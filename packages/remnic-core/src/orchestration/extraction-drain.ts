@@ -1,4 +1,3 @@
-/** Chunked trigger-drain for the extraction pipeline. */
 
 import { createHash } from "node:crypto";
 import { isAbortError, preemptedExtractionError } from "../abort-error.js";
@@ -50,10 +49,6 @@ export interface ExtractionDrainDeps {
   };
 }
 
-/** Identity of a chunk: its failure count must not follow a buffer key to
- *  different content. Part copies carry the part ordinal: two slices of one
- *  oversized turn can be byte-identical, and their failure counts must not
- *  share a slot (a success on part 1 would erase part 2's count). */
 function chunkFingerprint(chunk: readonly BufferTurn[]): string {
   const hash = createHash("sha256");
   for (const turn of chunk) {
@@ -63,27 +58,22 @@ function chunkFingerprint(chunk: readonly BufferTurn[]): string {
   return hash.digest("hex");
 }
 
-/** The chunking decision for one trigger-drain window. */
 interface ChunkPlan {
   singleRun: boolean;
   chunks: BufferTurn[][];
   resumed: boolean;
-  /** In-flight part copy → its source turn, for `extractionPartOf` splits. */
   partParents?: Map<BufferTurn, BufferTurn>;
-  /** How many oversized turns hit the max-parts clamp. */
   clampedParts: number;
   /** Parents whose unemitted tail needs a recovery copy before clearing. */
   clampedParents?: Set<BufferTurn>;
 }
 
-/** The drain-loop action for one chunk result. */
 interface ChunkVerdict {
   action: "continue" | "return" | "failed";
   result: ExtractionRunResult;
   aggregate: ExtractionRunResult | null;
 }
 
-/** Per-chunk run options plus the chunk-local preemption controller. */
 interface ChunkExecutionOptions {
   options: DrainRunOptions;
   preempt?: AbortController;
@@ -102,7 +92,6 @@ export class ExtractionDrain {
    */
   private readonly qualified = new Map<string, string>();
 
-  /** The claim drain runs with `dropFailedChunks: false`: a chunk that keeps */
   private readonly dropFailedChunks: boolean;
 
   private readonly deps: ExtractionDrainDeps;
@@ -173,7 +162,6 @@ export class ExtractionDrain {
     preemptHandle?: ExtractionPreemptHandle
   ): Promise<ExtractionRunResult> {
     const budgetChars = this.deps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY;
-    // Exact duplicates (same role AND content, one scope) collapse to their first
     // occurrence before chunk planning (#3443): chunks pack unique turns and the model
     // sees each text once. Every original stays a distinct identity the chunk must
     // account for, so chunks carry the duplicates as marked copies — clearing and
@@ -202,10 +190,8 @@ export class ExtractionDrain {
     // The tail of a window that already qualified goes through the chunk loop even when it now fits in one
     // chunk, so its failures still count toward the drop threshold.
     if (plan.singleRun) {
-      // Without duplicates this is today's single-run path: the run judges its own
       // thresholds on the raw window.
       if (collapsed.duplicateCount === 0) return await this.deps.runExtraction(turns, runOptions);
-      // With duplicates, eligibility belongs to the RAW window — duplicate inflation
       // must not change whether a window qualifies (#3443). Below the threshold,
       // today's skip path runs on the raw window (unmarked, so skip/capture/clear
       // judge every identity exactly as before); above it, the representative subset
@@ -223,7 +209,6 @@ export class ExtractionDrain {
     if (!plan.resumed && this.windowBelowThreshold(turns, runOptions)) {
       return await this.deps.runExtraction(turns, runOptions);
     }
-    // A deduped window is never re-judged on its representative subset inside the
     // run: eligibility above (or the caller's skip flags) already decided it.
     const options =
       collapsed.duplicateCount > 0
@@ -244,7 +229,6 @@ export class ExtractionDrain {
     partBudget = Number.POSITIVE_INFINITY
   ): ChunkPlan {
     const deduped = collapsed !== undefined && collapsed.duplicateCount > 0;
-    // Long-turn split (payload-cap drain): a turn longer than the render clamp
     // would lose its tail to the per-turn slice, so it becomes ordered verbatim
     // part copies marked `extractionPartOf`. The parts pack like any turn; the
     // parent clears only when its last part drains.
@@ -277,13 +261,6 @@ export class ExtractionDrain {
     };
   }
 
-  /** Each representative chunk expands to a PARTITION slice of the original window:
-   *  chunk k spans [start_k, start_k+1) where start_0 = 0 and start_k+1 is chunk
-   *  k+1's first representative's position; the last chunk runs to the window end.
-   *  A gap or trailing duplicate therefore rides with the chunk BEFORE which it
-   *  sits — whose representatives precede it (its own representative is in that
-   *  chunk or an earlier one) — so every identity is cleared or dropped exactly
-   *  once and nothing is left behind after a fully successful drain (#3443). */
   private expandedChunks(
     turns: readonly BufferTurn[],
     collapsed: CollapsedDuplicates,
@@ -301,8 +278,6 @@ export class ExtractionDrain {
     return chunks;
   }
 
-  /** Automatic chunking needs a clearable window, no fail-closed/forced
-   *  caller, and a real budget to chunk against. */
   private chunkable(runOptions: DrainRunOptions, turns: readonly BufferTurn[], budgetChars: number): boolean {
     return (
       runOptions.clearBufferAfterExtraction &&
@@ -314,15 +289,10 @@ export class ExtractionDrain {
     );
   }
 
-  /** A native group clears its turns by identity (a pinned capture can sit
-   *  in front); a drop must find them the same way. */
   private identityCleared(runOptions: DrainRunOptions, turns: readonly BufferTurn[]): boolean {
     return runOptions.clearMatchingTurns === true || !turns.some((turn) => turn.acceptedCapture === true);
   }
 
-  /** Eligibility (minimum user turns and characters) belongs to the whole
-   *  window: a window that never qualified keeps the single-run path, which
-   *  judges it exactly as before. */
   private windowBelowThreshold(turns: readonly BufferTurn[], runOptions: DrainRunOptions): boolean {
     const windowUserTurns = turns.filter((turn) => turn.role === "user").length;
     const belowChars = !runOptions.skipCharThreshold && this.windowChars(turns) < this.deps.config.extractionMinChars;
@@ -331,8 +301,6 @@ export class ExtractionDrain {
     );
   }
 
-  /** The window qualified as a whole; its chunks must not be re-judged one by
-   *  one (an assistant-only or short chunk would be cleared unextracted). */
   private async runChunked(
     chunks: readonly BufferTurn[][],
     runOptions: DrainRunOptions,
@@ -408,7 +376,6 @@ export class ExtractionDrain {
     return aggregate ?? { status: "skipped", persistedCount: 0, durableOutputCount: 0 };
   }
 
-  /** retention replaces theirs (retained turns do not pile up across chunks) */
   private chunkOptionsFor(
     chunks: readonly BufferTurn[][],
     position: number,
@@ -431,17 +398,12 @@ export class ExtractionDrain {
     return { options, preempt };
   }
 
-  /** A chunk-local abort controller so a fail-closed flush can abort the
-   *  next chunk instead of waiting behind the whole window. */
   private armChunkPreempt(preemptHandle?: ExtractionPreemptHandle): AbortController {
     const local = new AbortController();
     preemptHandle?.arm(() => local.abort(preemptedExtractionError()));
     return local;
   }
 
-  /** An abort error is rethrown (the chunk-local abort leaves the outer
-   *  signal untouched, so the host gets the preemption reason it looks for,
-   *  as it does for the first chunk). */
   private rethrowChunkAbort(cause: unknown, preempt: AbortController | undefined, outerAborted: boolean): void {
     if (!isAbortError(cause)) return;
     throw preempt && preempt.signal.aborted && !outerAborted ? preempt.signal.reason : cause;
@@ -494,9 +456,7 @@ export class ExtractionDrain {
       this.setFailureCount(bufferKey, chunk, 0);
       return { action: "continue", result: mergeDrainResults(aggregate, result), aggregate };
     }
-    // Provider breaker/backoff retention: keep everything for retry.
     if (verdict === "deferred") return { action: "return", result: mergeDrainResults(aggregate, result), aggregate };
-    // An outage or a bad key is not the chunk's fault: keep the chunk and do not count toward dropping it.
     // A reply cut at the output ceiling long-parks in the run layer on the first failure — the chunk
     // stays buffered so a raised ceiling can drain it, and retries never count toward a drop (#3521).
     if (
@@ -509,7 +469,6 @@ export class ExtractionDrain {
     return { action: "failed", result, aggregate };
   }
 
-  /** (live drains, recovery copy first) or keep it as durable retryable */
   private async settleFailedChunk(args: {
     bufferKey: string;
     chunk: readonly BufferTurn[];
@@ -532,7 +491,6 @@ export class ExtractionDrain {
           args.partParents
         ))
       ) {
-        // No recovery copy: keep the only buffered copy and retry later.
         this.setFailureCount(args.bufferKey, args.chunk, failures);
         return { action: "return", result: mergeDrainResults(args.aggregate, args.result) };
       }
@@ -543,7 +501,6 @@ export class ExtractionDrain {
     return { action: "return", result: mergeDrainResults(args.aggregate, args.result) };
   }
 
-  /** Greedy chunking sized by the RENDERED conversation (the oracle the model */
   private chunkByRenderedSize(turns: readonly BufferTurn[], budgetChars: number): BufferTurn[][] {
     const measure = this.deps.measureRenderedTurns!;
     const chunks: BufferTurn[][] = [];
@@ -607,7 +564,6 @@ export class ExtractionDrain {
       const storage = await this.deps.getStorage();
       return await storage.saveDroppedExtractionChunk(bufferKey, reason, chunk);
     } catch (err) {
-      // Never destroy the only buffered copy without a recovery file.
       log.warn(
         `buffer[${bufferKey}]: could not save the dropped-chunk recovery copy; keeping the chunk in the buffer: ${describeError(err)}`
       );
@@ -632,10 +588,6 @@ export class ExtractionDrain {
     return dropTurns;
   }
 
-  /** A part's slice never equals its parent's buffered content, so no drain
-   *  clears a parent implicitly. When the LAST part of a parent drains, the
-   *  whole turn has been extracted and the parent is removed by identity —
-   *  non-prefix, since earlier chunks may leave it mid-buffer. */
   private async clearFinishedPartParents(
     bufferKey: string,
     chunk: readonly BufferTurn[],

@@ -1,6 +1,4 @@
 // ---------------------------------------------------------------------------
-// @remnic/import-weclone — public surface
-// ---------------------------------------------------------------------------
 
 import {
   getBulkImportSource,
@@ -43,6 +41,4 @@ export function ensureWecloneImportAdapterRegistered(): boolean {
 // `clearBulkImportSources()`) can re-invoke
 // `ensureWecloneImportAdapterRegistered()` after clearing.
 //
-// Let unexpected registry failures surface at import time so the public
-// "import registers the adapter" contract cannot silently become false.
 ensureWecloneImportAdapterRegistered();

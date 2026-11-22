@@ -7,11 +7,6 @@ interface EnrichmentWriter {
   ): Promise<unknown>;
 }
 
-/**
- * Persist one accepted enrichment candidate through the sealed envelope
- * (issue #1989 PR4). Enrichment-provider output is machine data — salvage;
- * drops are warn-logged by the shared helper.
- */
 export async function persistEnrichmentCandidate(
   storage: EnrichmentWriter,
   entityName: string,

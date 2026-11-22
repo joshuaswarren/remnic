@@ -1,34 +1,3 @@
-/**
- * §33 disable-value check (issue #2070).
- *
- * AGENTS.md §33 ("Config Schema-Code Consistency — Schema Minimums Must Honor
- * Documented Disable Values"): when a config property documents "0 disables" /
- * "set to 0 to disable" semantics, both the JSON schema AND the parser must
- * accept 0. PR #399 shipped a property documented as "set to 0 to disable"
- * whose schema had `minimum: 1` and whose parser clamped with
- * `Math.max(1, …)`, silently overriding a user who followed the docs.
- *
- * This is a static check — no LLM, no runtime. It runs inside
- * `npm run check-config-contract` (via validate-config-contract.ts), which is
- * the single entry point contract-check.ts's header promises.
- *
- * Two rename-immune sub-checks over the config surface:
- *
- *   - schema-min: a documented zero-disable property whose configSchema entry
- *     is numeric with `minimum >= 1` (the exact PR #399 class). Keyed by the
- *     literal property name in both the docs and the manifest, so it carries
- *     no false positives from renamed runtime locals.
- *   - guard: the property's runtime handling coerces 0 away — a parser clamp
- *     (`Math.max(1, …)`) or falsy-default (`… || 5`) inside the property's own
- *     initializer that has no zero short-circuit, or a consumer threshold
- *     comparison (`queued > threshold`) with no `<= 0` / `=== 0` guard.
- *
- * Violations that already exist on `main` are recorded in
- * disable-value-grandfathered.json (a SEPARATE manifest from
- * grandfathered.json, whose contract-check consumer rejects foreign violation
- * kinds). The manifest is shrink-only: an entry that no longer violates is a
- * failure, not a comfort, so fixing a property forces removing its exception.
- */
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -45,7 +14,6 @@ export interface DisableValueViolation {
 export interface DisableValueGrandfatherEntry {
   kind: DisableValueViolationKind;
   key: string;
-  /** Issue tracking this entry's removal. */
   issue: string;
 }
 
@@ -80,17 +48,8 @@ export interface DisableValueCheckResult {
   zeroDisableProperties: string[];
 }
 
-/**
- * A literal `0` within a short window before "disabl(e|es|ed)" — matches
- * "0 disables", "set to 0 to disable", "0 to disable the gate", "<= 0
- * disables", "0 (disabled)". The window stops at a sentence boundary (`.`) so a
- * `0` in one sentence cannot bind to "disable" in the next. Runs on normalized
- * text (comment markers stripped, whitespace collapsed), so phrasing wrapped
- * across JSDoc lines still matches.
- */
 export const ZERO_DISABLE_PATTERN = /\b0\b[^.]{0,40}?disabl/i;
 
-/** Strip JSDoc/line-comment markers and collapse whitespace so wrapped phrasing reads as one line. */
 function normalizeDocText(text: string): string {
   return text
     .replace(/\/\*\*?|\*\/|^\s*\*|\/\//gm, " ")
@@ -120,7 +79,6 @@ function leadingCommentText(fullText: string, node: ts.Node): string {
   return ranges.map((range) => fullText.slice(range.pos, range.end)).join("\n");
 }
 
-/** Property names in a single source file whose leading comment/JSDoc documents zero-disable. */
 export function collectZeroDisablePropertiesFromSource(source: DisableValueSource): Set<string> {
   const sf = ts.createSourceFile(source.path, source.text, ts.ScriptTarget.Latest, true);
   const fullText = sf.getFullText();
@@ -143,7 +101,6 @@ function numericSchema(prop: DisableValueSchemaProperty): boolean {
   return types.some((t) => t === "number" || t === "integer");
 }
 
-/** A numeric branch/schema that is constrained enough to express whether it admits 0. */
 function isNumericConstrained(prop: DisableValueSchemaProperty): boolean {
   return (
     numericSchema(prop) ||
@@ -155,14 +112,6 @@ function isNumericConstrained(prop: DisableValueSchemaProperty): boolean {
   );
 }
 
-/**
- * A short reason a numeric schema rejects the value 0 (so it cannot honor a
- * documented disable value), or undefined when it admits 0 (or isn't numeric).
- * Considers `minimum` (ANY value > 0, fractional included), `exclusiveMinimum`,
- * `enum`, `const`, and `anyOf`/`oneOf`. Parent constraints apply IN ADDITION to
- * any combinator (JSON Schema allOf): the field admits 0 only when the parent
- * admits 0 AND some branch admits 0.
- */
 function zeroRejectionReason(prop: DisableValueSchemaProperty): string | undefined {
   if (typeof prop.minimum === "number" && prop.minimum > 0) return `minimum ${prop.minimum}`;
   if (typeof prop.exclusiveMinimum === "number" && prop.exclusiveMinimum >= 0) {
@@ -170,7 +119,6 @@ function zeroRejectionReason(prop: DisableValueSchemaProperty): string | undefin
   }
   if (prop.const !== undefined && prop.const !== 0) return `const ${JSON.stringify(prop.const)}`;
   if (Array.isArray(prop.enum) && !prop.enum.includes(0)) return `enum ${JSON.stringify(prop.enum)}`;
-  // allOf is an intersection: 0 is rejected if ANY branch rejects it.
   if (prop.allOf && prop.allOf.length > 0) {
     for (const branch of prop.allOf) {
       const reason = zeroRejectionReason(branch);
@@ -179,9 +127,6 @@ function zeroRejectionReason(prop: DisableValueSchemaProperty): string | undefin
   }
   const branches = prop.anyOf ?? prop.oneOf;
   if (branches && branches.length > 0) {
-    // Parent admits 0 here (nothing rejected above). Count branches that admit 0:
-    // anyOf admits 0 when >= 1 branch does; oneOf requires EXACTLY one (two
-    // matching branches make 0 invalid under oneOf).
     const isOneOf = prop.anyOf === undefined && prop.oneOf !== undefined;
     let rejection: string | undefined;
     let zeroAdmittingCount = 0;
@@ -243,7 +188,6 @@ function isInequalityOperator(kind: ts.SyntaxKind): boolean {
   );
 }
 
-/** `Math.max(L, …)` / `Math.max(…, L)` with a positive floor L > 0 (a fractional floor like 0.1 coerces 0 too). */
 function isFloorAboveZero(node: ts.CallExpression): boolean {
   const callee = node.expression;
   if (
@@ -260,7 +204,6 @@ function isFloorAboveZero(node: ts.CallExpression): boolean {
   });
 }
 
-/** Full dotted access path (`config.backlogThreshold`, `this.cap`), or undefined for anything that isn't a plain member access. */
 function accessPath(node: ts.Expression): string | undefined {
   if (ts.isIdentifier(node)) return node.text;
   if (node.kind === ts.SyntaxKind.ThisKeyword) return "this";
@@ -271,22 +214,12 @@ function accessPath(node: ts.Expression): string | undefined {
   return undefined;
 }
 
-/** The config property (leaf) an operand reads as `obj.leaf`, plus its full path for guard matching. Bare identifiers are excluded to avoid renamed-local false positives. */
 function propertyAccess(node: ts.Expression): { leaf: string; path: string } | undefined {
   if (!ts.isPropertyAccessExpression(node)) return undefined;
   const path = accessPath(node);
   return path ? { leaf: node.name.text, path } : undefined;
 }
 
-/**
- * If bare identifier `operand` was destructured from a config object
- * (`const { field } = config` / `const { field: alias } = config`) within its
- * OWN enclosing function, the config field leaf it maps to. Scoped to the
- * operand's function so a `const { cap } = config` in one function does not make
- * an unrelated `cap` in a sibling function look like that config field.
- * Restricted to destructuring off a plain object reference (identifier or member
- * access) to avoid binding unrelated call-result locals.
- */
 function destructuredConfigField(operand: ts.Identifier): { field: string; sourcePath: string } | undefined {
   const scope = enclosingScope(operand);
   const name = operand.text;
@@ -316,7 +249,6 @@ function destructuredConfigField(operand: ts.Identifier): { field: string; sourc
   return result;
 }
 
-/** In-scope destructured alias names for a property-access path (`config.cap` → `cap` when `const { cap } = config` is in scope). */
 function destructuredAliasesInScope(operand: ts.Expression, fullPath: string, leaf: string): string[] {
   const root = fullPath.split(".")[0];
   const scope = enclosingScope(operand);
@@ -344,7 +276,6 @@ function destructuredAliasesInScope(operand: ts.Expression, fullPath: string, le
   return aliases;
 }
 
-/** A function-like scope node (excludes SourceFile). */
 function isFunctionScope(node: ts.Node): boolean {
   return (
     ts.isFunctionDeclaration(node) ||
@@ -357,7 +288,6 @@ function isFunctionScope(node: ts.Node): boolean {
   );
 }
 
-/** Nearest enclosing function/method scope (or the SourceFile), so a threshold's guard is checked in its own scope, not repo-wide. */
 function enclosingScope(node: ts.Node): ts.Node {
   let current: ts.Node | undefined = node.parent;
   while (current) {
@@ -367,7 +297,6 @@ function enclosingScope(node: ts.Node): ts.Node {
   return node.getSourceFile();
 }
 
-/** The `const name = <initializer>` initializer for `name` within `scope`, if any. */
 function localInitializer(name: string, scope: ts.Node): ts.Expression | undefined {
   let init: ts.Expression | undefined;
   const visit = (node: ts.Node): void => {
@@ -384,7 +313,6 @@ function localInitializer(name: string, scope: ts.Node): ts.Expression | undefin
   return init;
 }
 
-/** True when `expr` is the local identifier `name` or a pure alias chain to it (`const b = name`). */
 function refersToLocal(expr: ts.Expression, name: string, scope: ts.Node, seen: Set<string>): boolean {
   if (ts.isParenthesizedExpression(expr)) return refersToLocal(expr.expression, name, scope, seen);
   if (!ts.isIdentifier(expr)) return false;
@@ -395,19 +323,9 @@ function refersToLocal(expr: ts.Expression, name: string, scope: ts.Node, seen: 
   return init ? refersToLocal(init, name, scope, seen) : false;
 }
 
-/**
- * Does `expr` emit config field `name` into a returned value UNDER THE KEY
- * `name` — via a same-named shorthand (`return { name }`), a `name: <value>`
- * property, or a nested/aliased container that itself emits it
- * (`const p = { name }; return { p }`)? A same-named local returned under a
- * DIFFERENT key (`return { requested: name }`) does NOT count — that binds the
- * value to another config key, not `name`. `seen` breaks alias cycles.
- */
 function expressionEmitsField(expr: ts.Expression, name: string, scope: ts.Node, seen: Set<string>): boolean {
   if (ts.isParenthesizedExpression(expr)) return expressionEmitsField(expr.expression, name, scope, seen);
   if (ts.isIdentifier(expr)) {
-    // Follow a container alias (`const p = { name }; return p`); a bare identifier
-    // is not itself an emission under key `name`.
     if (seen.has(expr.text)) return false;
     seen.add(expr.text);
     const init = localInitializer(expr.text, scope);
@@ -417,7 +335,6 @@ function expressionEmitsField(expr: ts.Expression, name: string, scope: ts.Node,
     return expr.properties.some((prop) => {
       if (ts.isShorthandPropertyAssignment(prop)) {
         if (prop.name.text === name) return true;
-        // `{ container }` where container = { name }: follow the alias.
         if (seen.has(prop.name.text)) return false;
         seen.add(prop.name.text);
         const init = localInitializer(prop.name.text, scope);
@@ -425,10 +342,7 @@ function expressionEmitsField(expr: ts.Expression, name: string, scope: ts.Node,
       }
       if (ts.isPropertyAssignment(prop)) {
         const key = ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) ? prop.name.text : undefined;
-        // `name: <value>` emits the local only when the VALUE is that local (or a
-        // pure alias to it) — `{ name: otherValue }` binds another value to the key.
         if (key === name && refersToLocal(prop.initializer, name, scope, new Set())) return true;
-        // Otherwise only a nested container can still emit `name` deeper.
         return expressionEmitsField(prop.initializer, name, scope, seen);
       }
       return false;
@@ -437,7 +351,6 @@ function expressionEmitsField(expr: ts.Expression, name: string, scope: ts.Node,
   return false;
 }
 
-/** True when the parsed local `decl` flows into its scope's return value — directly, via a same-named shorthand, or through nested/aliased returned objects. A returned config field, not a helper local passed elsewhere. */
 function localReturnedViaShorthand(decl: ts.VariableDeclaration): boolean {
   if (!ts.isIdentifier(decl.name)) return false;
   const name = decl.name.text;
@@ -459,14 +372,6 @@ function localReturnedViaShorthand(decl: ts.VariableDeclaration): boolean {
 
 type Tri = true | false | "unknown";
 
-/**
- * Three-valued truth of a boolean condition when `guardedPath` holds `value`.
- * A comparison of `guardedPath` to a numeric literal evaluates concretely; every
- * other operand (a different path, a call, a bare flag like `force`) is "unknown"
- * and propagates through `&&`/`||`/`!`. This is what lets the guard classifier
- * respect boolean operators: `force && cap <= 0` is "unknown" at value 0, so it
- * is not accepted as a disable guard for `cap`.
- */
 function evalConditionAt(node: ts.Node, guardedPath: string, value: number): Tri {
   if (ts.isParenthesizedExpression(node)) return evalConditionAt(node.expression, guardedPath, value);
   if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) {
@@ -507,16 +412,6 @@ function evalConditionAt(node: ts.Node, guardedPath: string, value: number): Tri
   return "unknown";
 }
 
-/**
- * How a condition treats the disable value for `guardedPath`, keyed on the value
- * at 0: "disabling" when 0 makes the condition definitely TRUE (it fires when
- * disabled) and a positive value does not force it true (`x <= 0`, `x === 0`,
- * and feature-gated `!enabled || x <= 0`); "active" when 0 makes it definitely
- * FALSE (the branch cannot run while disabled) and a positive value does not
- * force it false (`x > 0`, `x !== 0`, `enabled && x > 0`). An unknown value at 0
- * (`force && x <= 0` — the zero check is itself gated), `>= 0` (true for both),
- * and conditions independent of `guardedPath` yield undefined.
- */
 function pathGuardKind(condition: ts.Node, guardedPath: string): "active" | "disabling" | undefined {
   const atZero = evalConditionAt(condition, guardedPath, 0);
   if (atZero === "unknown") return undefined;
@@ -535,7 +430,6 @@ function isDescendant(ancestor: ts.Node, node: ts.Node): boolean {
   return false;
 }
 
-/** A statement that unconditionally leaves the current block (return/throw/break/continue), directly or as a block's first exit. */
 function branchAlwaysExits(node: ts.Statement): boolean {
   if (
     ts.isReturnStatement(node) ||
@@ -551,7 +445,6 @@ function branchAlwaysExits(node: ts.Statement): boolean {
   return false;
 }
 
-/** The nearest ancestor that is a statement (its parent holds a statement list). */
 function enclosingStatement(node: ts.Node): ts.Statement | undefined {
   let current: ts.Node | undefined = node;
   while (current) {
@@ -561,7 +454,6 @@ function enclosingStatement(node: ts.Node): ts.Statement | undefined {
   return undefined;
 }
 
-/** A preceding `if (<disabling guard>) <exit>` guard clause in the use's block or an ancestor block. */
 function precedingGuardClauseExits(use: ts.Node, guardedPath: string): boolean {
   let stmt = enclosingStatement(use);
   while (stmt) {
@@ -581,20 +473,12 @@ function precedingGuardClauseExits(use: ts.Node, guardedPath: string): boolean {
         }
       }
     }
-    // A guard in an outer function does not protect a use in a nested
-    // function: the inner function's parameter can still be 0.
     if (container && container.parent && isFunctionScope(container.parent)) break;
     stmt = container ? enclosingStatement(container) : undefined;
   }
   return false;
 }
 
-/**
- * True when a boolean `||`/`&&`/paren expression is (part of) an if-condition
- * whose then-branch always exits (return/throw/break/continue). Used so a
- * disabling `||` conjunct only counts as a guard when disabling short-circuits
- * to an exit, not to running an action.
- */
 function orConditionBranchExits(orExpr: ts.Node): boolean {
   let node: ts.Node = orExpr;
   while (node.parent) {
@@ -613,29 +497,19 @@ function orConditionBranchExits(orExpr: ts.Node): boolean {
   return false;
 }
 
-/** A disable guard actually short-circuits the threshold use: a preceding guard clause, an `&&`/`||` conjunct, or an enclosing active/else branch. */
 function guardShortCircuitsUse(use: ts.Node, guardedPath: string): boolean {
   let node: ts.Node = use;
   const useScope = enclosingScope(use);
   while (node.parent) {
     const parent = node.parent;
-    // Stop at the use's own function boundary: an enclosing `if`/guard in an
-    // outer function cannot protect a threshold inside a nested function, whose
-    // parameter can still be the disable value.
     if (isFunctionScope(parent) && parent !== useScope) break;
     if (ts.isBinaryExpression(parent) && node === parent.right) {
-      // `cfg.x > 0 && use` — the use only runs when the guard is active.
       if (
         parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
         pathGuardKind(parent.left, guardedPath) === "active"
       ) {
         return true;
       }
-      // `cfg.x <= 0 || use` — a disabling left operand short-circuits, but only
-      // PROTECTS when the whole `||` is an if-condition whose branch EXITS
-      // (`if (cfg.x <= 0 || used > cfg.x) return`). In an action context
-      // (`if (cfg.x <= 0 || used > cfg.x) flush()`) the disable value TRIGGERS
-      // the action, so it is not a guard.
       if (
         parent.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
         pathGuardKind(parent.left, guardedPath) === "disabling" &&
@@ -665,7 +539,6 @@ function guardShortCircuitsUse(use: ts.Node, guardedPath: string): boolean {
   return precedingGuardClauseExits(use, guardedPath);
 }
 
-/** Evaluate `<value> <op> <lit>` (or the mirror `<lit> <op> <value>`) for a concrete value. */
 function satisfiesComparison(
   op: ts.SyntaxKind,
   valueOnLeft: boolean,
@@ -693,20 +566,12 @@ function satisfiesComparison(
   return undefined;
 }
 
-/** Identifier or member-access text of an operand (`raw`, `cfg.raw`), for tying a ternary condition to its clamped value. */
 function operandText(node: ts.Expression): string | undefined {
   if (ts.isIdentifier(node)) return node.text;
   if (ts.isPropertyAccessExpression(node)) return accessPath(node);
   return undefined;
 }
 
-/**
- * For a condition that is a BARE comparison of a single value to 0/1: which
- * ternary branch runs when the value is 0, plus the compared value's text. A
- * comparison gated by `&&`/`||` (`flag && raw <= 0`) is NOT a zero-preserving
- * test — the branch can run with the value at 0 when the gate flips — so only
- * the whole top-level comparison (parens unwrapped) qualifies.
- */
 function zeroCaseBranch(condition: ts.Expression): { branch: "whenTrue" | "whenFalse"; valueText: string | undefined } | undefined {
   let node: ts.Expression = condition;
   while (ts.isParenthesizedExpression(node)) node = node.expression;
@@ -729,7 +594,6 @@ function zeroCaseBranch(condition: ts.Expression): { branch: "whenTrue" | "whenF
   return { branch: satisfied ? "whenTrue" : "whenFalse", valueText: operandText(valueNode) };
 }
 
-/** Does a subtree reference an operand with the given identifier/access text? */
 function subtreeReferencesText(root: ts.Node, text: string): boolean {
   let found = false;
   const visit = (node: ts.Node): void => {
@@ -744,14 +608,6 @@ function subtreeReferencesText(root: ts.Node, text: string): boolean {
   return found;
 }
 
-/**
- * True when `clamp` runs only for a non-zero value: it sits in the clamp branch
- * of an enclosing ternary whose zero case yields literal 0 and whose condition
- * tests the value the clamp operates on (`raw <= 0 ? 0 : Math.max(1, raw)`).
- * Checked PER clamp site, so a separate zero-preserving ternary elsewhere in the
- * initializer (`(raw <= 0 ? 0 : raw) + Math.max(1, raw)`) does not mask a clamp
- * that still coerces 0.
- */
 function clampIsZeroPreserved(clamp: ts.Node): boolean {
   let node: ts.Node = clamp;
   while (node.parent) {
@@ -761,11 +617,6 @@ function clampIsZeroPreserved(clamp: ts.Node): boolean {
       if (info) {
         const zeroBranch = info.branch === "whenTrue" ? parent.whenTrue : parent.whenFalse;
         const clampBranch = info.branch === "whenTrue" ? parent.whenFalse : parent.whenTrue;
-        // Require a VERIFIED same-value tie: the zero branch yields 0 and the
-        // CLAMP NODE ITSELF operates on the exact value the condition tested
-        // (not merely somewhere in the branch — `legacy <= 0 ? 0 : Math.max(1, rawCap) + legacy`
-        // clamps rawCap, not legacy, and must still be flagged). If the tested
-        // value can't be named (e.g. `coerceNumber(x) <= 0`), fail closed.
         if (
           node === clampBranch &&
           numericLiteralValue(zeroBranch) === 0 &&
@@ -781,7 +632,6 @@ function clampIsZeroPreserved(clamp: ts.Node): boolean {
   return false;
 }
 
-/** Initializer clamps 0 up (`Math.max(1, …)`) or falsy-defaults it (`… || 5`) at a site that is not confined to the non-zero branch of a zero-preserving ternary. */
 function initializerCoercesZero(initializer: ts.Expression): boolean {
   let coerces = false;
   const visit = (node: ts.Node): void => {
@@ -803,14 +653,6 @@ function initializerCoercesZero(initializer: ts.Expression): boolean {
   return coerces;
 }
 
-/**
- * One pass per source collecting guard flags for every zero-disable property at
- * once. A threshold comparison (`obj.prop` as a bound) is unguarded only when
- * its OWN enclosing function lacks a `obj.prop <op> 0|1` short-circuit — a guard
- * in a different consumer does not vouch for it. Coercion is caught in a
- * property's own initializer AND in a local of the same name (parser values
- * returned via shorthand).
- */
 function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string>): Map<string, GuardFlags> {
   const flags = new Map<string, GuardFlags>();
   for (const name of zeroDisable) flags.set(name, { thresholdUnguarded: false, coercion: false });
@@ -820,8 +662,6 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
       if (ts.isIdentifier(operand)) {
         const destructured = destructuredConfigField(operand);
         if (destructured) {
-          // A guard may reference the alias (`cap <= 0`) or the full config path
-          // (`config.cap <= 0`); accept either.
           return {
             leaf: destructured.field,
             paths: [operand.text, `${destructured.sourcePath}.${destructured.field}`],
@@ -839,17 +679,11 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
         const right = operandBound(node.right);
         const leftLit = numericLiteralValue(node.left);
         const rightLit = numericLiteralValue(node.right);
-        // A property is a threshold bound in ANY inequality ordering (`prop > X`,
-        // `X > prop`, `prop < X`, `X < prop`, …) as long as the other operand is
-        // a dynamic value, not the 0/1 disable literal (that side is a guard).
         const bounds = [
           right && flags.has(right.leaf) && leftLit !== 0 && leftLit !== 1 ? right : undefined,
           left && flags.has(left.leaf) && rightLit !== 0 && rightLit !== 1 ? left : undefined,
         ];
         for (const bound of bounds) {
-          // Guarded when a disable check on ANY of the bound's access paths (the
-          // property path, or a destructured alias / its full config path) actually
-          // short-circuits this use — not merely present in the function.
           if (bound && !bound.paths.some((guardPath) => guardShortCircuitsUse(node, guardPath))) {
             flags.get(bound.leaf)!.thresholdUnguarded = true;
           }
@@ -862,16 +696,12 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
           : ts.isPropertyDeclaration(node)
             ? node.initializer
             : undefined;
-        // Resolve an aliased local initializer (`const parsed = Math.max(1, raw); { maxItems: parsed }`)
-        // to its declaration so a coercion routed through a differently named local is still caught.
         const resolved =
           initializer && ts.isIdentifier(initializer)
             ? localInitializer(initializer.text, enclosingScope(node))
             : initializer;
         if (resolved && initializerCoercesZero(resolved)) flags.get(assignedName)!.coercion = true;
       }
-      // Parser value computed in a same-named local AND returned via shorthand
-      // (a config field being assembled) — not an unrelated runtime helper local.
       if (
         ts.isVariableDeclaration(node) &&
         ts.isIdentifier(node.name) &&
@@ -889,13 +719,11 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
 }
 
 interface FlatSchemaEntry {
-  /** Dotted path from the configSchema root (`procedural.minOccurrences`, `foo[].bar`). */
   path: string;
   leaf: string;
   prop: DisableValueSchemaProperty;
 }
 
-/** Flatten a configSchema property map into dotted paths, recursing objects and array items. */
 function flattenManifestProperties(
   properties: Record<string, DisableValueSchemaProperty>,
   prefix = "",
@@ -910,17 +738,10 @@ function flattenManifestProperties(
   return out;
 }
 
-/**
- * Pure core: given source texts and manifest property maps, return every §33
- * violation (unsorted). No filesystem, no grandfather — the unit-test seam.
- */
 export function findDisableValueViolations(input: {
   sources: DisableValueSource[];
   manifests: DisableValueManifest[];
 }): { violations: DisableValueViolation[]; zeroDisableProperties: string[] } {
-  // Leaves documented via source JSDoc are real top-level config field names; a
-  // schema *description* documents only the entry at its own path, so it must
-  // not vouch for an unrelated top-level entry sharing the leaf.
   const jsDocLeaves = new Set<string>();
   for (const source of input.sources) {
     for (const name of collectZeroDisablePropertiesFromSource(source)) jsDocLeaves.add(name);
@@ -930,16 +751,7 @@ export function findDisableValueViolations(input: {
     manifest,
     entries: flattenManifestProperties(manifest.properties),
   }));
-  // A schema *description* contributes its leaf to the leaf-keyed guard scan only
-  // when the leaf is unambiguously zero-disable: another numeric (or combinator)
-  // entry sharing the leaf without the zero-disable contract would poison that
-  // unrelated field's consumer scan, so such a leaf is left out (schema-min still
-  // keys by full dotted path, so nested docs are still checked there).
   const schemaEntries = flattenedByManifest.flatMap(({ entries }) => entries);
-  // Leaf uniqueness is per-manifest: the same leaf appearing once in each of
-  // several manifests is still unambiguous within each manifest. A global
-  // count would falsely reject source-JSDoc docs when manifests duplicate
-  // a leaf (root + plugin + shim all carry `cap`).
   const perManifestLeafCount = new Map<string, Map<string, number>>();
   for (const { manifest, entries } of flattenedByManifest) {
     const counts = new Map<string, number>();
@@ -961,10 +773,6 @@ export function findDisableValueViolations(input: {
   }
 
   const violations: DisableValueViolation[] = [];
-  // schema-min over every flattened entry (nested blocks included). An entry is
-  // zero-disable via its own schema description at any depth, or via a top-level
-  // leaf documented in a source JSDoc — never a nested leaf coinciding with an
-  // unrelated top-level name.
   for (const { manifest, entries } of flattenedByManifest) {
     for (const entry of entries) {
       const documented =
@@ -1036,14 +844,6 @@ function loadGrandfather(grandfatherPath: string): DisableValueGrandfatherEntry[
   });
 }
 
-/**
- * Resolve the grandfather baseline for the shrink-only ban, mirroring the v2
- * contract checker. `baselineRequired` lets the caller FAIL CLOSED rather than
- * run open: a real Git checkout whose base ref or baseline JSON cannot be
- * resolved must not silently skip the ban. A missing Git work tree (unit
- * fixture) and the PR that first introduces the manifest legitimately have no
- * baseline (`keys: null, baselineRequired: false`).
- */
 function readBaselineGrandfather(
   repoRoot: string,
   grandfatherPath: string,
@@ -1084,7 +884,6 @@ function readBaselineGrandfather(
       stdio: ["ignore", "pipe", "ignore"],
     });
   } catch {
-    // Absent at the base → this PR introduces the manifest; not a new exception.
     return { keys: null, baselineRequired: false };
   }
   let parsed: unknown;
@@ -1104,7 +903,6 @@ function readBaselineGrandfather(
   };
 }
 
-/** Reject any exception not present in the baseline — the manifest may only shrink. No-op when baseline is null. */
 export function assertGrandfatherShrinkOnly(
   current: DisableValueGrandfatherEntry[],
   baseline: Set<string> | null,
@@ -1128,7 +926,6 @@ function readSchemaProperties(manifestPath: string): Record<string, DisableValue
   return manifest.configSchema?.properties ?? {};
 }
 
-/** Every non-test, non-declaration `.ts` under a directory (the runtime consumers to scan for guards). */
 function collectCoreSourceFiles(dirPath: string): string[] {
   const out: string[] = [];
   if (!fs.existsSync(dirPath)) return out;
@@ -1148,18 +945,12 @@ function collectCoreSourceFiles(dirPath: string): string[] {
   return out;
 }
 
-/**
- * Filesystem wiring: read the config surface (declarations + parser) and every
- * present manifest, run the core, then apply the shrink-only grandfather.
- */
 export function runDisableValueCheck(options: {
   repoRoot: string;
   sourceFiles?: string[];
   manifestPaths?: string[];
   grandfatherPath?: string;
-  /** Enforce the shrink-only grandfather ban against the git base (default true). Unit tests on non-git dirs opt out. */
   checkGrandfatherBaseline?: boolean;
-  /** Git ref for the shrink-only baseline (default env REMNIC_CONFIG_CONTRACT_BASE_REF ?? "origin/main"). */
   baselineRef?: string;
 }): DisableValueCheckResult {
   const repoRoot = options.repoRoot;

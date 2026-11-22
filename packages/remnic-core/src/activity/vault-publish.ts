@@ -29,10 +29,6 @@ export function applyManagedRegion(
 
   const startMarker = `<!-- remnic:${opts.name}:start -->`;
   const endMarker = `<!-- remnic:${opts.name}:end -->`;
-  // Markers are owned only outside a code block — fenced or indented: a
-  // complete pair inside a ``` or four-space-indented example is sample
-  // text the user wrote, and replacing between it would overwrite their
-  // bytes (issue #1985).
   const rows = fileLines(fileText);
   let startRow: FileLine | undefined;
   let endRow: FileLine | undefined;

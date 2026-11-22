@@ -26,23 +26,6 @@ function classify(bytes: Uint8Array, sessionKey: string): JsonlOwnership {
   return matches ? "matches" : "empty";
 }
 
-/**
- * Parse cache for transcript directory ownership checks.
- *
- * Every {@link verify} call reads the file's exact bytes and hashes them; it
- * trusts no size, mtime, or earlier verdict that those bytes do not reproduce.
- * A cached entry records that the first `length` bytes (always ending on a
- * newline) hashed to `digest` and were all lines owned by the session. A call
- * reuses it only when the current bytes' prefix of that length hashes to the
- * same digest, then parses just the bytes after it. Anything else re-parses
- * from byte 0, so rewrites at equal size, prefix edits, and truncation all
- * fall back to a full, independent parse. Concurrent callers never share
- * verdicts; each reads and hashes for itself.
- *
- * Only owned prefixes are cached, never foreign or unreadable results, and the
- * map is an LRU capped at `maxEntries`. Keys hold the session key as a digest
- * so caller-chosen keys cannot inflate memory.
- */
 export class JsonlOwnershipDigestCache {
   private readonly entries = new Map<string, VerifiedPrefix>();
 

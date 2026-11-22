@@ -1,11 +1,3 @@
-// Focused regression for the codegraph OKF projection (issue #1950).
-//
-// Fixture: a two-file synthetic repo indexed into a real GraphStore via the
-// optional-engine loader (never a static optional-package import), plus a
-// supersede pair + one accepted ADR and an architecture-card memory in the
-// project's coding namespace. Covers the issue's acceptance set: bundle
-// shape + verbatim card, determinism, truncation with a legal broken link,
-// the --symbols ladder, gating refusals, and store-byte immutability.
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -121,7 +113,6 @@ async function seedNamespace(memoryDir: string): Promise<void> {
   const namespaceDir = path.join(memoryDir, "namespaces", "project-p1");
   const storage = new StorageManager(namespaceDir);
   await storage.ensureDirectories();
-  // Accepted ADR with an explicit id.
   await writeAdr(storage, {
     id: "ADR-0001",
     title: "Use SQLite for the graph store",
@@ -131,8 +122,6 @@ async function seedNamespace(memoryDir: string): Promise<void> {
     consequences: "Reads stay local; no server required.",
     entityRefs: [],
   });
-  // Supersede pair in the production shape: frontmatter id left EMPTY (the
-  // memory id is canonical) and the replacement carries `supersedes`.
   await writeAdr(
     storage,
     {
@@ -156,7 +145,6 @@ async function seedNamespace(memoryDir: string): Promise<void> {
     entityRefs: [],
     supersedes: "ADR-0002",
   });
-  // Architecture card memory (surface classification: fact + tag + cardKind).
   await storage.writeMemory("fact", CARD_MARKDOWN, {
     source: "coding-architecture",
     tags: ["architecture-card"],
@@ -229,20 +217,16 @@ test("exportCodegraphOkfBundle writes the full bundle: card verbatim, ADRs, modu
     assert.equal(result.decisions, 3);
     assert.equal(result.architectureCard, true);
 
-    // Root index carries the version stamp + counts.
     const root = await readFile(path.join(out, "index.md"), "utf8");
     assert.match(root, /okf_version: "0.1"/);
     assert.match(root, /- code modules: 2 of 2 indexed files/);
     assert.equal(root.includes(OKF_CODEGRAPH_TRUNCATION_MARKER), false);
 
-    // Architecture card: OKF type frontmatter + stored body verbatim
-    // (storage-layer attribute suffix stripped).
     const arch = await readFile(path.join(out, "architecture.md"), "utf8");
     assert.match(arch, /type: Architecture Card/);
     assert.ok(arch.includes(CARD_MARKDOWN.trimEnd()), "card body must be verbatim");
     assert.equal(arch.includes("[Attributes:"), false);
 
-    // Decisions: all three statuses exported with type + original keys.
     const decisionFiles = collectFiles(path.join(out, "decisions")).sort();
     assert.deepEqual(
       decisionFiles.filter((f) => f !== "index.md"),
@@ -256,11 +240,8 @@ test("exportCodegraphOkfBundle writes the full bundle: card verbatim, ADRs, modu
     const adr3 = await readFile(path.join(out, "decisions", "ADR-0003.md"), "utf8");
     assert.match(adr3, /- supersedes: \[ADR-0002\]\(\/decisions\/ADR-0002\.md\)/);
     const decisionsIndex = await readFile(path.join(out, "decisions", "index.md"), "utf8");
-    // ACTIVE statuses listed before superseded.
     assert.ok(decisionsIndex.indexOf("## Accepted") < decisionsIndex.indexOf("## Superseded"));
 
-    // Modules: one concept per file; symbols table (exported default);
-    // edges under # Dependencies with kind prose + bundle-relative links.
     const big = await readFile(path.join(out, "modules", "src", "big.ts.md"), "utf8");
     assert.match(big, /type: Code Module/);
     assert.match(big, /title: src\/big\.ts/);
@@ -275,7 +256,6 @@ test("exportCodegraphOkfBundle writes the full bundle: card verbatim, ADRs, modu
     const modulesIndex = await readFile(path.join(out, "modules", "index.md"), "utf8");
     assert.match(modulesIndex, /## src/);
 
-    // Read-only guarantee: the store's bytes are unchanged.
     assert.equal(sha256File(fx.dbPath), fx.sqliteBefore);
   } finally {
     await rm(fx.memoryDir, { recursive: true, force: true });
@@ -317,7 +297,6 @@ test("truncation keeps the most-symbolic file, notices in the root index, keeps 
     assert.equal(existsSync(path.join(out, "modules", "src", "small.ts.md")), false);
     const root = await readFile(path.join(out, "index.md"), "utf8");
     assert.match(root, new RegExp(OKF_CODEGRAPH_TRUNCATION_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    // The edge to the truncated target survives as a legal broken link.
     const big = await readFile(path.join(out, "modules", "src", "big.ts.md"), "utf8");
     assert.match(big, /\(\/modules\/src\/small\.ts\.md\) \(confidence: high\) \(link target not exported\)/);
     assert.equal(sha256File(fx.dbPath), fx.sqliteBefore);
@@ -339,7 +318,6 @@ test("--symbols none|all changes only the # Symbols tables", async (t) => {
     const allBig = await readFile(path.join(outAll, "modules", "src", "big.ts.md"), "utf8");
     assert.equal(noneBig.includes("# Symbols"), false);
     assert.match(allBig, /\| internal \| type \| 20-30 \|/);
-    // Frontmatter and Dependencies are identical across the two filters.
     assert.equal(noneBig.split("# Dependencies")[0].split("# Symbols")[0], allBig.split("# Symbols")[0]);
     assert.equal(
       `# Dependencies${noneBig.split("# Dependencies")[1]}`,

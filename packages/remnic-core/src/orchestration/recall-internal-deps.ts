@@ -1,9 +1,3 @@
-/**
- * recall-internal-deps.ts — the `RecallInternalDeps` contract (issue #1526
- * seam 18), extracted from recall-internal.ts so that file can stay under
- * its frozen ratchet ceiling while recall work proceeds (#2183). Pure type
- * relocation: no behavior change, no renames, no member reordering.
- */
 
 import type { BoxBuilder } from "../boxes.js";
 import type { CapabilitySet, GraphConstructionCapabilitySet } from "../capabilities.js";
@@ -64,7 +58,6 @@ export interface RecallInternalDeps {
     graphCaps?: GraphConstructionCapabilitySet;
     queryAwarePrefilter?: QueryAwarePrefilter;
     abortSignal?: AbortSignal;
-    /** Backend degradation observer — cold-tier QMD must report like hot (#1536). */
     onDegradation?: (degradation: SearchDegradation) => void;
     /** Issue #680 — historical recall point in ms-since-epoch. */
     asOfMs?: number;
@@ -220,7 +213,6 @@ export interface RecallInternalDeps {
       queryAwarePrefilter?: QueryAwarePrefilter;
       searchOptions?: SearchQueryOptions;
       onDebugSnapshot?: (snapshot: QmdRecallSnapshot) => Promise<void>;
-      /** Backend degradation observer, threaded into every QMD call (#1536). */
       /** Cross-lingual plan flag (#2197): supplement the lexical page with vector-tier hits. */
       crossScript?: boolean;
       onDegradation?: (degradation: SearchDegradation) => void;

@@ -1,8 +1,3 @@
-/**
- * Security command group extracted from cli.ts (#1955).
- *
- * Behaviour is identical to the inline registration it replaces.
- */
 
 import type { CliCommand } from "../cli.js";
 import { runAuditMemoryCliCommand } from "../cli.js";
@@ -33,11 +28,6 @@ export function registerSecurityCommands(
           ? options.since.trim()
           : undefined,
         quarantine: options.quarantine === true,
-        // Screen with the profile live ingestion uses, or a memory this
-        // deployment would quarantine on write stays active once stored
-        // (#3078). A deployment with the screen DISABLED keeps the previous
-        // `default` weighting: the sweep must not be stricter than the
-        // write path the operator configured.
         profile: auditScreenProfile(orchestrator.config),
       });
       if (options.json === true) {

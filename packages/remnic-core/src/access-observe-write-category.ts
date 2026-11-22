@@ -24,13 +24,6 @@ export function splitCanonicalWriteRequest<T extends { rawCategory?: string; cat
   categoryCoercion: CategoryAliasCoercion | undefined;
 } {
   const { rawCategory, ...canonical } = request;
-  // #2962: a direct service caller bypasses the wire schema, so an accepted
-  // alias can still sit on `category`. Canonicalize it at the same boundary
-  // the schema's transform covers for HTTP/MCP/CLI, minting the retained
-  // spelling from the request itself. A schema-minted `rawCategory` always
-  // wins (it names the spelling the transform actually canonicalized);
-  // near-misses pass through untouched and reject at the write candidate
-  // with the attempted category echoed.
   if (rawCategory === undefined && typeof canonical.category === "string") {
     const mapped = canonicalCategoryForAlias(canonical.category);
     if (mapped !== undefined) {

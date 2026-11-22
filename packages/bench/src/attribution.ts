@@ -83,7 +83,6 @@ export interface AttributionEnvironment {
 }
 
 export interface AttributeOptions {
-  threshold?: number; /* default 0.6 */
   similarity?: (gold: string, candidate: string) => number;
 }
 
@@ -212,7 +211,6 @@ export async function attributeGoldMemory(
   const threshold = options.threshold ?? DEFAULT_ATTRIBUTION_THRESHOLD;
   const simFn = options.similarity ?? lexicalSimilarity;
 
-  // recalledText is the stored run's injected context: a secondary retrieval witness.
   const goldInRecalledText =
     typeof recalledText === "string" && simFn(goldStatement, recalledText) >= threshold;
 
@@ -223,7 +221,6 @@ export async function attributeGoldMemory(
     use: { status: "unavailable" },
   };
 
-  // Stage 1: extraction — is the gold statement present in the store at all?
   let memories: AttributionMemory[] = [];
   let extractionRan = false;
   let extractionErrorDetail: string | undefined;
@@ -320,7 +317,6 @@ export async function attributeGoldMemory(
 
   const matchedMemoryId = matchedMem ? matchedMem.id : undefined;
 
-  // Stage 2: index — is the matched memory reachable via an oracle query?
   const recallLimit = env.recallLimit;
   const replayLimit = env.replayLimit ?? Math.max(25, recallLimit * 5);
 
@@ -359,7 +355,6 @@ export async function attributeGoldMemory(
     stages.index = { status: "unavailable", detail: "index check unavailable" };
   }
 
-  // Stage 3: retrieval — does the production-shaped recall surface the memory?
   let retrievalCheckPassed = false;
   let retrievalStageMiss: RetrievalMissStage | undefined = undefined;
 
@@ -407,7 +402,6 @@ export async function attributeGoldMemory(
     stages.retrieval = { status: "pass", detail: "Found in recalledText context" };
   }
 
-  // A passing retrieval retroactively proves reachability (implied index pass).
   if (retrievalCheckPassed) {
     if (indexCheckFailed) {
       stages.index = { status: "pass", detail: "implied pass from retrieval (oracle query missed)" };
@@ -418,7 +412,6 @@ export async function attributeGoldMemory(
     }
   }
 
-  // Stage 4: use — evidence reached the context yet the answer was still wrong.
   if (retrievalCheckPassed) {
     stages.use = {
       status: "fail",

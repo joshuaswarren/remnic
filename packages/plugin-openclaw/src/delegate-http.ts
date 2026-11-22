@@ -1,10 +1,3 @@
-/**
- * JSON transport for the delegate's daemon routes.
- *
- * Extracted from `delegate-runtime.ts` so both the runtime and the
- * flush-plan ingestion can reach it without importing each other, and so
- * the runtime stays under the new-file line ceiling (issue #1995).
- */
 
 import {
   daemonUrl,
@@ -19,7 +12,6 @@ export interface DelegateJsonResponse {
   body: Record<string, unknown> | null;
 }
 
-/** Parse a 2xx body, or `null` when it is not a JSON object. */
 async function readJsonObject(res: Response): Promise<Record<string, unknown> | null> {
   const parsed: unknown = await res.json().catch(() => null);
   return typeof parsed === "object" && parsed !== null
@@ -27,10 +19,6 @@ async function readJsonObject(res: Response): Promise<Record<string, unknown> | 
     : null;
 }
 
-/**
- * Report an authorization refusal once, then drain the body so the socket
- * is reusable.
- */
 async function noteRefusal(
   res: Response,
   serviceId: string,
@@ -44,14 +32,6 @@ async function noteRefusal(
   return { status: res.status, body: null };
 }
 
-/**
- * Retry one unauthorized request after resolving the credential again.
- *
- * OpenClaw can rotate a connector token while a session remains active. A
- * single retry lets a resolver that observed that rotation recover the
- * current request, including `TRIGGER_REAUTHENTICATION`, without re-registering
- * the session hooks. A network failure still rejects from `fetch`.
- */
 async function fetchWithAuthRetry(
   target: DelegateDaemonTarget,
   pathname: string,
@@ -81,15 +61,6 @@ async function fetchWithAuthRetry(
   return { response: await request(refreshedAuth), auth: refreshedAuth };
 }
 
-/**
- * POST that reports the daemon's status instead of collapsing it.
- *
- * `postJson` below cannot tell a caller WHY a request failed: 401/403
- * become `null` and every other non-2xx throws. A client that adapts to the
- * daemon's body limit needs the difference, because halving the payload fixes
- * a 413 and does nothing for a refused credential (issue #2303). Transport
- * failures still reject — only HTTP responses are reported.
- */
 export async function postJsonWithStatus(
   target: DelegateDaemonTarget,
   serviceId: string,
@@ -107,10 +78,6 @@ export async function postJsonWithStatus(
 }
 
 
-/**
- * Legacy contract kept for every existing delegate route: `null` on an
- * authorization refusal, a throw on any other non-2xx.
- */
 export async function postJson(
   target: DelegateDaemonTarget,
   serviceId: string,

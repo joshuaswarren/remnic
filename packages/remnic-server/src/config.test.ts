@@ -228,14 +228,12 @@ test("server config parser rejects invalid trustPrincipalHeader values", () => {
 });
 
 test("server config parser rejects ephemeral and blank ports in user-facing config", () => {
-  // Port 0 is reserved for the programmatic allowEphemeralPort runtime
   // option: user-facing server.port / REMNIC_PORT / --port must stay 1-65535
   // so runServerHealthcheck never probes port 0 (review: PR #2790).
   assert.throws(
     () => parseServerConfig({ port: 0 }),
     /server\.port: expected an integer port from 1 to 65535/,
   );
-  // Number("".trim()) === 0, so a blank string must be rejected explicitly
   // rather than silently resolving to an ephemeral port.
   assert.throws(
     () => parseServerConfig({ port: "" }),
@@ -401,7 +399,6 @@ test("server config parser rejects invalid field types", () => {
 });
 
 test("parseServerConfig write rate limit keys: optional, string-coerced, invalid rejected (issue #1937)", () => {
-  // Unset -> undefined (EngramAccessHttpServer applies the 30/60000 defaults).
   const defaults = parseServerConfig({});
   assert.equal(defaults.writeRateLimitMaxRequests, undefined);
   assert.equal(defaults.writeRateLimitWindowMs, undefined);
@@ -413,7 +410,6 @@ test("parseServerConfig write rate limit keys: optional, string-coerced, invalid
   assert.equal(custom.writeRateLimitMaxRequests, 120);
   assert.equal(custom.writeRateLimitWindowMs, 30000);
 
-  // CLI/env-sourced numerics arrive as strings — coerce, don't reject.
   const coerced = parseServerConfig({
     writeRateLimitMaxRequests: "120" as unknown as number,
     writeRateLimitWindowMs: "30000" as unknown as number,
@@ -447,7 +443,6 @@ test("envOverrides write rate limit env: precedence, legacy fallback, invalid re
     for (const k of keys) delete process.env[k];
   };
   try {
-    // REMNIC_ wins over a conflicting ENGRAM_ value, for both fields.
     clear();
     process.env.REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS = "1800";
     process.env.ENGRAM_WRITE_RATE_LIMIT_MAX_REQUESTS = "99";
@@ -457,7 +452,6 @@ test("envOverrides write rate limit env: precedence, legacy fallback, invalid re
     assert.equal(parsed.writeRateLimitMaxRequests, 1800);
     assert.equal(parsed.writeRateLimitWindowMs, 30000);
 
-    // Legacy ENGRAM_ name is honored when the REMNIC_ name is unset — both fields.
     clear();
     process.env.ENGRAM_WRITE_RATE_LIMIT_MAX_REQUESTS = "42";
     process.env.ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS = "45000";
@@ -465,7 +459,6 @@ test("envOverrides write rate limit env: precedence, legacy fallback, invalid re
     assert.equal(parsed.writeRateLimitMaxRequests, 42);
     assert.equal(parsed.writeRateLimitWindowMs, 45000);
 
-    // Invalid env values reach validation and are rejected, not silently dropped.
     for (const bad of ["0", "", "abc", "1.5"]) {
       clear();
       process.env.REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS = bad;
@@ -496,12 +489,10 @@ test("envOverrides honors REMNIC_READY_DEGRADED_AFTER_ATTEMPTS with legacy fallb
     process.env.REMNIC_READY_DEGRADED_AFTER_ATTEMPTS = "0";
     assert.equal(parseServerConfig(envOverrides()).readinessDegradedAfterAttempts, 0);
 
-    // REMNIC_ wins over a conflicting legacy ENGRAM_ value.
     process.env.REMNIC_READY_DEGRADED_AFTER_ATTEMPTS = "7";
     process.env.ENGRAM_READY_DEGRADED_AFTER_ATTEMPTS = "9";
     assert.equal(parseServerConfig(envOverrides()).readinessDegradedAfterAttempts, 7);
 
-    // Legacy ENGRAM_ name is honored when the REMNIC_ name is unset.
     clear();
     process.env.ENGRAM_READY_DEGRADED_AFTER_ATTEMPTS = "0";
     assert.equal(parseServerConfig(envOverrides()).readinessDegradedAfterAttempts, 0);

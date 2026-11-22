@@ -384,8 +384,6 @@ test("trackMemoryAccess preserves namespaces for relative paths", () => {
   );
 });
 
-// COS-666e: flushAccessTracking scanned the whole corpus for every buffered update and resolved paths on each
-// comparison: 100 updates x 130k memories x 2-3 resolves was a 40 s main-thread stall in production.
 type FlushMemory = { path: string; frontmatter: { id: string; accessCount: number } };
 type FlushBuffer = WorkspaceOpsDeps["accessTrackingBuffer"];
 

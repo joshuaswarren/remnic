@@ -64,8 +64,6 @@ function profilePlan(overrides: Partial<ResolvedScopeProfilePlan> = {}): Resolve
     promotionTargets: [],
     warnings: [],
     ...overrides,
-    // Recompute layers from the (possibly overridden) readOrder/baseNamespace
-    // unless the caller supplied their own.
     layers: overrides.layers ?? layers,
   } as unknown as ResolvedScopeProfilePlan;
 }
@@ -130,9 +128,6 @@ test("resolveMemorySearchDefaultFallback returns null when the profile self is a
 });
 
 test("resolveMemorySearchDefaultFallback returns null when only serverShared (no userGlobal) is in readOrder", async () => {
-  // serverShared maps to sharedNamespace, NOT the default: a profile that
-  // reads only userProject + serverShared deliberately reads the shared
-  // namespace, not the default, so the fallback must not fire.
   const plan = profilePlan({
     profile: {
       readOrder: ["userProject", "serverShared"],
@@ -151,9 +146,6 @@ test("resolveMemorySearchDefaultFallback returns null when only serverShared (no
 });
 
 test("resolveMemorySearchDefaultFallback returns null when readOrder omits userGlobal even if a readable userGlobal layer is materialized (#2056 r3)", async () => {
-  // resolveScopeProfilePlan always materializes a userGlobal layer regardless
-  // of readOrder. A profile that intentionally omits userGlobal from readOrder
-  // must not get the fallback just because the materialized layer is readable.
   const plan = profilePlan({
     profile: {
       readOrder: ["userProject"],
@@ -187,9 +179,6 @@ test("resolveMemorySearchDefaultFallback ACL-gates the default namespace", async
 });
 
 test("resolveMemorySearchDefaultFallback returns null when the resolved userGlobal layer is unreadable (#2056 r2)", async () => {
-  // userGlobal is listed in readOrder but resolved unreadable (e.g. a policy
-  // withholding the principal): a deliberate omission must not trigger the
-  // fallback.
   const plan = profilePlan({
     layers: [
       { id: "userGlobal", kind: "user-global", namespace: "operator-x", readable: false, writable: false, promotable: false, reason: "policy withholds principal" },
@@ -200,10 +189,6 @@ test("resolveMemorySearchDefaultFallback returns null when the resolved userGlob
 });
 
 test("resolveMemorySearchDefaultFallback returns null when the principal owns a dedicated namespace (#2056 r2 / #1501 privateOnly)", async () => {
-  // Multi-tenant scope-profile deployment: the principal has its own policy,
-  // so its self namespace is NOT the configured default. Reaching into the
-  // default would read another namespace — the fallback must not fire even
-  // though userGlobal is readable and baseNamespace differs from default.
   const config = pluginConfig({
     namespacePolicies: [
       { name: "operator-x", readPrincipals: ["operator-x"], writePrincipals: ["operator-x"] },

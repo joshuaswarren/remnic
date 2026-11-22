@@ -157,7 +157,6 @@ export class ProviderCircuitBreaker {
   }
 
   private logTransition(): void {
-    // Once per state change (not per attempt) — AGENTS.md observability rule.
     log.warn("extraction: provider circuit breaker transition", {
       state: this.state,
       consecutiveFailures: this.consecutiveFailures,

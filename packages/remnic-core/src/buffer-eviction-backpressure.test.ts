@@ -41,7 +41,6 @@ function emptyEntry(): BufferEntryState {
   return { turns: [], lastExtractionAt: null, extractionCount: 0 };
 }
 
-/** default + the given entries; default stays empty unless given. */
 function seededState(entries: Record<string, BufferEntryState>): BufferState {
   const defaultEntry = entries.default ?? emptyEntry();
   return {
@@ -85,8 +84,6 @@ test("live capture at a cap full of non-empty backlog is refused, never evicts b
   assert.deepEqual(buffer.getTurns("c").map((t) => t.content), ["backlog c"]);
   assert.equal(buffer.getTurns("new-session").length, 0, "refused turn was not buffered");
 
-  // Accepted captures are subject to the same no-backlog-loss limit: refusal
-  // happens before acceptance, preserving accepted-capture non-eviction.
   assert.equal(
     await buffer.addTurnBounded("accepted-1", makeTurn("accepted-1", "accepted", true)),
     null,
@@ -188,8 +185,6 @@ test("processTurn propagates retryable admission refusal without queueing extrac
   });
   const queued: BufferTurn[][] = [];
   type CoordinatorDeps = ConstructorParameters<typeof TurnIngestionCoordinator>[0];
-  // SAFETY: this fixture exercises only admission + refusal; the remaining
-  // coordinator deps are never reached on this path.
   const deps = Object.assign({} as CoordinatorDeps, {
     buffer,
     config,

@@ -106,7 +106,6 @@ export async function readDrainClaimTotals(
   try {
     bodies = (await readdir(claimsDir)).filter((name) => CLAIM_BODY_PATTERN.test(name)).sort();
   } catch {
-    // No claims directory yet: nothing has ever been claimed. Empty backlog.
     return totals;
   }
   totals.claimedSessions = bodies.length;
@@ -138,19 +137,10 @@ export async function readDrainClaimTotals(
     }
     totals.verifiedSidecars += 1;
     totals.claimedPendingTurns += sidecar.pending;
-    // Hand-in inbox: appended after the body counts were cached, so a non-empty
-    // inbox holds pending turns the sidecar does not know about. One extra
-    // stat per claim, no parse — the file only ever grows by appends, so its
-    // mtime is a lower bound on the oldest turn inside it.
     const inboxStat = await stat(`${bodyPath}.inbox.jsonl`).catch(() => null);
     const inboxPending = inboxStat !== null && inboxStat.size > 0;
     if (inboxPending) totals.claimsPendingInbox += 1;
     if (sidecar.pending > 0 || inboxPending) {
-      // Oldest-age candidates. The sidecar's turn timestamp (when it parses,
-      // else the body mtime as a lower bound — see DrainClaimTotals doc)
-      // describes the body's turns only while pending > 0; the inbox mtime
-      // covers the hand-ins. The per-claim minimum competes in the global
-      // minimum with its own basis.
       const candidates: { ms: number; iso: string; basis: DrainClaimAgeBasis }[] = [];
       if (sidecar.pending > 0) {
         const turnIso = sidecar.oldestTurnAt;

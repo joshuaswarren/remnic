@@ -37,8 +37,6 @@ function options(
 }
 
 // ---------------------------------------------------------------------------
-// Registry integration
-// ---------------------------------------------------------------------------
 
 test("registry: memcorrect-v1 is registered and resolvable", () => {
   const all = listBenchmarks();
@@ -91,7 +89,6 @@ test("runner: an unknown string adapter mode is rejected with the valid options 
 });
 
 // ---------------------------------------------------------------------------
-// End-to-end with the prompt-only baseline
 // ---------------------------------------------------------------------------
 
 test("runner: baseline run emits directional scores (collateral_delta excluded; scope/reassertion conditional)", async () => {
@@ -113,19 +110,15 @@ test("runner: baseline run emits directional scores (collateral_delta excluded; 
     for (const key of alwaysPresent) {
       assert.ok(key in task.scores, `task ${task.taskId} missing score ${key}`);
     }
-    // collateral_delta is target-zero (not directional): must NOT appear in
-    // per-task directional scores, but IS carried in the full metric bundle.
     assert.ok(!("collateral_delta" in task.scores), "collateral_delta must not pollute directional scores");
     const detail = task.details as { metrics?: { memcorrect?: { collateral_delta?: unknown } }; shape?: string };
     assert.equal(typeof detail.metrics?.memcorrect?.collateral_delta, "number", "collateral_delta in details bundle");
-    // scope_precision / reassertion appear only for their applicable shapes.
     const shape = detail.shape;
     const hasScope = "scope_precision" in task.scores;
     const hasReassertion = "reassertion" in task.scores;
     assert.equal(hasScope, shape === "scoped", `scope_precision presence must match scoped shape (got ${shape})`);
     assert.equal(hasReassertion, shape === "re-assertion", `reassertion presence must match re-assertion shape (got ${shape})`);
   }
-  // Aggregate headline bundle present in config.benchmarkOptions.
   const bundle = summarizeAggregateMetrics(result);
   assert.ok(bundle, "aggregate bundle must be attached");
   assert.ok("uptake_at_next" in bundle);
@@ -133,10 +126,6 @@ test("runner: baseline run emits directional scores (collateral_delta excluded; 
 });
 
 test("runner: baseline scores near-zero on non_resurrection-under-reingest (the structural floor)", async () => {
-  // The append-everything baseline never retires anything, so re-ingesting
-  // the original transcript re-surfaces the retired fact. non_resurrection
-  // must collapse toward 0 — this is the sanity requirement from the issue
-  // (baseline near-zero, Remnic must not).
   const result = await runMemCorrectBenchmark(
     options({
       benchmarkOptions: { adapter: new PromptOnlyBaselineAdapter() },
@@ -225,7 +214,6 @@ test("runner: propagates categorized specialized judge failures", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Determinism: two runs, same seed, identical corpus hash + identical metrics
 // ---------------------------------------------------------------------------
 
 test("runner: identical seed → identical datasetHash and identical deterministic metrics", async () => {
@@ -245,8 +233,6 @@ test("runner: identical seed → identical datasetHash and identical determinist
     }),
   );
   assert.equal(r1.meta.datasetHash, r2.meta.datasetHash);
-  // Per-task deterministic metrics identical (latency is non-deterministic,
-  // so compare scores only).
   for (let i = 0; i < r1.results.tasks.length; i += 1) {
     assert.deepEqual(
       r1.results.tasks[i].scores,
@@ -265,9 +251,6 @@ test("runner: datasetHash matches the standalone corpus hash for the same seed",
       limit: 2,
     }),
   );
-  // The runner uses QUICK_OPTIONS shape with the override seed; the corpus
-  // hash is over ALL scenarios (limit only trims which run), so compare
-  // against the full quick corpus.
   const corpus = generateMemCorrectCorpus({
     personaCount: 2,
     factsPerPersona: 4,
@@ -284,7 +267,6 @@ test("runner: datasetHash matches the standalone corpus hash for the same seed",
 });
 
 // ---------------------------------------------------------------------------
-// Adapter resolution
 // ---------------------------------------------------------------------------
 
 test("runner: benchmarkOptions.adapter is used when it satisfies the MemCorrect contract", async () => {
@@ -312,7 +294,6 @@ test("runner: benchmarkOptions.adapter is used when it satisfies the MemCorrect 
 });
 
 // ---------------------------------------------------------------------------
-// Schema round-trip
 // ---------------------------------------------------------------------------
 
 test("runner: emitted result validates against BENCHMARK_RESULT_SCHEMA", async () => {
@@ -322,9 +303,6 @@ test("runner: emitted result validates against BENCHMARK_RESULT_SCHEMA", async (
       limit: 3,
     }),
   );
-  // The schema is a JSON-schema object; validate by shape via the schema's
-  // required-key contract. (BENCHMARK_RESULT_SCHEMA is consumed by the
-  // publishing pipeline; here we assert the structural invariants it pins.)
   const required: readonly string[] = BENCHMARK_RESULT_SCHEMA.required;
   for (const key of required) {
     assert.ok(key in result, `result missing required top-level key ${key}`);
@@ -338,7 +316,6 @@ test("runner: emitted result validates against BENCHMARK_RESULT_SCHEMA", async (
 });
 
 // ---------------------------------------------------------------------------
-// Runtime-profile compatibility (the bench must accept a resolved profile)
 // ---------------------------------------------------------------------------
 
 test("runner: accepts a local-lab runtime profile without changing the hermetic corpus", async () => {
@@ -350,7 +327,6 @@ test("runner: accepts a local-lab runtime profile without changing the hermetic 
     }),
   );
   assert.equal(result.config.runtimeProfile, "local-lab");
-  // The hermetic corpus hash is independent of the runtime profile.
   const baseline = await runMemCorrectBenchmark(
     options({
       benchmarkOptions: { adapter: new PromptOnlyBaselineAdapter() },
@@ -380,14 +356,9 @@ test("runner: onTaskComplete fires for each scenario with a correct total", asyn
 });
 
 // ---------------------------------------------------------------------------
-// Anti-event probe turn isolation (Thread 3: bump turn before recall)
 // ---------------------------------------------------------------------------
 
 test("runner: anti-event probe gets its own interaction turn (not the ingest's)", async () => {
-  // When the uptake probe fails and the anti-event probe is the first recall
-  // to reflect the correction, uptake_latency must measure the delta from the
-  // probe's own interaction turn — not the anti-event ingest's turn. Before
-  // the fix the probe shared the ingest's turn, underreporting latency by one.
   const corpus = generateMemCorrectCorpus({
     personaCount: 2,
     factsPerPersona: 4,
@@ -409,8 +380,6 @@ test("runner: anti-event probe gets its own interaction turn (not the ingest's)"
     async recall() {
       const idx = recallIdx++;
       if (!corrected) return []; // baseline probes
-      // Uptake probe (idx === baselineRecalls) fails; anti-event probe
-      // (idx === baselineRecalls + 1) is the first to reflect the correction.
       if (idx === baselineRecalls) return [];
       if (idx === baselineRecalls + 1) return [...scenario.correction.correctedContent];
       return [];
@@ -422,9 +391,6 @@ test("runner: anti-event probe gets its own interaction turn (not the ingest's)"
   );
   const bundle = summarizeAggregateMetrics(result);
   assert.ok(bundle, "bundle missing");
-  // After the fix: the anti-event probe lands at correctionTurnIndex + 3
-  // (one turn for the ingest, one for the probe's own interaction, plus the
-  // uptake probe's turn). Before the fix it was +2 (probe shared ingest's turn).
   assert.equal(bundle.uptake_latency, 3, "anti-event probe must get its own interaction turn");
   assert.equal(bundle.uptake_latency_censored, 0, "within cap, not censored");
 });

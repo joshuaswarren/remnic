@@ -1,16 +1,3 @@
-/**
- * dreams-ledger.ts — per-phase telemetry for the Dreams consolidation pipeline.
- *
- * Every scheduled or manual phase run appends one JSONL entry to
- *   <memoryDir>/state/dreams-ledger.jsonl
- *
- * The entry records which phase ran, how long it took, and a small
- * itemsProcessed counter so `remnic dreams status` can aggregate the last
- * 24-hour window without scanning the full memory corpus.
- *
- * This module is intentionally side-effect-free on import (no fs calls at
- * module load time) so tests can import it without touching the filesystem.
- */
 
 import path from "node:path";
 import { createReadStream, type ReadStream } from "node:fs";
@@ -18,9 +5,7 @@ import { appendFile, lstat, mkdir, readdir, readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
 
-/** The three named phases of the Dreams consolidation pipeline. */
 export type DreamsPhase = "lightSleep" | "rem" | "deepSleep";
 
 /**
@@ -53,11 +38,9 @@ export interface DreamsLedgerEntry {
    * - `manual`    — invoked via `remnic dreams run`
    */
   trigger: "scheduled" | "manual";
-  /** Free-form notes for debugging (optional, never required). */
   notes?: string;
 }
 
-/** Aggregated stats for a single phase over a time window. */
 export interface DreamsPhaseStatus {
   phase: DreamsPhase;
   /** Number of phase runs in the window. */
@@ -72,7 +55,6 @@ export interface DreamsPhaseStatus {
   lastDurationMs: number | null;
 }
 
-/** Shape returned by `getDreamsStatus` — the canonical telemetry response. */
 export interface DreamsStatusResult {
   /** ISO-8601 start of the query window (inclusive). */
   windowStart: string;
@@ -86,13 +68,11 @@ export interface DreamsStatusResult {
   };
 }
 
-// ── Path helpers ──────────────────────────────────────────────────────────────
 
 export function dreamsLedgerPath(memoryDir: string): string {
   return path.join(memoryDir, "state", "dreams-ledger.jsonl");
 }
 
-// ── Writer ────────────────────────────────────────────────────────────────────
 
 /**
  * Append a single entry to the dreams ledger.
@@ -127,8 +107,6 @@ function parseDreamsLedgerLine(line: string): DreamsLedgerEntry | null {
     return null; // Malformed JSON — skip (fail-open).
   }
 
-  // Required, strongly-typed fields. A row missing or mistyping any of these is
-  // not a usable telemetry entry.
   const phase = parsed.phase;
   if (phase !== "lightSleep" && phase !== "rem" && phase !== "deepSleep") return null;
   if (
@@ -140,9 +118,6 @@ function parseDreamsLedgerLine(line: string): DreamsLedgerEntry | null {
     return null;
   }
 
-  // Optional fields: absence is tolerated (older entries predate them, no
-  // backfill), but a PRESENT value with the wrong type/value marks the row
-  // malformed and skips it — never silently coerced to a default (issue #1910).
   if ("schemaVersion" in parsed && parsed.schemaVersion !== 1) return null;
   if ("dryRun" in parsed && typeof parsed.dryRun !== "boolean") return null;
   if ("trigger" in parsed && parsed.trigger !== "manual" && parsed.trigger !== "scheduled") {
@@ -184,10 +159,6 @@ export async function* streamDreamsLedgerLines(memoryDir: string): AsyncGenerato
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
     throw err;
   } finally {
-    // Close the readline interface AND destroy the underlying stream. When a
-    // consumer stops early (e.g. `getDreamsStatus` breaks out), the generator's
-    // `.return()` runs this finally; `rl.close()` alone leaves the file
-    // descriptor open, so destroy the stream to release it (issue #1910).
     rl.close();
     input.destroy();
   }
@@ -267,10 +238,6 @@ export async function getDreamsStatus(
     });
   }
 
-  // Stream the ledger and aggregate every in-window row inline, so heap use is
-  // O(number of phases) regardless of window or file size (issue #1910) — no
-  // per-row array and no row cap, so a large in-window window is still counted
-  // in full rather than truncated.
   for await (const line of streamDreamsLedgerLines(memoryDir)) {
     const entry = parseDreamsLedgerLine(line);
     if (!entry) continue;
@@ -299,7 +266,6 @@ export async function getDreamsStatus(
   };
 }
 
-// ── Phase runner (PR 4/4: manual invocation) ─────────────────────────────────
 
 export interface DreamsRunOptions {
   memoryDir: string;
@@ -375,9 +341,6 @@ export async function runDreamsPhase(
   let notes: string | undefined;
 
   if (phase === "lightSleep") {
-    // Dry-run light sleep counts recent observation entries as a preview.
-    // Live runs must be backed by the orchestrator phase runner so the command
-    // never reports success without executing the phase.
     if (!dryRun) {
       if (!phaseRunner) {
         throw new Error("light-sleep manual runs require a phase runner");
@@ -386,9 +349,6 @@ export async function runDreamsPhase(
       itemsProcessed = Math.max(0, Math.floor(result.itemsProcessed));
       notes = result.notes ?? `scored ${itemsProcessed} memories`;
     } else {
-      // Light sleep: count observation ledger entries from the last 24h as a
-      // proxy for "items scored". The live value-scoring pass runs through the
-      // phase runner above.
       try {
         const ledgerPath = path.join(memoryDir, "state", "observation-ledger", "rebuilt-observations.jsonl");
         let raw = "";
@@ -435,7 +395,6 @@ export async function runDreamsPhase(
       itemsProcessed = Math.max(0, Math.floor(result.itemsProcessed));
       notes = result.notes ?? `REM pass assessed ${itemsProcessed} memories`;
     } else {
-      // REM dry-runs estimate candidates without synthesizing or archiving.
       try {
         const stateFilePath = path.join(memoryDir, "state", "semantic-consolidation-last-run.json");
         let lastRunAt: string | null = null;
@@ -454,7 +413,6 @@ export async function runDreamsPhase(
       }
     }
   } else {
-    // deep sleep
     if (governanceRunner) {
       try {
         const result = await governanceRunner({ memoryDir, dryRun });
@@ -464,7 +422,6 @@ export async function runDreamsPhase(
         throw new Error(`deep-sleep governance run failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     } else {
-      // Fallback: count memory files.
       const memFiles = await listMemoryFiles(memoryDir);
       itemsProcessed = memFiles.length;
       notes = dryRun
@@ -528,7 +485,6 @@ export function summarizeGovernanceResultForDreams(
   };
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
 
 async function listMemoryFiles(memoryDir: string): Promise<string[]> {
   const out: string[] = [];
@@ -557,7 +513,6 @@ async function listMemoryFiles(memoryDir: string): Promise<string[]> {
       if (isMacOsReplicationJunkBasename(entry.name)) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        // Skip state/ and archive/ subdirs.
         if (
           entry.name === "state" ||
           entry.name === "archive" ||

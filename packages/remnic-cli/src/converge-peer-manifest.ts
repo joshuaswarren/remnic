@@ -94,10 +94,6 @@ function parseFile(value: unknown): ReconcileManifestFile | undefined {
   }
   const bytes = optionalNonNegativeNumber(file.bytes, "bytes");
   const mtimeMs = optionalNonNegativeNumber(file.mtimeMs, "mtimeMs");
-  // Negative rows (no memory identity) carry their invalidation stamps at
-  // the top level so a warm plan can reuse the "no identity here" verdict
-  // across normalizer/identity upgrades (#2927). Positive rows keep their
-  // stamps inside `memory`, mirroring every producer.
   const normalizerVersion = optionalNonNegativeNumber(file.normalizerVersion, "normalizerVersion");
   const identityResolutionVersion = optionalNonNegativeNumber(
     file.identityResolutionVersion,

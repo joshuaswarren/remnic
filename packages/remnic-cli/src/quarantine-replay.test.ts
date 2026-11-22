@@ -8,8 +8,6 @@ import test from "node:test";
 
 import { runQuarantineReplay } from "./quarantine-replay.js";
 
-// The config resolver is never invoked on these paths (validation fails first),
-// so it throws to prove that: a leaked call would surface here.
 const resolver = (): string => {
   throw new Error("config resolver must not run when argument validation fails");
 };

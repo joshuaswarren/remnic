@@ -1427,10 +1427,7 @@ function dreamRouteConfig(overrides: {
 }): DreamRouteConfig {
   const config: DreamRouteConfig = {
     modelSource: overrides.modelSource,
-    // gatewayAgentId is a required string (default ""); an empty value makes
-    // gatewayTaskChainOptions fall through to the default chain.
     gatewayAgentId: overrides.gatewayAgentId ?? "",
-    // Only narrativeModel is read by resolveDreamNarrativeRoute.
     dreaming: {
       narrativeModel: overrides.narrativeModel ?? null,
     } as PluginConfig["dreaming"],
@@ -1458,8 +1455,6 @@ test("resolveDreamNarrativeRoute skips in plugin mode without a direct client (i
 });
 
 test("resolveDreamNarrativeRoute routes through the gateway without a direct OpenAI key (issue #1366)", () => {
-  // The core fix: gateway mode never depends on the direct client, so dreams
-  // work for gateway-only operators (ZAI/Fireworks/OpenRouter, no OpenAI key).
   const route = resolveDreamNarrativeRoute(
     dreamRouteConfig({
       modelSource: "gateway",
@@ -1485,7 +1480,6 @@ test("resolveDreamNarrativeRoute layers narrativeModel over the task chain in ga
   assert.equal(route.kind, "gateway");
   if (route.kind !== "gateway") return;
   assert.equal(route.hasExplicitModel, true);
-  // narrativeModel is the explicit override; taskModelChain supplies fallbacks.
   assert.equal(route.options.model, "zai/glm-4.7-flash");
   assert.deepEqual(route.options.modelChain, { primary: "fireworks/x/glm-5p1" });
 });
@@ -1518,8 +1512,6 @@ test("resolveDreamNarrativeRoute uses the gateway agent persona when that is all
 });
 
 test("resolveDreamNarrativeRoute leaves gateway options empty when nothing is configured", () => {
-  // hasExplicitModel false + empty options → the caller's isAvailable() gate
-  // decides whether to skip.
   const route = resolveDreamNarrativeRoute(
     dreamRouteConfig({ modelSource: "gateway" }),
     false,

@@ -1,13 +1,6 @@
-/** Package-wide constants for @remnic/capture-screen. */
 
-/**
- * Reported by GET /v1/health. Kept in sync with package.json by the release
- * tooling; the health endpoint tolerates drift because the connector never
- * gates on an exact match (it reads `ok`).
- */
 export const CAPTURE_SCREEN_VERSION = "9.14.0";
 
-/** Loopback default; capture is local-first (charter). */
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 4341;
 

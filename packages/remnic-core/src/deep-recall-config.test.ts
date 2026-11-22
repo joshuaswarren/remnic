@@ -1,10 +1,3 @@
-/**
- * Strict `maxSteps` request parsing (issue #2915) — the one parser MCP,
- * HTTP, and CLI share. Absent means absent; everything else must be a
- * non-negative safe integer. Malformed (`"abc"`), empty (`""`), fractional
- * (`"1.5"` / `1.5`), negative, unsafe, and non-number values throw instead of
- * silently falling back to the configured default (§39).
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";

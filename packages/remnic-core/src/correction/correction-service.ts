@@ -24,15 +24,7 @@ import { CorrectionPlanner, type PlannerDeps } from "./correction-planner.js";
 import { CorrectionExecutor, type ExecutorDeps } from "./correction-executor.js";
 
 // ---------------------------------------------------------------------------
-// Injected collaborators — the access-service wires these from the orchestrator.
-// ---------------------------------------------------------------------------
 
-/**
- * Namespace policy façade. The access-service already implements these via
- * `resolveWritableNamespace` / `canReadNamespace` / `canWriteNamespace`; the
- * correction service consumes them through this narrow interface so the
- * correction modules stay decoupled from the access-service's surface area.
- */
 export interface CorrectionNamespacePolicy {
   /**
    * Resolve the AUTHORIZED effective namespace for a plan/apply request.
@@ -62,19 +54,9 @@ export interface CorrectionNamespacePolicy {
   }): Promise<readonly string[]>;
 }
 
-/**
- * Factory wiring for the planner + executor deps. The service holds ONE
- * planner + ONE executor for its lifetime; both are stateless across requests
- * (per-request scope is threaded through method parameters, rules 11/47).
- */
 export interface CorrectionServiceDeps {
   readonly policy: CorrectionNamespacePolicy;
-  /**
-   * Planner collaborators. The planner takes `readableNamespaces` per call to
-   * `plan()`, so a single deps instance serves callers with different scopes.
-   */
   plannerDeps(): PlannerDeps;
-  /** Executor collaborators (one per service). */
   executorDeps(): ExecutorDeps;
   /** Whether the correction feature is enabled (gate). */
   isEnabled(): boolean;
@@ -83,7 +65,6 @@ export interface CorrectionServiceDeps {
 }
 
 // ---------------------------------------------------------------------------
-// Service
 // ---------------------------------------------------------------------------
 
 export class CorrectionService {
@@ -143,8 +124,6 @@ export class CorrectionService {
     return this.executor.apply(namespace, planId, {
       confirm: true,
       abortSignal: opts.abortSignal,
-      // Authorize rescope destinations through the namespace policy bound to
-      // THIS caller's principal (review thread: authorize-rescope-destination).
       canWriteDestination: (dest, abortSignal) =>
         this.deps.policy.canWriteNamespace({
           namespace: dest,
@@ -155,7 +134,6 @@ export class CorrectionService {
     });
   }
 
-  /** List pending (not-yet-applied) plans for the caller's namespace. */
   async listPending(opts: {
     namespace?: string;
     sessionKey?: string;
@@ -177,23 +155,7 @@ export class CorrectionService {
     await this.planner.deletePlan(namespace, planId);
   }
 
-  /**
-   * Recover stale `applying` plans across the given namespaces (#1713 Item 2).
-   *
-   * Startup maintenance: scans each namespace for plans stuck in `applying`
-   * past the stale-applying TTL (process died mid-apply) and discards+scrubs
-   * them. Unlike plan/apply/listPending, this is NOT a per-caller request —
-   * it operates on all supplied namespaces directly because it is an
-   * internal maintenance operation invoked by the orchestrator at init.
-   *
-   * @returns the total count of recovered plans across all namespaces.
-   */
   async recoverStaleApplyingPlans(namespaces: readonly string[]): Promise<number> {
-    // Intentionally NOT gated on isEnabled(): stale-applying recovery is a
-    // maintenance/cleanup operation, not a user-facing correction. Plans left
-    // in 'applying' after a mid-apply crash hold unscrubbed redaction_rule
-    // patterns on disk; they must be discarded+scrubbed even if the correction
-    // feature is currently disabled (review thread 9e1f07f0).
     let recovered = 0;
     for (const namespace of namespaces) {
       try {

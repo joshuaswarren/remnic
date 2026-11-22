@@ -29,8 +29,6 @@ export class ReplitAdapter implements EngramAdapter {
     const clientId = headerValue(context.headers, "x-engram-client-id");
     if (clientId?.toLowerCase() === "replit") return true;
 
-    // MCP clientInfo (Replit's MCP client name is not publicly documented,
-    // but check for it in case it becomes available)
     const clientName = context.clientInfo?.name?.toLowerCase() ?? "";
     if (clientName.includes("replit")) return true;
 

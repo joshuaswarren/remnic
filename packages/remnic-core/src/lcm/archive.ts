@@ -68,7 +68,6 @@ function escapeSqlLike(value: string): string {
 export class LcmArchive {
   constructor(private readonly db: Database.Database) {}
 
-  /** Append a message to the archive. Returns the row id. */
   appendMessage(
     sessionId: string,
     turnIndex: number,
@@ -88,7 +87,6 @@ export class LcmArchive {
     const result = stmt.run(sessionId, turnIndex, role, content, tokenCount, now, metaJson);
     const rowId = Number(result.lastInsertRowid);
 
-    // Keep FTS in sync
     this.db
       .prepare("INSERT INTO lcm_messages_fts (rowid, content) VALUES (?, ?)")
       .run(rowId, content);
@@ -100,7 +98,6 @@ export class LcmArchive {
     return rowId;
   }
 
-  /** Append multiple messages in a single transaction. */
   appendMessages(
     sessionId: string,
     messages: Array<{
@@ -190,7 +187,6 @@ export class LcmArchive {
 
   /** Highest turn index covered by a leaf summary (-1 when none exist). */
   private lastLeafSummaryEnd(sessionId: string): number {
-    // SAFETY: the query returns exactly one aggregate column, `last_end`.
     const row = this.db
       .prepare(
         "SELECT MAX(msg_end) as last_end FROM lcm_summary_nodes WHERE session_id = ? AND depth = 0",
@@ -199,7 +195,6 @@ export class LcmArchive {
     return row?.last_end ?? -1;
   }
 
-  /** Retrieve unsummarized messages (after last leaf summary), optionally bounded. */
   getUnsummarizedMessages(sessionId: string, limit?: number): LcmMessage[] {
     const lastSummarized = this.lastLeafSummaryEnd(sessionId);
     if (limit !== undefined && limit <= 0) return [];
@@ -209,17 +204,14 @@ export class LcmArchive {
         ? "SELECT * FROM lcm_messages WHERE session_id = ? AND turn_index > ? ORDER BY turn_index"
         : "SELECT * FROM lcm_messages WHERE session_id = ? AND turn_index > ? ORDER BY turn_index LIMIT ?",
     );
-    // SAFETY: the statement selects the lcm_messages row shape.
     const rows = (
       limit === undefined ? stmt.all(sessionId, lastSummarized) : stmt.all(sessionId, lastSummarized, limit)
     ) as LcmMessage[];
     return rows;
   }
 
-  /** Count archived turns that no leaf summary covers yet. */
   countUnsummarizedMessages(sessionId: string): number {
     const lastSummarized = this.lastLeafSummaryEnd(sessionId);
-    // SAFETY: the query returns exactly one aggregate column, `n`.
     const row = this.db
       .prepare(
         "SELECT COUNT(*) as n FROM lcm_messages WHERE session_id = ? AND turn_index > ?",
@@ -235,7 +227,6 @@ export class LcmArchive {
    */
   listSessionsWithUnsummarizedTurns(minTurns: number): string[] {
     if (minTurns <= 0) return [];
-    // SAFETY: the query returns one `session_id` column per session.
     const rows = this.db
       .prepare(
         `
@@ -256,7 +247,6 @@ export class LcmArchive {
     return rows.map((row) => row.session_id);
   }
 
-  /** Full-text search across all messages. */
   search(query: string, limit: number, sessionId?: string, sessionPrefix?: string): LcmSearchResult[] {
     try {
       const ftsQuery = sanitizeFtsQuery(query);
@@ -337,7 +327,6 @@ export class LcmArchive {
       const cappedLimit = normalizeSearchLimit(limit);
       if (cappedLimit === 0) return [];
 
-      // Extract content words from query for excerpt windowing
       const queryWords = query
         .replace(/[^\w\s]/g, " ")
         .split(/\s+/)
@@ -390,7 +379,6 @@ export class LcmArchive {
         rank: number;
       }>;
 
-      // Deduplicate by message id (same message may match multiple terms)
       const seen = new Set<number>();
       const results: LcmSearchWithContentResult[] = [];
       for (const r of rows) {
@@ -470,7 +458,6 @@ export class LcmArchive {
     return rows;
   }
 
-  /** Get total message count for a session. */
   getMessageCount(sessionId: string): number {
     const row = this.db
       .prepare("SELECT COUNT(*) as cnt FROM lcm_messages WHERE session_id = ?")
@@ -478,7 +465,6 @@ export class LcmArchive {
     return row.cnt;
   }
 
-  /** Get total message count across all sessions. */
   getTotalMessageCount(): number {
     const row = this.db
       .prepare("SELECT COUNT(*) as cnt FROM lcm_messages")
@@ -486,7 +472,6 @@ export class LcmArchive {
     return row.cnt;
   }
 
-  /** Delete all archived messages for one session. */
   deleteSession(sessionId: string): number {
     const txn = this.db.transaction(() => {
       this.db
@@ -507,7 +492,6 @@ export class LcmArchive {
     return txn();
   }
 
-  /** Delete all archived messages. */
   deleteAll(): number {
     const txn = this.db.transaction(() => {
       this.db.prepare("DELETE FROM lcm_messages_fts").run();
@@ -518,7 +502,6 @@ export class LcmArchive {
     return txn();
   }
 
-  /** Prune messages older than retentionDays. */
   pruneOldMessages(retentionDays: number): number {
     const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
 
@@ -553,7 +536,6 @@ export class LcmArchive {
 function extractExcerpt(content: string, queryWords: string[], excerptChars: number): string {
   if (content.length <= excerptChars) return content;
 
-  // Find the earliest position of any query word in the content
   const contentLower = content.toLowerCase();
   let bestPos = -1;
   for (const word of queryWords) {
@@ -563,22 +545,18 @@ function extractExcerpt(content: string, queryWords: string[], excerptChars: num
     }
   }
 
-  // If no match found (shouldn't happen for FTS results), return start
   if (bestPos === -1) {
     return content.slice(0, excerptChars) + "...";
   }
 
-  // Center the window around the match
   const halfWindow = Math.floor(excerptChars / 2);
   let start = Math.max(0, bestPos - halfWindow);
   let end = Math.min(content.length, start + excerptChars);
 
-  // Adjust start if we hit the end
   if (end === content.length) {
     start = Math.max(0, end - excerptChars);
   }
 
-  // Extend to sentence boundaries if possible
   if (start > 0) {
     const sentenceStart = content.lastIndexOf(". ", start);
     if (sentenceStart !== -1 && start - sentenceStart < 200) {
@@ -708,7 +686,6 @@ function sanitizeFtsQuery(raw: string): string {
     .split(/\s+/)
     .filter((w) => w.length > 1 && !STOPWORDS.has(w.toLowerCase()));
   if (words.length === 0) {
-    // If all words were stopwords, fall back to using all words
     const allWords = raw.replace(/[^\w\s]/g, " ").split(/\s+/).filter((w) => w.length > 1);
     if (allWords.length === 0) return "";
     return allWords.map((w) => `"${w}"`).join(" OR ");

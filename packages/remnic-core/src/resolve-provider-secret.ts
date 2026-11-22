@@ -131,11 +131,8 @@ export async function resolveProviderApiKey(
 
   let resolved: string | undefined;
 
-  // Fast path: plain-text string that looks like an actual API key
   if (typeof apiKeyValue === "string" && apiKeyValue.trim().length > 0) {
     const trimmedApiKeyValue = apiKeyValue.trim();
-    // Skip known non-API-key markers used by the gateway for auth modes,
-    // plus env-var-shaped markers such as OPENAI_API_KEY.
     if (isNonLiteralAuthMarker(trimmedApiKeyValue)) {
       const markerEnvValue = resolveFromNamedEnvVar(trimmedApiKeyValue);
       if (markerEnvValue) {
@@ -159,8 +156,6 @@ export async function resolveProviderApiKey(
     return resolvedCache.get(cacheKey);
   }
 
-  // The API key is either a SecretRef object, "secretref-managed", or empty.
-  // Try the host-supplied auth resolution system first.
   if (resolver) {
     try {
       const auth = await resolver({ provider: providerId, cfg: gatewayConfig, agentDir: resolvedAgentDir });
@@ -177,7 +172,6 @@ export async function resolveProviderApiKey(
     }
   }
 
-  // Environment variable fallback
   resolved = resolveFromEnv(providerId);
   if (resolved) {
     log.debug(`resolved API key for provider "${providerId}" from environment variable`);
@@ -185,17 +179,12 @@ export async function resolveProviderApiKey(
     log.debug(`could not resolve API key for provider "${providerId}" — skipping`);
   }
 
-  // Only cache successful resolutions — failures are retried on next call
-  // so providers can recover after transient issues (e.g., 1Password agent restart)
   if (resolved) {
     resolvedCache.set(cacheKey, resolved);
   }
   return resolved;
 }
 
-/**
- * Try to resolve an API key from environment variables.
- */
 function resolveFromEnv(providerId: string): string | undefined {
   const normalized = providerId.toUpperCase().replace(/[^A-Z0-9]/g, "_");
   const candidates = [

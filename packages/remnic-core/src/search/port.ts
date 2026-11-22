@@ -12,7 +12,6 @@ export interface SearchQueryOptions {
   structuredSearches?: Array<{ type: "lex" | "vec" | "hyde"; query: string }>;
 }
 
-/** Merge config-derived QMD options with an optional per-recall HTTP/MCP override. */
 export function mergeSearchQueryOptions(
   configured: SearchQueryOptions | undefined,
   request?: SearchQueryOptions,
@@ -157,7 +156,6 @@ export interface SearchBackendStatus {
  * See docs/writing-a-search-backend.md for the implementation guide.
  */
 export interface SearchBackend {
-  // ── Lifecycle ──
   probe(execution?: SearchExecutionOptions): Promise<boolean>;
   /**
    * Optional non-mutating availability probe for health/readiness checks.
@@ -170,7 +168,6 @@ export interface SearchBackend {
   /** Optional embedding backlog status for health surfaces. */
   status?(): Promise<SearchBackendStatus>;
 
-  // ── Search ──
   search(
     query: string,
     collection?: string,
@@ -198,7 +195,6 @@ export interface SearchBackend {
     execution?: SearchExecutionOptions
   ): Promise<SearchResult[]>;
 
-  // ── Maintenance ──
   update(execution?: SearchExecutionOptions): Promise<void>;
   /**
    * Wall-clock ms of the most recent SUCCESSFUL index refresh, or null when the
@@ -251,7 +247,6 @@ export interface SearchBackend {
    */
   embedCollectionStrict?(collection: string): Promise<void>;
 
-  // ── Collection management ──
   /**
    * True only when the backend can bind, isolate, search, and delete collections
    * outside Remnic's primary memory roots.

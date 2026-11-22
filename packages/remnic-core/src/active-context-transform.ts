@@ -64,7 +64,6 @@ export interface ActiveContextMessage {
 export interface ActiveContextSnapshot {
   schemaVersion: 1;
   sessionKey: string;
-  /** Data routing only — never authorization. */
   namespace: string;
   /** Host revision/turn identifier the plan binds as a precondition. */
   revision: string | number;
@@ -134,7 +133,6 @@ export interface ActiveContextScoreRow {
 
 export interface ActiveContextPlanReplacement {
   messageId: string;
-  /** Filled by prepare — plans never carry raw text. */
   contentHash?: string;
   sourceMessageIds: string[];
   method: "deterministic" | "llm";
@@ -266,13 +264,11 @@ export interface ActiveContextPreparedTransform {
   errorCode?: ActiveContextErrorCode;
 }
 
-// ── hashing ────────────────────────────────────────────────────────────────
 
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-/** Deterministic JSON: sorted keys, so field order never changes a hash. */
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -299,7 +295,6 @@ function hashSnapshot(snapshot: ActiveContextSnapshot): string {
   );
 }
 
-// ── shared validation ──────────────────────────────────────────────────────
 
 interface PlanContext {
   caps: ActiveContextCapabilitySet;
@@ -394,7 +389,6 @@ function buildContext(
   if (!scope || !scope.sessionKey || !scope.namespace || !scope.principal || !scope.adapterId) {
     throw new PlanReject("scope_mismatch");
   }
-  // Trusted-scope checks run before any ID selection or model work.
   if (request.snapshot.sessionKey !== scope.sessionKey) throw new PlanReject("scope_mismatch");
   if (request.snapshot.namespace !== scope.namespace) throw new PlanReject("scope_mismatch");
 
@@ -496,7 +490,6 @@ function protectedIdSet(
   return protectedIds;
 }
 
-// ── plan ───────────────────────────────────────────────────────────────────
 
 /**
  * Build one bounded, content-addressed SUMMARY or FILTER plan. Returns a
@@ -517,7 +510,6 @@ export function planActiveContextTransform(
     operation: request.operation,
   });
   if (policy.decision === "deny") {
-    // feature_disabled — evaluated before scope or selection work.
     return rejectedPlan(request.operation, "feature_disabled", null, policy);
   }
   let context: PlanContext | null = null;
@@ -736,7 +728,6 @@ function buildSummaryPlan(
     method = "llm";
     fallbackPolicy = "none"; // fallback only in auto mode
   } else {
-    // auto: prefer the LLM seam when allowed; deterministic otherwise.
     method = llmEnabled && deps.summarize ? "llm" : "deterministic";
     fallbackPolicy = method === "llm" ? "allowed" : "none";
   }
@@ -752,8 +743,6 @@ function buildSummaryPlan(
   }
   const targetTokens = Math.floor(requestedTokens);
 
-  // planId is derived inside finalizePlan; the replacement ID must be stable
-  // relative to it, so derive from the same stable inputs.
   const replacementSeed = sha256Hex(
     canonicalJson({
       operation: "SUMMARY",
@@ -780,7 +769,6 @@ function buildSummaryPlan(
   return plan;
 }
 
-// ── prepare ────────────────────────────────────────────────────────────────
 
 /**
  * Produce the SUMMARY replacement text for a ready plan through the pure
@@ -871,7 +859,6 @@ export async function prepareActiveContextTransform(
   }
 }
 
-// ── receipts and telemetry ─────────────────────────────────────────────────
 
 /**
  * Validate a host receipt against the plan's bindings and append one

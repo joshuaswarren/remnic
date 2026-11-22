@@ -35,7 +35,6 @@ function isGraphemePrefix(prefix: string, value: string): boolean {
   return accumulated === prefix;
 }
 
-// Deterministic pseudo-random source so failures replay exactly.
 function lcg(seed: number): () => number {
   let state = seed >>> 0;
   return () => {

@@ -34,9 +34,6 @@ import type { SemanticFailure } from "./types.js";
 import { modelIdFor } from "./vectors.js";
 import type { HostEmbeddingProvider } from "@remnic/core/host-embedding-provider";
 
-/**
- * Input to {@link computeSimilarTo}.
- */
 export interface SimilarToInput {
   readonly store: GraphStore;
   readonly provider: HostEmbeddingProvider | undefined;
@@ -91,12 +88,6 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
     return { ok: false, code: "semantic_disabled" };
   }
 
-  // Without pre-built bodies AND without a repoRoot, the only available
-  // text is the qualified name, which MinHashes name similarity rather
-  // than body similarity — real copy-paste clones with different names
-  // are silently missed. Refuse to guess: require one of the two so the
-  // pipeline always MinHashes actual symbol bodies (chatgpt-codex-
-  // connector P2: 'Require source bodies before MinHashing').
   if (!input.bodies && !input.repoRoot) {
     return {
       ok: false,
@@ -104,10 +95,6 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
       message: "computeSimilarTo needs either 'bodies' or 'repoRoot' to read source text",
     };
   }
-  // Closed store is a distinct degradation (rule 34) — readNodesForSemantic
-  // would return [] and we would report { ok: true, edges: [] } instead of
-  // the documented store_closed code used by the other entry points (cursor
-  // Bugbot: 'SimilarTo ignores closed store').
   if (store.isClosed) {
     return { ok: false, code: "store_closed" };
   }
@@ -115,14 +102,12 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
   const modelId = provider ? modelIdFor(provider) : undefined;
   const vectors = input.vectors ?? (modelId ? readVectorsMap(store, modelId) : new Map<string, Float32Array>());
 
-  // Pass 1: MinHash/LSH candidates.
   const hasher = createMinHasher();
   for (const [nodeId, entry] of bodies) {
     hasher.add({ nodeId, qualifiedName: entry.qualifiedName, body: entry.body });
   }
   const candidates = hasher.findCandidates();
 
-  // Pass 2: cosine confirmation.
   const edges: SimilarEdge[] = [];
   let confirmed = 0;
   let minhashOnly = 0;
@@ -130,13 +115,7 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
     const va = vectors.get(c.aNodeId);
     const vb = vectors.get(c.bNodeId);
     if (va && vb && va.length === vb.length) {
-      // Require matching dimensionality — cosineSimilarity compares over the
-      // shorter length, so mismatched-dims rows would get a misleading
-      // partial-overlap score (cursor Bugbot: 'SimilarTo skips embedding
-      // length check'). Pairs that fail this fall through to the no-provider
-      // MinHash-only branch or are skipped.
       const cos = cosineSimilarity(va, vb);
-      // rule 35: >= threshold confirms (decided once, here).
       if (cos >= config.similarToThreshold) {
         edges.push({
           srcNodeId: c.aNodeId,
@@ -149,15 +128,6 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
         confirmed += 1;
       }
     } else if (!provider) {
-      // MinHash-only is the documented fallback for the NO-PROVIDER
-      // (local, deterministic) mode. When a provider IS configured we do
-      // NOT emit MinHash-only edges for pairs missing a vector — that
-      // would bypass the cosine confirmation path during partial / not-
-      // yet-indexed state. Such pairs are simply skipped; they will be
-      // cosine-confirmed once indexing completes (cursor Bugbot: 'MinHash
-      // edges with provider set'). Use a Jaccard gate well below the
-      // cosine threshold — MinHash Jaccard for near-clones is typically
-      // 0.3-0.8; the MINHASH_JACCARD_GATE is the documented floor.
       if (c.jaccard >= MINHASH_JACCARD_GATE) {
         edges.push({
           srcNodeId: c.aNodeId,
@@ -174,7 +144,6 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
     // indexing + cosine confirmation; do not bypass with MinHash-only).
   }
 
-  // Stable sort: by confidence desc, then src qname, then dst qname.
   edges.sort((a, b) => {
     if (b.confidence !== a.confidence) return b.confidence - a.confidence;
     if (a.srcQualifiedName !== b.srcQualifiedName) return a.srcQualifiedName < b.srcQualifiedName ? -1 : 1;
@@ -229,22 +198,12 @@ function readBodiesFromStore(store: GraphStore, repoRoot?: string): Map<string, 
         // File not readable — body stays empty, symbol is skipped by MinHasher.
       }
     }
-    // MinHash the extracted BODY only, not the full canonical text. The
-    // canonical form includes KIND/QNAME/SIG metadata; tokenizing it would
-    // let empty-body stubs/declarations emit name-driven candidates among
-    // unrelated symbols. extractBodyText returns "" for a bodyless symbol,
-    // and the hasher skips empty bodies entirely (chatgpt-codex-connector:
-    // 'MinHash only the extracted body text').
     const body = extractBodyText(rawText, 0);
     out.set(node.nodeId, { qualifiedName: node.qualifiedName, body });
   }
   return out;
 }
 
-/**
- * Read the vectors table into a nodeId → Float32Array map for cosine
- * confirmation. Uses the model id derived from the provider.
- */
 function readVectorsMap(store: GraphStore, modelId: string): Map<string, Float32Array> {
   const out = new Map<string, Float32Array>();
   for (const row of store.readAllSymbolVectors(modelId)) {

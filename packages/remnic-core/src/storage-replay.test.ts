@@ -254,7 +254,6 @@ test("a stale-clock frontmatter write retires A's receipt without touching busin
     const seeded = await storage.getMemoryById(created.id);
     assert.ok(seeded);
 
-    // A: content CAS commits the deterministic merged body; receipt token1.
     const aReceipt = await storage.updateMemoryIfUnchanged(seeded, "Merged body.");
     assert.ok(typeof aReceipt === "string");
 
@@ -271,7 +270,6 @@ test("a stale-clock frontmatter write retires A's receipt without touching busin
     const lifecycleToken = await storage.readCasRevision(afterLifecycle.path);
     assert.ok(lifecycleToken !== undefined && lifecycleToken !== aReceipt, "the generic write retired A's receipt token");
 
-    // C: commits the identical deterministic body in the same millisecond.
     const cReceipt = await storage.updateMemoryIfUnchanged(afterLifecycle, "Merged body.");
     assert.ok(typeof cReceipt === "string");
     assert.notEqual(cReceipt, aReceipt, "C must not reuse A's retired receipt");

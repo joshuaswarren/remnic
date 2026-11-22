@@ -86,7 +86,6 @@ export async function drainObserveOutbox(
 ): Promise<void> {
   const drainOptions: DrainOptions = {
     notify: (message, level) => session.notify(message, level),
-    // Entries enqueued for a different daemon stay queued for it (#3381).
     destination: config.remnicDaemonUrl,
   };
   if (bounded) {
@@ -101,12 +100,9 @@ export async function drainObserveOutbox(
       timeoutMs: config.turnRequestTimeoutMs,
       replayNonce: entry.replayNonce ?? entry.id,
     };
-    // The entry keeps its original writer's principal; this drainer's own
-    // config.principal is only the fallback for pre-field entries.
     if (entry.principal !== undefined) observeOptions.principal = entry.principal;
     if (bounded) {
       observeOptions.maxRetries = 0;
-      // One cheap attempt: never let a hanging daemon hold session start or shutdown for a full turn budget.
       observeOptions.timeoutMs = Math.min(config.turnRequestTimeoutMs, STARTUP_DRAIN_ATTEMPT_MS);
     }
     try {
@@ -116,13 +112,6 @@ export async function drainObserveOutbox(
       stopReason = err instanceof Error ? classifyObserveFailure(err) : "retry-ambiguous";
       throw err;
     }
-    // Delivered: remember identity so later turns and the shutdown replay skip
-    // these. The hashes and replay keys embed the entry's OWN sessionKey, so
-    // they are recorded in that session's state (#3381): a drain running under
-    // another session must not file them in its own set, where they can never
-    // match, while the writer's shutdown resends the same turns under a new
-    // nonce. A writer session that is not live has no in-memory state to teach;
-    // its persisted hashes cannot be written from here, so nothing is recorded.
     const target = stateForSession ? stateForSession(entry.sessionKey) : { observedHashes, liveObservedReplayKeys };
     if (target) {
       for (const hash of entry.messageHashes) {
@@ -135,7 +124,6 @@ export async function drainObserveOutbox(
       }
     }
   }, drainOptions);
-  // Entries bound to another daemon are pending for IT, not saturation here.
   // Only a stop caused by an actual failed send (capacity/ambiguous) reports
   // saturation; a successful bounded send leaving entries is normal pacing.
   const pendingForUs = result.pending - (result.foreign ?? 0);
@@ -178,7 +166,6 @@ export function startObserveOutboxDrain(
   const run: Promise<void> = drainObserveOutbox(session, client, config, outbox, observedHashes, liveObservedReplayKeys, bounded, stateForSession)
     .catch((err: Error) => {
       try {
-        // The drain only throws Errors (lock timeout, write failure); coerce defensively for the message.
         session.notify(`Remnic observe outbox drain failed: ${String(err.message ?? err)}`, "warning");
       } catch {
         // The session UI is gone; the queue itself is untouched and replays next time.

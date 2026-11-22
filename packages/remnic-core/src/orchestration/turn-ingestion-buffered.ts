@@ -1,4 +1,3 @@
-/** Buffered durable replay ingest (#3368 split from turn-ingestion.ts — 1200-line ratchet). */
 
 import { ReplayAdmissionRefusedError, StorageTargetRequiredError } from "../buffer-admission.js";
 import type { BoundedAdmissionRefusal } from "../buffer-add-turns-bounded.js";

@@ -1,11 +1,3 @@
-/**
- * Extraction gate for sessions claimed by `remnic buffer drain`.
- *
- * A claimed session's turns belong to the drain: they live in a durable
- * claim file and are extracted out of process. The live buffer owner hands
- * its copy of such a session into the claim instead of writing it back, so
- * extracting it here as well would persist the same content twice.
- */
 
 import { log } from "../logger.js";
 import type { ExtractionRunResult } from "./extraction-run.js";

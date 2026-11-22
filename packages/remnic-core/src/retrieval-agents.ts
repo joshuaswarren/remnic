@@ -1,21 +1,3 @@
-/**
- * Parallel Specialized Retrieval (v9.1 — ASMR-inspired)
- *
- * Replaces single-pass hybrid search with three parallel specialized agents:
- *
- *   1. DirectFactAgent  — entity-first lookup via entity filename index (<5ms)
- *   2. ContextualAgent  — existing hybridSearch (same cost as current single-pass)
- *   3. TemporalAgent    — temporal index prefilter + recency scoring (<10ms)
- *
- * All agents run via Promise.all(), so total latency = max(agents), not sum.
- * No new LLM inference is introduced — agents reuse existing search primitives.
- *
- * Graceful degradation: any agent error/timeout does not block the others.
- *
- * References:
- *   - Supermemory ASMR: https://blog.supermemory.ai/...
- *   - Spec: docs/ideas/parallel-specialized-retrieval.md
- */
 
 import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
@@ -30,12 +12,10 @@ import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.j
 import { isShapedUnnamedEntityRecord } from "./utils/malformed-entity-record.js";
 
 
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 export type SearchAgentSource = "direct" | "contextual" | "temporal";
 
 export interface ParallelSearchResult extends QmdSearchResult {
-  /** Which retrieval agent produced this result. */
   agentSource: SearchAgentSource;
 }
 
@@ -46,7 +26,6 @@ export const PARALLEL_AGENT_WEIGHTS: Record<SearchAgentSource, number> = {
   contextual: 0.7, // semantic: broadest, lower precision
 };
 
-// ─── Query classification ────────────────────────────────────────────────────
 
 /**
  * Decide whether a given agent should run for this query.
@@ -65,8 +44,6 @@ export function shouldRunAgent(
       // ASCII-only, so CJK entity names would never start the direct agent.
       return knownEntityCount > 0 || /[\p{L}\p{N}]{2,}/u.test(query);
     case "temporal":
-      // Only run temporal agent when the query actually asks about a time window.
-      // Running it for every query injects recency bias into semantic searches.
       return isTemporalQuery(query);
     case "contextual":
       return true;
@@ -75,7 +52,6 @@ export function shouldRunAgent(
   }
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function tokenize(value: string): string[] {
   return normalizeRecallTokens(value).filter((t) => t.length >= 2);
@@ -110,7 +86,6 @@ async function resolveContainedRegularFile(
   }
 }
 
-// ─── Agent 1: Direct Facts ───────────────────────────────────────────────────
 
 /**
  * Direct Facts Agent — entity-first retrieval.
@@ -123,11 +98,6 @@ async function resolveContainedRegularFile(
  * Scored hits are read, up to the result cap, so a malformed record is not returned.
  *
  */
-// Agents scan one namespace storage dir and return absolute paths. Contextual
-// fanout hits are also absolute (globally-unique identity), so we keep the
-// agent path absolute and only stamp the owning namespace here — that carries
-// the namespace through merge/tracking without re-deriving it (#2020). No-op
-// without a resolver.
 function namespaceRelativeResult(
   result: ParallelSearchResult,
   _memoryDir: string,
@@ -209,7 +179,6 @@ export async function runDirectAgent(
   }
 }
 
-// ─── Agent 3: Temporal ───────────────────────────────────────────────────────
 
 /**
  * Temporal Agent — recency-focused retrieval.
@@ -232,7 +201,6 @@ export async function runTemporalAgent(
 ): Promise<ParallelSearchResult[]> {
   try {
     const canonicalRoot = await realpath(memoryDir);
-    // Read index_time.json once — used for both date-range filtering and recency scoring.
     let dateIndex: Record<string, string[]> = {};
     try {
       const indexPath = path.join(memoryDir, "state", "index_time.json");
@@ -243,20 +211,14 @@ export async function runTemporalAgent(
       return []; // Index missing or unreadable — nothing to return
     }
 
-    // Derive both window edges from the same function so fromDate/toDate always use
-    // consistent pattern-matching and priority ordering.
     const { fromDate, toDate } = recencyWindowBoundsFromPrompt(query);
 
-    // Build path → date map, filtering to the recency window in one pass.
-    // Apply candidatePaths here (before scoring + top-K) so in-scope entries are
-    // not displaced by newer out-of-scope entries at the slice boundary.
     const pathToDate = new Map<string, string>();
     for (const [date, datePaths] of Object.entries(dateIndex)) {
       // toDate is an exclusive upper bound (the first day NOT included in the window).
       // e.g. "3 days ago" → fromDate="2026-03-12", toDate="2026-03-13" → only includes 2026-03-12.
       if (date >= fromDate && date < toDate) {
         for (const p of datePaths) {
-          // Skip paths excluded by the query-aware prefilter scope
           if (candidatePaths && !candidatePaths.has(p)) continue;
           if (!pathToDate.has(p)) pathToDate.set(p, date);
         }
@@ -267,10 +229,6 @@ export async function runTemporalAgent(
 
     const todayMs = Date.now();
 
-    // Extract non-temporal topic tokens for tag-based relevance boost.
-    // Purely temporal words (dates, relative time) and common stopwords are stripped
-    // so the signal reflects the subject the user is asking about (e.g. "auth" in
-    // "what changed in auth last week"), not the time window itself.
     const TEMPORAL_STOPWORDS = new Set([
       "today", "yesterday", "this", "last", "week", "month", "year",
       "morning", "night", "now", "earlier", "since", "after", "before",
@@ -285,9 +243,6 @@ export async function runTemporalAgent(
     ]);
     const topicTokens = tokenize(query).filter((t) => !TEMPORAL_STOPWORDS.has(t));
 
-    // Load tag index for topical scoring, in parallel with existence checks.
-    // Fail-open: if the tag index is unavailable, topicBoost = 0 and scores
-    // degrade gracefully to recency-only ordering (existing behaviour).
     const entries = [...pathToDate.entries()];
     const tagIndexPromise: Promise<Map<string, string[]>> = topicTokens.length > 0
       ? readFile(path.join(memoryDir, "state", "index_tags.json"), "utf-8")
@@ -307,7 +262,6 @@ export async function runTemporalAgent(
           .catch(() => new Map<string, string[]>())
       : Promise.resolve(new Map<string, string[]>());
 
-    // Parallel: existence checks + tag index read.
     const [safePathResults, pathToTags] = await Promise.all([
       Promise.all(entries.map(([p]) => resolveContainedRegularFile(memoryDir, p, canonicalRoot))),
       tagIndexPromise,
@@ -366,7 +320,6 @@ export async function runTemporalAgent(
   }
 }
 
-// ─── Agent 2: Contextual ─────────────────────────────────────────────────────
 
 /**
  * Contextual Agent — broad semantic/hybrid search.
@@ -396,7 +349,6 @@ export async function runContextualAgent(
   }
 }
 
-// ─── Merge helper ─────────────────────────────────────────────────────────────
 
 /**
  * Merge results from multiple agents into a single deduplicated, weighted list.
@@ -428,7 +380,6 @@ function mergeAgentResults(
         docid: result.docid,
         path: result.path,
         namespace,
-        // Preserve any snippet from the existing entry when the new one has none
         snippet: result.snippet || existing?.snippet || "",
         score: weightedScore,
         transport: "hybrid",
@@ -453,7 +404,6 @@ function stripFrontmatter(raw: string): string {
   if (!raw.startsWith("---")) return raw;
   const end = raw.indexOf("\n---", 3);
   if (end === -1) return raw;
-  // Skip the closing "---" line and any leading blank lines
   return raw.slice(end + 4).replace(/^\n+/, "");
 }
 
@@ -473,8 +423,6 @@ async function populateEmptySnippets(results: QmdSearchResult[], memoryDir?: str
           : null;
         if (!safePath) return;
         const raw = await readFile(safePath, "utf-8");
-        // Memory files start with YAML frontmatter — skip it so the snippet
-        // contains actual memory content, not metadata fields.
         const body = stripFrontmatter(raw);
         const preview = body.slice(0, SNIPPET_PREVIEW_CHARS).replace(/\s+/g, " ").trim();
         if (preview) snippetMap.set(r.path, preview);
@@ -530,14 +478,6 @@ export async function mergeWithAgentResults(
   return populateEmptySnippets(merged, memoryDir);
 }
 
-// ─── Augmentation helper (used by tests; orchestrator uses inline logic) ─────
-//
-// NOTE: This function passes the same `memoryDir` to both direct and temporal
-// agents. The orchestrator's inline implementation differs: it passes a
-// namespace-specific storage dir to runDirectAgent and the shared root to
-// runTemporalAgent. augmentWithDirectAndTemporal is intentionally simpler
-// (single-dir assumption) and is exercised by unit tests where both agents
-// operate on the same temporary directory.
 
 /**
  * Augment a set of contextual (hybridSearch) results with direct and temporal
@@ -572,7 +512,6 @@ export async function augmentWithDirectAndTemporal(
    * (namespace, path) merge key as their contextual counterpart. */
   resolveNamespace?: (path: string) => string,
 ): Promise<QmdSearchResult[]> {
-  // maxPerAgent=0 is a hard disable: skip agents entirely and return contextual unchanged
   if (maxPerAgent === 0) return contextualResults;
 
   const knownEntityCount = (query.match(/\b[A-Z][a-z]{1,}/g) ?? []).length;
@@ -588,8 +527,6 @@ export async function augmentWithDirectAndTemporal(
       })
       : Promise.resolve([] as ParallelSearchResult[]),
     runTemporal
-      // Pass candidatePaths so scope-filtering happens before the top-K cap inside runTemporalAgent,
-      // preventing out-of-scope newer entries from displacing in-scope ones at the slice boundary.
       ? runTemporalAgent(query, memoryDir, maxPerAgent, candidatePaths).catch((err) => {
         log.debug(`augmentWithDirectAndTemporal: TemporalAgent failed — ${err}`);
         return [] as ParallelSearchResult[];
@@ -598,20 +535,9 @@ export async function augmentWithDirectAndTemporal(
   ]);
   const durationMs = Date.now() - startMs;
 
-  // Direct agent results (entities/) intentionally bypass candidatePaths.
   //
-  // Why: candidatePaths is built from temporal + tag indexes, which never include
-  // entity files (entities/*.md). Applying the filter here would silently drop ALL
-  // direct-agent results for any scoped query, making the direct agent a no-op.
-  // Entity files are identified by filename matching (query tokens vs. entity name),
-  // so they are already query-scoped independently of the time/tag prefilter.
-  // Temporal results are scoped inside runTemporalAgent() before the top-K cap.
   const scopedDirect = directResults;
 
-  // Tag contextual results with their source so they can participate in weighted merge.
-  // We do NOT cap contextual here: contextualResults comes from fetchQmdMemoryResultsWithArtifactTopUp
-  // which intentionally over-fetches so downstream phases (graph expansion, lifecycle filtering,
-  // reranking) can drop candidates. Capping before the merge would remove that headroom.
   const contextualTagged: ParallelSearchResult[] = contextualResults.map((r) => ({
     ...r,
     agentSource: "contextual" as const,
@@ -621,16 +547,10 @@ export async function augmentWithDirectAndTemporal(
     `augmentWithDirectAndTemporal: direct=${scopedDirect.length} temporal=${temporalResults.length} contextual=${contextualTagged.length} agentMs=${durationMs}ms`,
   );
 
-  // If no specialized agents contributed anything (e.g. fresh setup without entities/ or temporal
-  // index), skip reweighting entirely — applying the contextual weight penalty with zero benefit
-  // would silently reduce every result score by ~30% compared to the non-augmented path.
   if (scopedDirect.length === 0 && temporalResults.length === 0) {
     return (contextualResults as QmdSearchResult[]).slice(0, maxResults);
   }
 
-  // Merge all three; contextual first so its snippets are preserved when a higher-scoring
-  // direct/temporal result overrides the same path (see mergeAgentResults snippet logic).
-  // Note: maxPerAgent=0 is handled by the early-return guard above; we never reach here with 0.
   const merged = mergeAgentResults(
     [...contextualTagged, ...scopedDirect, ...temporalResults],
     weights,
@@ -638,11 +558,9 @@ export async function augmentWithDirectAndTemporal(
     resolveNamespace,
   );
 
-  // Populate snippets for results discovered only by direct/temporal (no contextual preview)
   return populateEmptySnippets(merged, memoryDir);
 }
 
-// ─── Orchestrator ─────────────────────────────────────────────────────────────
 
 export interface ParallelRetrievalOptions {
   collection?: string;
@@ -679,7 +597,6 @@ export async function parallelRetrieval(
   const maxPerAgent = options.maxResultsPerAgent ?? maxResults;
   const startMs = Date.now();
 
-  // Rough entity detection: count proper-noun-like tokens in query
   const knownEntityCount = (query.match(/\b[A-Z][a-z]{1,}/g) ?? []).length;
 
   const runDirect = shouldRunAgent("direct", query, knownEntityCount);
@@ -713,8 +630,6 @@ export async function parallelRetrieval(
     `parallelRetrieval: direct=${directResults.length} temporal=${temporalResults.length} contextual=${contextualResults.length} durationMs=${durationMs}ms`,
   );
 
-  // Contextual results go first so their snippets are preserved when a higher-scoring
-  // direct/temporal result overrides the same path in mergeAgentResults.
   const merged = mergeAgentResults(
     [...contextualResults, ...directResults, ...temporalResults],
     options.agentWeights ?? PARALLEL_AGENT_WEIGHTS,

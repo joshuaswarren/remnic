@@ -79,8 +79,6 @@ test("mcp source paginates and stops on a page of known ids", async () => {
     }) as typeof fetch,
   });
   const budget = new XBudgetTracker({ maxPagesPerSync: 5, maxCostUsdPerMonth: 10, costPerReadUsd: 0.01 }, 0);
-  // Bookmarks page 2 contains only known ids → pagination stops after it,
-  // then one own-posts timeline page runs.
   const outcome = await source.fetch({ knownIds: new Set(["3"]), budget });
   assert.equal(outcome.records.length, 4);
   assert.equal(outcome.reads, 3);

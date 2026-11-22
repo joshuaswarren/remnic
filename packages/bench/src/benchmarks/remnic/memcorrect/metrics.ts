@@ -1,19 +1,3 @@
-/**
- * MemCorrect metrics (issue #1584 PR 2).
- *
- * Every metric is a pure function over the probe log + resolved scenario
- * metadata. The runner records the probe log while driving an adapter
- * through the protocol; these functions turn that log into the 8 scores.
- *
- * Scoring prefers deterministic token containment over LLM judging
- * (checklist: a benchmark whose scores move with judge temperature is not
- * a benchmark). Paraphrase-tolerant checks go through the sealed-rubric
- * judge in the runner; these pure functions take already-resolved string
- * sets so they are unit-testable with hand-computed expected values.
- *
- * Half-open windows (checklist §23): "post-correction" includes probes
- * whose turnIndex is strictly greater than the correction's turnIndex.
- */
 
 import type {
   MemCorrectMetricBundle,
@@ -23,13 +7,11 @@ import type {
   ResolvedReassertion,
 } from "./types.js";
 
-/** Normalize a string to a lowercase alnum-token set for containment. */
 export function tokenize(text: string): Set<string> {
   const tokens = text.toLowerCase().match(/[a-z0-9][a-z0-9-]*/g);
   return new Set(tokens ?? []);
 }
 
-/** True iff every needle token appears in the haystack's token set. */
 export function containsAll(haystack: string, needles: readonly string[]): boolean {
   if (needles.length === 0) return true;
   const hay = tokenize(haystack);
@@ -39,7 +21,6 @@ export function containsAll(haystack: string, needles: readonly string[]): boole
   return true;
 }
 
-/** True iff none of the banned tokens appear in the haystack's token set. */
 export function containsNone(haystack: string, banned: readonly string[]): boolean {
   if (banned.length === 0) return true;
   const hay = tokenize(haystack);
@@ -49,35 +30,21 @@ export function containsNone(haystack: string, banned: readonly string[]): boole
   return true;
 }
 
-/** Join a probe's recalled strings into one haystack for containment checks. */
 function joinedRecall(entry: ProbeLogEntry): string {
   return entry.recalled.join(" ");
 }
 
-/**
- * True iff the probe's recall shows the retired value as a *standalone* stale
- * assertion — some recalled string asserts the retired content WITHOUT the
- * corrected content. Correction/provenance evidence that cites both the old and
- * new value (e.g. "not X, now Y") is affirmative, not stale, and must NOT be
- * penalized (issue #1584: don't treat correction evidence as stale recall).
- */
 export function recallShowsStaleRetired(
   entry: ProbeLogEntry,
   correction: ResolvedCorrection,
 ): boolean {
   for (const recalled of entry.recalled) {
     if (!containsAll(recalled, correction.retiredContent)) continue;
-    // Retired token present: only a stale signal if the corrected value is
-    // absent from the SAME string (otherwise it is correction evidence).
     if (!containsAll(recalled, correction.correctedContent)) return true;
   }
   return false;
 }
 
-/**
- * A probe "passes" for a correction iff the corrected content is present
- * AND no recalled string asserts the retired value as a standalone stale fact.
- */
 export function probePassesForCorrection(
   entry: ProbeLogEntry,
   correction: ResolvedCorrection,
@@ -110,7 +77,6 @@ export function uptakeAtNext(
   for (const correction of corrections) {
     const post = entriesFor(log, correction.scenarioId, "post_correction")
       .sort((a, b) => a.turnIndex - b.turnIndex);
-    // Half-open: only probes strictly after the correction count.
     const eligible = post.filter((e) => e.turnIndex > correction.turnIndex);
     const first = eligible[0];
     if (first && probePassesForCorrection(first, correction)) passed += 1;
@@ -147,9 +113,6 @@ export function uptakeLatency(
         break;
       }
     }
-    // Censor only when NO passing probe was found within the cap. A success
-    // landing exactly at the cap (delta === cap) is resolved, not censored —
-    // the old `resolved >= cap` check double-counted such boundary wins.
     if (!found) censored += 1;
     sum += resolved;
   }
@@ -214,7 +177,6 @@ export function scopePrecision(
     const primaryPost = entriesFor(log, correction.scenarioId, "post_correction")
       .filter((e) => e.turnIndex > correction.turnIndex)
       .sort((a, b) => a.turnIndex - b.turnIndex)[0];
-    // Twin probe: most recent twin-namespace post-correction probe.
     const twinPost = log
       .filter(
         (e) =>
@@ -245,10 +207,6 @@ export function falseApply(
   if (antiEvents.length === 0) return 0;
   let triggered = 0;
   for (const anti of antiEvents) {
-    // The runner records the post-anti probe under post_correction phase
-    // (anti-events are ingested between correction and the maintenance
-    // cycle); the token is scenario-scoped so cross-scenario leakage
-    // cannot inflate the score.
     const probes = log.filter(
       (e) => e.scenarioId === anti.scenarioId && e.phase === "post_correction",
     );
@@ -297,7 +255,6 @@ export function provenanceFidelity(
   return scored.reduce((s, v) => s + v, 0) / scored.length;
 }
 
-/** Compute the full metric bundle from resolved inputs. */
 export function computeMetricBundle(args: {
   log: readonly ProbeLogEntry[];
   corrections: readonly ResolvedCorrection[];

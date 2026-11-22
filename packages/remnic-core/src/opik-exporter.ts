@@ -22,8 +22,6 @@ import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 const OPIK_EXPORTER_SLOT = "__openclawOpikExporter";
 
 // ---------------------------------------------------------------------------
-// Engram event types (mirrors types.ts without importing from it)
-// ---------------------------------------------------------------------------
 
 type EngramLlmTraceEvent = {
   kind: "llm_start" | "llm_end" | "llm_error";
@@ -63,7 +61,6 @@ type EngramRecallTraceEvent = {
 type EngramTraceEvent = EngramLlmTraceEvent | EngramRecallTraceEvent;
 
 // ---------------------------------------------------------------------------
-// Config
 // ---------------------------------------------------------------------------
 
 export interface OpikExporterConfig {
@@ -79,7 +76,6 @@ export interface OpikExporterConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-detect from opik-openclaw plugin config
 // ---------------------------------------------------------------------------
 
 function readOpikOpenclawConfig(log?: LoggerBackend): Partial<OpikExporterConfig> {
@@ -118,16 +114,13 @@ function uuidV7(): string {
   bytes[3] = (now / 2 ** 16) & 0xff;
   bytes[4] = (now / 2 ** 8) & 0xff;
   bytes[5] = now & 0xff;
-  // Version 7
   bytes[6] = (bytes[6] & 0x0f) | 0x70;
-  // Variant 10xx
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 // ---------------------------------------------------------------------------
-// REST helpers
 // ---------------------------------------------------------------------------
 
 function buildHeaders(cfg: OpikExporterConfig): Record<string, string> {
@@ -184,7 +177,6 @@ async function postTraceBatch(
 }
 
 // ---------------------------------------------------------------------------
-// In-flight LLM span tracking
 // ---------------------------------------------------------------------------
 
 type InFlightLlm = {
@@ -198,7 +190,6 @@ type InFlightLlm = {
 };
 
 // ---------------------------------------------------------------------------
-// Main exporter class
 // ---------------------------------------------------------------------------
 
 export class OpikExporter {
@@ -206,7 +197,6 @@ export class OpikExporter {
   private readonly log: LoggerBackend;
   private _handler: ((e: EngramTraceEvent) => void) | undefined;
   private readonly inFlight = new Map<string, InFlightLlm>();
-  /** Track which trace_ids we have already created parent trace objects for. */
   private readonly createdTraces = new Set<string>();
   /** In-flight ensureTrace promises keyed by traceId — concurrent callers await the same promise. */
   private readonly pendingTraces = new Map<string, Promise<void>>();
@@ -233,7 +223,6 @@ export class OpikExporter {
       this.log.debug?.("[opik-exporter] already subscribed — skipping duplicate");
       return;
     }
-    // If a different (stale) exporter instance is registered, evict it first.
     if (active) active._detach();
 
     g[OPIK_EXPORTER_SLOT] = this;
@@ -249,16 +238,8 @@ export class OpikExporter {
         this.log.debug?.(`[opik-exporter] handler error: ${err}`);
       }
     };
-    // Store handler ref so _detach() can remove it from the chain.
     this._handler = handler;
 
-    // Chain: call existing subscribers first, then ours.
-    // NOTE: when _detach() is later called, it marks this.cfg.enabled = false
-    // rather than restoring the chain, so that any subscriber that chained
-    // *after* us is not dropped. The cost is one disabled no-op wrapper
-    // remaining in the chain per stop/start cycle. In practice, Engram
-    // restarts Opik only a handful of times per process lifetime, so the
-    // overhead is negligible (one boolean check per leftover closure).
     g.__openclawEngramTrace =
       typeof existing === "function"
         ? (event: EngramTraceEvent) => {
@@ -272,21 +253,9 @@ export class OpikExporter {
     );
   }
 
-  /** Deactivate this exporter instance.
-   *
-   * We intentionally do NOT restore __openclawEngramTrace to a prior handler
-   * because any subscriber that chained *after* us would be silently dropped
-   * by such a restoration. Instead we mark the instance as disabled so that
-   * handleEvent() becomes a no-op while the callback chain itself is left
-   * untouched. The next subscribe() call from a fresh instance will re-enter
-   * the chain on top of whatever is there at that point.
-   */
   _detach(): void {
     const g = globalThis as Record<string, unknown>;
-    // Only clear the global slot if we are still the active exporter.
-    // A stale instance must not evict a newer exporter that already took over.
     if (g[OPIK_EXPORTER_SLOT] === this) delete g[OPIK_EXPORTER_SLOT];
-    // Disable event processing; the wrapper closure in the chain becomes a no-op.
     (this.cfg as OpikExporterConfig & { enabled: boolean }).enabled = false;
     this._handler = undefined;
     this.log.debug?.("[opik-exporter] detached — events silenced, chain preserved");
@@ -308,7 +277,6 @@ export class OpikExporter {
   }
 
   // -------------------------------------------------------------------------
-  // Recall events → general span
   // -------------------------------------------------------------------------
 
   private async onRecall(evt: EngramRecallTraceEvent): Promise<void> {
@@ -348,7 +316,6 @@ export class OpikExporter {
 
     const traceId = evt.sessionKey ? this.sessionToTraceId(evt.sessionKey) : uuidV7();
 
-    // Ensure parent trace exists so the span is not orphaned in Opik.
     await this.ensureTrace(traceId, evt.sessionKey ?? "engram:recall", startTime, endTime);
 
     const output: Record<string, unknown> = {
@@ -379,13 +346,9 @@ export class OpikExporter {
   }
 
   // -------------------------------------------------------------------------
-  // Engram internal LLM events (extraction / consolidation) → llm span
   // -------------------------------------------------------------------------
 
   private onLlmStart(evt: EngramLlmTraceEvent): void {
-    // Use evt.traceId (Engram's correlation key) as the Opik spanId so spans
-    // are deterministic and stable across retries. Derive a per-call Opik
-    // trace_id from the same key so each LLM call maps to its own trace.
     this.inFlight.set(evt.traceId, {
       startedAt: Date.now(),
       startTime: new Date().toISOString(),
@@ -407,7 +370,6 @@ export class OpikExporter {
   }
 
   private async onLlmEnd(evt: EngramLlmTraceEvent): Promise<void> {
-    // Opportunistically sweep stale entries to prevent unbounded map growth.
     if (this.inFlight.size > 20) this.sweepStaleInFlight();
     const state = this.inFlight.get(evt.traceId);
     this.inFlight.delete(evt.traceId);
@@ -454,7 +416,6 @@ export class OpikExporter {
   }
 
   // -------------------------------------------------------------------------
-  // Helpers
   // -------------------------------------------------------------------------
 
   /**
@@ -476,11 +437,9 @@ export class OpikExporter {
     if (existing) {
       await existing;
       if (this.createdTraces.has(traceId)) return;
-      // First attempt failed — check if another waiter is already retrying.
       const retrying = this.pendingTraces.get(traceId);
       if (retrying) {
         await retrying;
-        // Only return if the retry actually succeeded.
         if (this.createdTraces.has(traceId)) return;
       }
       // No one else retrying; fall through to create.
@@ -505,7 +464,6 @@ export class OpikExporter {
       this.createdTraces.add(traceId);
       this.pendingTraces.delete(traceId);
 
-      // Cap the set size to prevent unbounded growth in long-running processes.
       if (this.createdTraces.size > 10_000) {
         const first = this.createdTraces.values().next().value;
         if (first) this.createdTraces.delete(first);
@@ -525,7 +483,6 @@ export class OpikExporter {
    */
   private sessionToTraceId(sessionKey: string): string {
     const digest = createHash("sha256").update(sessionKey).digest();
-    // Version 7 (bytes 0-5 are hash-derived, not real timestamps)
     digest[6] = (digest[6] & 0x0f) | 0x70;
     // Variant 10xx
     digest[8] = (digest[8] & 0x3f) | 0x80;
@@ -535,7 +492,6 @@ export class OpikExporter {
 }
 
 // ---------------------------------------------------------------------------
-// Factory: build from Engram resolved config + auto-detect from opik-openclaw
 // ---------------------------------------------------------------------------
 
 export interface OpikExporterRawConfig {
@@ -551,20 +507,13 @@ export function createOpikExporter(
   raw: OpikExporterRawConfig,
   log: LoggerBackend,
 ): OpikExporter | null {
-  // Explicit opt-out: if set to false, never enable.
   if (raw.opikTraceEnabled === false) return null;
 
   // Auto-detect from opik-openclaw plugin config.
-  // If opikTraceEnabled is not set (undefined), we enable automatically
-  // whenever opik-openclaw is configured — avoids needing extra fields in
-  // Engram's openclaw.json config section (which would fail schema validation).
   const detected = readOpikOpenclawConfig(log);
 
   const apiUrl = raw.opikApiUrl ?? detected.apiUrl;
   if (!apiUrl) {
-    // Only warn when the user explicitly opted in but forgot to set the URL.
-    // When auto-detecting (opikTraceEnabled not set), return silently so non-Opik
-    // users see no log noise on every startup.
     if (raw.opikTraceEnabled === true) {
       log.warn(
         "[opik-exporter] opikTraceEnabled=true but no apiUrl found — " +

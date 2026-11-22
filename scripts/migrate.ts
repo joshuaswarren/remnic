@@ -128,9 +128,7 @@ const stats: MigrationStats = {
   errors: [],
 };
 
-// ── Dedup index ──────────────────────────────────────────────────────────
 
-/** Normalize text for dedup comparison: lowercase, strip markdown, collapse whitespace */
 function normalize(text: string): string {
   return text
     .toLowerCase()
@@ -142,7 +140,6 @@ function normalize(text: string): string {
     .trim();
 }
 
-/** Set of normalized strings for dedup. Checks both exact and substring containment. */
 class DedupIndex {
   private entries: Set<string> = new Set();
   private longEntries: string[] = []; // for substring checks
@@ -156,15 +153,12 @@ class DedupIndex {
     }
   }
 
-  /** Returns true if text is a duplicate or near-duplicate of something already indexed */
   isDuplicate(text: string): boolean {
     const n = normalize(text);
     if (n.length < 5) return true; // too short to be useful
 
-    // Exact match
     if (this.entries.has(n)) return true;
 
-    // Check if the new text is a substring of an existing entry or vice versa
     for (const existing of this.longEntries) {
       if (existing.includes(n) || n.includes(existing)) {
         return true;
@@ -177,7 +171,6 @@ class DedupIndex {
 
 const dedupIndex = new DedupIndex();
 
-// ── Load existing engram facts ───────────────────────────────────────────
 
 async function loadExistingFacts(): Promise<number> {
   let count = 0;
@@ -193,7 +186,6 @@ async function loadExistingFacts(): Promise<number> {
       if (!file.endsWith(".md")) continue;
       try {
         const content = await readFile(path.join(dayPath, file), "utf-8");
-        // Extract the body after YAML frontmatter
         const parts = content.split("---");
         if (parts.length >= 3) {
           const body = parts.slice(2).join("---").trim();
@@ -206,7 +198,6 @@ async function loadExistingFacts(): Promise<number> {
     }
   }
 
-  // Also load corrections
   const correctionsDir = path.join(MEMORY_DIR, "corrections");
   if (existsSync(correctionsDir)) {
     const files = await readdir(correctionsDir).catch(() => []);
@@ -231,7 +222,6 @@ async function loadExistingFacts(): Promise<number> {
   return count;
 }
 
-// ── File writing ─────────────────────────────────────────────────────────
 
 async function ensureDirs(): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
@@ -261,7 +251,6 @@ function buildFrontmatter(opts: {
   ].join("\n");
 }
 
-/** Write a fact if it's not a duplicate. Returns true if written, false if skipped. */
 async function writeFact(
   body: string,
   opts: {
@@ -303,7 +292,6 @@ async function writeFact(
   return true;
 }
 
-// ── Source 1: Context files ──────────────────────────────────────────────
 
 async function migrateContextFiles(): Promise<void> {
   console.log("\n=== Migrating context files ===\n");
@@ -333,7 +321,6 @@ async function migrateContextFiles(): Promise<void> {
 
       console.log(`  Processing: ${file} (${content.length} chars)`);
 
-      // Extract bullet points as facts
       const lines = content.split("\n");
       const bullets = lines
         .filter((l) => l.match(/^[-*]\s+/))
@@ -354,7 +341,6 @@ async function migrateContextFiles(): Promise<void> {
         `    → ${written} new facts (${bullets.length - written} duplicates skipped)`,
       );
 
-      // Add content summary to profile
       if (content.length > 20) {
         profileSections.push(`## ${baseName}\n\n${content.trim()}`);
       }
@@ -363,7 +349,6 @@ async function migrateContextFiles(): Promise<void> {
     }
   }
 
-  // Seed profile.md (only if it doesn't exist)
   const profilePath = path.join(MEMORY_DIR, "profile.md");
   if (profileSections.length > 0 && !existsSync(profilePath)) {
     const profileContent = [
@@ -390,7 +375,6 @@ async function migrateContextFiles(): Promise<void> {
   }
 }
 
-// ── Source 2: Supermemory daily logs ─────────────────────────────────────
 
 async function migrateSupermemory(): Promise<void> {
   console.log("\n=== Migrating Supermemory daily logs ===\n");
@@ -425,7 +409,6 @@ async function migrateSupermemory(): Promise<void> {
       const content = await readFile(filePath, "utf-8");
       const dateStr = file.replace(".md", "");
 
-      // Extract meaningful bullets (skip checkpoint/receipt metadata)
       const lines = content.split("\n");
       const bullets: string[] = [];
 
@@ -433,7 +416,6 @@ async function migrateSupermemory(): Promise<void> {
       for (const line of lines) {
         const trimmed = line.trim();
 
-        // Skip checkpoint/receipt system metadata
         if (
           trimmed.match(
             /^\d{2}:\d{2}\s+(Checkpoint|Receipt|Heartbeat|System):/i,
@@ -443,26 +425,20 @@ async function migrateSupermemory(): Promise<void> {
           continue;
         }
 
-        // Skip header lines
         if (trimmed.startsWith("# ")) {
           inCheckpoint = false;
           continue;
         }
 
-        // New section header resets checkpoint mode
         if (trimmed.startsWith("## ")) {
           inCheckpoint = false;
-          // Section headers themselves aren't facts
           continue;
         }
 
-        // Skip if we're in a checkpoint block
         if (inCheckpoint && trimmed.startsWith("- ")) continue;
 
-        // Extract bullets that look like real facts
         if (trimmed.match(/^[-*]\s+/) && !inCheckpoint) {
           const bullet = trimmed.replace(/^[-*]\s+/, "").trim();
-          // Skip very short or system-like entries
           if (bullet.length > 10 && !bullet.match(/^(Cron|Git|Repo|Modified)/i)) {
             bullets.push(bullet);
           }
@@ -476,7 +452,6 @@ async function migrateSupermemory(): Promise<void> {
 
       let written = 0;
       for (const bullet of bullets) {
-        // Determine category from content
         let category = "fact";
         let confidence = 0.8;
 
@@ -517,16 +492,13 @@ async function migrateSupermemory(): Promise<void> {
   }
 }
 
-// ── Source 3: Honcho API ─────────────────────────────────────────────────
 
 async function migrateHoncho(): Promise<void> {
   console.log("\n=== Migrating Honcho conclusions ===\n");
 
-  // Load API key from environment or .env file
   let apiKey = process.env.HONCHO_API_KEY;
 
   if (!apiKey) {
-    // Try reading from .env file
     const envPath = path.join(
       process.env.HOME ?? "~",
       ".openclaw",
@@ -552,7 +524,6 @@ async function migrateHoncho(): Promise<void> {
   console.log("  Honcho API key found. Connecting...");
 
   try {
-    // Dynamic import to avoid requiring the SDK when not migrating honcho
     const { Honcho } = await import("@honcho-ai/sdk");
 
     const honcho = new Honcho({
@@ -560,11 +531,9 @@ async function migrateHoncho(): Promise<void> {
       workspaceId: "openclaw",
     });
 
-    // Get the owner peer (user-facing conclusions)
     const ownerPeer = await honcho.peer("owner");
     console.log(`  Connected. Peer: owner (${ownerPeer.id})`);
 
-    // List all self-conclusions (paginated)
     let page = 1;
     let totalConclusions = 0;
     let hasMore = true;
@@ -625,7 +594,6 @@ async function migrateHoncho(): Promise<void> {
         if (ok) stats.honchoConclusions++;
       }
 
-      // Check pagination
       if (items.length < 50) {
         hasMore = false;
       } else {
@@ -641,7 +609,6 @@ async function migrateHoncho(): Promise<void> {
       `\n  Honcho: ${totalConclusions} total conclusions → ${stats.honchoConclusions} new facts`,
     );
 
-    // Also get the owner's representation (processed summary)
     try {
       const representation = await ownerPeer.representation({
         maxConclusions: 100,
@@ -650,7 +617,6 @@ async function migrateHoncho(): Promise<void> {
         console.log(
           `  Got owner representation (${representation.length} chars)`,
         );
-        // Store as a special reference file (not deduplicated against)
         if (!dryRun) {
           const refPath = path.join(
             MEMORY_DIR,
@@ -668,7 +634,6 @@ async function migrateHoncho(): Promise<void> {
       console.log(`  Could not fetch representation: ${err}`);
     }
 
-    // Try the openclaw peer's conclusions about the owner too
     try {
       const clawPeer = await honcho.peer("openclaw");
       const clawConclusions = clawPeer.conclusionsOf("owner");
@@ -722,12 +687,10 @@ async function migrateHoncho(): Promise<void> {
   }
 }
 
-// ── State management ─────────────────────────────────────────────────────
 
 async function updateMetaState(): Promise<void> {
   const metaPath = path.join(MEMORY_DIR, "state", "meta.json");
 
-  // Read existing meta if available
   let meta: Record<string, unknown> = {
     extractionCount: 0,
     lastExtractionAt: null,
@@ -745,7 +708,6 @@ async function updateMetaState(): Promise<void> {
     }
   }
 
-  // Count total memories on disk
   let totalMemories = 0;
   const factsDir = path.join(MEMORY_DIR, "facts");
   if (existsSync(factsDir)) {
@@ -772,7 +734,6 @@ async function updateMetaState(): Promise<void> {
 
   await writeFile(metaPath, JSON.stringify(meta, null, 2), "utf-8");
 
-  // Ensure buffer.json exists
   const bufferPath = path.join(MEMORY_DIR, "state", "buffer.json");
   if (!existsSync(bufferPath)) {
     await writeFile(
@@ -787,7 +748,6 @@ async function updateMetaState(): Promise<void> {
   }
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   console.log("============================================");
@@ -801,11 +761,9 @@ async function main(): Promise<void> {
     await ensureDirs();
   }
 
-  // Load existing facts for dedup
   const existingCount = await loadExistingFacts();
   console.log(`  Existing facts loaded for dedup: ${existingCount}`);
 
-  // Run selected sources
   if (source === "all" || source === "context") {
     await migrateContextFiles();
   }

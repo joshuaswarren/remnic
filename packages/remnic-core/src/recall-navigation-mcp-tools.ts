@@ -1,17 +1,3 @@
-/**
- * Recall-navigation MCP tool definitions (issue #1956) — extracted from
- * access-mcp.ts so the surface file stays at its structural ceiling (same
- * seam as deep-recall-mcp-tools.ts). Spread back into `this.tools`
- * (`...RECALL_NAVIGATION_MCP_TOOLS`); the migrated-operation mapping lives
- * in access-mcp.ts's MCP_MIGRATED_OPERATIONS. The `remnic.` canonical alias
- * is minted by withToolAliases at tools/list time.
- *
- * Gating: spread is conditional on `service.recallNavigationEnabled !== false`
- * — the flag defaults TRUE, so the check treats an absent property (older
- * service shape / test stub) as enabled and removes the tools from listing
- * ONLY on an explicit false. Disabled config therefore yields tools absent
- * from tools/list, not present-but-erroring.
- */
 
 import type { McpTool } from "./access-mcp.js";
 

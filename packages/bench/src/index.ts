@@ -1,6 +1,3 @@
-/**
- * @remnic/bench — phase 1 bench foundation exports
- */
 
 export type {
   BenchTier,
@@ -536,7 +533,6 @@ export type {
   BenchTaskSummary,
 } from "./result-summary.js";
 
-// Published-benchmark dataset loaders (LongMemEval-S + LoCoMo-10).
 export {
   LONG_MEM_EVAL_DATASET_FILENAMES,
   LOCOMO_DATASET_FILENAMES,
@@ -552,7 +548,6 @@ export type {
   LoadDatasetOptions,
 } from "./benchmarks/published/dataset-loader.js";
 
-// Integrity pipeline (sealed qrels, canary adapter, contamination, randomize).
 export * from "./integrity/index.js";
 export {
   loadCustomBenchmarkFile,
@@ -589,7 +584,6 @@ export { projectFolderFixture } from "./fixtures/inbox/project-folder.js";
 export { calendarFixture } from "./fixtures/inbox/calendar.js";
 export { chatFixture } from "./fixtures/inbox/chat.js";
 
-// Assistant bench tier — sealed-rubric judge infrastructure.
 export {
   ASSISTANT_RUBRIC_DIMENSIONS,
   buildJudgePayload,
@@ -616,7 +610,6 @@ export {
   SEALED_PROMPT_REGISTRY,
 } from "./judges/sealed-prompts/index.js";
 
-// Cross-tier judge calibration — Cohen's kappa + calibration slice (issue #1573 PR3).
 export {
   CALIBRATION_SLICE_SIZE,
   DEFAULT_KAPPA_BOOTSTRAP_SAMPLES,
@@ -649,7 +642,6 @@ export type {
   RunJudgeCalibrationOptions,
 } from "./judges/calibration-slice.js";
 
-// Assistant bench tier — shared runner helpers.
 export {
   ASSISTANT_AGENT_CONFIG_KEY,
   ASSISTANT_JUDGE_CONFIG_KEY,
@@ -674,7 +666,6 @@ export type {
   AssistantStance,
 } from "./benchmarks/remnic/_assistant-common/index.js";
 
-// Assistant bench tier — individual benchmark exports.
 export {
   ASSISTANT_MORNING_BRIEF_SCENARIOS,
   ASSISTANT_MORNING_BRIEF_SMOKE_SCENARIOS,
@@ -708,7 +699,6 @@ export {
   runAssistantSynthesisBenchmark,
 } from "./benchmarks/remnic/assistant-synthesis/runner.js";
 
-// Procedural recall ablation harness (issue #567 PR 1/5).
 export {
   runProceduralAblation,
   runProceduralAblationCli,
@@ -725,7 +715,6 @@ export type {
   RunProceduralAblationOptions,
 } from "./benchmarks/remnic/procedural-recall/ablation.js";
 
-// Single-flag ablation matrix for published benchmarks (issues #1574 §"Ablations" + #1730).
 export {
   SINGLE_FLAG_ABLATION_MATRIX,
   DEFAULT_ABLATION_BENCHMARK,
@@ -737,9 +726,6 @@ export type {
   AblationConfigOverrides,
 } from "./ablations/single-flag-matrix.js";
 
-// H1 outcome-prior scaffold (issue #1958). The sync helper loads frozen arms.
-// runOutcomePriorGatesCli checks the committed CI snapshot. Neither path runs
-// epochs or writes result JSONL.
 export {
   OUTCOME_PRIOR_CLI_COMMAND,
   evaluateH1Decision,
@@ -755,7 +741,6 @@ export type {
   OutcomePriorScaffoldCliResult,
 } from "./ablations/outcome-prior.js";
 
-// Real-fixture procedural-recall scenarios + baseline (issue #567 PR 2/5).
 export {
   PROCEDURAL_REAL_SCENARIOS,
   PROCEDURAL_REAL_SCENARIOS_SMOKE,
@@ -765,7 +750,6 @@ export type {
   ProceduralRealScenarioCategory,
 } from "./benchmarks/remnic/procedural-recall/real-scenarios.js";
 
-// Security — ADAM-style memory-extraction attack harness (issue #565).
 // `createSeededRng` is exported here as `createAdamSeededRng` because
 // `./integrity/index.js` already star-re-exports a differently-validated
 // `createSeededRng`. Keep the names distinct to avoid shadowing (ESM's
@@ -792,7 +776,6 @@ export type {
   TimelineEntry,
 } from "./security/extraction-attack/index.js";
 
-// ADAM baseline runner + default scenarios (issue #565 PR 3/5).
 export {
   DEFAULT_BASELINE_SCENARIOS,
   MITIGATED_BASELINE_SCENARIOS,
@@ -854,10 +837,6 @@ export type {
   OnlineAdaptiveStatistics,
 } from "./security/injection-suite/index.js";
 
-// ---------------------------------------------------------------------------
-// Coding-graph benchmark harness (issue #1557): deterministic synthetic repo
-// generator, metric runner, and regression gate. Reached via the optional
-// loader (rule 57). Bench-owned baseline JSON lives in baselines/.
 // ---------------------------------------------------------------------------
 export {
   createSeededRng as createCodingGraphSeededRng,

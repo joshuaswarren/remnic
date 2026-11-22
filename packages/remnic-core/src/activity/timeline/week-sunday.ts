@@ -3,7 +3,6 @@
  */
 import { isValidActivityDate } from "../digest.js";
 
-/** Parse `dateIso` as YYYY-MM-DD. Sunday UTC → true. */
 export function isSundayIso(dateIso: string): boolean {
   if (!isValidActivityDate(dateIso)) {
     throw new RangeError(`Invalid date "${dateIso}"; expected YYYY-MM-DD.`);

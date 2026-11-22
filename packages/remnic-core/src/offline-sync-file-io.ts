@@ -146,15 +146,11 @@ export async function offlineSyncRegularFilePresent(
     throw new Error(`${root.errorPrefix}: record path escapes target root: ${relPath}`);
   }
   const st = await lstat(target).catch((error: NodeJS.ErrnoException) => {
-    // SAFETY: Node fs errors carry `code`; only ENOENT means absent, all other
-    // errno codes must propagate so census uncertainty fails closed.
     if (error.code === "ENOENT") return null;
     throw error;
   });
   if (!st || st.isSymbolicLink() || !st.isFile()) return false;
-  // A regular file still has to resolve inside the root (a symlinked parent directory escapes it).
   await resolveSafeArchiveTarget(root, relPath);
-  // The census skips a symlinked directory, so a file reached only through one is absent here too.
   return (await realpath(target)) === path.join(root.real, path.relative(root.abs, target));
 }
 

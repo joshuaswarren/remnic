@@ -23,7 +23,6 @@ import type { RemnicPiConfig } from "./config.js";
 
 type RegisteredToolName = string;
 
-/** The subset of Pi's extension context this test drives. */
 type PiCommandContext = {
   cwd: string;
   ui: {
@@ -84,11 +83,6 @@ type FetchDoubles = {
   listCalls: () => number;
 };
 
-/**
- * Synthetic daemon at the fetch boundary: `/engram/v1/health` and
- * `/engram/v1/live` answer, `/mcp` answers `tools/list` with the catalog when
- * `listingHealthy()` holds and fails with a 503 otherwise.
- */
 function installFetch(
   t: TestContext,
   options: {
@@ -128,10 +122,8 @@ function installFetch(
   return { listCalls: () => listCalls };
 }
 
-/** The JSON-RPC request fields the daemon double reads off the wire. */
 type McpRequestBody = { id?: number; method?: string };
 
-/** Parse the JSON-RPC body the client posts, at the fetch boundary. */
 function parseMcpRequestBody(body: string): McpRequestBody {
   const parsed: McpRequestBody = JSON.parse(body);
   return parsed;
@@ -283,8 +275,6 @@ test("concurrent status retries do not register the same tool twice", async (t) 
     ui: { notify: () => undefined, setStatus: () => undefined },
     sessionManager: { getSessionId: () => "pi-mcp-concurrent" },
   };
-  // Both handlers await the daemon before they register, so the two retries
-  // overlap in the listing window without any wall-clock wait.
   await Promise.all([
     harness.run("remnic-status", "", context),
     harness.run("remnic-status", "", context),
@@ -303,9 +293,6 @@ test("concurrent status retries do not register the same tool twice", async (t) 
 });
 
 test("a status command that runs while the startup registration is still in flight does not double-register", async (t) => {
-  // The gate holds every `tools/list` response until the test releases it, so
-  // the startup registration and the status command are in the listing window
-  // at the same time. No wall-clock wait is involved.
   const gate = Promise.withResolvers<void>();
   const originalFetch = globalThis.fetch;
   let listCalls = 0;
@@ -347,8 +334,6 @@ test("a status command that runs while the startup registration is still in flig
     ui: { notify: () => undefined, setStatus: () => undefined },
     sessionManager: { getSessionId: () => "pi-mcp-load-status-race" },
   };
-  // The command is registered synchronously by the extension factory, so the
-  // status handler can run while the startup listing is still pending.
   const statusPromise = harness.run("remnic-status", "", context);
   gate.resolve();
   await Promise.all([loadPromise, statusPromise]);
@@ -412,8 +397,6 @@ test("the status retry keeps the missing auth token gate closed", async (t) => {
     listingHealthy: () => true,
   });
   const harness = createHarness();
-  // baseConfig() carries no auth token: the extension must stay out of the
-  // MCP tools path entirely.
   const extension = createRemnicPiExtension({ config: baseConfig() });
 
   await extension(harness.pi);

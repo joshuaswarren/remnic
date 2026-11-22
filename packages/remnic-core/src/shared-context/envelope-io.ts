@@ -25,7 +25,6 @@ export interface ComposeWriteEnvelopeInput {
   authority?: string;
   /** Optional ISO-8601 expiry. Invalid timestamps throw. */
   expiresAt?: string;
-  /** Optional id of the item this one supersedes. */
   supersedes?: string;
   /** Config opt-in (`sharedContextAllowBindingAuthority`). Binding throws without it. */
   allowBinding: boolean;
@@ -79,12 +78,6 @@ function optionalEnvelopeId(supersedes: string | undefined): string | undefined 
   return parsed.id;
 }
 
-/**
- * Reserved governance origin for an authenticated external access write that
- * resolved no principal (`agentAccessHttp.principal` unset, no adapter
- * identity). Server-owned: the caller cannot mint or influence it, and the
- * caller-supplied `agentId` never becomes audit metadata on that path.
- */
 export const UNATTRIBUTED_ACCESS_WRITE_ORIGIN = "unattributed:access-surface";
 
 export interface ResolvedWriteIdentity {
@@ -98,24 +91,6 @@ export interface ResolvedWriteIdentity {
   origin: string;
 }
 
-/**
- * Resolve the producer identity and governance origin for a shared-context
- * write. They are different fields with different trust requirements:
- *
- * - The origin (`sharedBy`) is audit metadata and is always server-derived.
- *   When the surface resolved an authenticated identity, that identity IS the
- *   origin; when it resolved none but the write crosses an external
- *   boundary, the caller-supplied `unattributedOrigin` token is stamped
- *   instead — never the caller's value. Only a trusted in-process caller
- *   (no identity, no token) may stamp its own id as the origin.
- * - The producer (`agent`) drives grouping and display only. When an
- *   authenticated identity exists it is also the producer, and a
- *   caller-supplied `agentId` naming a different agent is REJECTED, so a
- *   caller can never publish an item attributed to another agent. Without a
- *   server identity the caller's label stands as the producer — collapsing
- *   it instead would merge every writer into one agent and erase
- *   multi-agent overlaps from `synthesizeCrossSignals`.
- */
 export function resolveWriteOrigin(input: {
   agentId: string;
   authenticatedIdentity?: string;

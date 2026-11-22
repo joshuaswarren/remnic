@@ -1,15 +1,3 @@
-/**
- * FileIR emitter — runs tree-sitter queries against a parsed tree and
- * assembles the neutral intermediate representation.
- *
- * Determinism (rule 38): every collection is sorted before it leaves this
- * module. Sort keys are chosen so output is byte-identical across runs:
- *   symbols   → (startByte, name)
- *   imports   → (startByte, module)
- *   exports   → (startByte, name)
- *   callSites → (startByte, firstCandidate)
- *   routes    → (startByte, pathTemplate)
- */
 import { createHash } from "node:crypto";
 import { Query, type Language, type Node as TSNode } from "web-tree-sitter";
 import type {
@@ -30,7 +18,6 @@ import {
 import { buildUtf16ToByteOffsetMap, utf16ToByte } from "./utf16-offsets.js";
 
 // ---------------------------------------------------------------------------
-// Content hashing — SHA-256 of the raw bytes (rule 23).
 // ---------------------------------------------------------------------------
 
 export function hashContent(content: Uint8Array): string {
@@ -38,14 +25,11 @@ export function hashContent(content: Uint8Array): string {
 }
 
 // ---------------------------------------------------------------------------
-// Module-specifier cleanup — strips quotes/brackets from the captured text.
 // ---------------------------------------------------------------------------
 
 function cleanModuleSpecifier(raw: string): string {
   let s = raw.trim();
-  // Strip C/C++ system includes: <stdio.h>
   if (s.startsWith("<") && s.endsWith(">")) return s.slice(1, -1);
-  // Strip double/single/backtick quotes.
   if (s.length >= 2) {
     const f = s[0];
     const l = s[s.length - 1];
@@ -167,7 +151,6 @@ function extractSymbols(root: TSNode, language: Language, lang: CodingGraphLangu
 }
 
 // ---------------------------------------------------------------------------
-// Import extraction — group captures by @__import.stmt node.
 // ---------------------------------------------------------------------------
 
 function extractImports(root: TSNode, language: Language, lang: CodingGraphLanguage): ImportIR[] {
@@ -202,7 +185,6 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
       // Default/namespace import locals: informational only, never
       // call-bindable (issue #1894 round 12).
       const unboundNames: string[] = [];
-      // local -> exported for aliased named imports (issue #1894 review).
       let aliasExported = "";
       let aliasLocal = "";
 
@@ -224,7 +206,6 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
       }
 
       if (stmtStart < 0) {
-        // Fallback: use the first capture's parent chain to find an import node.
         const firstCap = match.captures[0];
         if (firstCap) {
           stmtStart = firstCap.node.startIndex;
@@ -281,7 +262,6 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
 }
 
 // ---------------------------------------------------------------------------
-// Export extraction.
 // ---------------------------------------------------------------------------
 
 function extractExports(root: TSNode, language: Language, lang: CodingGraphLanguage): ExportIR[] {
@@ -340,7 +320,6 @@ function extractExports(root: TSNode, language: Language, lang: CodingGraphLangu
 }
 
 // ---------------------------------------------------------------------------
-// Call-site extraction.
 // ---------------------------------------------------------------------------
 
 function extractCallSites(root: TSNode, language: Language, lang: CodingGraphLanguage): CallSiteIR[] {
@@ -377,7 +356,6 @@ function extractCallSites(root: TSNode, language: Language, lang: CodingGraphLan
 }
 
 // ---------------------------------------------------------------------------
-// Route extraction (Express/Fastify/Flask/etc.).
 // ---------------------------------------------------------------------------
 
 
@@ -408,7 +386,6 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
         if (cap.name === "route.verb") {
           verb = cap.node.text.toUpperCase();
           startByte = cap.node.parent?.startIndex ?? cap.node.startIndex;
-          // Extract the receiver object name for the HTTP-client exclusion.
           const memberExpr = cap.node.parent;
           const objectNode = memberExpr?.childForFieldName("object");
           if (objectNode) {
@@ -431,7 +408,6 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
         } else if (cap.name === "route.path") {
           pathTemplate = cleanModuleSpecifier(cap.node.text);
         } else if (cap.name === "route.handler") {
-          // Python route handlers (function names) and legacy JS patterns.
           handler = cap.node.type === "identifier"
             ? cap.node.text
             : (findHandlerName(cap.node) ?? "anonymous");
@@ -470,11 +446,6 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
   }
 }
 
-/**
- * Extract the route handler name from the LAST argument of an arguments
- * node. Handles middleware: app.get("/path", requireAuth, getUsers) →
- * handler=getUsers (the last arg), not requireAuth (issue #1659 #5).
- */
 function extractHandlerFromArgs(argsNode: TSNode): string {
   // Collect the real (non-comment) named args, skipping trailing inline/
   // block comments. tree-sitter treats comments as named children, so
@@ -505,25 +476,16 @@ function extractHandlerFromArgs(argsNode: TSNode): string {
   return "";
 }
 
-/**
- * Try to find a handler name from a function/arrow expression node.
- * For named function expressions: `(function foo() {})` → "foo".
- * For arrow functions assigned to a variable, the variable name is not in this node;
- * the caller would need the parent. For now, return "anonymous" unless we find a name.
- */
 function findHandlerName(node: TSNode): string | null {
-  // function_expression may have a name child (identifier)
   for (const child of node.namedChildren) {
     if (child && child.type === "identifier") return child.text;
   }
-  // Python function_definition has a name field
   const nameChild = node.childForFieldName("name");
   if (nameChild) return nameChild.text;
   return null;
 }
 
 // ---------------------------------------------------------------------------
-// Top-level emitter.
 // ---------------------------------------------------------------------------
 
 /**

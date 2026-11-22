@@ -18,7 +18,6 @@ export const RECAP_SOURCE_KINDS = ["ai", "deterministic", "previous"] as const;
 export type RecapSourceKind = (typeof RECAP_SOURCE_KINDS)[number];
 
 export interface RecapCandidate {
-  /** Rendered journal body. */
   body: string;
   kind: RecapSourceKind;
 }
@@ -66,9 +65,6 @@ export function selectRecapForDay(input: {
     failure = input.failure;
   }
 
-  // Validate every supplied candidate FIRST. Returning on the first valid
-  // body would let a malformed lower-priority candidate hide behind a valid
-  // higher-priority one, so the kind contract would hold only sometimes.
   for (const slot of SLOT_ORDER) {
     const candidate = input[slot];
     if (candidate == null) continue;

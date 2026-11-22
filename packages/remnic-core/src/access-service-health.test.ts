@@ -758,7 +758,6 @@ test("health surfaces extraction-LLM availability and last failure reason (#3140
     assert.equal(unhealthy.extraction.lastFailureReason, "no_models");
     assert.equal(unhealthy.extraction.lastFailureAt, getExtractionLlmHealth().lastFailureAt);
 
-    // A recovered extractor reads reachable with no stale reason.
     recordExtractionLlmSuccess();
     const healthy = await makeService().health();
     assert.equal(healthy.extraction.llmReachable, true);
@@ -770,7 +769,6 @@ test("health surfaces extraction-LLM availability and last failure reason (#3140
   }
 });
 
-// ── #3442: claimed drain backlog in the extraction block ─────────────────────
 
 test("health reports claimed drain backlog totals and degrades when the oldest claimed turn is stale", async (t) => {
   const nowMs = Date.parse("2026-07-30T12:00:00.000Z");
@@ -798,7 +796,6 @@ test("health reports claimed drain backlog totals and degrades when the oldest c
     const fake = {
       config,
       qmd: makeQmd({}),
-      // In-memory buffer is EMPTY: every pending turn lives in drain claims.
       buffer,
       storage: await router.storageFor(config.defaultNamespace),
       getStorage: (namespace?: string) => router.storageFor(namespace ?? config.defaultNamespace),

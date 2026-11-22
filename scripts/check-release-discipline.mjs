@@ -1,54 +1,4 @@
 #!/usr/bin/env node
-/**
- * Release-discipline gate (issue #3032).
- *
- * Every merge to `main` publishes to the `alpha` dist-tag; `beta` and `latest`
- * are promotions of an already-published version (see docs/releases.md). This
- * gate enforces the mechanical half of that model on a pull request's effective
- * diff:
- *
- *   (a) Changeset stability — a diff that touches a PUBLISHED package must add
- *       or modify a changeset carrying an exact `Stability: alpha|beta|stable`
- *       line. Doc-only and CI-only diffs are exempt by path: package
- *       attribution reuses `inferTouchedPackages` from changeset-stub.mjs, so
- *       files that map to no published package (docs/, .github/, scripts/,
- *       tests/, per-package README/AGENTS/CONTRIBUTING/CHANGELOG) require
- *       nothing. A malformed `Stability:` line is always a violation.
- *
- *   (b) Flag registration — a default-off gate NEWLY added to `parseConfig`
- *       must have an entry in scripts/flag-graduation.json at head.
- *
- *   (c) Stability/flag coupling — `Stability: alpha|beta` work must be
- *       default-off behind a registered flag (the diff adds a new default-off
- *       gate, or a changeset names an already-registered flag).
- *       `Stability: stable` must not add a default-off gate.
- *
- *   (d) Graduation symmetry — a default FLIP (the gate stops being default-off
- *       while the key survives in config.ts) whose registry entry still exists
- *       is a violation, and deleting a registry entry whose flag is STILL
- *       default-off is a violation. A registry entry whose flag no longer
- *       appears in config.ts at all is a violation too (the registry never
- *       outlives the code).
- *
- * The freeze line: this gate NEVER evaluates `graduationCriterion` prose.
- * Whether a criterion is met is a human judgment made at promotion time. The
- * machinery checks structure only, and stops here.
- *
- * Detection scope is honest about its limits: gate discovery is a static scan
- * of the `parseConfig` body for the default-off BOOLEAN signatures listed in
- * DEFAULT_OFF_PATTERNS. A default-off enum (a string-valued knob defaulting to
- * an inert value) is not detected and must be registered by hand.
- *
- * Conventions match scripts/lifecycle-matrix/check-coverage.mjs: Node builtins
- * only, effective-diff aware, git errors fail the gate loudly rather than
- * passing vacuously.
- *
- * Usage:
- *   node scripts/check-release-discipline.mjs [--repo-root <path>]
- *                                            [--base <ref>] [--head <ref>]
- *
- * Exit codes: 0 = clean, 1 = violations, 2 = the gate could not run.
- */
 
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -61,38 +11,22 @@ export const CONFIG_PATH = "packages/remnic-core/src/config.ts";
 export const REGISTRY_PATH = "scripts/flag-graduation.json";
 export const STABILITY_LEVELS = Object.freeze(["alpha", "beta", "stable"]);
 
-/** Registry entry fields. Every one is required; none may be empty. */
 const REGISTRY_FIELDS = Object.freeze(["flag", "addedIn", "issue", "graduationCriterion"]);
 
-/** A config key is a plain JS identifier; anything else is a registry error. */
 const FLAG_NAME_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
-/**
- * Default-off gate signatures inside the `parseConfig` body. Each pattern
- * captures the assigned config key. Quantifiers stay bounded to a single line
- * and never nest (see scripts/check-regex-safety.mjs).
- */
 const DEFAULT_OFF_PATTERNS = Object.freeze([
-  // foo: coerceBool(cfg.foo) === true,
   /^\s*([A-Za-z_$][A-Za-z0-9_$]*):\s*coerceBool(?:eanLike)?\([^\n]*\)\s*===\s*true\s*,?\s*$/,
-  // foo: coerceBooleanLike(cfg.foo) ?? false,
   /^\s*([A-Za-z_$][A-Za-z0-9_$]*):\s*coerceBool(?:eanLike)?\([^\n]*\)\s*\?\?\s*false\s*,?\s*$/,
-  // foo: cfg.foo === true,
   /^\s*([A-Za-z_$][A-Za-z0-9_$]*):\s*cfg\.[A-Za-z0-9_$]+\s*===\s*true\s*,?\s*$/,
 ]);
 
 const PARSE_CONFIG_OPENER = "export function parseConfig(";
 
-/** A changeset file the gate reads. `.changeset/README.md` is not one. */
 export function isChangesetFile(filePath) {
   return /^\.changeset\/[^/]+\.md$/.test(filePath) && filePath !== ".changeset/README.md";
 }
 
-/**
- * Default-off boolean gates declared in the `parseConfig` body, sorted.
- * Throws when `parseConfig` cannot be located: a silent empty result would let
- * every flag rule pass vacuously.
- */
 export function extractDefaultOffGates(source) {
   if (typeof source !== "string") {
     throw new TypeError("extractDefaultOffGates: source must be a string");
@@ -126,28 +60,16 @@ export function extractDefaultOffGates(source) {
   return [...found].sort(compareStrings);
 }
 
-/** Total comparator: -1 / 0 / 1, and 0 for equal values. */
 export function compareStrings(left, right) {
   if (left === right) return 0;
   return left < right ? -1 : 1;
 }
 
-/** True when `name` appears in `source` as a standalone identifier. */
 export function mentionsIdentifier(source, name) {
   if (!FLAG_NAME_RE.test(name)) return false;
   return new RegExp(`\\b${name}\\b`).test(source);
 }
 
-/**
- * `Stability:` declarations in one changeset body.
- *
- * Detection is loose (any line whose first token is `Stability:`, case
- * insensitive) and acceptance is STRICT: the line must be exactly
- * `Stability: <level>` with a level from STABILITY_LEVELS. The raw line is
- * validated as written — never trimmed, case-folded, or otherwise normalized
- * first, so `Stability:  Beta ` is reported as invalid instead of silently
- * reinterpreted (AGENTS.md checklist 45).
- */
 export function parseStabilityDeclarations(text) {
   if (typeof text !== "string") {
     throw new TypeError("parseStabilityDeclarations: text must be a string");
@@ -167,13 +89,6 @@ export function parseStabilityDeclarations(text) {
   return { levels, invalid };
 }
 
-/**
- * Parse + validate the flag registry. Keys are enumerated with
- * `Object.getOwnPropertyNames` and read with `Object.hasOwn` so a
- * non-enumerable or inherited field cannot slip past validation (checklist 46).
- * Throws on any structural error: a malformed registry must fail the gate, not
- * shrink it.
- */
 export function parseRegistry(raw, source = REGISTRY_PATH) {
   const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -213,8 +128,6 @@ export function parseRegistry(raw, source = REGISTRY_PATH) {
     if (typeof entry.graduationCriterion !== "string" || entry.graduationCriterion.length === 0) {
       throw new Error(`${source}: ${flag} "graduationCriterion" must be a non-empty string`);
     }
-    // Reject non-finite and non-integer issue numbers explicitly rather than
-    // letting NaN fall through a comparison (checklist 45).
     if (typeof entry.issue !== "number" || !Number.isInteger(entry.issue) || entry.issue <= 0) {
       throw new Error(`${source}: ${flag} "issue" must be a positive integer, got ${JSON.stringify(entry.issue)}`);
     }
@@ -261,7 +174,6 @@ export function evaluateReleaseDiscipline(input) {
   const violations = [];
   const touched = inferTouchedPackages(changedFiles, packages).published;
 
-  // (a) changeset stability
   const levels = new Set();
   for (const changeset of changesets) {
     const declared = parseStabilityDeclarations(changeset.text);
@@ -283,7 +195,6 @@ export function evaluateReleaseDiscipline(input) {
     );
   }
 
-  // (b) new default-off gates must be registered
   const headGateSet = new Set(headGates);
   const baseGateSet = new Set(baseGates);
   const newGates = headGates.filter((flag) => !baseGateSet.has(flag));
@@ -296,7 +207,6 @@ export function evaluateReleaseDiscipline(input) {
     }
   }
 
-  // (c) stability/flag coupling
   const experimental = levels.has("alpha") || levels.has("beta");
   if (experimental && newGates.length === 0) {
     const named = [...headRegistry.keys()].filter((flag) =>
@@ -318,7 +228,6 @@ export function evaluateReleaseDiscipline(input) {
     );
   }
 
-  // (d) graduation symmetry
   for (const flag of baseGates) {
     if (headGateSet.has(flag)) continue;
     const stillConfigured = mentionsIdentifier(headConfigSource, flag);
@@ -353,8 +262,6 @@ export function evaluateReleaseDiscipline(input) {
 }
 
 // ---------------------------------------------------------------------------
-// git collection
-// ---------------------------------------------------------------------------
 
 function makeGit(repoRoot) {
   return (args) =>
@@ -366,7 +273,6 @@ function makeGit(repoRoot) {
     });
 }
 
-/** `git show <ref>:<path>`, or null when the path does not exist at that ref. */
 export function showAtRef(git, ref, filePath) {
   try {
     return git(["show", `${ref}:${filePath}`]);
@@ -379,11 +285,6 @@ function normalizePath(filePath) {
   return filePath.split(path.sep).join("/").replace(/^\.\//, "");
 }
 
-/**
- * Files added/copied/modified/renamed/type-changed between two refs. Deletions
- * are excluded: a deleted path cannot be read at head, and package attribution
- * for a removed file would only ever over-require a changeset.
- */
 export function changedFilesBetween(git, baseRef, headRef) {
   const output = git([
     "diff",
@@ -397,11 +298,6 @@ export function changedFilesBetween(git, baseRef, headRef) {
   return [...new Set(output.split("\0").filter(Boolean).map(normalizePath))].sort(compareStrings);
 }
 
-/**
- * Workspace packages as they exist AT `ref` (not on disk): a PR that adds a
- * package must still get its files attributed, and the CI checkout is the base
- * tree. Mirrors `discoverPackages` in changeset-stub.mjs over git objects.
- */
 export function discoverPackagesAtRef(git, ref) {
   const listing = git(["ls-tree", "-r", "--name-only", "-z", ref, "--", "packages"]);
   const files = listing.split("\0").filter(Boolean);
@@ -431,7 +327,6 @@ export function discoverPackagesAtRef(git, ref) {
   return packages;
 }
 
-/** Collect every input `evaluateReleaseDiscipline` needs from git. */
 export function collectFromGit({ repoRoot, baseRef, headRef, git = makeGit(repoRoot) }) {
   const changedFiles = changedFilesBetween(git, baseRef, headRef);
 
@@ -448,8 +343,6 @@ export function collectFromGit({ repoRoot, baseRef, headRef, git = makeGit(repoR
   if (headRegistryRaw === null) {
     throw new Error(`${REGISTRY_PATH} not found at ${headRef}`);
   }
-  // A missing registry at base is expected exactly once: the diff that
-  // introduces it. Treat it as empty rather than failing the gate.
   const baseRegistryRaw = showAtRef(git, baseRef, REGISTRY_PATH);
 
   const changesets = [];

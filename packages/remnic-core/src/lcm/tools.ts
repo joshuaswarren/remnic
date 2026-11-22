@@ -55,7 +55,6 @@ function registerAliasedTool(
 }
 
 export function registerLcmTools(api: ToolApi, engine: LcmEngine): void {
-  // engram.context_search — FTS search across conversation history
   registerAliasedTool(
     api,
     "engram_context_search",
@@ -102,7 +101,6 @@ export function registerLcmTools(api: ToolApi, engine: LcmEngine): void {
       },
   );
 
-  // engram.context_describe — Get compressed summary of a turn range
   registerAliasedTool(
     api,
     "engram_context_describe",
@@ -139,7 +137,6 @@ export function registerLcmTools(api: ToolApi, engine: LcmEngine): void {
       },
   );
 
-  // engram.context_expand — Retrieve raw messages (lossless)
   registerAliasedTool(
     api,
     "engram_context_expand",

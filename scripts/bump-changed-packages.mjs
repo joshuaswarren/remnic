@@ -264,7 +264,6 @@ async function syncJsonManifestVersion(repoRoot, relativeManifestPath, version, 
   return writeJson(manifestPath, manifest, dryRun);
 }
 
-// Packages whose version must also be written into a companion manifest that
 // ships alongside package.json. `set-release-version.mjs` derives the same set
 // from package directories; keep both in sync with the release workflow's
 // staging globs.

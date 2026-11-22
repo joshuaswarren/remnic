@@ -1,14 +1,3 @@
-/**
- * Span source stamp/verify (issue #2333).
- *
- * Offsets index the exact normalized string sent to the model. If that string
- * drifts before materialization, the offsets point at different characters and
- * a wrong quote is persisted as verbatim source. The stamp lets materialization
- * detect the drift without carrying the source text alongside it.
- *
- * Pure apart from hashing: no I/O, no clock, no randomness. The input text is
- * never mutated and never appears in a result or error message.
- */
 
 import { createHash } from "node:crypto";
 
@@ -85,10 +74,6 @@ export function verifySpanSource(
   requireText(text);
   requireStamp(expected);
   const actual = stampSpanSource(text);
-  // Project the caller's stamp down to exactly the two stamp fields. Echoing
-  // the original object would re-export any extra property it carries — a
-  // `source` field holding the text defeats the whole point of a stamp, which
-  // exists so the content does not have to travel.
   const safeExpected: SpanSourceStamp = { hash: expected.hash, length: expected.length };
   if (actual.length !== safeExpected.length) {
     return { ok: false, error: "length_mismatch", expected: safeExpected, actual };

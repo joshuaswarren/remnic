@@ -1,6 +1,3 @@
-/**
- * AMemGym runner migrated into @remnic/bench for phase 1.
- */
 
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -36,11 +33,6 @@ const DATASET_FILENAMES = [
 ] as const;
 const AMEMGYM_STORE_CHUNK_SIZE = 20;
 
-/**
- * For each QA, find the correct answer based on the final state.
- * The QA has answer_choices, each tied to specific state values.
- * We pick the one matching the user's final state.
- */
 function findExpectedAnswerChoice(
   qa: AMemGymQA,
   finalState: Record<string, string>,

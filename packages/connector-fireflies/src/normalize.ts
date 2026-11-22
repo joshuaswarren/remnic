@@ -85,8 +85,6 @@ export function transcriptToConversation(transcript: FirefliesTranscript): Weara
 
   const summaryText = firstNonEmpty(transcript.summary?.overview, transcript.summary?.short_summary);
 
-  // Note-only fallback: a meeting with a summary but no transcript still
-  // anchors recall for the day.
   if (segments.length === 0 && summaryText !== undefined) {
     segments.push({ text: summaryText, speakerKey: "note" });
   }

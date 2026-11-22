@@ -1,10 +1,3 @@
-/**
- * Regression tests for PR #396 reviewer findings on the MCP dispatcher.
- * All fixtures are synthetic — no real user data.
- *
- * Finding 2: Invalid `format` values must be rejected with a structured error,
- * not silently mapped to `undefined`.
- */
 
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -23,8 +16,6 @@ import { initLogger, resetLogger } from "./logger.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
 import type { StorageManager } from "./storage.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Stub service — only implements the members EngramMcpServer actually touches.
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeMockService(briefingFn?: () => Promise<unknown>): EngramAccessService {
@@ -113,7 +104,6 @@ test("MCP reports buffer admission refusal as retryable and does not return succ
   let attempts = 0;
   const refusal = new Error("buffer at session-entry cap");
   refusal.name = "ReplayAdmissionRefusedError";
-  // SAFETY: the mock overrides only observe; every other MCP dispatch path is unreachable in this test.
   const service = Object.assign({} as EngramAccessService, {
     observe: async () => {
       attempts += 1;
@@ -128,7 +118,6 @@ test("MCP reports buffer admission refusal as retryable and does not return succ
   });
 
   const refused = await server.handleRequest(request);
-  // SAFETY: a tools/call request always resolves to a JSON-RPC result envelope; only isError and structuredContent are asserted.
   const refusedResult = refused as {
     result?: {
       isError?: boolean;
@@ -136,14 +125,12 @@ test("MCP reports buffer admission refusal as retryable and does not return succ
     };
   };
   assert.equal(refusedResult.result?.isError, true, "refused admission must not be acknowledged as success");
-  // SAFETY: same tools/call result envelope as the assertion above.
   assert.deepEqual(refusedResult.result?.structuredContent, {
     code: "buffer_admission_refused",
     retryable: true,
   }, JSON.stringify(refused));
 
   const retried = await server.handleRequest(request);
-  // SAFETY: same tools/call result envelope as refusedResult above.
   const retriedResult = retried as typeof refusedResult;
   assert.equal(retriedResult.result?.isError, false);
   assert.equal(attempts, 2, "the same request can be retried after capacity is available");
@@ -213,7 +200,6 @@ test("#3381: MCP returns the missing storage target explanation and does not log
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Finding 2 (#396 new): invalid MCP briefing format values must be rejected
 // ──────────────────────────────────────────────────────────────────────────
 
 test("MCP briefing: valid format 'markdown' passes through to service", async () => {
@@ -662,11 +648,6 @@ test("MCP session override is injected only into tools that accept sessionKey", 
 });
 
 test("MCP memory_get advertises sessionKey so the override reaches the resolver (#1582)", async () => {
-  // The engram.memory_get inputSchema must advertise sessionKey, otherwise
-  // toolAcceptsArgument skips the override injection and an MCP caller citing a
-  // [m:xxxx] handle gets "cannot be resolved without a session key" (codex
-  // review). With the field advertised, the transport session key flows through
-  // the registry op into service.memoryGet as the 4th positional arg.
   let receivedSessionKey: string | undefined;
   const service = {
     ...makeMockService(),
@@ -1146,7 +1127,6 @@ test("MCP profiling report rejects invalid argument types before dispatch", asyn
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Issue #1427: opt-out of legacy engram.* tool aliases on tools/list
 // ──────────────────────────────────────────────────────────────────────────
 
 function listToolNames(response: unknown): string[] {
@@ -1199,7 +1179,6 @@ test("tools/list omits engram.* aliases when emitLegacyTools is false", async ()
     0,
     "no engram.* aliases advertised when opted out",
   );
-  // Every advertised tool uses the Anthropic-safe remnic_* prefix.
   assert.ok(names.every((n) => n.startsWith("remnic_")), "all advertised tools are canonical");
   assert.ok(names.every((n) => /^[a-zA-Z0-9_-]{1,64}$/.test(n)), "Anthropic tool-name pattern");
 });
@@ -1227,7 +1206,6 @@ test("emitLegacyTools=false still allows calling tools under BOTH names (adverti
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Issue #1850 round 5 (finding 3): tools/list must reflect the token's ops scope
 // ──────────────────────────────────────────────────────────────────────────
 
 test("tools/list: deny-all (ops:[]) token sees NO tools (issue #1850 finding 3)", async () => {
@@ -1252,9 +1230,7 @@ test("tools/list: ops-scoped token sees ONLY its permitted tools (issue #1850 fi
 
 test("tools/list: unrestricted token (ops axis absent) sees the FULL surface (unchanged)", async () => {
   const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
-  // No capability context at all (stdio / direct call) ⇒ full surface.
   const noContext = listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST));
-  // Explicit-unrestricted record (version present, no ops axis) ⇒ same surface.
   const explicitUnrestricted = await tokenCapabilityStore.run({ version: 1 }, async () =>
     listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST)),
   );
@@ -1263,14 +1239,6 @@ test("tools/list: unrestricted token (ops axis absent) sees the FULL surface (un
 });
 
 // ===========================================================================
-// Issue #1850 round 9 — MCP review_resolve namespace allow-list gate.
-// Mirror of the HTTP review/resolve namespace gate (access-http.test.ts).
-// review_resolve selects its target BY pairId, so the pair's namespace comes
-// from the record — NOT a request param the MCP-over-HTTP tools/call gate
-// (toolAcceptsNamespace) already enforces, because this tool's schema carries
-// no `namespace` property. A namespace-scoped bearer must NOT mutate a pair in
-// a namespace outside its allow-list. Both canonical (remnic.*) and legacy
-// (engram.*) tool-name aliases route through the SAME handler/gate.
 // ===========================================================================
 
 test("MCP review_resolve: namespace-scoped token cannot mutate a pair in a disallowed namespace (issue #1850 round 9)", async () => {
@@ -1324,7 +1292,6 @@ test("MCP review_resolve: namespace-scoped token cannot mutate a pair in a disal
     return { isError, text };
   };
   try {
-    // ── scoped to ns_a: denied-namespace pair → isError (fail closed), NOT mutated ──
     const denied = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
       readOutcome(await server.handleRequest(makeToolRequest("engram.review_resolve", { pairId: deniedPair.pairId, verb: "both-valid" }))),
     );
@@ -1336,7 +1303,6 @@ test("MCP review_resolve: namespace-scoped token cannot mutate a pair in a disal
       "scoped resolve: the denied pair must remain unresolved (no mutation leak)",
     );
 
-    // ── scoped to ns_a: allowed-namespace pair → resolves, mutated ──
     const allowed = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
       readOutcome(await server.handleRequest(makeToolRequest("engram.review_resolve", { pairId: allowedPair.pairId, verb: "both-valid" }))),
     );
@@ -1347,7 +1313,6 @@ test("MCP review_resolve: namespace-scoped token cannot mutate a pair in a disal
       "scoped resolve: the allowed pair is marked resolved",
     );
 
-    // ── canonical alias (remnic.review_resolve) routes through the SAME gate ──
     const deniedCanonical = writePair(dir, {
       namespace: "ns_b",
       memoryIds: ["b-3", "b-4"],
@@ -1367,7 +1332,6 @@ test("MCP review_resolve: namespace-scoped token cannot mutate a pair in a disal
       "canonical-alias denied pair must remain unresolved",
     );
 
-    // ── unrestricted token (no namespaces axis): the denied-namespace pair is reachable ──
     const unrestrictedDenied = await tokenCapabilityStore.run({ version: 1 }, async () =>
       readOutcome(await server.handleRequest(makeToolRequest("engram.review_resolve", { pairId: deniedPair.pairId, verb: "both-valid" }))),
     );
@@ -1383,14 +1347,6 @@ test("MCP review_resolve: namespace-scoped token cannot mutate a pair in a disal
 });
 
 // ===========================================================================
-// Issue #1850 round 10 — fleet-wide maintenance ops namespace gate.
-// These ops run ACROSS ALL namespaces (or a global non-namespaced layer) and
-// carry NO `namespace` arg, so the MCP tools/call effective-namespace
-// chokepoint (toolAcceptsNamespace) never fires. The `fleetWide` flag on each
-// op makes defineOperation's run wrapper reject a namespace-scoped token
-// BEFORE the handler — no side effect on denial; unrestricted/legacy allowed.
-// Both canonical (remnic.*) and legacy (engram.*) aliases route through the
-// SAME gate.
 // ===========================================================================
 
 function readCallToolOutcome(response: unknown): { isError: boolean; text: string } {
@@ -1422,8 +1378,6 @@ const FLEET_WIDE_MAINTENANCE_TOOLS = [
   "compounding_promote_candidate",
   "compression_guidelines_optimize",
   "compression_guidelines_activate",
-  // Issue #3225 B3: work and peer ops run against GLOBAL stores, so a
-  // namespace argument cannot isolate them — same fleet-wide rule.
   "work_task",
   "work_project",
   "work_board",
@@ -1438,9 +1392,6 @@ const FLEET_WIDE_MAINTENANCE_TOOLS = [
 test("MCP fleet-wide maintenance ops: namespace-scoped token denied for every op, no side effect (issue #1850 round 10)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-mcp-fleetwide-scoped-"));
   let sideEffects = 0;
-  // Every fleet-wide op that dispatches to a service method routes through
-  // this tracker; graph_edge_decay_run short-circuits via graphEdgeDecayEnabled
-  // false. Under a scoped token NONE may run — the guard throws first.
   const track = (): Promise<{ ok: true }> => { sideEffects += 1; return Promise.resolve({ ok: true }); };
   const service = {
     ...makeMockService(),
@@ -1457,8 +1408,6 @@ test("MCP fleet-wide maintenance ops: namespace-scoped token denied for every op
     compressionGuidelinesOptimize: track,
     compressionGuidelinesActivate: track,
   } as unknown as EngramAccessService;
-  // Issue #3225 B3: track the global-store methods the fleet-wide guard must
-  // block; the dispatch reads them off this same object at call time.
   Object.assign(service, {
     workTask: track,
     workProject: track,
@@ -1473,13 +1422,11 @@ test("MCP fleet-wide maintenance ops: namespace-scoped token denied for every op
   const server = new EngramMcpServer(service, { principal: "ops" });
   try {
     for (const tool of FLEET_WIDE_MAINTENANCE_TOOLS) {
-      // Legacy alias (engra.*).
       const legacy = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
         readCallToolOutcome(await server.handleRequest(makeToolRequest("engram." + tool))),
       );
       assert.equal(legacy.isError, true, `engram.${tool}: a namespace-scoped token must be denied`);
       assert.match(legacy.text, /across all namespaces/, `engram.${tool}: denial names the fleet-wide restriction`);
-      // Canonical alias (remnic.*) routes through the SAME gate.
       const canonical = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
         readCallToolOutcome(await server.handleRequest(makeToolRequest("remnic." + tool))),
       );
@@ -1500,12 +1447,10 @@ test("MCP graph_edge_decay_run: unrestricted and legacy tokens reach the handler
       memoryDir: dir,
     } as unknown as EngramAccessService;
     const server = new EngramMcpServer(service, { principal: "ops" });
-    // Explicit-unrestricted record (version present, no namespaces axis).
     const unrestricted = await tokenCapabilityStore.run({ version: 1 }, async () =>
       readCallToolOutcome(await server.handleRequest(makeToolRequest("engram.graph_edge_decay_run"))),
     );
     assert.equal(unrestricted.isError, false, "unrestricted token reaches the handler");
-    // Legacy / no ALS at all (cron, internal caller) — same path.
     const legacy = readCallToolOutcome(await server.handleRequest(makeToolRequest("remnic.graph_edge_decay_run")));
     assert.equal(legacy.isError, false, "legacy token (no ALS) reaches the handler");
   } finally {
@@ -1608,8 +1553,6 @@ test("MCP external_wiki_search rejects an empty query before service dispatch", 
 });
 
 // ===========================================================================
-// Issue #3225 C5 — tools/call catch-all must not leak unexpected Error.message
-// (paths from fs/backend). Intended typed access errors stay readable.
 // ===========================================================================
 
 function serviceWithRecallThrow(error: Error): EngramAccessService {
@@ -1674,8 +1617,6 @@ test("MCP tools/call keeps intended EngramAccessInputError and ForbiddenError me
 });
 
 // ===========================================================================
-// Issue #3225 N1 — stdio framing is bounded, refuses an oversized frame,
-// and keeps answering the frames that follow it.
 // ===========================================================================
 
 type StdioMessage = { id?: number | null; result?: object; error?: { message: string } };
@@ -1709,7 +1650,6 @@ function readStdioMessages(raw: string): StdioMessage[] {
   return messages;
 }
 
-/** Feeds each chunk in its own tick so the server sees separate data events. */
 async function runStdioRaw(chunks: string[]): Promise<string> {
   const input = new PassThrough();
   const output = new PassThrough();

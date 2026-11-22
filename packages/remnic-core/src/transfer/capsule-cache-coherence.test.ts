@@ -32,7 +32,6 @@ test("importCapsule bumps the corpus sentinel so a warm cache surfaces imported 
   const dstDir = await tmp("cap-dst-");
   const outDir = await tmp("cap-out-");
   try {
-    // Source capsule holds a fact the destination does not yet have.
     await writeFact(srcDir, "fact-imported", "Imported fact content.");
     const exported = await exportCapsule({
       name: "coherence-capsule",
@@ -42,14 +41,12 @@ test("importCapsule bumps the corpus sentinel so a warm cache surfaces imported 
       now: 1_700_000_000_000,
     });
 
-    // Destination starts with one local fact; warm the hot-memories cache.
     await writeFact(dstDir, "fact-local", "Local fact content.");
     const storage = new StorageManager(dstDir);
     const before = await storage.readAllMemories();
     assert.equal(before.length, 1, "warm cache should hold only the local fact");
     assert.ok(before.some((m) => m.frontmatter.id === "fact-local"));
 
-    // Import writes fact-imported directly to disk (out-of-band).
     const result = await importCapsule({
       archivePath: exported.archivePath,
       root: dstDir,
@@ -57,9 +54,6 @@ test("importCapsule bumps the corpus sentinel so a warm cache surfaces imported 
     });
     assert.equal(result.imported.length, 1, "capsule should import one record");
 
-    // The SAME warmed StorageManager must now surface the imported fact —
-    // proving the out-of-band write bumped the corpus sentinel and the cache
-    // rescanned rather than serving the stale pre-import corpus.
     const after = await storage.readAllMemories();
     const ids = after.map((m) => m.frontmatter.id).sort();
     assert.deepEqual(ids, ["fact-imported", "fact-local"], "imported fact must be visible after import");

@@ -8,14 +8,12 @@
 import fs from "node:fs";
 import path from "node:path";
 
-// ── Types ────────────────────────────────────────────────────────────────────
 
 export interface OnboardOptions {
   /** Directory to scan (defaults to cwd) */
   directory?: string;
   /** Max depth to walk (default: 6) */
   maxDepth?: number;
-  /** Directories to skip */
   excludeDirs?: string[];
 }
 
@@ -29,11 +27,8 @@ export interface LanguageInfo {
 }
 
 export interface DocFile {
-  /** Absolute path */
   path: string;
-  /** Relative path from project root */
   relativePath: string;
-  /** Estimated type */
   kind: "readme" | "changelog" | "contributing" | "license" | "config" | "docs" | "other";
   /** File size in bytes */
   size: number;
@@ -42,36 +37,25 @@ export interface DocFile {
 export type ProjectShape = "app" | "library" | "monorepo" | "workspace" | "script" | "unknown";
 
 export interface OnboardResult {
-  /** Project root */
   directory: string;
   /** Detected languages (sorted by confidence) */
   languages: LanguageInfo[];
-  /** Detected project shape */
   shape: ProjectShape;
-  /** Shape evidence */
   shapeEvidence: string[];
-  /** Discovered documentation files */
   docs: DocFile[];
-  /** Total files scanned */
   totalFiles: number;
   /** Duration in ms */
   durationMs: number;
-  /** Suggested ingestion plan */
   plan: IngestionPlan;
 }
 
 export interface IngestionPlan {
-  /** Priority files to ingest first */
   priorityFiles: DocFile[];
-  /** Estimated total files to ingest */
   estimatedFiles: number;
-  /** Recommended categories */
   categories: string[];
-  /** Suggested memory namespace */
   suggestedNamespace: string;
 }
 
-// ── Language detection rules ─────────────────────────────────────────────────
 
 interface LanguageRule {
   language: string;
@@ -177,7 +161,6 @@ const DEFAULT_EXCLUDE = new Set([
   ".engram",
 ]);
 
-// ── Main function ────────────────────────────────────────────────────────────
 
 export function onboard(options: OnboardOptions): OnboardResult {
   const startTime = Date.now();
@@ -198,19 +181,14 @@ export function onboard(options: OnboardOptions): OnboardResult {
 
   const exclude = new Set([...DEFAULT_EXCLUDE, ...excludeDirs]);
 
-  // Collect all files
   const files = walkDir(directory, exclude, maxDepth);
 
-  // Detect languages
   const languages = detectLanguages(files, directory);
 
-  // Detect shape
   const { shape, evidence: shapeEvidence } = detectShape(files, directory);
 
-  // Discover docs
   const docs = discoverDocs(files, directory);
 
-  // Build plan
   const plan = buildPlan(languages, shape, docs, directory);
 
   return {
@@ -225,7 +203,6 @@ export function onboard(options: OnboardOptions): OnboardResult {
   };
 }
 
-// ── Walk directory ───────────────────────────────────────────────────────────
 
 function walkDir(
   root: string,
@@ -261,19 +238,16 @@ function walkDir(
   return results;
 }
 
-// ── Language detection ───────────────────────────────────────────────────────
 
 function detectLanguages(files: string[], root: string): LanguageInfo[] {
   const results: LanguageInfo[] = [];
 
-  // Count extensions
   const extCounts = new Map<string, number>();
   for (const f of files) {
     const ext = path.extname(f).toLowerCase();
     if (ext) extCounts.set(ext, (extCounts.get(ext) ?? 0) + 1);
   }
 
-  // Check manifests at root level
   const rootFiles = new Set(
     files
       .filter((f) => path.dirname(f) === root)
@@ -284,7 +258,6 @@ function detectLanguages(files: string[], root: string): LanguageInfo[] {
     const evidence: string[] = [];
     let score = 0;
 
-    // Extension matches
     let extMatch = 0;
     for (const ext of rule.extensions) {
       const count = extCounts.get(ext) ?? 0;
@@ -295,7 +268,6 @@ function detectLanguages(files: string[], root: string): LanguageInfo[] {
     }
     score += Math.min(extMatch * 0.05, 0.5);
 
-    // Manifest matches
     for (const manifest of rule.manifests) {
       if (manifest.includes("*")) {
         // Glob pattern — e.g. "*.gemspec" matches files ending with ".gemspec"
@@ -310,7 +282,6 @@ function detectLanguages(files: string[], root: string): LanguageInfo[] {
       }
     }
 
-    // Config matches
     for (const cfg of rule.configFiles) {
       if (rootFiles.has(cfg)) {
         score += 0.1;
@@ -330,7 +301,6 @@ function detectLanguages(files: string[], root: string): LanguageInfo[] {
   return results.sort((a, b) => b.confidence - a.confidence);
 }
 
-// ── Shape detection ──────────────────────────────────────────────────────────
 
 function detectShape(
   files: string[],
@@ -353,7 +323,6 @@ function detectShape(
 
   const evidence: string[] = [];
 
-  // Monorepo: workspace packages/ or libs/ dirs + root package.json with workspaces
   if (rootFiles.has("package.json")) {
     const pkg = readJsonSafe(path.join(root, "package.json"));
     if (pkg?.workspaces) {
@@ -367,7 +336,6 @@ function detectShape(
     return { shape: "monorepo", evidence };
   }
 
-  // Workspace: pnpm-workspace.yaml, Cargo workspace, go.work
   if (rootFiles.has("pnpm-workspace.yaml") || rootFiles.has("go.work")) {
     evidence.push("workspace manifest found");
     return { shape: "workspace", evidence };
@@ -379,11 +347,9 @@ function detectShape(
     return { shape: "workspace", evidence };
   }
 
-  // Library: has lib/ or src/index.*, exports in package.json
   if (rootFiles.has("package.json")) {
     const pkg = readJsonSafe(path.join(root, "package.json"));
     if (pkg?.exports || pkg?.main) {
-      // If it also has "bin", it's more of an app
       if (pkg?.bin) {
         evidence.push("package.json has bin");
         return { shape: "app", evidence };
@@ -393,7 +359,6 @@ function detectShape(
     }
   }
 
-  // Check for app indicators
   if (
     rootFiles.has("Dockerfile") ||
     rootFiles.has("docker-compose.yml") ||
@@ -405,7 +370,6 @@ function detectShape(
     return { shape: "app", evidence };
   }
 
-  // Script: few files, no package manifest
   if (files.length <= 5 && !rootFiles.has("package.json") && !rootFiles.has("pyproject.toml")) {
     evidence.push("few files, no manifest");
     return { shape: "script", evidence };
@@ -414,7 +378,6 @@ function detectShape(
   return { shape: "unknown", evidence: ["no strong shape signal"] };
 }
 
-// ── Doc discovery ────────────────────────────────────────────────────────────
 
 function discoverDocs(files: string[], root: string): DocFile[] {
   const docs: DocFile[] = [];
@@ -435,7 +398,6 @@ function discoverDocs(files: string[], root: string): DocFile[] {
     const relPath = path.relative(root, filePath);
     let kind: DocFile["kind"] | undefined;
 
-    // Check against patterns
     for (const { pattern, kind: k } of docPatterns) {
       if (pattern.test(basename)) {
         kind = k;
@@ -443,12 +405,10 @@ function discoverDocs(files: string[], root: string): DocFile[] {
       }
     }
 
-    // Check docs/ directories
     if (!kind && isUnderDocsDir(relPath)) {
       kind = "docs";
     }
 
-    // Check markdown files at root or in docs/
     if (!kind && (basename.endsWith(".md") || basename.endsWith(".mdx"))) {
       if (path.dirname(relPath) === "." || isUnderDocsDir(relPath)) {
         kind = "docs";
@@ -479,7 +439,6 @@ function isUnderDocsDir(relPath: string): boolean {
   return parts[0] === "docs" || parts[0] === "doc" || parts[0] === "documentation";
 }
 
-// ── Plan generation ──────────────────────────────────────────────────────────
 
 function buildPlan(
   languages: LanguageInfo[],
@@ -487,7 +446,6 @@ function buildPlan(
   docs: DocFile[],
   _root: string,
 ): IngestionPlan {
-  // Priority: README, CONTRIBUTING, then other docs
   const priorityOrder: Record<DocFile["kind"], number> = {
     readme: 0,
     contributing: 1,
@@ -502,13 +460,11 @@ function buildPlan(
     .filter((d) => d.size > 0)
     .sort((a, b) => priorityOrder[a.kind] - priorityOrder[b.kind]);
 
-  // Recommended categories based on project shape
   const categories: string[] = ["fact", "preference", "decision", "principle"];
   if (shape === "monorepo" || shape === "workspace") {
     categories.push("entity");
   }
 
-  // Namespace suggestion from primary language
   const suggestedNamespace = languages.length > 0
     ? languages[0].language.toLowerCase()
     : "project";
@@ -521,7 +477,6 @@ function buildPlan(
   };
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function readJsonSafe(filePath: string): Record<string, unknown> | null {
   try {

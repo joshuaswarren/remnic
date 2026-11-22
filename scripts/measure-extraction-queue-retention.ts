@@ -110,10 +110,6 @@ async function pumpAndMeasure(turnCount: number, turnBytes: number): Promise<Sam
   globalWithGc.gc?.();
   globalWithGc.gc?.();
   const whileQueued = process.memoryUsage();
-  // Verified-accumulation assertions: the gate keeps the drain blocked, so
-  // the first task runs synchronously and every later trigger must still be
-  // queued. If these fail the workload is not exercising the stall shape and
-  // its numbers are void.
   assert.equal(queue.length, turnCount - 1, "blocked drain: all but the first task stay queued");
   assert.equal(queue.isProcessing, true, "first task holds the worker");
   const verifiedStats = coordinator.snapshotSharing?.stats();
@@ -161,13 +157,6 @@ console.log(
   `scaling exponents 250→2000: heap=${heapExponent.toFixed(2)}  unsharedRefs=${refExponent.toFixed(2)}  distinctRefs=${tailExponent.toFixed(2)}`,
 );
 
-// ── Accepted-capture QUEUE path only (queueBufferedCaptureScopeGroups with
-// namespace-pinned acceptedCapture turns, repeated observes of an unchanged
-// buffer). NOT end-to-end observe evidence: this workload excludes the
-// access-observe admission surface (addTurnBounded, acceptance boundary,
-// ReplayAdmissionRefusedError) and PendingObserveExtractionTracker — the
-// tracker retention term HeapRepro measured lives there and is OUT OF SCOPE
-// for these numbers.
 {
   // SAFETY: gc is only defined under node --expose-gc; absent means noisier
   // heap numbers.

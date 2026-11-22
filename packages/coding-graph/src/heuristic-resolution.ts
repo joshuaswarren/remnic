@@ -44,13 +44,6 @@ import { posix } from "node:path";
 
 import type { EdgeIR, FileIR, StoreFileIR } from "./graph-store.js";
 
-/**
- * Languages where a method call on the enclosing instance REQUIRES an
- * explicit receiver (this./self.) — a bare identifier call can never mean
- * a sibling method, so class-like scopes are excluded from bare-call
- * resolution. Implicit-this languages (Java, C#, Kotlin, Swift, Ruby,
- * PHP, C++, Go methods via receivers, ...) keep their class scopes.
- */
 const EXPLICIT_RECEIVER_LANGUAGES: ReadonlySet<string> = new Set([
   "typescript",
   "tsx",
@@ -62,42 +55,20 @@ const EXPLICIT_RECEIVER_LANGUAGES: ReadonlySet<string> = new Set([
   "php",
 ]);
 
-/** Confidence for a call resolved to a unique same-file symbol. */
 export const HEURISTIC_CONFIDENCE_SAME_FILE = 0.9;
-/** Confidence for a call resolved through an import binding. */
 export const HEURISTIC_CONFIDENCE_IMPORT_BOUND = 0.8;
 
-/**
- * The provenance scope reindex asserts for derived edges: ONLY its own
- * heuristic derivations. Each provenance layer owns its lifecycle
- * (issue #1894 review rounds 3/7/8): `lsp` rows include member-dispatch
- * resolutions Phase A deliberately never re-asserts, so including `lsp`
- * here would retire still-valid method-call edges on every edit of their
- * file. Vanished-call `lsp` rows are the LSP pass's job to retire when it
- * re-derives from the current parse (its edges die with their src nodes on
- * symbol pruning regardless). `trace` (runtime observation) and semantic
- * edges are likewise never this scope's to touch. The store's update guard
- * separately ensures a re-asserted key never DOWNGRADES an lsp row.
- */
 export const HEURISTIC_PROVENANCE_SCOPE = ["heuristic"] as const;
 
-/** Per-batch resolution counters — surfaced by callers for observability. */
 export interface HeuristicResolutionStats {
-  /** Total call sites examined across the batch. */
   readonly callSites: number;
-  /** Call sites that produced an edge assertion. */
   readonly resolved: number;
-  /** Call sites whose candidates matched nothing (no evidence). */
   readonly skippedUnresolved: number;
-  /** Call sites whose best candidate was ambiguous in-file. */
   readonly skippedAmbiguous: number;
-  /** Call sites with no enclosing symbol (module-level calls). */
   readonly skippedNoEnclosingSymbol: number;
-  /** Member/property calls — Phase B (LSP) territory, never bare-bound. */
   readonly skippedMemberAccess: number;
 }
 
-/** A FileIR enriched with the store-consumable edge assertions. */
 export type ResolvedFileIR = StoreFileIR & { readonly edges: readonly EdgeIR[] };
 
 export interface HeuristicResolutionResult {
@@ -146,7 +117,6 @@ export function deriveHeuristicEdges(
       }
       parentOf.set(sym.qualifiedName, parent ? parent.qualifiedName : "");
     }
-    // scope level (parent qualifiedName or "" = file) → name → matches.
     const scopeByName = new Map<string, Map<string, { qualifiedName: string; count: number }>>();
     for (const sym of ir.symbols) {
       const level = parentOf.get(sym.qualifiedName) ?? "";
@@ -258,7 +228,6 @@ export function deriveHeuristicEdges(
         continue;
       }
 
-      // src: innermost enclosing symbol (smallest containing span).
       let src: { qualifiedName: string; size: number } | undefined;
       for (const sym of ir.symbols) {
         if (sym.span.startByte > site.span.startByte || site.span.endByte > sym.span.endByte) continue;

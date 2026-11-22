@@ -1,11 +1,3 @@
-/**
- * Session-end experience memories as procedure-mining input (issue #2979 layer 3).
- *
- * Promoted episodes (experience_* attributes, status active) join the miner
- * record set when sessionExperience.enabled is on. Gate off: miner input is
- * byte-identical to the trajectory-only set (no experience records).
- * pending_review stays out.
- */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

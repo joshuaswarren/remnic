@@ -50,9 +50,6 @@ const PUBLIC_DIRS: ReadonlyArray<{
   { dir: "artifacts", kind: "artifact", contentType: "markdown" },
 ];
 
-/**
- * Standalone files (relative to memoryDir) that are safe to expose.
- */
 const PUBLIC_FILES: ReadonlyArray<{
   relativePath: string;
   kind: string;
@@ -72,7 +69,6 @@ async function resolveContainedPath(target: string, boundary: string): Promise<s
   try {
     const resolvedTarget = await realpath(target);
     const resolvedBoundary = await realpath(boundary);
-    // Ensure the resolved path is within the boundary (with trailing sep)
     if (resolvedTarget === resolvedBoundary || resolvedTarget.startsWith(resolvedBoundary + path.sep)) {
       return resolvedTarget;
     }
@@ -93,14 +89,6 @@ async function listMarkdownFilesRecursive(
   ancestorRealPaths?: ReadonlySet<string>
 ): Promise<string[]> {
   const boundaryDir = boundary ?? rootDir;
-  // Cycle detection uses only the current recursion path — the set of real
-  // paths of ancestors we've descended through. This prevents infinite
-  // recursion on symlink cycles while still allowing sibling aliases that
-  // point at the same real directory to each be traversed independently.
-  // Globally tracking visited real paths (as the earlier implementation
-  // did) suppressed all-but-one of the aliases, leaving the surviving one
-  // dependent on readdir() order — a source of unstable relativePath
-  // output across environments/runs.
   let resolvedRoot: string;
   try {
     resolvedRoot = await realpath(rootDir);
@@ -118,9 +106,6 @@ async function listMarkdownFilesRecursive(
     return [];
   }
 
-  // Sort entries deterministically before traversal so readdir() order
-  // cannot influence which aliases survive cycle pruning, and so the
-  // overall output order is stable across filesystems.
   entries.sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
   const files: string[] = [];
@@ -140,7 +125,6 @@ async function listMarkdownFilesRecursive(
         if (!(await isContainedWithin(fullPath, boundaryDir))) {
           continue; // Symlink escapes boundary — skip
         }
-        // Follow the symlink to determine target type
         const targetStat = await stat(fullPath);
         isDir = targetStat.isDirectory();
         isFile = targetStat.isFile();
@@ -163,9 +147,6 @@ async function listMarkdownFilesRecursive(
   return files.sort((a, b) => a.localeCompare(b));
 }
 
-/**
- * Check if a file or directory exists.
- */
 async function pathExists(inputPath: string): Promise<boolean> {
   try {
     await access(inputPath);
@@ -205,32 +186,21 @@ export async function listRemnicPublicArtifacts(params: {
     return [];
   }
 
-  // Scan public directories
   for (const spec of PUBLIC_DIRS) {
     const dirPath = path.join(memoryDir, spec.dir);
     if (!(await pathExists(dirPath))) continue;
 
-    // Block symlink traversal: verify the directory resolves within memoryDir.
-    // Also reject top-level symlinks that redirect an allowlisted directory
-    // name to a different directory (e.g., facts -> state), which would
-    // expose private files as public artifacts under the wrong kind.
     if (!(await isContainedWithin(dirPath, memoryDir))) continue;
     try {
       const resolvedDir = await realpath(dirPath);
       const expectedParent = await realpath(memoryDir);
       const resolvedName = path.basename(resolvedDir);
-      // If the resolved directory name doesn't match the expected name,
-      // this is a symlink redirect (e.g., facts -> state). Reject it.
       if (resolvedName !== spec.dir) continue;
-      // Also verify the resolved dir's parent is memoryDir (not a nested path)
       if (path.dirname(resolvedDir) !== expectedParent) continue;
     } catch {
       continue;
     }
 
-    // Use the specific public directory as the containment boundary (not
-    // memoryDir), so symlinks within e.g. facts/ cannot escape into private
-    // directories like state/ or questions/ that live under memoryDir.
     const files = await listMarkdownFilesRecursive(dirPath, dirPath);
 
     for (const absolutePath of files) {
@@ -246,22 +216,17 @@ export async function listRemnicPublicArtifacts(params: {
     }
   }
 
-  // Scan standalone public files
   for (const spec of PUBLIC_FILES) {
     const absolutePath = path.join(memoryDir, spec.relativePath);
     if (!(await pathExists(absolutePath))) continue;
-    // Block symlink traversal for standalone files
     const resolvedPath = await resolveContainedPath(absolutePath, memoryDir);
     if (resolvedPath === undefined) continue;
-    // Reject symlinks for standalone files so returned paths cannot be swapped
-    // after validation but before downstream ingestion reads them.
     try {
       const linkStat = await lstat(absolutePath);
       if (linkStat.isSymbolicLink()) continue;
     } catch {
       continue;
     }
-    // Verify it's a file (not a directory)
     try {
       const fileStat = await stat(resolvedPath);
       if (!fileStat.isFile()) continue;
@@ -278,8 +243,6 @@ export async function listRemnicPublicArtifacts(params: {
     });
   }
 
-  // Deduplicate by (workspaceDir, relativePath, kind) — defensive against
-  // overlapping scans or symlinks.
   const deduped = new Map<string, RemnicPublicArtifact>();
   for (const artifact of artifacts) {
     const key = [artifact.workspaceDir, artifact.relativePath, artifact.kind].join(String.fromCharCode(0));

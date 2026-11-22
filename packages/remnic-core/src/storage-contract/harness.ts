@@ -1,17 +1,3 @@
-/**
- * Issue #1533 — Storage contract test harness.
- *
- * Shared fixture helpers for the storage public-surface contract suite AND
- * the #1522 catalog-touch fitness test (both live under `storage-contract/`
- * per the issue's coordination note: "build both on ONE shared harness so the
- * write-entry-point enumeration lives in exactly one place").
- *
- * Every helper creates a fresh temp directory and returns a `cleanup` that
- * tears it down — tests never share state. `StorageManager.clearAllStaticCaches()`
- * is called on setup and teardown so the module-level caches (readAllMemories
- * in-flight, version sentinels, secure-store entity cache) do not leak between
- * tests.
- */
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -23,7 +9,6 @@ import {
 } from "../namespaces/storage.js";
 import type { PluginConfig } from "../types.js";
 
-/** Clear every module-level cache so tests start from a known-empty state. */
 export function resetStaticCaches(): void {
   StorageManager.clearAllStaticCaches();
 }

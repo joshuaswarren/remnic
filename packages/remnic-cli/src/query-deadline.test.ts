@@ -41,9 +41,7 @@ test("query exits with a bounded JSON error when startup never resolves", async 
     assert.equal(settled, true, "query must fail at the deadline instead of hanging on startup");
     const result = await command;
     assert.equal(result.exitCode, 1);
-    // The last stderr line is the JSON error; earlier lines are logger notices.
     const errorLine = result.stderr.trim().split("\n").at(-1) ?? "";
-    // SAFETY: the deadline error path writes one JSON object with an error string on stderr.
     const parsed = JSON.parse(errorLine) as { error: string };
     assert.match(parsed.error, /query timed out/i);
     assert.equal(result.stdout.trim(), "", "a timeout is not a valid query result");

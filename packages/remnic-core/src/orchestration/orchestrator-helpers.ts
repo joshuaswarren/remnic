@@ -1,4 +1,3 @@
-/** Orchestrator module-level helpers relocated from orchestrator.ts (#1526); behavior-preserving move. */
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +18,6 @@ import { type BufferTurn, type MemoryActionEvent, type MemoryFile, type MemoryFr
 import { categoryDirName } from "../utils/category-dir.js";
 import { parseFlexibleIsoTimestamp } from "../utils/iso-timestamp.js";
 
-/** Freshness window for the artifact source status cache read by NamespaceReadFanoutCoordinator. */
 export const ARTIFACT_STATUS_CACHE_TTL_MS = 60_000;
 export interface BulkImportBatchIngestResult {
   attemptedTurnCount: number;
@@ -120,13 +118,9 @@ export interface RecallModeDecision {
    * fell back. Absent on the synchronous heuristic-only path.
    */
   plannerSource?: "heuristic" | "llm" | "heuristic-fallback";
-  /** Short rationale from the planner (for telemetry / x-ray). */
   plannerReason?: string;
-  /** Wall-clock spent in the LLM planner call, when one was made. */
   plannerLatencyMs?: number;
-  /** True when the LLM planner was enabled but fell back to the heuristic. */
   plannerFallbackUsed?: boolean;
-  /** Model that served the LLM classification, when one was used. */
   plannerModelUsed?: string;
   /**
    * The regex-heuristic baseline mode, captured whenever the LLM planner ran
@@ -141,18 +135,6 @@ export interface RecallModeDecision {
   shadowLlmMode?: RecallPlanMode;
 }
 
-/**
- * Map the orchestrator's internal `recallSource` strings to the
- * X-ray `servedBy` vocabulary (issue #570 PR 1).  The X-ray tier
- * ladder intentionally flattens QMD / embedding / cold-fallback to
- * the `hybrid` tier because they all materialize through the same
- * hybrid BM25+vector pipeline from the caller's perspective.  The
- * `recent_scan` path gets its own dedicated tier because it bypasses
- * the hybrid pipeline entirely.  `none` is treated as `hybrid` on the
- * theory that a query that returned nothing still routed through the
- * hybrid pipeline — but callers should normally gate capture on
- * `recalledMemoryIds.length > 0`.
- */
 export function mapRecallSourceToXrayServedBy(
   source:
     | "none"
@@ -161,12 +143,6 @@ export function mapRecallSourceToXrayServedBy(
     | "cold_fallback"
     | "recent_scan",
 ): RecallXrayServedBy {
-  // Exhaustive switch: every current union member is explicitly
-  // listed so TypeScript surfaces a compile error if a new source is
-  // added without a deliberate mapping.  The `never`-typed fallthrough
-  // keeps the function total at runtime — if the caller passes an
-  // unexpected value that slipped past the type system (e.g. a JSON
-  // deserialization), we still fall back to `hybrid`.
   switch (source) {
     case "recent_scan":
       return "recent-scan";
@@ -187,7 +163,6 @@ export interface RecallInvocationOptions {
   mode?: RecallPlanMode;
   onRecallPlanResolved?: (mode: RecallPlanMode, readNamespaces: readonly string[]) => void | Promise<void>;
   abortSignal?: AbortSignal;
-  /** Server-resolved identity of the connector performing this recall. */
   sourceConnector?: string;
   /**
    * Capture a `RecallXraySnapshot` for this recall (issue #570).  When
@@ -248,7 +223,6 @@ export interface RecallInvocationOptions {
    * config flag; a change-intent query is still required for any effect.
    */
   stateView?: boolean;
-  /** Per-call QMD options (HTTP/MCP `searchOptions`). */
   searchOptions?: SearchQueryOptions;
   /**
    * User-aware context scopes active for this recall. Used by X-ray
@@ -285,12 +259,6 @@ export type QueryAwarePrefilter = {
   filteredToFullSearch: boolean;
 };
 
-// Recall-specific abort helpers.  Thin wrappers over the shared
-// `abort-error.ts` module so every abort in the codebase shares the
-// same `name === "AbortError"` classification contract (`isAbortError`
-// works uniformly).  We keep the "recall aborted" default message for
-// back-compat with call-site logs; callers that pass an explicit
-// message (e.g. "extraction aborted (before_extract)") are unaffected.
 export const abortRecallError = sharedAbortError;
 
 export function throwIfRecallAborted(
@@ -478,7 +446,6 @@ export async function qmdStartupCollectionCheckWithTimeout(
   return await Promise.race([checkedPromise, timeoutPromise]);
 }
 
-/** Default workspace directory when no per-agent or config workspace is available. */
 export function defaultWorkspaceDir(): string {
   return path.join(os.homedir(), ".openclaw", "workspace");
 }
@@ -872,8 +839,6 @@ export async function resolveRecallModeDecisionAsync(
 ): Promise<RecallModeDecision> {
   const heuristicDecision = resolveRecallModeDecision(options);
 
-  // Planner globally off, or LLM planning not opted into → heuristic only.
-  // Read the resolved capability (issue #1523) — never re-derive from config.
   const plannerLlmEnabled = options.caps.recallPlannerLlm;
   if (!options.plannerEnabled || !plannerLlmEnabled) {
     return heuristicDecision;
@@ -889,8 +854,6 @@ export async function resolveRecallModeDecisionAsync(
     options.signal,
   );
 
-  // Shadow mode: record what the LLM would have chosen but keep the heuristic
-  // effective decision (safe rollout / comparison — gotcha #30).
   if (options.config.recallPlannerShadowMode) {
     return {
       ...heuristicDecision,
@@ -933,8 +896,6 @@ export function computeQmdHybridFetchLimit(
   const cappedRecallLimit = Math.max(0, recallFetchLimit);
   if (cappedRecallLimit === 0) return 0;
   if (!artifactsEnabled) return cappedRecallLimit;
-  // Overscan when artifacts are enabled, then filter artifact paths before
-  // re-applying the recall cap to avoid artifact-dominated top-N starvation.
   const artifactHeadroom = Math.max(20, Math.max(0, maxArtifactRecall) * 8);
   return Math.min(400, cappedRecallLimit + artifactHeadroom);
 }
@@ -1111,7 +1072,6 @@ export function resolveRecentThreadMemoryPaths(options: {
     buildMemoryPathById(options.allMemsForGraph, options.storageDir);
   if (pathById.size === 0) return [];
 
-  // #1635 (defensive): skip pending_review ids from legacy episode sets.
   const pendingReviewIds = new Set<string>(
     (options.allMemsForGraph ?? [])
       .filter((m) => m.frontmatter.status === "pending_review" && m.frontmatter.id)
@@ -1179,14 +1139,6 @@ export function resolvePersistedMemoryRelativePath(options: {
   if (options.category === "correction") {
     return path.join("corrections", `${options.memoryId}.md`);
   }
-  // Pick the subtree that matches the StorageManager.writeMemory routing
-  // so fallback paths (used before memoryPathById has seen the fresh
-  // write) agree with where the file actually lives. Routing goes through
-  // the shared categoryDirName() chokepoint (utils/category-dir.ts) so
-  // every category — decisions/, preferences/, reasoning-traces/, ... —
-  // resolves to the same dir the writer used; otherwise graph edges point
-  // at the wrong subtree and graph expansion silently drops those nodes
-  // when readMemoryByPath cannot resolve them (issue #564 PR 3 / #1546).
   const subtree = categoryDirName(options.category);
   const idParts = options.memoryId.split("-");
   const maybeTimestamp = Number(idParts[1]);

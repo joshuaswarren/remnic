@@ -1,18 +1,3 @@
-/**
- * Namespace read-fanout coordinator — extracted from the orchestrator
- * (issue #1526, seam 26).
- *
- * Owns namespace-scoped READ fanout (never namespace RESOLUTION — the
- * ScopePlan resolver from #1521 stays the single authority for that):
- *   - storage-dir hint loading from the catalog
- *   - cross-namespace search and memory/archive reads
- *   - scoped memory candidate search and artifact recall fanout
- *   - artifact source status resolution (with per-storage cache)
- *   - path→namespace and storage-dir→namespace mapping helpers
- *
- * Behavior-preserving move from orchestrator.ts (late-binding deps rule,
- * seams 18–25).
- */
 
 import { existsSync, readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -266,14 +251,9 @@ export class NamespaceReadFanoutCoordinator {
       let latestVersionAfter = storage.getMemoryStatusVersion();
 
       for (let attempt = 0; attempt < MAX_STABLE_READ_ATTEMPTS; attempt += 1) {
-        // Each attempt is a full corpus read; an abandoned caller must not buy a
-        // second or third one (issue #2307).
         checkCorpusReadAbort(options);
         const versionBefore = storage.getMemoryStatusVersion();
         const allMemories = await storage.readAllMemories(options);
-        // An abort landing between the read and the publish below would otherwise
-        // cache and return a snapshot to a caller that had already cancelled
-        // (issue #2307 review).
         checkCorpusReadAbort(options);
         const versionAfter = storage.getMemoryStatusVersion();
         latestVersionAfter = versionAfter;
@@ -299,7 +279,6 @@ export class NamespaceReadFanoutCoordinator {
         }
       }
 
-      // Sustained write churn: return latest read without caching a potentially torn snapshot.
       return {
         loadedAtMs: Date.now(),
         statusVersion: latestVersionAfter,
@@ -310,8 +289,6 @@ export class NamespaceReadFanoutCoordinator {
     if (!isFresh) {
       snapshot = await rebuildSnapshot();
     } else {
-      // Warm cache may miss brand-new sourceMemoryId values created after snapshot build.
-      // Refresh once on-demand when unseen IDs are requested.
       const hasUnknownSourceIds = sourceIds.some(
         (id) => !snapshot?.statuses.has(id),
       );
@@ -320,8 +297,6 @@ export class NamespaceReadFanoutCoordinator {
       }
     }
 
-    // Persist negative lookups in the cached snapshot so stale source IDs do not
-    // trigger repeated full snapshot rebuilds on every matching recall.
     for (const id of sourceIds) {
       if (!snapshot?.statuses.has(id)) {
         snapshot?.statuses.set(id, "missing");
@@ -460,11 +435,6 @@ export class NamespaceReadFanoutCoordinator {
   }
 
   storageDirNamespace(storageDir: string): string {
-    // #1521: delegates to the scope-module resolver. The inline dir→namespace
-    // derivation (token round-trip guard, catalog hints) is retired so the
-    // adHocNamespaceResolutions ratchet no longer counts this site. Hints are
-    // loaded lazily via the callback (only after early returns, matching the
-    // original behavior — codex P2).
     return resolveNamespaceFromStorageDir(storageDir, {
       config: this.deps.config,
       configuredNamespaces: this.deps.configuredNamespaceList(),

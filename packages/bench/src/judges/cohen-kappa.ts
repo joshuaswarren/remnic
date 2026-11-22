@@ -1,19 +1,3 @@
-/**
- * Cohen's kappa — inter-rater agreement for the cross-tier judge calibration
- * (issue #1573 PR3).
- *
- * The local-lab protocol (#1573) needs a single number that says whether the
- * cheap local judge agrees with the expensive frontier judge closely enough to
- * trust it for regression runs. Cohen's kappa is the standard measure: it
- * corrects raw agreement for the agreement you would see by chance, so a
- * reported 0.9 on a binary task where both judges say "correct" 95% of the
- * time is not actually impressive.
- *
- * This module is pure: it operates on parallel arrays of category labels and
- * has no I/O, no globals, and no module-level mutable state (rule 11). The
- * calibration orchestration that turns numeric judge scores into labels and
- * drives both judges lives in `./calibration-slice.ts`.
- */
 
 /** A rater-assigned category label. Free-form string (e.g. "correct"). */
 export type JudgeCategory = string;
@@ -25,7 +9,6 @@ export interface CohenKappaResult {
   observedAgreement: number;
   /** Expected chance agreement given the marginal distributions. In [0, 1]. */
   expectedAgreement: number;
-  /** Number of paired judgements. */
   sampleSize: number;
   /** Distinct category labels seen across both raters (sorted). */
   categories: readonly JudgeCategory[];
@@ -83,7 +66,6 @@ export function computeCohensKappa(
     throw new Error("computeCohensKappa: cannot compute kappa over zero paired judgements.");
   }
 
-  // Marginal counts: how many times each rater used each category.
   const countA = new Map<JudgeCategory, number>();
   const countB = new Map<JudgeCategory, number>();
   let observedAgreements = 0;
@@ -100,7 +82,6 @@ export function computeCohensKappa(
   const categories = new Set<JudgeCategory>([...countA.keys(), ...countB.keys()]);
   const observedAgreement = observedAgreements / sampleSize;
 
-  // Expected chance agreement = Σ_c P(A=c) * P(B=c).
   let expectedAgreement = 0;
   for (const category of categories) {
     const probA = (countA.get(category) ?? 0) / sampleSize;
@@ -111,8 +92,6 @@ export function computeCohensKappa(
   const denominator = 1 - expectedAgreement;
   let kappa: number;
   if (denominator === 0) {
-    // Single-category collapse: every judgement from both raters is the same
-    // label. Perfect agreement → kappa = 1 by convention.
     kappa = observedAgreement === 1 ? 1 : 0;
   } else {
     kappa = (observedAgreement - expectedAgreement) / denominator;

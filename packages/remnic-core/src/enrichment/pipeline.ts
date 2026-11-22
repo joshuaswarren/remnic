@@ -20,8 +20,6 @@ import type {
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Rate-limit tracking
-// ---------------------------------------------------------------------------
 
 interface RateLimitBucket {
   minuteCount: number;
@@ -51,7 +49,6 @@ function reserveRateLimitSlot(
     rateBuckets.set(provider.id, bucket);
   }
 
-  // Reset windows if expired
   if (now >= bucket.minuteReset) {
     bucket.minuteCount = 0;
     bucket.minuteReset = now + 60_000;
@@ -72,7 +69,6 @@ function reserveRateLimitSlot(
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline
 // ---------------------------------------------------------------------------
 
 export async function runEnrichmentPipeline(
@@ -101,7 +97,6 @@ export async function runEnrichmentPipeline(
 
       const start = Date.now();
 
-      // Check availability
       let available: boolean;
       try {
         available = await provider.isAvailable();
@@ -125,8 +120,6 @@ export async function runEnrichmentPipeline(
         continue;
       }
 
-      // Reserve quota before the awaited provider call so concurrent pipelines
-      // cannot all pass the same pre-await rate-limit check.
       if (!reserveRateLimitSlot(provider, config)) {
         log.debug?.(
           `enrichment: skipping provider ${provider.id} for ${entity.name} — rate limited`,
@@ -143,10 +136,6 @@ export async function runEnrichmentPipeline(
         continue;
       }
 
-      // Run provider.
-      // Count every attempt toward rate-limit buckets — including failures —
-      // because the provider may have consumed external quota before throwing
-      // (PR #425 review finding 2).
       let candidates: EnrichmentCandidate[];
       try {
         candidates = await provider.enrich(entity);
@@ -166,7 +155,6 @@ export async function runEnrichmentPipeline(
         continue;
       }
 
-      // Tag each candidate with provider id
       for (const candidate of candidates) {
         candidate.source = provider.id;
       }

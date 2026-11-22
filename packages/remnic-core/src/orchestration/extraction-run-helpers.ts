@@ -159,14 +159,6 @@ export function capExtractionRetryStateEntries<T extends { firstFailedAt: string
   return sorted.slice(-maxEntries);
 }
 
-/**
- * Derive a single `sourceConnector` from a batch of turns.
- * Returns the connector ONLY when ALL turns carry the same connector.
- * Mixed tagged/untagged batches return undefined — extraction facts are
- * persisted at batch level, so attributing them to the single tagged
- * connector would falsely label facts from untagged turns.
- * Conflicting connectors (different values) also return undefined.
- */
 export function deriveSourceConnector(turns: readonly BufferTurn[]): string | undefined {
   if (turns.length === 0) return undefined;
   const connectors = new Set<string>();
@@ -178,7 +170,6 @@ export function deriveSourceConnector(turns: readonly BufferTurn[]): string | un
       untaggedCount += 1;
     }
   }
-  // All turns must agree on the same connector — no untagged turns mixed in.
   if (untaggedCount > 0) return undefined;
   return connectors.size === 1 ? [...connectors][0] : undefined;
 }
@@ -205,10 +196,6 @@ export async function runExtractionPostPersistBestEffort(
   }
 }
 
-/**
- * Applies deferred-judge retention only to live, non-shadow extraction runs.
- * Replay/import paths must not synthesize live-buffer entries after persistence.
- */
 export interface ExtractionDeferRetentionOptions {
   clearBufferAfterExtraction: boolean;
   extractionJudgeShadow: boolean;
@@ -289,9 +276,6 @@ export async function runExtractionPostPersist(
     }
     log.warn(`runExtraction: ${stage} failed after durable persistence; continuing with buffer clear`, error);
   };
-  // Applied under the storage's per-dir meta lock (storage.updateMeta): the
-  // fingerprint record and the counters land on a FRESHLY loaded meta, so a
-  // concurrent extraction's updates are not reverted by this save.
   const applyPostPersistMetadata = async (fresh: MetaState): Promise<void> => {
     if (options.extractionFingerprint && options.shouldPersistProcessedFingerprint) {
       try {

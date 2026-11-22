@@ -1,4 +1,3 @@
-// Node-local warm-cache generation marker (`<stateDir>/embeddings.generation`).
 // Two-phase publication barrier: in-flight before a publication's first
 // destructive write, fresh unique value after its last write (PR #3176), so a
 // completed stamp is only ever stable while generation bytes are unchanged.
@@ -33,17 +32,10 @@ export async function writeGenerationMarkerRaw(markerAbs: string, value: string)
   }
 }
 
-/** Barrier first half: strict, so bytes can never change under a stable stamp. */
 export async function beginGenerationMarker(markerAbs: string): Promise<void> {
   await writeGenerationMarkerRaw(markerAbs, GENERATION_MARKER_IN_FLIGHT);
 }
 
-/**
- * Barrier second half: written after the last content write. Best-effort:
- * a failure leaves the in-flight marker, whose stamp identityStamp()
- * never repeats, so cached probes revalidate on every search until a
- * publication completes.
- */
 export async function completeGenerationMarker(markerAbs: string): Promise<void> {
   await writeGenerationMarkerRaw(markerAbs, randomUUID()).catch((err) => {
     log.warn(`embedding index: could not write generation completion marker: ${err instanceof Error ? err.message : String(err)}`);

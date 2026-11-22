@@ -1,10 +1,3 @@
-/**
- * Assistant bench: next-best-action.
- *
- * Given current state, what should the user do next? Judged on grounding in
- * the memory graph (not generic advice) and on calibration — abstaining on
- * weak-evidence questions rather than confidently inventing answers.
- */
 
 import type {
   BenchmarkDefinition,

@@ -241,7 +241,6 @@ export interface ApplySemanticMergeOptions {
   targetHasPromotedCopies?: (targetId: string) => Promise<boolean>;
   /** Caller-side bypass: contradiction detected or pending_review routing. */
   skip?: boolean;
-  /** Injection seam for tests. */
   now?: () => Date;
   judgeCall?: (options: MergeJudgeCallOptions) => Promise<MergeJudgeRawVerdict | null>;
 }
@@ -252,46 +251,6 @@ const PROVENANCE_STRENGTH_RANK: Record<string, number> = {
   verified: 2,
 };
 
-/**
- * Create-path parity gate (final round, PR #2771). Nine review rounds all
- * found the same defect class: the merge path did less, or something wider,
- * than the create path. Instead of patching call sites, this ONE gate
- * enumerates every trust/scope/verdict field the create path's write stamps
- * (`writeSealedMemory` + extras in `extraction-persist.ts`) and decides,
- * per field, whether the merge preserves it. A merge proceeds only when
- * EVERY field is carried by the merge patch, preserved monotonically, or
- * provably equal. Anything else — including anything unknown or unreadable —
- * bypasses to a create, because a create is always safe and a merge is not.
- *
- * Field classification, from the create-path write:
- *  - carried by the merge patch: content (judge-composed merged body),
- *    sources (appended by buildMergeFrontmatterUpdate), contentHash
- *    (restamped off the canonical merged form), status (a merge-eligible
- *    fact is never pending_review — the caller skips — and the target is
- *    re-verified active), provenance (only when downgraded to the
- *    least-trusted side, see below).
- *  - equality-required (bypass on mismatch): category (also enforced at
- *    candidate resolution), entityRef, effective validity bounds — both
- *    sides unbounded, or an incoming validAt identical to the target's
- *    valid_at; a target carrying invalid_at never merges (round N+2 A) —
- *    subject (effective), memoryKind when the incoming fact carries a
- *    computed kind (round N+2 B), sourceConnector (against the COLD-AWARE
- *    target snapshot, finding D), faithfulness verdict (effective, finding C).
- *  - monotone-preservable (bypass when the incoming side exceeds what the
- *    target retains): tags (target must be a superset), importance score
- *    (incoming may not exceed), confidence score (incoming may not exceed;
- *    a lower incoming DOWNGRADES the record to min(incoming, target) with
- *    the tier that score maps to — final round A), provenance strength
- *    (incoming may not be stronger — and a weaker incoming downgrades the
- *    target so the merged body never carries trust its new claims did not
- *    earn, finding B).
- *  - bypass-on-presence (no carrier exists at all): structuredAttributes,
- *    bi-temporal bounds.
- *  - escalation-refused: origin (an untrusted incoming origin may never
- *    merge into a trusted target; equal or fence-safe mismatches may).
- *  - scope-widening-refused: toolScoped (an unscoped target may never gain
- *    tool-scoped claims; a scoped target keeps its stricter flag).
- */
 export type CreatePathMergeParity =
   | {
       ok: true;
@@ -337,16 +296,6 @@ export function createPathMergeParity(input: {
   if (md?.validAt !== undefined && md.validAt !== target.frontmatter.valid_at) {
     return { ok: false, field: "validAt" };
   }
-  // Round N+2 (A) — effective validity bounds. The merged body inherits the
-  // TARGET's valid_at/invalid_at (the patch has no carrier for either), and
-  // inferMemoryStatus ignores temporal validity, so a lifecycle-active
-  // target with a past invalid_at takes the fresh claims out of normal
-  // recall the moment they merge in (isValidityExpiredNow reads the bound).
-  // Refuse instead: a target carrying invalid_at never merges (a non-
-  // bi-temporal incoming fact cannot carry one — bi-temporal facts already
-  // bypass above), and a target carrying valid_at merges only with an
-  // incoming fact carrying the same bound via the equality check above.
-  // Both-unbounded pairs keep merging.
   if (target.frontmatter.invalid_at !== undefined) {
     return { ok: false, field: "validity_bounds" };
   }
@@ -364,12 +313,6 @@ export function createPathMergeParity(input: {
     return { ok: false, field: "importance" };
   }
 
-  // Finding B — provenance must not be upgraded by merging. A stronger
-  // incoming strength has no carrier (create stamps it on its own fact);
-  // a weaker one must RETAG the combined body to the least-trusted value,
-  // because `trust-score.ts` maps the memory-level tag straight to a
-  // provenance contribution and unverified new claims must not inherit
-  // `verified`'s maximum.
   const incomingProvenanceRank = provenanceRank(md?.provenanceStrength);
   const targetProvenanceRank = provenanceRank(target.frontmatter.provenance);
   if (incomingProvenanceRank > targetProvenanceRank) {
@@ -380,15 +323,6 @@ export function createPathMergeParity(input: {
       ? ((md?.provenanceStrength ?? "none") as "verified" | "unverified" | "none")
       : undefined;
 
-  // Final round (A) — confidence must not be upgraded by merging either.
-  // Lifecycle scoring, preference consolidation, and the merged-target
-  // promotion all read the record's confidence, so a low-confidence
-  // extraction merging into a higher-confidence target must DOWNGRADE the
-  // record to min(incoming, target) — the value the create path would have
-  // stored for the incoming fact alone. A value at or above the target's
-  // needs no rewrite (the min IS the target's); an unreadable one bypasses
-  // the merge rather than guessing a floor. A legacy target with no
-  // confidence reads as the write path's 0.8 default (parseMemoryFrontmatter).
   if (md?.confidence !== undefined) {
     if (
       typeof md.confidence !== "number" ||
@@ -404,12 +338,6 @@ export function createPathMergeParity(input: {
       ? md.confidence
       : undefined;
 
-  // Finding D — connector scope from the COLD-AWARE target snapshot. The
-  // lookup's hit enrichment reads `sourceConnector` hot-only
-  // (persistence-index.ts), so a cold-tier (or read-failed) target looks
-  // unscoped and an unscoped incoming fact slips past the lookup-side
-  // comparison. The re-read target carries the authoritative frontmatter;
-  // fail closed on any mismatch (both sides unscoped, or identical).
   if (
     normalizeConnectorScope(target.frontmatter.sourceConnector) !==
     normalizeConnectorScope(input.sourceConnector)
@@ -420,52 +348,23 @@ export function createPathMergeParity(input: {
   if (md?.toolScoped === true && target.frontmatter.toolScoped !== true) {
     return { ok: false, field: "toolScoped" };
   }
-  // Subject: the write path stamps `subject`, and the merge patch has no
-  // carrier for it, so a fact whose EFFECTIVE subject differs from the
-  // target's must be created. An absent subject resolves to the
-  // least-privileged `user` — the same default the subject guard applies —
-  // so classification being disabled never lets an unclassified fact merge
-  // into an `agent`-labeled target.
   if ((md?.subject ?? "user") !== (target.frontmatter.subject ?? "user")) {
     return { ok: false, field: "subject" };
   }
-  // Round N+2 (B) — memoryKind parity. See the field doc on
-  // ApplySemanticMergeOptions.incomingMetadata.memoryKind.
   if (md?.memoryKind !== undefined && md.memoryKind !== target.frontmatter.memoryKind) {
     return { ok: false, field: "memoryKind" };
   }
-  // Origin: the merged body renders under the TARGET's origin at recall, so
-  // an UNTRUSTED incoming origin (per the deployment's untrustedOrigins)
-  // merging into a TRUSTED target would hand injected text unfenced,
-  // user-authority rendering — the escalation the recall fence exists to
-  // prevent. That merge is refused; the fact is created through the write
-  // that stamps its own origin. Mismatches that never reduce fencing still
-  // merge, so legacy unstamped targets (`origin` absent → `unknown`, the
-  // fence's least-privilege default) keep receiving user-origin facts.
   if (
     isUntrustedOrigin(parseOriginClass(md?.origin), untrustedOrigins) &&
     !isUntrustedOrigin(parseOriginClass(target.frontmatter.origin), untrustedOrigins)
   ) {
     return { ok: false, field: "origin" };
   }
-  // Finding C — faithfulness verdicts must be preserved. The create path
-  // stamps `faithfulnessFm` whenever the gate ran (shadow mode included: a
-  // contradicted fact gets the verdict without pending_review status). The
-  // merge patch cannot compose an honest verdict for a combined body, so the
-  // effective verdicts must be EQUAL — both present and identical, or both
-  // absent. One-sided verdicts (gate ran on one side only) bypass too: the
-  // trust stage maps `entailed` to the maximum contribution, so claims the
-  // gate never checked must not inherit an entailment rendered over the
-  // other side's claims alone. The create path runs instead and persists
-  // the verdict it computed (or none).
   const incomingFaithfulness = effectiveFaithfulness(md?.faithfulness?.verdict);
   const targetFaithfulness = effectiveFaithfulness(target.frontmatter.faithfulness?.verdict);
   if (incomingFaithfulness !== targetFaithfulness) {
     return { ok: false, field: "faithfulness" };
   }
-  // Round N+9 (A): an EQUAL verdict cannot survive either — the target's
-  // `entailed` was rendered over its pre-merge body, never the judge's
-  // merged text, so bypass (entailment only; others under-claim / no signal).
   if (targetFaithfulness === "entailed") {
     return { ok: false, field: "faithfulness" };
   }
@@ -484,18 +383,6 @@ function versioningConfigFrom(deps: ExtractionPersistDeps): VersioningConfig {
   };
 }
 
-/**
- * Finding B — union the incoming fact's suggested navigation links into the
- * target's committed links, deduping on (targetId, linkType): the same key
- * `StorageManager.addLinksToMemory` uses. A suggestion naming the surviving
- * target itself is DISCARDED — memory linking and the merge judge both
- * search on the incoming content, so the suggested neighbor is often the
- * merge target itself, and attaching it would make the record its own
- * neighbor (recall-navigate would return the current memory and burn
- * traversal budget). Returns undefined when there is nothing to attach so
- * the patch carries no `links` key at all (an empty array would ERASE
- * committed links).
- */
 export function mergeMemoryLinks(
   existing: readonly MemoryLink[] | undefined,
   incoming: readonly MemoryLink[] | undefined,
@@ -541,8 +428,6 @@ export async function applySemanticMergeAtPersist(
     },
     judge: async (input) => {
       const call = options.judgeCall ?? callMergeJudge;
-      // A null (no backend answered / schema-failed) maps to a thrown error
-      // so decideSemanticMerge classifies it as judge_error → create.
       const verdict = await call({
         ...input,
         candidates: [...input.candidates],
@@ -560,9 +445,6 @@ export async function applySemanticMergeAtPersist(
 
   if (decision.action === "create") {
     if (config.shadowMode) {
-      // Telemetry only — category, length, reason. Never fact content: log
-      // sinks generally have broader access and retention than the memory
-      // store, and extracted facts can hold personal material.
       log.info(
         `semantic-merge[shadow]: would create category=${options.category} length=${options.content.length} reason="${decision.reason}"`,
       );
@@ -571,30 +453,19 @@ export async function applySemanticMergeAtPersist(
   }
 
   if (config.shadowMode) {
-    // Rollout lever: decision-only. Never mutate in shadow mode.
     log.info(
       `semantic-merge[shadow]: would merge into ${decision.targetId} reason="judge_merge"`,
     );
     return { action: "created", reason: "shadow_would_merge" };
   }
 
-  // Step 1 — re-read the target; gone or no-longer-active → create.
   const target = await options.storage.getMemoryByIdIncludingArchived(decision.targetId);
   if (!target || inferMemoryStatus(target.frontmatter, target.path) !== "active") {
     return { action: "created", reason: "target_inactive" };
   }
-  // `mergedContent` was composed from the body the judge was shown. In a
-  // multi-writer deployment another extraction can update the target between
-  // that resolve and now; writing the merge would silently drop the
-  // concurrent writer's details. A changed body creates instead.
   if (target.content !== decision.targetContent) {
     return { action: "created", reason: "target_changed" };
   }
-  // Round N+7 (C) + #2916: every mutation below commits THIS body — the
-  // judge's merged text in its cited form (the incoming marker when one is
-  // liftable, else the configured transform as a fresh attributed write
-  // applies it) — and the outcome reports it, so caller comparisons
-  // describe what storage actually holds.
   const nowIso = (options.now ? options.now() : new Date()).toISOString();
   const committedContent = committedMergedBody(
     deps,
@@ -604,10 +475,6 @@ export async function applySemanticMergeAtPersist(
     nowIso,
   );
 
-  // Create-path parity gate (final round) — ONE place enumerates every
-  // trust/scope/verdict field the normal write stamps and bypasses the
-  // merge unless each is carried, preserved, or provably equal. See
-  // {@link createPathMergeParity} for the field classification.
   const parity = createPathMergeParity({
     target,
     incoming: options.incomingMetadata,
@@ -618,21 +485,12 @@ export async function applySemanticMergeAtPersist(
     return { action: "created", reason: "metadata_unpreservable" };
   }
 
-  // Finding C — the create path's promotion step owns shared/profile copies
-  // linked by `sourceMemoryId`; a merge mutates only this storage, so those
-  // copies would keep serving the pre-merge body. When any promoted copy
-  // exists, bypass the merge so the normal write (with its own promotion
-  // reconciliation) runs instead. Probed before any mutation, so a bypass
-  // leaves the target — and its page-version history — untouched.
   if (
     options.targetHasPromotedCopies &&
     (await options.targetHasPromotedCopies(decision.targetId))
   ) {
     return { action: "created", reason: "promoted_copy_present" };
   }
-  // Step 2 — rollback data BEFORE any mutation (checklist #14). A failed
-  // snapshot must leave the target untouched. Versioning disabled means no
-  // rollback story exists at all, so merge refuses to run.
   const versioning = versioningConfigFrom(deps);
   if (!versioning.enabled) {
     return { action: "created", reason: "snapshot_unavailable" };
@@ -647,32 +505,11 @@ export async function applySemanticMergeAtPersist(
     return { action: "created", reason: "snapshot_failed" };
   }
 
-  // Round N+16 (C): `committedFactHash` — passed ONLY on the degraded path —
-  // registers the hash of what storage actually HOLDS. The default reader
-  // (`restoreFactHashAfterApproval` → `corpusRegisteredHashes`) prefers the
-  // PERSISTED frontmatter `contentHash`, which the degraded record still
-  // carries from BEFORE the merge, so routing the degraded repair through it
-  // re-registered the stale pre-merge identity and left the merged body
-  // unindexed for exact dedup.
   const repairIndexes = async (committedFactHash?: string): Promise<void> => {
-    // Hash index: remove the old form, add the new form, in the same
-    // corpus-registered identity the write path uses. Both helpers are
-    // fact-category no-ops, mirroring `contentHashSource` on the write path.
-    // The index rebuilds from the corpus on restart, so a failure here is
-    // logged, not fatal.
     try {
       await options.storage.removeFactContentHashesForMemories([target]);
       if (committedFactHash !== undefined) {
-        // Round N+20 (B): body-coupled — a writer that replaced the target
-        // after this writer's content commit keeps its own record (and its
-        // own hash); registering ours would be a phantom exact-dedup hit.
         await options.storage.registerFactContentHash(decision.targetId, committedFactHash, committedContent);
-        // Round N+19 (B): also persist the repaired identity in the
-        // frontmatter — the index registration is process-local state over
-        // a persisted stale `contentHash`, and a restart's corpus rebuild
-        // prefers the persisted value, which would discard this repair.
-        // CAS-guarded and non-fatal: a concurrent writer that already
-        // replaced the record keeps its own (correct) identity.
         await persistRepairedContentHash(
           options.storage,
           decision.targetId,
@@ -687,8 +524,6 @@ export async function applySemanticMergeAtPersist(
         `semantic-merge: hash-index sync failed for ${decision.targetId} (non-fatal; index rebuilds from corpus): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    // Reindex the merged target or its new content stays undiscoverable until
-    // unrelated maintenance runs (checklist #31).
     try {
       await deps.indexPersistedMemory(options.storage, decision.targetId);
     } catch (err) {
@@ -698,10 +533,6 @@ export async function applySemanticMergeAtPersist(
     }
   };
 
-  // Step 3 — update in place, preserving the id, via compare-and-swap on the
-  // snapshot just read: a writer landing between the read and the write must
-  // win rather than be overwritten from a stale body. The active-target check
-  // above makes a tombstone block structurally impossible here.
   let casRevision: string | undefined; // #2813 (P1): OUR content CAS's receipt — feeds the patch stamp below and the catch's rollback comparison
   let mergePatch: MergeFrontmatterUpdate | undefined;
   try {
@@ -715,10 +546,6 @@ export async function applySemanticMergeAtPersist(
       actor: "semantic-merge",
     });
     if (!updated) {
-      // Round N+13 (B): the CAS lost the race, so no merge committed — roll
-      // the staged snapshot back out or this failed attempt leaves a
-      // duplicate history entry a later successful prune would trade real
-      // rollback states for.
       await discardMergedTargetSnapshot(
         target.path,
         versioning,
@@ -729,45 +556,20 @@ export async function applySemanticMergeAtPersist(
       return { action: "created", reason: "target_changed" };
     }
     casRevision = updated; // fix A: a successful CAS returns the revision it landed; a later rollback compares against it
-    // The provenance patch must land on OUR merged body. An id-keyed patch
-    // re-reads and stamps whatever the latest row holds, so a writer landing
-    // after the content commit would receive this merge's provenance while
-    // its own body stood — and the caller would still be told "merged".
-    // Verify the snapshot, then patch it through the conditional API so the
-    // window between the verify and the patch is closed by storage itself.
     const merged = await readTargetSnapshot(options.storage, target);
     if (!merged || merged.content !== committedContent) {
       throw new Error("target replaced before the provenance patch");
     }
     const mergedRawBody = rawPreCitationMergedBody(deps, committedContent);
-    // Finding A (round N+3) — intent parity. With intent routing on, the
-    // create path stamps intentGoal/intentActionType/intentEntityTypes from
-    // the body it persists, and recall-search-pipeline scores intent
-    // compatibility from exactly those fields; a merge that left the
-    // target's stale values would misroute the newly merged claims. The
-    // patch recomputes them with the SAME call the write path runs
-    // (`${category} ${tags} ${content}`) over the committed record — its own
-    // category and tags plus the canonical RAW pre-citation merged body — so
-    // the committed values equal what an ordinary write of the same body
-    // would persist. An empty entityTypes list clears a stale field, exactly
-    // as serialization omits it on a fresh write.
     const mergedIntent = resolveConversationContextCapabilities(deps.config).intentRouting
       ? inferIntentFromText(
           `${merged.frontmatter.category} ${(merged.frontmatter.tags ?? []).join(" ")} ${mergedRawBody}`,
         )
       : undefined;
-    // Item B — `updateMemoryIfUnchanged` keeps the target's old
-    // `frontmatter.contentHash`, so the patch must restamp the identity the
-    // write path would register: the hash of the SAME canonical form normal
-    // persistence hashes — the sanitized RAW pre-citation body (round N+2 C).
-    // Facts only, mirroring `contentHashSource` on the write path.
     const mergedFactHash =
       options.category === "fact"
         ? ContentHashIndex.computeHash(sanitizeMemoryContent(mergedRawBody).text)
         : undefined;
-    // Finding B — the incoming fact's suggested navigation links attach to
-    // the target here, in the same conditional patch (the fact is never
-    // created on this path, so the create path's `links` carrier cannot run).
     const mergedLinks = mergeMemoryLinks(
       merged.frontmatter.links,
       options.incomingLinks,
@@ -776,24 +578,14 @@ export async function applySemanticMergeAtPersist(
     const patched = await options.storage.writeMemoryFrontmatterIfUnchanged(
       merged,
       {
-        // #2807: business/event time, exactly what an ordinary write would
-        // stamp — receipt identity is the sidecar token storage mints.
         updated: mergePatch.updated,
         derived_via: mergePatch.derived_via,
         reinforcement_count: mergePatch.reinforcement_count,
         sources: mergePatch.sources,
         ...(mergedFactHash !== undefined ? { contentHash: mergedFactHash } : {}),
-        // Finding B — a weaker incoming provenance retags the combined body
-        // to the least-trusted value instead of letting unverified new
-        // claims ride the target's stronger memory-level tag.
         ...(parity.ok && parity.provenanceFloor !== undefined
           ? { provenance: parity.provenanceFloor }
           : {}),
-        // Final round (A) — min(incoming, target) confidence: the merged
-        // record keeps the lower score, and the tier that score maps to,
-        // so lifecycle scoring and the committed-record promotion payload
-        // can never treat the combined body as higher-confidence than the
-        // create path would have stored for the incoming fact alone.
         ...(parity.ok && parity.confidenceFloor !== undefined
           ? {
               confidence: parity.confidenceFloor,
@@ -814,36 +606,6 @@ export async function applySemanticMergeAtPersist(
     if (!patched) throw new Error("frontmatter patch rejected (target changed)");
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    // A committed content update means the merged text may be IN the target.
-    // Reporting `created` while it is would write the fact a second time and
-    // leave those claims without the incoming provenance, so `created` is
-    // reachable only once storage has been re-read and confirms the target no
-    // longer holds this merge's unprovenanced body.
-    //
-    // #2807 (finding 2): the flag alone cannot distinguish a CAS that threw
-    // BEFORE changing the target (lock acquisition, transient I/O) from one
-    // that threw AFTER the write committed — and both left the staged
-    // snapshot `pending` forever, which pruneExcessVersions deliberately
-    // excludes, so repeated contention grew history past
-    // maxVersionsPerPage with snapshots of bodies storage never (or no
-    // longer) holds. Reread the target instead of trusting the flag.
-    // #2813 (P1): ownership comes from the CAS's own commit identity —
-    // storage stamps the thrown error with the revision its write landed
-    // (markCasCommittedRevision) — NEVER from body equality: a concurrent
-    // writer's identical deterministic merge is byte-for-byte this writer's
-    // merged body, so content comparison would misattribute their commit,
-    // and the revert below would CAS-replace their valid merge with the
-    // pre-merge body while their patched provenance stood.
-    //   - receipt present → OUR write landed (throw after commit) → revert,
-    //     else degraded success — and the rollback verifies the standing
-    //     record still carries the receipt's revision (#2813 P1, round 2);
-    //     clean up OUR staged duplicate, leave theirs untouched, report the
-    //     degraded merged outcome (never `created`: storage already holds
-    //     these claims);
-    //   - no receipt, pre-merge body → the write never landed → the snapshot
-    //     is a duplicate and goes, `created` is honest;
-    //   - no receipt, replaced by another writer or unreadable →
-    //     unverifiable → keep-side, the snapshot stays.
     const committedRevision = casCommittedRevisionOf(err) ?? casRevision; // fix A: patch-path failures carry no error receipt — fall back to the success receipt
     const landed = committedRevision !== undefined;
     if (!landed) {
@@ -885,11 +647,6 @@ export async function applySemanticMergeAtPersist(
         return { action: "created", reason: "update_failed" };
       }
     }
-    // #2813 (P1, round 2): the receipt was used only as a boolean — never
-    // compared with the standing record — so writer B's identical commit
-    // after our lock released was reverted as ours. Equal revision → ours,
-    // safe to roll back; advanced → B's — the same handling as the no-receipt
-    // other-writer branch above; never revert theirs.
     const revert = landed
       ? await revertMergedContent(options.storage, target, committedContent, committedRevision)
       : undefined;
@@ -916,17 +673,6 @@ export async function applySemanticMergeAtPersist(
       log.error(
         `semantic-merge: ${decision.targetId} holds merged content without provenance metadata and the rollback failed (${detail}); snapshot ${versionId} holds the pre-merge state — recover with revertToVersion. Not creating a duplicate fact.`,
       );
-      // Item C — the merged body IS committed; repair the indexes before
-      // reporting the degraded success. N+16 (C): the record's persisted
-      // frontmatter hash is the stale PRE-merge identity, so register the
-      // COMMITTED body's hash instead.
-      // Round N+20 (C): degraded SUCCESS commits the recovery snapshot —
-      // the body is committed and kept, so the staged version clears its
-      // `pending` flag under the same page lock as a finalizing prune.
-      // Without it pruneExcessVersions excluded every degraded recovery
-      // point forever, so repeated degraded merges grew the manifest and
-      // snapshot directory past maxVersionsPerPage and no later successful
-      // merge could prune them back.
       await finalizeMergedVersionPrune(target.path, versioning, options.storage.dir, decision.targetId, versionId);
       await repairIndexes(committedMergedFactHash(deps, options.category, committedContent));
       return {
@@ -936,11 +682,6 @@ export async function applySemanticMergeAtPersist(
         provenancePatched: false,
       };
     }
-    // Round N+13 (B): with the content committed and the revert above
-    // confirmed, storage holds the pre-merge body, so the staged snapshot of
-    // that same body is a duplicate and goes. (The degraded-success branch
-    // above keeps it as the recovery point. An unverifiable throw — target
-    // replaced or unreadable — is keep-side, the snapshot stays.)
     if (landed) {
       await discardMergedTargetSnapshot(
         target.path,
@@ -955,11 +696,8 @@ export async function applySemanticMergeAtPersist(
     );
     return { action: "created", reason: "update_failed" };
   }
-  // Round N+12 (A): the prune finalizes only after BOTH compare-and-swaps
-  // commit — full rationale on finalizeMergedVersionPrune. A degraded
   await finalizeMergedVersionPrune(target.path, versioning, options.storage.dir, decision.targetId, versionId);
 
-  // Steps 4+5 — hash-index resync and reindex (see repairIndexes above).
   await repairIndexes();
 
   log.info(
@@ -973,20 +711,6 @@ export async function applySemanticMergeAtPersist(
   };
 }
 
-/**
- * Finding B: for a qualifying write the create path stores the incoming
- * extraction's text as a verbatim artifact anchored to the memory it just
- * wrote. A merge that skipped that step would permanently drop the anchor
- * the same extraction would have stored, so a successful merge persists the
- * artifact against the MERGED target — same gates as the write path
- * (verbatim artifacts enabled, category qualifies, confidence at or above
- * the threshold). A merge target is always active and a pending_review fact
- * never reaches the merge, so the write path's post-write guards cannot
- * apply here. Round N+17 (B): this write is the merge path's LAST durable
- * effect (create-path ordering), and a rejection is isolated inside to a
- * logged warning — the committed target stays discoverable; failures never
- * abort the merge batch.
- */
 export async function writeMergedVerbatimArtifact(
   deps: ExtractionPersistDeps,
   storage: StorageManager,
@@ -1022,42 +746,12 @@ export async function writeMergedVerbatimArtifact(
       ...(input.toolScoped ? { toolScoped: true as const } : {}),
     });
   } catch (err) {
-    // Round N+17 (B): the caller runs this LAST, after every durable merge
-    // effect — log and skip; the committed target stays discoverable.
     log.warn(
       `semantic-merge: verbatim artifact write failed for ${targetId} (non-fatal; the committed target remains discoverable): ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }
 
-/**
- * Round N+5 (A+B) + N+6 (A/B/C): the create path's write is followed by
- * post-write stages that OBSERVE the persisted record — graph-edge
- * construction and the behavior-signal ledger. The merge path's `continue`
- * skipped both, so a judge-accepted merge committed new claims that
- * graph-mode recall and runtime-policy learning could never see. This helper
- * runs them for the SURVIVING target, derived from the re-read committed
- * record exactly like `buildMergedTargetPromotionPayload`: category,
- * entityRef, graph content, AND the relative graph path come from the
- * committed record, never the incoming extraction and never a hot-only
- * path-map fallback — the graph context is built from a hot-only corpus
- * scan, so a cold-tier target is absent from it and only `committed.path`
- * carries the true location (N+6 A). The graph content is the canonical RAW
- * pre-citation form — the same body the create path hands `buildGraphEdge`.
- * The target's prior generated edges are removed first in EVERY enabled
- * graph type — entity from-side, time/causal inbound — so a re-merge
- * REPLACES them instead of re-appending duplicates into append-only JSONLs
- * that spreadingActivation would then double-count (N+6 B, N+7 G); if the
- * replacement build fails, the rows the failed build already appended are
- * removed and the removed edges restored, so failure leaves EXACTLY the old
- * set (N+7 E, N+10 C). The target joins the
- * batch's thread episode list at its END — deduped first when already
- * present — so the merge is the thread's latest event and later facts in
- * the same extraction chain their time/causal adjacency through it (N+6 C,
- * N+7 F). Graph failures are fail-open (the committed merge stands,
- * matching the create path's try/catch); the caller owns the ledger flush,
- * so the behavior events are RETURNED for its storage.
- */
 export async function runMergedTargetPostEffects(
   deps: ExtractionPersistDeps,
   storage: StorageManager,
@@ -1086,14 +780,6 @@ export async function runMergedTargetPostEffects(
     confidence: input.incomingConfidence,
     source: "extraction",
   });
-  // N+6 C + round N+7 (F): the normal write path pushes every freshly
-  // persisted memory onto the thread episode list (extraction-persist.ts
-  // post-write block); the merge must record the target as the thread's
-  // LATEST event. A target already in the list (created in this thread
-  // earlier, or pushed by a previous merge in this batch) must MOVE to the
-  // end: leaving it at its old position makes the NEXT fact's
-  // recent-in-thread resolution chain through an older episode instead of
-  // the merge that just happened.
   if (input.threadEpisodeIdsForGraph) {
     const episodes = input.threadEpisodeIdsForGraph;
     const existing = episodes.lastIndexOf(merge.targetId);
@@ -1101,9 +787,6 @@ export async function runMergedTargetPostEffects(
     episodes.push(merge.targetId);
   }
   if (!input.graphCaps.multiGraphMemory) return signals;
-  // #2807 (finding 4): whether the remove-and-rebuild below finalized. A
-  // false or thrown exit means a ROLLBACK ran (or nothing mutated), and the
-  // owning index's edge cache must be invalidated after the catch.
   let rewriteInstalled = false;
   try {
     const committed = await storage.getMemoryByIdIncludingArchived(merge.targetId);
@@ -1111,47 +794,17 @@ export async function runMergedTargetPostEffects(
     if (inferMemoryStatus(committed.frontmatter, committed.path) !== "active") return signals;
     const entityRef = committed.frontmatter.entityRef;
     const rawBody = rawPreCitationMergedBody(deps, merge.mergedContent);
-    // N+6 A: derive the relative path from the cold-aware committed record.
-    // The graph context's path map was built from a HOT-only corpus scan, so
-    // a cold-tier target is missing from it and the category-dir fallback
-    // would fabricate a hot node path that graph recall cannot resolve.
     const memoryRelPath = path.relative(storage.dir, committed.path);
     input.graphContext.memoryPathById.set(merge.targetId, memoryRelPath);
-    // The target predates this extraction, so a corpus-loaded context already
-    // holds an entry for it — refresh that entry's body in place instead of
-    // appending a duplicate the sibling scan would double-count.
     const all = input.graphContext.allMemsForGraph;
     if (Array.isArray(all)) {
       const entry = all.find((m) => path.relative(storage.dir, m.path) === memoryRelPath);
       if (entry) entry.content = rawBody;
     }
-    // N+6 B + round N+7 (E/G) + round N+10 (C) + round N+12 (C): onMemoryWritten is
-    // append-only, so a re-merge must first drop the target's prior
-    // generated edges in EVERY enabled graph type — entity from-side,
-    // time/causal inbound — or each later merge re-appends them and
-    // spreadingActivation double-counts the duplicates while the JSONLs
-    // The removed edges are captured; when the replacement build FAILS or is
-    // superseded, the rows THAT build appended — returned by identity from
-    // onMemoryWritten (round N+14), or carried on its rejection when it
-    // throws mid-append (round N+16 A) — are removed first, never a
-    // node-wide sweep, so rows a newer writer rebuilt after this removal
-    // survive. The
-    // prior edges are then RESTORED per graph type, skipped only where a
-    // newer writer's rebuilt rows are live in the file — so failure leaves
-    // EXACTLY the old set, and supersession leaves exactly the newer
-    // writer's set: never none, never old plus partial-new.
     const rewriteTypes: GraphType[] = [];
     if (input.graphCaps.entityGraph) rewriteTypes.push("entity");
     if (input.graphCaps.timeGraph) rewriteTypes.push("time");
     if (input.graphCaps.causalGraph) rewriteTypes.push("causal");
-    // Round N+12 (C) + #2837: the remove-and-rebuild is revision-guarded
-    // end to end (see rewriteMergedTargetGraphEdges) — a writer committing
-    // a newer body mid-rebuild aborts this install instead of clobbering
-    // its edges. The guard compares the truthful receipt STATUS (#2807:
-    // the dedicated CAS revision token, never public `updated`), and an
-    // UNAVAILABLE sidecar SKIPS the effect entirely: passing a fail-open
-    // undefined into the install is what let an unchecked replacement
-    // install when both sidecar reads failed.
     const receiptStatus = await storage.readCasRevisionStatus(committed.path);
     if (receiptStatus.status === "unavailable") {
       log.warn(
@@ -1185,13 +838,6 @@ export async function runMergedTargetPostEffects(
     /* fail-open: the committed merge stands; the create path's graph block fails open too */
   }
   if (!rewriteInstalled) {
-    // #2807 (finding 4): the rewrite rolled back — superseded revision, a
-    // failed build, or a pre-rewrite read error — after the build's
-    // onMemoryWritten had already pushed this writer's appended rows into
-    // the owning GraphIndex's warm edge cache. The rollback repaired only
-    // the JSONL files; without invalidating the cache, spreadingActivation
-    // kept serving the rolled-back edges for the full five-minute TTL.
-    // Invalidation is idempotent and cheap when nothing was cached.
     deps.invalidateGraphEdgeCache?.(storage);
   }
   return signals;

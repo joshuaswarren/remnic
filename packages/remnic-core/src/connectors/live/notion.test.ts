@@ -14,15 +14,6 @@ import {
 } from "./notion.js";
 import type { ConnectorCursor } from "./framework.js";
 
-/**
- * Tests for the Notion connector (#683 PR 3/N). All Notion API calls are
- * stubbed via the `fetchFn` test hook — the test suite never touches the
- * network.
- *
- * Per CLAUDE.md privacy rules: no real tokens, no real database ids, no
- * real page ids. All inputs are obviously-synthetic strings shaped roughly
- * like the real values.
- */
 
 // ---------------------------------------------------------------------------
 // Synthetic test data
@@ -717,7 +708,6 @@ test("isTransientNotionError classifies common error shapes", () => {
   assert.equal(isTransientNotionError({ code: "EAI_AGAIN" }), true);
   // AbortError.
   assert.equal(isTransientNotionError({ name: "AbortError" }), true);
-  // Bare Error with no metadata — conservatively transient.
   assert.equal(isTransientNotionError(new Error("unknown")), true);
   // Non-objects.
   assert.equal(isTransientNotionError(null), false);
@@ -821,7 +811,6 @@ test("a 403 on block fetch is treated as terminal (skip page, cursor advances)",
 
   const result = await connector.syncIncremental({ cursor, config });
   assert.deepEqual(result.newDocs, []);
-  // Cursor advances even for terminal errors so we don't retry forever.
   const payload = JSON.parse(result.nextCursor.value) as { pages: Record<string, string> };
   assert.ok(payload.pages[PAGE_ID_1]);
 });
@@ -1036,7 +1025,6 @@ test("validateConfig is enforced again on every sync pass", async () => {
 // ---------------------------------------------------------------------------
 
 test("skipped empty pages record their revision so they aren't re-fetched on every poll", async () => {
-  // Codex P2: empty/too-large branches must update page watermark.
   const page = makeSyntheticPage(PAGE_ID_1, "2026-04-26T08:00:00.000Z");
   const fetchFn = makeFetch([
     {

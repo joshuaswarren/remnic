@@ -1,9 +1,3 @@
-// In-process claim drain (daemon backlog scheduler task body): the runner
-// must drain a claim through the shared extraction queue WITHOUT the global
-// buffer swap, group the claim's turns by captured extraction scope (exact
-// pins + CURRENT policy re-applied from the original binding), keep failing
-// chunks as durable retryable backlog (no drop, no side file), and leave the
-// claim retryable across cancel / dead-lease adoption.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";
@@ -97,9 +91,6 @@ test("an in-process claim drain never swaps the live buffer: concurrent live sav
     const draining = d.runner.drainSession("sess-a", { ownerId: "drain-1" });
     await gate.entered();
 
-    // While the claim drain holds the extraction open, the foreground owner
-    // keeps capturing: a live save must land in LIVE session storage, never
-    // inside the claim's storage view.
     await d.orchestrator.buffer.addTurn("sess-b", turn("b2", "sess-b", "2026-11-01T00:01:00.000Z"));
     await d.orchestrator.buffer.save();
     const persisted = await d.orchestrator.storage.loadBuffer();
@@ -160,7 +151,6 @@ test("a mixed-scope claim drains each group under its exact captured scope", asy
       ["native one"],
       "the native group extracts alone"
     );
-    // Durable outputs land in the EXACT captured namespaces.
     const aliceRoot = await resolveNamespaceStorageRoot(d.config, "alice");
     const defaultRoot = await resolveNamespaceStorageRoot(d.config, "default");
     assert.ok(
@@ -177,8 +167,6 @@ test("a mixed-scope claim drains each group under its exact captured scope", asy
 });
 
 test("a policy-denied group stays pending, is reported, and never blocks other groups", async () => {
-  // Namespaces DISABLED: the pinned non-default namespace can no longer be
-  // honored, so the pinned group is denied while native work still drains.
   const d = await makeDrainer({ namespacesEnabled: false, defaultNamespace: "default" });
   try {
     const pinned: BufferTurn = {
@@ -215,7 +203,6 @@ test("a policy-denied group stays pending, is reported, and never blocks other g
 test("a repeatedly failing group never drops: the claim keeps every turn and the lease is released", async () => {
   const d = await makeDrainer();
   try {
-    // Fail ONLY the failing session's extraction, once; others succeed.
     const original = d.calls.push.bind(d.calls);
     let failuresLeft = 1;
     Object.defineProperty(d.calls, "push", {
@@ -239,7 +226,6 @@ test("a repeatedly failing group never drops: the claim keeps every turn and the
     );
     assert.equal(existsSync(d.runner.claims.leasePathForTest("sess-fail")), false, "the lease is released for retry");
     assert.equal(existsSync(path.join(d.memoryDir, "dropped")), false, "no side-file recovery copy was written");
-    // And the retry genuinely drains it.
     const retry = await d.runner.drainSession("sess-fail", { ownerId: "drain-1" });
     assert.equal(retry.status, "drained");
   } finally {
@@ -279,7 +265,6 @@ test("cancelling mid-drain keeps the claim retryable; a rerun finishes it", asyn
 test("a large pinned accepted group chunks to the model budget before any clear", async () => {
   const d = await makeDrainer(NAMESPACED);
   try {
-    // Shadow the private budget seam (house field-seam pattern): 200 chars.
     Object.defineProperty(d.orchestrator, "extractionWindowBudgetChars", {
       value: () => 200,
       configurable: true,

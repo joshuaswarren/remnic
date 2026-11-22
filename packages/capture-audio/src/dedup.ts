@@ -17,9 +17,7 @@ export interface DedupSegment {
   endUtc: string;
 }
 
-/** Default temporal tolerance for "overlapping time" (ms). */
 const OVERLAP_TOLERANCE_MS = 5_000;
-/** Default word-level Jaccard threshold for "near-identical text". */
 const JACCARD_THRESHOLD = 0.8;
 
 function wordSet(text: string): Set<string> {
@@ -44,7 +42,6 @@ export function wordJaccard(a: string, b: string): number {
   return union === 0 ? 0 : intersection / union;
 }
 
-/** True when two segments overlap in time, expanded by `toleranceMs` on each side. */
 function overlapsWithin(a: DedupSegment, b: DedupSegment, toleranceMs: number): boolean {
   const aStart = Date.parse(a.startUtc);
   const aEnd = Date.parse(a.endUtc);

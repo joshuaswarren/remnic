@@ -1,9 +1,3 @@
-// Changeset-side generation atomicity for offline sync (issue #3150).
-// Split from offline-sync-embedding-generation.ts to respect the 1200-line
-// new-file cap: the snapshot-side transaction machinery stays there, this
-// module owns the CHANGESET protocol — the `embeddingGenerations` manifest
-// (sender-side builder + receiver-side validation) and the routing that
-// applies manifested generations through the shared locked atomic swap.
 import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import {
@@ -43,18 +37,7 @@ async function pathExists(absPath: string): Promise<boolean> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Changeset-side generation atomicity (issue #3150)
 //
-// Inline changesets are DIFFS, not complete generations: a push that rewrites
-// two of five shards carries only those two records. To reuse the snapshot
-// path's single atomic swap without sweeping unchanged shards, the sender
-// attaches an `embeddingGenerations` manifest — the COMPLETE post-change
-// membership of every touched generation — and the receiver assembles the
-// full incoming set: changed members ride inline, unchanged members carry
-// over from local bytes hash-verified against the manifest, removed members
-// are swept by the swap. Everything below shares the generation lock and the
-// secure-staging rules with the snapshot path.
 // ---------------------------------------------------------------------------
 
 export interface OfflineSyncChangesetGenerationMember {
@@ -63,9 +46,7 @@ export interface OfflineSyncChangesetGenerationMember {
   bytes: number;
 }
 
-/** Complete post-change membership of ONE sharded generation. */
 export interface OfflineSyncChangesetGeneration {
-  /** The generation dir, e.g. `state/embeddings`. */
   shardDir: string;
   members: OfflineSyncChangesetGenerationMember[];
 }
@@ -134,8 +115,6 @@ export function normalizeChangesetGenerations(
     generations.push({ shardDir, members });
   }
 
-  // Coherence with the change list: a manifest-bearing sender must account
-  // for EVERY upserted shard, and no delete may target a surviving member.
   const memberByPath = new Map<string, OfflineSyncChangesetGenerationMember>();
   for (const generation of generations) {
     for (const member of generation.members) memberByPath.set(member.path, member);
@@ -183,7 +162,6 @@ function deferGenerationConflicts(
 }
 
 export interface ChangesetGenerationApplication {
-  /** Paths the per-file apply loop must skip (published, swept, or removed). */
   transactionHandled: Set<string>;
   /** Conflicts for deferred generations — surfaced so the push side never
    * checkpoints a deferred generation as applied. */
@@ -191,15 +169,12 @@ export interface ChangesetGenerationApplication {
   conflictedPaths: Set<string>;
   appliedUpserts: number;
   appliedDeletes: number;
-  /** Result-map updates for published members. */
   writtenStates: Map<string, OfflineSyncFileState>;
-  /** Result-map removals for swept/removed members. */
   removedPaths: Set<string>;
 }
 
 export interface ChangesetGenerationApplyOptions {
   root: SafeArchiveRoot;
-  /** NORMALIZED changeset (manifest validated by normalizeChangesetGenerations). */
   changeset: { changes: readonly OfflineSyncChange[]; embeddingGenerations?: readonly OfflineSyncChangesetGeneration[] };
   incomingBuffers: ReadonlyMap<string, Buffer>;
   currentMap: ReadonlyMap<string, OfflineSyncFileState>;
@@ -210,7 +185,6 @@ export interface ChangesetGenerationApplyOptions {
   now: number;
 }
 
-/** Change-list maps scoped per generation dir. */
 type OfflineSyncChangesByDir = Map<string, OfflineSyncChange[]>;
 
 /**
@@ -263,9 +237,6 @@ export async function applyChangesetEmbeddingGenerations(
     }
   }
 
-  // Fail closed BEFORE any publication: custom storage IO without the
-  // staging pair would stage the incoming generation in plaintext (same rule
-  // and message as the snapshot apply).
   if (
     (shardUpsertChanges.size > 0 || markerUpsertChanges.size > 0) &&
     options.customIoPresent &&
@@ -309,7 +280,6 @@ export async function applyChangesetEmbeddingGenerations(
     return transaction;
   };
 
-  /** Incoming set + reconstructed shared base for ONE manifested generation. */
   const manifestedInput = (
     shardDirRel: string,
     generation: OfflineSyncChangesetGeneration,
@@ -328,7 +298,6 @@ export async function applyChangesetEmbeddingGenerations(
         if (change.baseSha256 !== undefined) baseStates.set(member.path, { sha256: change.baseSha256 });
         continue;
       }
-      // Unchanged member: the manifest digest IS its shared-base evidence.
       baseStates.set(member.path, { sha256: member.sha256 });
     }
     for (const change of tombstones) {
@@ -349,12 +318,6 @@ export async function applyChangesetEmbeddingGenerations(
       ),
       incomingBuffers: options.incomingBuffers,
       baseStates,
-      // Manifested deletes are pre-authorized removals: the retry after a
-      // response loss must re-apply idempotently instead of diverging
-      // (#3150 review), and the swept members need their deletion revisions
-      // recorded after the swap (the per-file loop never sees them). The
-      // map is present whenever tombstones exist — even when none carries
-      // mtimeMs — so the recording pass runs and defaults to `now`.
       justifiedRemovals: new Set(tombstones.map((change) => change.path)),
       deletionMtimeByPath: tombstones.length === 0
         ? undefined
@@ -379,8 +342,6 @@ export async function applyChangesetEmbeddingGenerations(
     const generation = manifest.get(shardDirRel);
     if (shardUpsertChanges.has(shardDirRel) || (generation && deleteChangesByDir.has(shardDirRel))) {
       if (!generation) {
-        // Legacy sender: shard upserts without a manifest cannot prove
-        // complete membership — defer instead of risking a mixed generation.
         const deferred = deferGenerationConflicts(
           dirChanges.get(shardDirRel) ?? [],
           options.currentMap,
@@ -394,11 +355,6 @@ export async function applyChangesetEmbeddingGenerations(
       continue;
     }
     if (markerUpsertChanges.has(shardDirRel)) {
-      // Cross-layout: an incoming legacy marker replaces the generation as a
-      // whole. No manifest exists (post-change membership is the marker), so
-      // base evidence comes from the marker change alone; a receiver-local
-      // sharded generation the marker base cannot account for defers via the
-      // transaction's under-lock census check rather than being swept.
       const markerChange = (markerUpsertChanges.get(shardDirRel) ?? [])[0] as OfflineSyncUpsertChange | undefined;
       if (!markerChange) continue;
       const stateDirRel = shardDirRel.slice(0, -stateDirSuffix.length);
@@ -418,19 +374,9 @@ export async function applyChangesetEmbeddingGenerations(
           ? undefined
           : new Map([[markerRel, { sha256: markerChange.baseSha256 }]]),
       });
-      // The conversion consumes the marker change whole: on a published
-      // transaction the per-file loop must not re-write the legacy marker
-      // outside the atomic swap (#3150 review). On deferral the marker
-      // change is already in conflictedPaths, so it stays uncheckpointed.
       if (!transaction.deferredLocalDivergence) result.transactionHandled.add(markerRel);
       continue;
     }
-    // Delete-only without a manifest: whole-generation removal ONLY when the
-    // changeset tombstones EVERY local member (complete evidence, mirrors the
-    // snapshot rule). Incomplete manifest-less deletion evidence defers the
-    // whole directory as `embedding_generation_manifest_required` conflicts;
-    // the complete published generation survives and is never broken apart by
-    // independent shard deletes. Only non-generation files keep per-file deletes.
     const deletes = deleteChangesByDir.get(shardDirRel) ?? [];
     const deletePaths = new Set(deletes.map((change) => change.path));
     const stateDirRel = shardDirRel.slice(0, -stateDirSuffix.length);
@@ -447,10 +393,6 @@ export async function applyChangesetEmbeddingGenerations(
     for (const name of localShardNames) localMembers.push(`${shardDirRel}/${name}`);
     if (localMembers.length === 0) continue;
     if (!localMembers.every((relPath) => deletePaths.has(relPath))) {
-      // Incomplete deletion evidence: applying the evidenced subset would
-      // break the local generation apart. Defer the WHOLE dir as conflicts —
-      // the complete published generation survives and the push side cannot
-      // checkpoint the deletes as applied.
       const deferred = deferGenerationConflicts(deletes, options.currentMap, "embedding_generation_manifest_required");
       result.conflicts.push(...deferred.conflicts);
       for (const conflicted of deferred.conflictedPaths) result.conflictedPaths.add(conflicted);
@@ -486,7 +428,6 @@ export async function applyChangesetEmbeddingGenerations(
 
 export interface ChangesetGenerationManifestOptions {
   changes: readonly OfflineSyncChange[];
-  /** The sender's complete current state (post-change generation members). */
   currentFiles: readonly OfflineSyncFileState[];
   baseFiles: readonly OfflineSyncFileState[];
   /** The exact exclusion predicate the change walk used — any member it
@@ -526,7 +467,6 @@ export function buildChangesetGenerationManifest(
       if (membership?.shardDir === shardDirRel) memberPaths.add(relPath);
     }
     for (const change of changes) memberPaths.add(change.path);
-    // Filter-to-omit: one excluded member omits the whole generation.
     let omitted = false;
     for (const relPath of memberPaths) {
       if (options.isExcluded(relPath)) {

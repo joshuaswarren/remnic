@@ -92,9 +92,6 @@ test("purgeMemories invalidates projection rows for hard-deleted memories", asyn
 test("purgeMemories invalidates projection rows for already-absent files but not failed deletes, and dry-run never mutates", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-purge-projection-branches-"));
   try {
-    // Real projection with two rows; candidates come from a mock storage so the
-    // unlink outcomes are deterministic: one path is already absent (ENOENT),
-    // the other is a non-empty directory (unlink fails, not ENOENT).
     const realStorage = new StorageManager(dir);
     const first = await realStorage.writeMemory("fact", "purge branch enoent", { source: "test" });
     const second = await realStorage.writeMemory("fact", "purge branch failure", { source: "test" });
@@ -121,7 +118,6 @@ test("purgeMemories invalidates projection rows for already-absent files but not
     };
     const future = () => new Date(Date.now() + 86_400_000);
 
-    // Dry-run: no projection mutation.
     await purgeMemories({ storage: mockStorage as never, olderThanMs: 1, tier: "all", dryRun: true, now: future });
     assert.equal(readProjectedMemoryBrowse(dir, { limit: 5, offset: 0 })?.total, 2);
 
@@ -132,7 +128,6 @@ test("purgeMemories invalidates projection rows for already-absent files but not
     assert.equal(result.errors.filter((e) => e.id === second.id).length, 1);
     const page = readProjectedMemoryBrowse(dir, { limit: 5, offset: 0 });
     assert.ok(page);
-    // ENOENT row invalidated; failed-delete row keeps its projection entry.
     assert.equal(page.total, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });

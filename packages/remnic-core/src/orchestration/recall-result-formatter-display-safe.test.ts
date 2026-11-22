@@ -6,7 +6,6 @@ test("displaySafeRecallSnapshot relativizes included-memory and tier-anchor path
   const memoryDir = "/srv/memory";
   const flatAbs = `${memoryDir}/facts/2026-07-19/b.md`;
   const nsResultAbs = `${memoryDir}/namespaces/tok-team/facts/2026-07-19/r.md`;
-  // An anchor that is NOT among the included memories — no authoritative owner.
   const unmatchedAnchorAbs = `${memoryDir}/namespaces/ns-616c706861/facts/2026-07-19/a.md`;
   const snapshot = {
     includedMemories: [
@@ -34,15 +33,11 @@ test("displaySafeRecallSnapshot relativizes included-memory and tier-anchor path
     { id: "mem-r", path: "team-alpha/facts/2026-07-19/r.md", namespace: "team-alpha" },
   ]);
   assert.deepEqual(safe.tierExplain.sourceAnchors, [
-    // Anchor coincides with a namespaced included memory → reuses its authoritative namespace.
     { path: "team-alpha/facts/2026-07-19/r.md", lineRange: [1, 2] },
-    // Anchor not among the included memories → truthful storage-relative segment, never a decode.
     { path: "namespaces/ns-616c706861/facts/2026-07-19/a.md" },
-    // Anchor coincides with a default-namespace included memory → memoryDir-relative.
     { path: "facts/2026-07-19/b.md" },
   ]);
 
-  // The input snapshot must not be mutated — the live cache keeps absolute paths.
   assert.equal(snapshot.tierExplain.sourceAnchors[0].path, nsResultAbs);
   assert.equal(snapshot.includedMemories[1].path, nsResultAbs);
 });

@@ -1,21 +1,3 @@
-/**
- * Recall section coordinator — extracted from the orchestrator (issue #1526).
- *
- * Owns the recall-output section-budgeting subsystem: section enablement
- * lookups, per-section maxChars/number resolution, section bucket appends,
- * budget-aware section truncation, and final ordered assembly of recall
- * sections within the configured character budget. Also builds the
- * LastRecallBudgetSummary and collects the sources used for X-ray tracing.
- *
- * Behavior-preserving move from orchestrator.ts — no logic changes; the
- * orchestrator constructs one instance and keeps thin delegating methods so
- * existing call sites (recallInternal, consolidation) continue to work.
- *
- * Config is accessed through a getter callback (not captured at construction)
- * so that post-construction reassignment of the orchestrator's live
- * `config` field is honored. This mirrors the ConversationIndexCoordinator /
- * TierMigrationCoordinator accessor pattern.
- */
 
 import type { IncludedMemory, LastRecallBudgetSummary } from "../recall-state.js";
 import { estimateTokenCount } from "../token-estimate.js";
@@ -27,12 +9,6 @@ export interface RecallSectionAppendOptions {
   memoryId?: string;
   memoryPath?: string;
   memoryNamespace?: string;
-  /**
-   * #2928 — state-view packet key (canonical `stateViewPacketKeys` root).
-   * Atomic chunks sharing a packetKey are ONE evidence packet: the final
-   * budget admits or drops them together, so a historical row can never
-   * render without its linked successor. Absent on non-state rows.
-   */
   packetKey?: string;
 }
 
@@ -50,14 +26,6 @@ export type RecallSectionBuckets = Map<
   Array<string | RecallSectionChunk>
 >;
 
-/**
- * Coordinator for the recall section budgeting + assembly subsystem.
- *
- * All methods are pure with respect to the coordinator's own state — they
- * read config via the getter and operate on the caller-provided section
- * buckets. No caches are held because the config-derived values are cheap
- * to recompute and the buckets are transient (per-recall-call).
- */
 export class RecallSectionCoordinator {
   private readonly getConfig: () => PluginConfig;
   private readonly resolveSectionEnabled: (
@@ -73,13 +41,6 @@ export class RecallSectionCoordinator {
     ) => boolean;
   }) {
     this.getConfig = options.getConfig;
-    // Default to the coordinator's own config-based check so standalone usage
-    // (e.g. config-recall-pipeline tests) keeps self-gating. The orchestrator
-    // injects its own resolver so appendRecallSection flows through the same
-    // overridable isRecallSectionEnabled that the recallInternal computation
-    // gates use — keeping compute-side and append-side enablement coherent
-    // (seam 13). This preserves the recall-hardening test seam where tests
-    // override orchestrator.isRecallSectionEnabled to isolate sections.
     this.resolveSectionEnabled =
       options.resolveSectionEnabled ??
       ((id, def) => this.isRecallSectionEnabled(id, def));
@@ -463,12 +424,6 @@ export class RecallSectionCoordinator {
         let includedPostAtomicContent = false;
         const postAtomicContents: string[] = [];
         let includedLeadingContent = false;
-        // #2928 — state-view packets: atomic chunks sharing a packetKey are
-        // ONE evidence packet (a historical row plus its linked successor).
-        // The packet renders as a block at the FIRST member's position,
-        // members in incoming order, and is admitted or dropped together —
-        // the final character/token budget can never emit one side alone.
-        // Chunks without a packetKey keep the pre-#2928 per-row behavior.
         const packetFirstIndex = new Map<string, number>();
         const packetMembers = new Map<number, number[]>();
         for (const [index, chunk] of section.chunks.entries()) {
@@ -496,8 +451,6 @@ export class RecallSectionCoordinator {
         for (const [index, chunk] of section.chunks.entries()) {
           const members = chunk.atomic ? packetMembers.get(index) : undefined;
           if (chunk.atomic && chunk.packetKey && members === undefined) {
-            // Non-first packet member: decided with its block at the first
-            // member's position — never admitted alone (#2928).
             continue;
           }
           const memberIndexes = members ?? [index];

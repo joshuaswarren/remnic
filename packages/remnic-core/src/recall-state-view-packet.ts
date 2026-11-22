@@ -119,7 +119,6 @@ function compareAttachments(a: Attachment, b: Attachment): number {
 export function buildStateEvidencePackets(
   entries: readonly StateViewEntry[],
 ): StateEvidencePackets {
-  // Validate every label before any skip, dedup, or walk.
   for (const entry of entries) {
     if (!(STATE_LABELS as readonly string[]).includes(entry.stateLabel)) {
       throw new TypeError(

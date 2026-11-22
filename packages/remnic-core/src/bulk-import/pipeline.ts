@@ -1,6 +1,4 @@
 // ---------------------------------------------------------------------------
-// Bulk-import batch processing pipeline
-// ---------------------------------------------------------------------------
 
 import {
   validateImportTurn,
@@ -100,9 +98,6 @@ export function resolveBulkImportContext(
   };
 }
 
-/**
- * Format a batch of turns into a conversation transcript string.
- */
 export function formatBatchTranscript(turns: ImportTurn[]): string {
   return turns
     .map((t) => {
@@ -143,7 +138,6 @@ export async function runBulkImportPipeline(
     return result;
   }
 
-  // Validate all turns upfront; collect validation errors
   const validTurns: ImportTurn[] = [];
   for (let i = 0; i < turns.length; i += 1) {
     const issues = validateImportTurn(turns[i], i);
@@ -167,7 +161,6 @@ export async function runBulkImportPipeline(
     return result;
   }
 
-  // Process in batches
   let batchIndex = 0;
   for (let i = 0; i < validTurns.length; i += batchSize) {
     const batch = validTurns.slice(i, i + batchSize);

@@ -61,10 +61,6 @@ export interface AuditMemoryReport {
 }
 
 function isActive(memory: MemoryFile, memoryDir: string): boolean {
-  // #1955 review: legacy memories without an explicit status ARE active in
-  // normal recall (inferMemoryStatus handles missing status), so the audit
-  // must include them — otherwise injection-bearing legacy memories can
-  // never be reported or quarantined. Explicit non-active statuses bail.
   const status = memory.frontmatter.status;
   if (status !== undefined && status !== "active") return false;
   if (memory.frontmatter.archivedAt !== undefined) return false;
@@ -79,9 +75,6 @@ function parseSince(value: string | Date | undefined): Date | undefined {
     if (Number.isNaN(value.getTime())) throw new Error("invalid --since date");
     return new Date(value.getTime());
   }
-  // Strict parse (rejects calendar overflow like 2026-02-31 and trailing
-  // junk) — a silently reinterpreted date changes which memories
-  // --quarantine may mutate (#1955 review).
   return parseStrictCliDate(value, "--since");
 }
 
@@ -149,17 +142,10 @@ function lineageKey(memory: MemoryFile): string | undefined {
   return undefined;
 }
 
-/**
- * Group by lineage AND creation day: a burst is many writes in a SHORT
- * interval, so a long-lived legitimate session must not aggregate months of
- * normal writes into one quarantine-eligible bucket (#1955 review).
- */
 function sourceGroups(memories: MemoryFile[]): Map<string, MemoryFile[]> {
   const groups = new Map<string, MemoryFile[]>();
   for (const memory of memories) {
     const lineage = lineageKey(memory);
-    // Do not create an "unknown" group. Generic or absent provenance cannot
-    // establish a write burst.
     if (lineage === undefined) continue;
     const day = typeof memory.frontmatter.created === "string" ? memory.frontmatter.created.slice(0, 10) : "";
     if (!day) continue;
@@ -207,14 +193,6 @@ function writeBurstStats(groups: Map<string, MemoryFile[]>): AuditMemoryReport["
   };
 }
 
-/**
- * The screen profile an audit sweep must use, resolved through the shared
- * security capability plan (#1523) rather than read off config (#3078). The
- * sweep matches the live write path, so a memory this deployment would
- * quarantine on write does not survive once stored; a deployment with the
- * screen DISABLED keeps the `default` weighting, because the sweep must
- * never be stricter than the configured write path.
- */
 export function auditScreenProfile(config: SecurityConfigProjection): InjectionScreenProfile {
   const capabilities = resolveSecurityCapabilities(config);
   return capabilities.injectionScreen ? capabilities.injectionScreenProfile : "default";
@@ -281,9 +259,6 @@ export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promis
     for (const staleMemory of activeMemories) {
       const qInfo = quarantinePaths.get(staleMemory.path);
       if (!qInfo) continue;
-      // #1955 review: the stale snapshot from readAllMemories can be old enough
-      // that intermediate gateway writes would be lost if rewritten blindly. Fetch
-      // the live record first.
       const memory = await storage.readMemoryByPath(staleMemory.path);
       if (!memory || !isActive(memory, options.memoryDir)) continue;
       if (qInfo.injection && !qInfo.burst && !screenCandidateFact(memory.content, profile).quarantine) continue;

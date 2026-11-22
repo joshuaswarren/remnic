@@ -28,7 +28,6 @@ export async function cleanupConversationChunks(
 
       for (const d of dayDirs) {
         if (!d.isDirectory()) continue;
-        // Expect YYYY-MM-DD
         if (!/^\d{4}-\d{2}-\d{2}$/.test(d.name)) continue;
         const dayMs = new Date(d.name + "T00:00:00.000Z").getTime();
         if (!Number.isFinite(dayMs)) continue;
@@ -37,7 +36,6 @@ export async function cleanupConversationChunks(
         }
       }
 
-      // Remove empty session dirs after pruning.
       try {
         const remaining = await readdir(sessionDir);
         if (remaining.length === 0) {

@@ -2,22 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { appendFileSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 
-/**
- * Entity-mention freshness, separate from the hot-memories corpus sentinel.
- *
- * Every memory write bumps the corpus version so the hot cache stays coherent.
- * The entity mention index does not depend on heat, decay, lifecycle, or
- * lastValidatedAt, so those rewrites must not force a fact-file rescan.
- * Content, entityRef, and origin changes bump this epoch. Metadata-only
- * frontmatter rewrites run inside `hold()` and leave it alone.
- *
- * The on-disk sentinel is the byte size of `state/.entity-mention-epoch.log`
- * (same pattern as the other version logs). A failed append adds one to an
- * in-process extra, and `current` is the file size plus that extra. A later
- * successful append, including one from another process, grows the file and
- * moves `current` past those failed bumps. `reset` drops caches that
- * registered at load (the mention index).
- */
 const fallbackByDir = new Map<string, { extra: number; disk: number }>();
 const suppression = new AsyncLocalStorage<true>();
 let onReset: (() => void) | null = null;
@@ -81,7 +65,6 @@ function current(dir: string): number {
   const local = fallbackByDir.get(key);
   if (!local) return disk;
   noteDisk(local, disk);
-  // Failed appends stay ahead of the file. A peer's later successful append
   // grows `disk` and must not land on the same number as those local failures.
   return disk + local.extra;
 }

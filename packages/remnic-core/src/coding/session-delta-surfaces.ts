@@ -42,8 +42,6 @@ import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 import { log } from "../logger.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Subcommands
-// ──────────────────────────────────────────────────────────────────────────
 
 export const DELTA_SUBCOMMANDS = ["get"] as const;
 
@@ -51,7 +49,6 @@ export type DeltaSubcommand = (typeof DELTA_SUBCOMMANDS)[number];
 
 const SUBCOMMAND_VALUES = DELTA_SUBCOMMANDS as readonly string[];
 
-/** Type guard — narrows an unknown subcommand string. */
 export function isDeltaSubcommand(value: unknown): value is DeltaSubcommand {
   return typeof value === "string" && SUBCOMMAND_VALUES.includes(value);
 }
@@ -63,10 +60,8 @@ export function formatDeltaSubcommands(): string {
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// Surface request / response shapes
 // ──────────────────────────────────────────────────────────────────────────
 
-/** Canonical surface request — one shape for all three transports. */
 export interface DeltaSurfaceRequest {
   subcommand: DeltaSubcommand;
   sessionKey?: string;
@@ -82,7 +77,6 @@ export type DeltaSurfaceResponse =
   | {
       subcommand: "get";
       ok: true;
-      /** A real delta was computed. */
       kind: "changed";
       delta: {
         commits: ReadonlyArray<{ sha: string; subject: string }>;
@@ -104,14 +98,12 @@ export type DeltaSurfaceResponse =
   | {
       subcommand: "get";
       ok: true;
-      /** Prior head equals current — no changes. */
       kind: "unchanged";
       nextState: LastSeenState;
     }
   | {
       subcommand: "get";
       ok: true;
-      /** No prior state — first session for this namespace. */
       kind: "first_run";
       nextState: LastSeenState;
     }
@@ -129,17 +121,10 @@ export type DeltaSurfaceResponse =
     };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Storage contract — narrow; the handler needs the memoryDir + namespace only
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * The resolved namespace context the handler needs. The service produces
- * this through the SAME coding-scoped read path as the other coding surfaces.
- */
 export interface DeltaSurfaceStorage {
-  /** The orchestrator's memoryDir — base for the state file path. */
   readonly memoryDir: string;
-  /** The resolved coding-scoped namespace — basis for the state filename. */
   readonly namespace: string;
   /**
    * Whether the calling principal may WRITE the namespace — i.e. advance the
@@ -152,37 +137,18 @@ export interface DeltaSurfaceStorage {
   readonly canAdvanceState?: boolean;
 }
 
-/**
- * Dependencies the handler borrows from the service. The service constructs
- * this context per call; the handler never touches the orchestrator directly.
- */
 export interface DeltaSurfaceContext {
   readonly codingKnowledge: CodingKnowledgeConfig;
   getCodingContext(sessionKey: string): CodingContext | null;
-  /** Resolve storage (memoryDir + namespace) via the coding-scoped read path. */
   resolveStorage(request: DeltaSurfaceRequest): Promise<DeltaSurfaceStorage>;
   /** Git invoker — drives `rev-parse` + `log`. Defaults to a real invoker. */
   gitInvoker: SessionDeltaGitInvoker;
-  /** Throw the surface-appropriate input-validation error. */
   throwInputError(message: string): never;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Handler — the single shared implementation behind all three surfaces
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * The single shared implementation behind the MCP, HTTP, and CLI
- * session-delta surfaces.
- *
- * Order of operations (rule 25 — do not destroy the old marker before the
- * new state is useful):
- *   1. Read the persisted last-seen-head.
- *   2. Resolve the current repo slice via the git invoker.
- *   3. Compute the delta from the OLD state + current slice.
- *   4. Persist the NEW state (temp-file-then-rename).
- *   5. Return the result.
- */
 export async function handleCodingDelta(
   request: DeltaSurfaceRequest,
   ctx: DeltaSurfaceContext,
@@ -198,8 +164,6 @@ export async function handleCodingDelta(
       "coding_delta requires codingKnowledge.enabled, codingKnowledge.sessionDelta, and an attached coding context",
     );
   }
-  // `get` is the only subcommand today; the switch keeps the shape forward-
-  // compatible if `refresh`/`reset` land later.
   switch (request.subcommand) {
     case "get":
       return deltaGet(request, ctx, codingContext);
@@ -207,7 +171,6 @@ export async function handleCodingDelta(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Subcommand handler
 // ──────────────────────────────────────────────────────────────────────────
 
 async function deltaGet(
@@ -218,13 +181,8 @@ async function deltaGet(
   const storage = await ctx.resolveStorage(request);
   const statePath = sessionDeltaStatePath(storage.memoryDir, storage.namespace);
 
-  // 1. Read prior state. Absent/empty/malformed → null → first_run.
   const lastSeen = await readLastSeenState(statePath);
 
-  // 2. Resolve the current repo slice. `rootPath` is the repo root the
-  //    coding context was resolved from; it MUST exist for a delta to make
-  //    sense. Fall back to `projectId` only as a path hint — refresh is the
-  //    caller's responsibility (the gate already required a context).
   const repoRoot = codingContextLocalRoot(codingContext);
   const sliceResult: ResolveSliceResult = resolveSlice(
     repoRoot,
@@ -232,14 +190,10 @@ async function deltaGet(
     ctx.gitInvoker,
   );
 
-  // 3. Git failure → tagged failure, but advance the state file when we
-  //    could at least read the current head (so the next call has a chance).
   if (!sliceResult.ok) {
     log.warn(
       `coding_delta/get: slice resolution failed (code=${sliceResult.code}): ${sliceResult.detail}`,
     );
-    // Best-effort: still try to advance the state file if the head was readable.
-    // On `no_head` we cannot write anything sensible — leave the prior marker.
     return {
       subcommand: "get",
       ok: false,
@@ -248,19 +202,9 @@ async function deltaGet(
     };
   }
 
-  // 4. Compute the delta from the OLD state + the slice.
   const result: SessionDeltaResult = computeSessionDelta(lastSeen, sliceResult.slice);
 
-  // 5. Persist the new state (rule 25 + rule 54). Failures here are logged
-  //    but do NOT fail the operation — the delta was computed; the next
-  //    session may re-derive it. A write failure surfaces in doctor/xray.
   //
-  //    Issue #1630 fix 2: the marker write is gated on a write-capable
-  //    principal. A read-only caller (e.g. read-but-not-write on the shared
-  //    namespace) receives the computed delta but does NOT advance the state
-  //    marker, so it cannot move another principal's baseline. The default
-  //    is `true` so legacy callers and the surface contract tests keep their
-  //    pre-fix behavior.
   const canAdvanceState = storage.canAdvanceState !== false;
   let nextState: LastSeenState | null = null;
   if (result.ok) {
@@ -278,7 +222,6 @@ async function deltaGet(
     }
   }
 
-  // 6. Map to the surface response shape.
   if (!result.ok) {
     if (result.code === "unreachable_head") {
       return {

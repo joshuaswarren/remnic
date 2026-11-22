@@ -375,8 +375,6 @@ test("a caller joining after the last waiter aborted starts a fresh call", async
     runs += 1;
     const id = runs;
     return new Promise<string>((resolve, reject) => {
-      // The aborted call settles late, so its slot is still in the map when the
-      // second caller joins.
       signal.addEventListener("abort", () => setTimeout(() => reject(abortError("run aborted")), 40));
       setTimeout(() => resolve(`run${id}`), 80);
     });

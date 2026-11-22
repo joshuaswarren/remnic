@@ -113,11 +113,6 @@ function isDriftSessionShape(row: unknown): row is DriftSession {
   );
 }
 
-/**
- * Externally supplied corpora can be syntactically valid JSON with mistyped
- * fields; every row is shape-checked here so malformed data surfaces as a
- * validation error instead of a crash in the integrity checks.
- */
 async function readJsonl<T>(
   filePath: string,
   errors: string[],

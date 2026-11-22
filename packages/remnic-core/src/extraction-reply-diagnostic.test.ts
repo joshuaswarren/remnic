@@ -8,11 +8,6 @@ import {
 
 const SECRET = "SECRETVALUE-4821";
 
-/**
- * Builds and renders the diagnostic for `reply`, then asserts no sentinel
- * substring appears anywhere in either form; `allowedKeys` lists the key names
- * expected to survive, and any other extracted key fails the assert.
- */
 function assertNoContent(reply: string, sentinels: string[], allowedKeys: string[] = []): void {
   const diag = buildUnusableReplyDiagnostic(reply, undefined, 0);
   const rendered = `${JSON.stringify(diag)} ${formatUnusableReplyDiagnostic(diag)}`;
@@ -20,7 +15,6 @@ function assertNoContent(reply: string, sentinels: string[], allowedKeys: string
   assert.deepEqual(diag.topLevelKeys.filter((k) => !allowedKeys.includes(k)), []);
 }
 
-/** The most common failure mode: prose with no JSON. Pins that the whole reply is exactly one candidate and every rendered field is content-free. */
 test("commentary: no braces, nothing parses (the whole reply is the one candidate the extractor tries)", () => {
   const reply = `I read the conversation about ${SECRET} and have no durable facts to report.`;
   assert.deepEqual(buildUnusableReplyDiagnostic(reply, "stop", 0), {
@@ -47,7 +41,6 @@ test("refusal: no JSON, finish reason carried", () => {
   assertNoContent(reply, [SECRET, "sorry"]);
 });
 
-/** Key names may be logged but values must never be: hostile key shapes are filtered and values are never read at all. */
 test("valid JSON of the wrong shape: parsed, shape rejected, safe keys kept, hostile keys omitted", () => {
   const long = "k".repeat(33);
   const reply = JSON.stringify({ summary: SECRET, "user@example.com": 1, [long]: 2, "has space": 3, result_set: [SECRET] });
@@ -59,7 +52,6 @@ test("valid JSON of the wrong shape: parsed, shape rejected, safe keys kept, hos
   assertNoContent(reply, [SECRET, "user@example.com", long, "has space"], ["summary", "result_set"]);
 });
 
-/** Bounds the worst case so a model echoing many keys cannot bloat the warn line; keys come from the first parse so repeated runs stay stable. */
 test("top-level keys are capped at 8 and come from the first parsed candidate", () => {
   const first = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`key${i}`, i]));
   const reply = `${JSON.stringify(first)}\n${JSON.stringify({ other: 1 })}`;
@@ -67,7 +59,6 @@ test("top-level keys are capped at 8 and come from the first parsed candidate", 
   assert.deepEqual(diag.topLevelKeys, ["key0", "key1", "key2", "key3", "key4", "key5", "key6", "key7"]);
 });
 
-/** Pins the parser treating a top-level array as keyless: index keys like "0" must not surface as if they were payload names. */
 test("a JSON array parses but exposes no keys", () => {
   const diag = buildUnusableReplyDiagnostic(`[{"a":"${SECRET}"}]`, undefined, 0);
   assert.equal(diag.parsedAnyJson, true);
@@ -75,7 +66,6 @@ test("a JSON array parses but exposes no keys", () => {
   assert.equal(diag.startsWithBrace, false);
 });
 
-/** The cut-off case from the issue: brace at position zero but nothing parseable, with partialFacts echoing what upstream salvage already recovered. */
 test("truncated JSON: starts with a brace, never parses", () => {
   const reply = `{"facts":[{"content":"${SECRET} is the`;
   const diag = buildUnusableReplyDiagnostic(reply, "length", 2);
@@ -87,7 +77,6 @@ test("truncated JSON: starts with a brace, never parses", () => {
   assertNoContent(reply, [SECRET, "is the"]);
 });
 
-/** Zero state: the HTTP-refusal site builds this from an empty reply, so the line reads "no candidates tried" without implying a malformed one. */
 test("empty reply", () => {
   assert.deepEqual(buildUnusableReplyDiagnostic("", undefined, 0), {
     replyChars: 0,
@@ -102,7 +91,6 @@ test("empty reply", () => {
   });
 });
 
-/** Fenced JSON parses through the fence but starts with a backtick, so startsWithBrace stays false — the signature of "JSON arrived, wrapped". */
 test("fenced json block of the wrong shape: parsed through the fence, content absent", () => {
   const reply = "```json\n" + JSON.stringify({ note: SECRET }) + "\n```";
   const diag = buildUnusableReplyDiagnostic(reply, "stop", 0);
@@ -120,7 +108,6 @@ test("finish reason that is not identifier-shaped is omitted", () => {
   }
 });
 
-/** Pins the exact rendering so log greps and parsers survive refactors of either module. */
 test("rendered line has a stable greppable shape", () => {
   const line = formatUnusableReplyDiagnostic(
     buildUnusableReplyDiagnostic('{"answer":"x"}', "stop", 0),

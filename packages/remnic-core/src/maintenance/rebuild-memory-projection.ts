@@ -55,11 +55,6 @@ export interface RebuildMemoryProjectionOptions {
   now?: Date;
   updatedAfter?: string;
   updatedBefore?: string;
-  /**
-   * When true, corpus reads keep the raw file text. Default false: the
-   * projection is built from parsed fields, and skipping the raw copy keeps
-   * the rebuild's peak heap down. Output rows stay the same either way.
-   */
   retainRaw?: boolean;
   /** When aborted, the rebuild stops before it publishes the projection file. */
   signal?: AbortSignal;
@@ -209,7 +204,6 @@ function toCurrentStateRow(memoryDir: string, memory: MemoryFile): MemoryProject
     accessCount: memory.frontmatter.accessCount,
     lastAccessed: memory.frontmatter.lastAccessed,
     tags: normalizeProjectionTags(memory.frontmatter.tags),
-    // Copy the preview off the source string so the full document can be collected.
     preview: Buffer.from(normalizeProjectionPreview(memory.content), "utf8").toString("utf8"),
     privateRecord: isSupportPassportPrivateMemory(memory),
   };
@@ -471,8 +465,6 @@ function selectProjectionMemories(
   const skippedDuplicateMemories: SkippedDuplicateMemory[] = [];
   const skippedBlankIdMemories: SkippedBlankIdMemory[] = [];
 
-  // Tier order is authoritative: hot wins over cold, and cold wins over archive.
-  // Paths break ties within a tier so the winner does not depend on readdir order.
   for (const tier of tiers) {
     for (const memory of [...tier].sort((left, right) => left.path.localeCompare(right.path))) {
       const memoryId = memory.frontmatter.id.trim();
@@ -540,8 +532,6 @@ async function loadAuthoritativeProjectionSnapshot(options: {
   skippedBlankIdTimelineEvents: SkippedBlankIdTimelineEvent[];
 }> {
   const storage = assertInjectedStorageRooted("rebuildMemoryProjection", options.memoryDir, options.storage) ?? new StorageManager(options.memoryDir);
-  // Force a fresh disk read — projection verify/rebuild must see the true
-  // on-disk state, not a potentially stale in-process cache.
   storage.invalidateAllMemoriesCacheForDir({ indexedText: false });
   const corpusRead = {
     retainRaw: options.retainRaw === true,
@@ -557,10 +547,6 @@ async function loadAuthoritativeProjectionSnapshot(options: {
   const allMemories = selected.allMemories;
   const projectionMemories = selected.memories;
   const currentRows = projectionMemories.map((memory) => toCurrentStateRow(options.memoryDir, memory));
-  // Preview is already a detached copy. Drop the document bodies before the
-  // ledger scan so peak heap is the larger of the corpus and the timeline,
-  // not both. These objects bypass the shared caches when retainRaw is off,
-  // so clearing them cannot strip a raw copy another caller is holding.
   if (options.retainRaw !== true) {
     for (const memory of allMemories) memory.content = "";
   }
@@ -1061,15 +1047,9 @@ export async function rebuildMemoryProjection(
         );
       }
       if (projectedNativeKnowledge.projectionExists) {
-        // Native knowledge rows are always loaded from the full persisted sync state,
-        // so scoped memory rebuilds should publish the fresh snapshot instead of
-        // pinning the projection to stale previously projected rows.
         nextNativeKnowledgeRows = snapshot.nativeKnowledgeRows;
       }
       if (projectedGovernance.projectionExists && projectedGovernance.runId) {
-        // Governance rows are also sourced from standalone artifact snapshots, so
-        // scoped memory rebuilds should keep the latest governance artifact data
-        // instead of restoring whatever happened to be in the prior projection.
         nextGovernance = snapshot.governance;
       }
     }

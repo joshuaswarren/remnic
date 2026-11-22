@@ -1,11 +1,3 @@
-/**
- * materialize-paths.ts — containment guard for the materializer's managed
- * sub-directories (`rollout_summaries/`, `skills/`).
- *
- * Extracted from codex-materialize.ts so the skills section (issue #2369) and
- * the rollout section share ONE containment implementation instead of forking
- * the check (rule 22).
- */
 
 import fs from "node:fs";
 import path from "node:path";

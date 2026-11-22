@@ -30,7 +30,6 @@ describe("ProfilingCollector", () => {
 
       collector.startTrace("recall", "test-session");
 
-      // Simulate sequential work with short timeouts.
       collector.startSpan("qmd-search");
       const start1 = Date.now();
       while (Date.now() - start1 < 5) { /* busy wait ~5ms */ }
@@ -59,15 +58,12 @@ describe("ProfilingCollector", () => {
       assert.equal(trace!.spans[2].name, "format");
       assert.ok(trace!.spans[2].durationMs >= 2);
 
-      // Spans should have increasing startOffsetMs.
       assert.ok(trace!.spans[1].startOffsetMs >= trace!.spans[0].startOffsetMs);
       assert.ok(trace!.spans[2].startOffsetMs >= trace!.spans[1].startOffsetMs);
 
-      // TotalMs should be >= sum of spans.
       const spanSum = trace!.spans.reduce((s, sp) => s + sp.durationMs, 0);
       assert.ok(trace!.totalMs >= spanSum);
 
-      // Should be in the buffer.
       const recent = collector.getRecentTraces();
       assert.equal(recent.length, 1);
       assert.equal(recent[0].traceId, trace!.traceId);
@@ -91,7 +87,6 @@ describe("ProfilingCollector", () => {
 
       collector.startTrace("extraction");
 
-      // Start a parallel group with a 5ms and 30ms promise.
       const handle = collector.startParallelGroup("embed+classify");
       const p1 = new Promise<void>((resolve) => setTimeout(resolve, 5));
       const p2 = new Promise<void>((resolve) => setTimeout(resolve, 30));
@@ -99,8 +94,6 @@ describe("ProfilingCollector", () => {
         { name: "embed", promise: p1 },
         { name: "classify", promise: p2 },
       ]);
-      // Two steps with a real event-loop turn between them, so the 5ms member's continuation
-      // reads the clock at 5ms instead of after the whole 30ms has been ticked.
       t.mock.timers.tick(5);
       await nextTurn();
       t.mock.timers.tick(25);
@@ -114,14 +107,12 @@ describe("ProfilingCollector", () => {
 
       const group = trace!.parallelGroups![0];
       assert.equal(group.name, "embed+classify");
-      // Wall time is the longest member (30ms); each member's duration is its own timer.
       assert.equal(group.wallMs, 30);
       assert.equal(group.members[0].durationMs, 5);
       assert.equal(group.members[1].durationMs, 30);
       assert.equal(group.members.length, 2);
       assert.equal(group.members[0].name, "embed");
       assert.equal(group.members[1].name, "classify");
-      // The shorter member resolved first.
       assert.equal(group.members[0].resolvedIndex, 0);
       assert.equal(group.members[1].resolvedIndex, 1);
     } finally {
@@ -146,7 +137,6 @@ describe("ProfilingCollector", () => {
       assert.equal(trace, null);
       assert.equal(collector.getRecentTraces().length, 0);
 
-      // No files written.
       const files = readdirSync(dir);
       assert.equal(files.length, 0);
     } finally {
@@ -186,17 +176,14 @@ describe("ProfilingCollector", () => {
         maxTraces: 10,
       });
 
-      // Start two concurrent traces.
       const id1 = collector.startTrace("recall", "session-a");
       const id2 = collector.startTrace("extraction", "session-b");
 
-      // Spans for trace 1.
       collector.startSpan("search", id1);
       const s1 = Date.now();
       while (Date.now() - s1 < 3) { /* busy wait */ }
       collector.endSpan("search", id1);
 
-      // Spans for trace 2.
       collector.startSpan("llm-call", id2);
       const s2 = Date.now();
       while (Date.now() - s2 < 3) { /* busy wait */ }
@@ -205,13 +192,11 @@ describe("ProfilingCollector", () => {
       const trace1 = collector.endTrace(id1);
       const trace2 = collector.endTrace(id2);
 
-      // Trace 1 should only have "search", not "llm-call".
       assert.ok(trace1);
       assert.equal(trace1!.spans.length, 1);
       assert.equal(trace1!.spans[0].name, "search");
       assert.equal(trace1!.kind, "recall");
 
-      // Trace 2 should only have "llm-call", not "search".
       assert.ok(trace2);
       assert.equal(trace2!.spans.length, 1);
       assert.equal(trace2!.spans[0].name, "llm-call");
@@ -230,7 +215,6 @@ describe("ProfilingCollector", () => {
         maxTraces: 2,
       });
 
-      // Create 3 traces with known ordering.
       const id1 = collector.startTrace("recall");
       collector.endTrace(id1);
       await collector.pruneFiles();
@@ -243,7 +227,6 @@ describe("ProfilingCollector", () => {
       collector.endTrace(id3);
       await collector.pruneFiles();
 
-      // maxTraces=2, so only 2 files should remain — the two newest.
       const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
       assert.equal(files.length, 2, `expected 2 files, got ${files.length}: ${files.join(", ")}`);
     } finally {
@@ -276,7 +259,6 @@ describe("ProfilingCollector", () => {
 
       const ascii = formatProfileTraceAscii(trace!);
 
-      // Check required strings.
       assert.ok(ascii.includes("=== Profile: recall ==="), "missing header");
       assert.ok(ascii.includes("Trace ID"), "missing trace id");
       assert.ok(ascii.includes("Total"), "missing total");
@@ -286,12 +268,10 @@ describe("ProfilingCollector", () => {
       assert.ok(ascii.includes("slow"), "missing slow span");
       assert.ok(ascii.includes("bottleneck"), "missing bottleneck marker");
 
-      // Bottleneck should be on the "slow" span.
       const lines = ascii.split("\n");
       const slowLine = lines.find((l) => l.includes("slow") && l.includes("bottleneck"));
       assert.ok(slowLine, "bottleneck should be on slow span");
 
-      // The fast span should NOT have bottleneck marker.
       const fastLine = lines.find((l) => l.includes("fast") && l.includes("bottleneck"));
       assert.ok(!fastLine, "fast span should not have bottleneck marker");
     } finally {
@@ -304,8 +284,6 @@ describe("ProfilingCollector", () => {
     const storageDir = join(dir, "profiling");
     try {
       const collector = new ProfilingCollector({ enabled: true, storageDir, maxTraces: 10 });
-      // Constructing a collector happens on every plugin registration, including
-      // read-only discovery passes, so it must not touch the memory dir.
       assert.equal(existsSync(storageDir), false, "no dir before a trace is written");
       collector.startTrace("recall", "test-session");
       collector.startSpan("qmd-search");

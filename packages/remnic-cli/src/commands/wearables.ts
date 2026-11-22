@@ -23,10 +23,6 @@ export async function runWearablesBinaryCommand(rest: string[]): Promise<void> {
       : rest;
   let wearablesOrchestrator: Orchestrator | undefined;
   try {
-    // Config/bootstrap failures get a constant message: parseConfig
-    // error strings can embed config values, including API keys
-    // (CodeQL js/clear-text-logging), so they must never reach
-    // console output.
     let wearablesService: ReturnType<Orchestrator["getWearablesService"]>;
     try {
       const configPath = resolveConfigPath();
@@ -49,15 +45,11 @@ export async function runWearablesBinaryCommand(rest: string[]): Promise<void> {
       stdout: process.stdout,
       stderr: process.stderr,
     });
-    // Standalone one-shot: drain the debounced meeting build the sync scheduled
-    // before this short-lived process exits (mirrors cli.ts forwardWearables; NOT the auto-sync path). #2123.
     if (wearablesArgs[0] === "sync" && code === 0 && wearablesOrchestrator.config.meetings.enabled) {
       await (await wearablesOrchestrator.getMeetingsService()).flushBuilds();
     }
     if (code !== 0) process.exitCode = code;
   } catch (err) {
-    // Runner errors are our own constructed messages (connector API
-    // errors, IO failures) — no config taint.
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
   } finally {

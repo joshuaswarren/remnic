@@ -1,16 +1,3 @@
-/**
- * Shared types for the Assistant bench tier.
- *
- * Every Assistant benchmark shares the same shape:
- *   - A synthetic memory graph (facts, stances, entities) the agent may read.
- *   - A scenario prompt given to the agent.
- *   - A sealed-rubric judge pass that scores the agent's output along
- *     identity_accuracy / stance_coherence / novelty / calibration.
- *
- * The goal is reviewability: each benchmark folder ships a small fixture.ts
- * that returns `AssistantScenario` values, and the runner wires the shared
- * multi-run + bootstrap-CI infrastructure around them.
- */
 
 import type {
   AssistantRubricDimension,

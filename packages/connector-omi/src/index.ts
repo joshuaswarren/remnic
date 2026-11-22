@@ -76,9 +76,6 @@ function parseOffsetCursor(cursor: string | null | undefined): number {
 export function createOmiConnector(
   options: WearableConnectorFactoryOptions,
 ): WearableSourceConnector {
-  // Construction is lazy so `wearables status` works without
-  // credentials; the client constructor throws the actionable
-  // missing-credential messages at call time.
   let client: OmiClient | null = null;
   const getClient = (): OmiClient => {
     if (!client) {

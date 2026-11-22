@@ -65,7 +65,6 @@ export async function loadSyncState(
   try {
     parsed = JSON.parse(raw);
   } catch {
-    // A corrupt state file should not brick syncing forever; treat it
     // as a cold start (the worst case is re-syncing days we already
     // have, which the day-hash skip makes cheap and idempotent).
     return emptySyncState();
@@ -102,7 +101,6 @@ export async function saveSyncState(
   }
 }
 
-/** Merge a completed source sync into the state file shape. */
 export function updateSourceSyncState(
   state: WearableSyncStateFile,
   sourceId: string,
@@ -110,7 +108,6 @@ export function updateSourceSyncState(
     syncedAt: string;
     days: string[];
     dayHashes: Record<string, string>;
-    /** Days whose memory pass completed cleanly this run. */
     memoryDayHashes?: Record<string, string>;
     /**
      * Days whose memory pass ran this sync but did NOT complete
@@ -127,7 +124,6 @@ export function updateSourceSyncState(
     ...(previous?.dayHashes ?? {}),
     ...update.dayHashes,
   };
-  // Bound the hash map: keep the lexicographically-largest (most
   // recent) dates, which sort naturally for YYYY-MM-DD keys.
   const hashKeys = Object.keys(mergedHashes).sort();
   while (hashKeys.length > MAX_TRACKED_DAY_HASHES) {

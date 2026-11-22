@@ -18,7 +18,6 @@ import { sessionStoragePaths } from "./session-identity.js";
 import { resolveLocalLlmCapabilities } from "./capabilities.js";
 import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 
-// Schema for LLM summary output
 const HourlySummarySchema = z.object({
   bullets: z.array(z.string().trim().min(1)).min(1).describe("3-5 bullet points summarizing the hour's activity"),
 });
@@ -45,12 +44,6 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/**
- * Outcome stats of one `runHourly` pass (issue #2783). The summarizer must
- * not report success on empty work: an empty or stale transcript store is
- * the delegate-mode starvation signature, and callers surface these counts
- * and the staleness flag as a distinct warning instead of a bare ok.
- */
 export interface HourlySummarizerRunStats {
   sessionsConsidered: number;
   sessionsWithEntries: number;
@@ -66,12 +59,6 @@ export interface HourlySummarizerRunStats {
 /** A store whose newest entry is older than this is considered stale (starvation signal, issue #2783). */
 const STALE_STORE_MS = 2 * 60 * 60 * 1000;
 
-/**
- * Interpret one {@link HourlySummarizerRunStats} into the operator-facing
- * message/warning (issue #2783). Every degraded shape — failed scan, empty
- * store, backend-down, stale store — is DISTINCT from success; monitoring
- * alerts on `warning`, never on `ok` (ok only means "the run completed").
- */
 export function summarizeHourlyStatus(stats: HourlySummarizerRunStats): {
   message: string;
   warning?: string;
@@ -137,10 +124,8 @@ export class HourlySummarizer {
     this.transcript = transcript;
     this.shutdownSignal = shutdownSignal;
 
-    // Initialize local LLM client with shared model registry
     this.localLlm = llmClients?.localLlm ?? new LocalLlmClient(config, this.modelRegistry, shutdownSignal);
 
-    // Initialize fallback client with gateway config
     this.fallbackLlm =
       llmClients?.fallbackLlm ??
       new FallbackLlmClient(gatewayConfig, fallbackLlmRuntimeContextFromConfig(config));
@@ -166,7 +151,6 @@ export class HourlySummarizer {
     options: import("./fallback-llm.js").FallbackLlmOptions
   ): import("./fallback-llm.js").FallbackLlmOptions {
     if (!this.useGatewayModelSource) return options;
-    // Shared resolution (taskModelChain > gatewayAgentId) — gotcha #22. Issue #1365.
     return { ...options, ...gatewayTaskChainOptions(this.config) };
   }
 
@@ -196,7 +180,6 @@ export class HourlySummarizer {
     return dateStr;
   }
 
-  // Generate summary for a specific hour and session
   async generateSummary(
     sessionKey: string,
     hourStart: Date,
@@ -205,7 +188,6 @@ export class HourlySummarizer {
     if (entries.length === 0) return null;
     this.shutdownSignal?.throwIfAborted();
 
-    // Format entries for the LLM
     const conversation = entries.map((e) => `[${e.role}] ${e.content}`).join("\n\n");
 
     if (resolvePipelineProcessingCapabilities(this.config).hourlySummariesExtended) {
@@ -217,7 +199,6 @@ export class HourlySummarizer {
         toolCalls: extended._meta.toolCalls,
         toolCounts: extended._meta.toolCounts,
       };
-      // Keep HourlySummary surface stable; encode "topics" as bullets for recall injection.
       const base: HourlySummary = {
         hour: hourStart.toISOString(),
         sessionKey,
@@ -259,7 +240,6 @@ export class HourlySummarizer {
       }
     }
 
-    // Try local LLM first if enabled
     if (this.shouldUseLocalLlm) {
       try {
         const localResult = await this.generateWithLocalLlm(conversation);
@@ -274,7 +254,6 @@ export class HourlySummarizer {
             generatedAt: new Date().toISOString(),
           };
         }
-        // Local failed, fall back if allowed
         if (!this.config.localLlmFallback) {
           log.warn("summary generation: local LLM failed and fallback disabled");
           return null;
@@ -291,7 +270,6 @@ export class HourlySummarizer {
 
     if (this.shutdownSignal?.aborted) return null;
 
-    // Fall back to gateway's default AI
     log.info("summary generation: falling back to gateway default AI");
 
     try {
@@ -463,12 +441,7 @@ Respond with valid JSON matching this schema:
     }
   }
 
-  /**
-   * Generate summary using local LLM with JSON mode.
-   * Uses dynamic context sizing based on model capabilities.
-   */
   private async generateWithLocalLlm(conversation: string): Promise<HourlySummaryResult | null> {
-    // Get dynamic context sizes based on model capabilities
     const contextSizes = this.modelRegistry.calculateContextSizes(
       this.config.localLlmModel,
       this.config.localLlmMaxContext
@@ -517,7 +490,6 @@ Respond with valid JSON matching this schema:
     }
 
     try {
-      // Parse JSON response
       const content = response.content.trim();
       for (const candidate of extractJsonCandidates(content)) {
         try {
@@ -534,22 +506,17 @@ Respond with valid JSON matching this schema:
     }
   }
 
-  // Save summary to file
   async saveSummary(summary: HourlySummary): Promise<void> {
     const sessionDir = await this.summarySessionDir(summary.sessionKey);
     await mkdir(sessionDir, { recursive: true });
 
-    // Format date as YYYY-MM-DD for the filename
     const dateStr = this.summaryDateString(summary.hour);
     const filePath = await resolveSafeStoragePath(sessionDir, `${dateStr}.md`);
 
-    // Format hour as HH:00 for display
     const hourStr = summary.hour.slice(11, 13);
 
-    // Build markdown content
     const lines: string[] = [];
 
-    // Check if file exists to append or create
     let existingContent = "";
     try {
       existingContent = await readFile(filePath, "utf-8");
@@ -557,10 +524,8 @@ Respond with valid JSON matching this schema:
       // File doesn't exist yet, will create new
     }
 
-    // Check if this hour already exists (idempotent)
     const hourHeader = `## ${hourStr}:00`;
     if (existingContent.includes(hourHeader)) {
-      // Replace existing hour section
       const headerMatch = new RegExp(`(^|\\n)${escapeRegExp(hourHeader)}\\n`).exec(existingContent);
       const sectionStart = headerMatch
         ? headerMatch.index + headerMatch[1].length
@@ -576,14 +541,11 @@ Respond with valid JSON matching this schema:
       await writeFile(filePath, existingContent, "utf-8");
       log.debug(`updated hourly summary for ${summary.sessionKey} at ${hourStr}:00`);
     } else {
-      // Append new hour section
       const newSection = this.formatHourSection(summary, hourHeader);
 
       if (existingContent) {
-        // Add to existing file
         await writeFile(filePath, existingContent.trimEnd() + "\n\n" + newSection, "utf-8");
       } else {
-        // Create new file with header
         const header = `# Hourly Summaries — ${dateStr}\n\n*Session: ${summary.sessionKey}*\n`;
         await writeFile(filePath, header + "\n" + newSection, "utf-8");
       }
@@ -643,7 +605,6 @@ Respond with valid JSON matching this schema:
     return lines.join("\n");
   }
 
-  // Read recent summaries for recall injection
   async readRecent(sessionKey: string, hours: number): Promise<HourlySummary[]> {
     try {
       const cutoffTime = Date.now() - hours * 60 * 60 * 1000;
@@ -676,7 +637,6 @@ Respond with valid JSON matching this schema:
         (a, b) => new Date(b.hour).getTime() - new Date(a.hour).getTime()
       );
 
-      // Filter to recent hours while materializing the full parsed history.
       const recent = sortedSummaries.filter((s) => new Date(s.hour).getTime() >= cutoffTime);
 
       if (sortedSummaries.length > 0) {
@@ -691,7 +651,6 @@ Respond with valid JSON matching this schema:
 
       return recent;
     } catch {
-      // Directory doesn't exist or error reading
       return [];
     }
   }
@@ -724,20 +683,16 @@ Respond with valid JSON matching this schema:
   private parseSummaryFile(content: string, sessionKey: string, filename: string): HourlySummary[] {
     const summaries: HourlySummary[] = [];
 
-    // Extract date from filename (YYYY-MM-DD.md)
     const dateMatch = filename.match(/^(\d{4}-\d{2}-\d{2})\.md$/);
     if (!dateMatch) return summaries;
     const dateStr = dateMatch[1];
 
-    // Split by hour sections
     const hourSections = content.split(/\n## (\d{2}):00\n/);
 
-    // First element is the header, skip it
     for (let i = 1; i < hourSections.length; i += 2) {
       const hourStr = hourSections[i];
       const sectionContent = hourSections[i + 1] || "";
 
-      // Parse bullets
       const bullets: string[] = [];
       const lines = sectionContent.split("\n");
       let turnCount = 0;
@@ -755,7 +710,6 @@ Respond with valid JSON matching this schema:
         }
         const bulletMatch = line.match(/^- (.+)$/);
         if (bulletMatch) {
-          // For extended format, only treat topic bullets as recall bullets.
           if (!sawExtendedTopicsHeader || inTopics) bullets.push(bulletMatch[1]);
         }
         const turnMatch = line.match(/\((\d+) turns?\)/);
@@ -776,7 +730,6 @@ Respond with valid JSON matching this schema:
     return summaries;
   }
 
-  // Format summaries for recall injection
   formatForRecall(summaries: HourlySummary[], maxCount: number): string {
     if (summaries.length === 0) return "";
 
@@ -793,27 +746,21 @@ Respond with valid JSON matching this schema:
     return lines.join("\n");
   }
 
-  // Main entry point for cron job
   async runHourly(): Promise<HourlySummarizerRunStats> {
     this.shutdownSignal?.throwIfAborted();
     log.debug("running hourly summary generation");
 
-    // Get active sessions from transcript. The scan outcome is kept LOCAL to
-    // this invocation (review round 2): shared instance state would let two
-    // concurrent runHourly calls cross-report each other's timestamps.
     const scan = await this.getActiveSessions();
     const sessions = scan.sessionKeys;
     let sessionsWithEntries = 0;
     let summariesWritten = 0;
 
     for (const sessionKey of sessions) {
-      // Calculate the hour we want to summarize (previous hour)
       const now = new Date();
       const hourStart = new Date(now.getTime() - 60 * 60 * 1000);
       hourStart.setMinutes(0, 0, 0);
       const hourEnd = new Date(hourStart.getTime() + 60 * 60 * 1000);
 
-      // Get entries for this session in the target hour
       const entries = await this.getTranscriptEntries(sessionKey, hourStart, hourEnd);
 
       if (entries.length === 0) {
@@ -822,7 +769,6 @@ Respond with valid JSON matching this schema:
       }
       sessionsWithEntries += 1;
 
-      // Generate and save summary
       const summary = await this.generateSummary(sessionKey, hourStart, entries);
       if (summary) {
         await this.saveSummary(summary);
@@ -835,8 +781,6 @@ Respond with valid JSON matching this schema:
       sessionsConsidered: sessions.length,
       sessionsWithEntries,
       summariesWritten,
-      // Staleness signal (issue #2783): newest entry across the whole
-      // store, from the same scan getActiveSessions already performs.
       staleStore:
         scan.newestEntryTimestamp !== null &&
         Date.now() - new Date(scan.newestEntryTimestamp).getTime() > STALE_STORE_MS,
@@ -845,11 +789,6 @@ Respond with valid JSON matching this schema:
     };
   }
 
-  // Get list of active sessions from the transcript directory, plus the
-  // scan bookkeeping runHourly reports: newest entry timestamp (staleness
-  // signal) and whether the scan itself FAILED. A failed scan must not be
-  // reported as an empty store — those are different incidents (review
-  // round 2).
   private async getActiveSessions(): Promise<{
     sessionKeys: string[];
     newestEntryTimestamp: string | null;
@@ -874,9 +813,6 @@ Respond with valid JSON matching this schema:
             if (typeof entry.sessionKey === "string" && entry.sessionKey.length > 0) {
               sessionKeys.add(entry.sessionKey);
             }
-            // Compare parsed epoch values, never strings: a malformed
-            // timestamp in a hand-edited file must not poison the staleness
-            // signal with a lexically-maximal garbage value (review).
             if (typeof entry.timestamp === "string") {
               const timeMs = new Date(entry.timestamp).getTime();
               if (Number.isFinite(timeMs) && (Number.isNaN(newestEntryTimeMs) || timeMs > newestEntryTimeMs)) {
@@ -889,10 +825,6 @@ Respond with valid JSON matching this schema:
           }
         }
       } catch (err) {
-        // ENOENT is a concurrently-deleted file — ignore. Any other read
-        // failure (permissions, I/O) means the store is partially UNREADABLE:
-        // mark the scan failed so the caller warns instead of reporting an
-        // empty store (review round 3).
         if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
           fileReadFailed = true;
         }
@@ -924,8 +856,6 @@ Respond with valid JSON matching this schema:
         scanFailed: fileReadFailed,
       };
     } catch (err) {
-      // ENOENT on the root is a never-written store — an EMPTY store, not a
-      // scan failure (those are different incidents).
       const code = (err as NodeJS.ErrnoException)?.code;
       if (code === "ENOENT") {
         return { sessionKeys: [], newestEntryTimestamp: null, scanFailed: false };
@@ -935,13 +865,7 @@ Respond with valid JSON matching this schema:
     }
   }
 
-  // Get transcript entries for a session within a time range
   private async getTranscriptEntries(sessionKey: string, startTime: Date, endTime: Date): Promise<TranscriptEntry[]> {
-    // Shared session-identity layer (issue #1496, rule #22). Arbitrary keys
-    // route to `session/<hash>`; legacy `agent:<id>:...` keep their paths. The
-    // shared helper also supplies the read-back-only candidate dirs (mirrors
-    // TranscriptManager) so legacy `other/default` AND old `parts.length >= 3`
-    // data stays discoverable here too.
     const paths = sessionStoragePaths(sessionKey);
 
     try {
@@ -952,12 +876,8 @@ Respond with valid JSON matching this schema:
         )
       );
       const entries: TranscriptEntry[] = [];
-      // Dedup identical raw rows that a partially-applied migration may have
-      // left in both the primary dir and a read-back dir (issue #1496, cursor
-      // review). Exact raw JSONL line is the stable identity.
       const seenRawLines = new Set<string>();
 
-      // Read all daily transcript files in the directory
       for (const candidateDir of candidateDirs) {
         const transcriptDir = await resolveSafeStoragePath(transcriptRoot, candidateDir).catch(() => null);
         if (transcriptDir === null) continue;

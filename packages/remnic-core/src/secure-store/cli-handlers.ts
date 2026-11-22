@@ -59,7 +59,6 @@ export interface SecureStoreHandlerCommon {
   now?: () => Date;
 }
 
-// ─── init ─────────────────────────────────────────────────────────────
 
 export interface SecureStoreInitOptions extends SecureStoreHandlerCommon {
   /** Passphrase reader — called twice (entry + confirmation). */
@@ -99,7 +98,6 @@ export async function runSecureStoreInit(
   if (typeof memoryDir !== "string" || memoryDir.length === 0) {
     throw new Error("secure-store init: memoryDir is required");
   }
-  // Fail fast if a header already exists, before we waste KDF time.
   const existing = await readHeader(memoryDir);
   if (existing !== null) {
     throw new Error(
@@ -124,7 +122,6 @@ export async function runSecureStoreInit(
     ...(options.note !== undefined ? { note: options.note } : {}),
     ...(options.now ? { createdAt: options.now().toISOString() } : {}),
   });
-  // Zero the derived key — init does NOT auto-unlock; the operator
   // must run `unlock` separately. This mirrors GnuPG-style hygiene
   // and keeps `init` safe to run from automation that should never
   // hold the master key in memory.
@@ -139,7 +136,6 @@ export async function runSecureStoreInit(
   };
 }
 
-// ─── unlock ───────────────────────────────────────────────────────────
 
 export interface SecureStoreUnlockOptions extends SecureStoreHandlerCommon {
   readPassphrase: PassphraseReader;
@@ -175,7 +171,6 @@ export async function runSecureStoreUnlock(
   };
 }
 
-// ─── lock ─────────────────────────────────────────────────────────────
 
 export interface SecureStoreLockOptions extends SecureStoreHandlerCommon {}
 
@@ -191,7 +186,6 @@ export function runSecureStoreLock(options: SecureStoreLockOptions): SecureStore
   return { ok: true, cleared };
 }
 
-// ─── migrate ─────────────────────────────────────────────────────────
 
 export interface SecureStoreMigrateOptions extends SecureStoreHandlerCommon {
   /**
@@ -259,7 +253,6 @@ export async function runSecureStoreMigrate(
   return { ok: true, ...result };
 }
 
-// ─── disable/decrypt ─────────────────────────────────────────────────
 
 export interface SecureStoreDisableOptions extends SecureStoreHandlerCommon {
   /**
@@ -326,7 +319,6 @@ export async function runSecureStoreDisable(
   return { ok: true, ...result };
 }
 
-// ─── status ───────────────────────────────────────────────────────────
 
 export interface SecureStoreStatusOptions extends SecureStoreHandlerCommon {}
 
@@ -373,9 +365,7 @@ export async function runSecureStoreStatus(
   };
 }
 
-// ─── helpers ──────────────────────────────────────────────────────────
 
-/** Minimum passphrase length. 8 chars is intentionally permissive — operators may use phrase managers. */
 export const MIN_PASSPHRASE_LENGTH = 8;
 
 function validatePassphrase(passphrase: string): void {

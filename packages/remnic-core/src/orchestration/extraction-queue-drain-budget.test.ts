@@ -7,10 +7,6 @@ import { ExtractionQueueCoordinator } from "./extraction-queue-coordinator.js";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-// pauseAndDrain's first budget is nominal today: the post-timeout wait is
-// unbounded, so a drain can stall shutdown arbitrarily long with nothing
-// logged about what is still in flight or how long the tail ran (issue
-// #3517). The tail gets its own budget and the drained flag must be honest.
 
 test("pauseAndDrain bounds the post-timeout tail and reports not-drained", async () => {
   const queue = new ExtractionQueueCoordinator(1);

@@ -1,26 +1,3 @@
-/**
- * Regression: amortized completion must refuse a symlinked entities root
- * before getFingerprint → fingerprintEntityEntries readdir.
- *
- * inputSig already labels the root "L", but isCompleted still runs the full
- * fingerprint (external tree walk) before any isTrustedEntitiesRoot-style
- * guard. A planted complete journal makes that path reachable after a
- * missing-id ENOENT.
- *
- * Instrumentation (deterministic): spawn a plain child (not nested --test —
- * node skips recursive test runs) with --experimental-test-module-mocks that
- * wraps node:fs/promises.readdir via mock.module, dynamic-imports the real
- * EntityMigrationCompletionCache, and records every readdir whose realpath is
- * the external canary (or whose path is the entities symlink). Assert
- * externalCount === 0 — not merely completed === false. chmod/EACCES is not
- * used (false-green on this host).
- *
- * Dynamic import in the probe is intentional: mock.module must install before
- * the cache module loads fs.promises (module-loading boundary).
- *
- * Temp roots only. Expected today: RED (externalCount >= 1).
- * After root nofollow guard: externalCount === 0 and completed === false.
- */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -94,7 +71,6 @@ test("isCompleted must not readdir through a symlinked entities root", async () 
     );
     const canaryReal = await realpath(canaryDir);
 
-    // Regular complete journal — completionFingerprint compare invokes getFingerprint.
     await writeFile(
       path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE),
       JSON.stringify({
@@ -105,9 +81,6 @@ test("isCompleted must not readdir through a symlinked entities root", async () 
       }),
     );
 
-    // Plain probe script (no nested --test: parent already runs under the test
-    // runner, and node skips recursive test-file execution).
-    // Dynamic import loads cache after mock.module wraps readdir.
     await writeFile(
       probeFile,
       `import { mock } from "node:test";

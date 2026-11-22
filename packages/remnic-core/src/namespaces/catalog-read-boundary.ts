@@ -47,16 +47,12 @@ export async function sanitizeRecordForRead(
   port: CatalogReadBoundaryPort,
   record: NamespaceRecord,
 ): Promise<NamespaceRecord | null> {
-  // Defense 1: drop an unsafe non-default namespace name entirely. Compare
-  // against the NORMALIZED default identity — record keys are trimmed, so a raw
-  // whitespace-padded config default would never match the default row (NH-FH).
   if (
     record.namespace !== port.defaultNamespaceIdentity &&
     !isSafeRouteNamespace(record.namespace)
   ) {
     return null;
   }
-  // Defense 2: keep the record but substitute a safe storageDir when needed.
   if (
     (await port.isContainedStorageDir(record.storageDir)) &&
     (await port.isStorageDirForNamespace(record.namespace, record.storageDir))

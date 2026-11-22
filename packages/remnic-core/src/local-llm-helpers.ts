@@ -121,19 +121,6 @@ export function describeFetchFailure(err: unknown): string {
   return `${name ? `${name}: ` : ""}${message}${causeText}`;
 }
 
-/**
- * What to record when every availability probe failed.
- *
- * A probe that TIMED OUT is not evidence the backend is down: the budget is a
- * fixed 2s and a busy event loop can burn it before the socket is scheduled,
- * so the backend looks dead while it answers other callers in single-digit ms.
- * Caching that verdict took extraction offline for a whole health-check
- * interval at a time (issue #2210), so a timeout leaves availability UNKNOWN —
- * this call fails, the next one re-probes instead of reading a stale false.
- *
- * A backend that ANSWERED and said no is a real verdict and stays cached, or
- * the daemon re-probes a known-bad endpoint on every request.
- */
 export function resolveUnavailableVerdict(args: {
   baseUrl: string;
   sawAbortedProbe: boolean;
@@ -149,8 +136,6 @@ export function resolveUnavailableVerdict(args: {
   }
   return {
     cacheVerdict: true,
-    // Surfaced at warn, not debug: extraction stops silently when this flips,
-    // and the daemon emits no debug at all unless configured for it.
     warning: args.wasAvailable !== false ? `local LLM became unavailable at ${args.baseUrl}` : null,
   };
 }
@@ -210,18 +195,6 @@ interface PendingProbe {
   waiters: number;
 }
 
-/**
- * Collapses concurrent probe sequences onto one in-flight run.
- *
- * A timed-out availability probe deliberately caches nothing (issue #2210),
- * which removed the false verdict that used to absorb concurrent callers:
- * every queued request would then run its own full probe sequence, on a host
- * already slow enough to blow the probe budget.
- *
- * Cancellation is refcounted rather than shared: one caller walking away must
- * not abort a sequence the others are still waiting on, so the underlying task
- * is aborted only once every waiter has gone.
- */
 export class SingleFlightProbe {
   private pending: PendingProbe | null = null;
 
@@ -244,10 +217,6 @@ export class SingleFlightProbe {
       released = true;
       entry.waiters -= 1;
       if (entry.waiters > 0) return;
-      // Detach BEFORE aborting. `pending` would otherwise still point at this
-      // doomed entry until the task's own `finally` runs a microtask later, and
-      // a caller arriving in that window would join an aborted sequence and
-      // read its `false` as a verdict.
       if (this.pending === entry) this.pending = null;
       entry.controller.abort();
     };
@@ -327,14 +296,9 @@ const LOCAL_LLM_GLOBAL_BACKEND_STATE = "__openclawEngramLocalLlmBackendState";
 export type LocalLlmBackendPoolState = {
   untilMs: number;
   reason: string;
-  /** Once the trip lapses this is set instead of deleting the entry: every
-   * client must observe the transition once, so a tombstone stays visible for
-   * BACKEND_POOL_TOMBSTONE_MS. */
   expiredAtMs?: number;
 };
 
-/** How long a lapsed circuit stays readable so each client can invalidate its
- * cached health verdict once (the health cache is 60s; this leaves margin). */
 const BACKEND_POOL_TOMBSTONE_MS = 15 * 60_000;
 
 function localLlmBackendPoolMap(): Map<string, LocalLlmBackendPoolState> {
@@ -366,10 +330,6 @@ export function getLocalLlmTrippedBackendPoolState(
   return state;
 }
 
-/** The instant this pool's circuit lapsed, or null while it is active or
- * absent. The tombstone stays in the map so every client holding a cached
- * health verdict can observe the transition once — deleting on first read left
- * later clients stale (wAN review on #3474). */
 export function localLlmBackendPoolExpiredAtMs(now: number, chatUrl: string, operation: string): number | null {
   const key = formatLocalLlmPoolKey(chatUrl, operation);
   const state = localLlmBackendPoolMap().get(key) ?? null;

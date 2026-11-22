@@ -148,8 +148,6 @@ test("a manual access-surface report does not suppress the scheduled run", async
   const weekId = previousIsoWeekId(now());
   const calls: string[] = [];
   try {
-    // A manual compounding_weekly_synthesize call wrote the week's report
-    // while that week was still in progress; no scheduler marker exists.
     const report = compoundingWeeklyReportPath(memoryDir, weekId);
     await mkdir(path.dirname(report), { recursive: true });
     await writeFile(report, `# ${weekId}\n`, "utf8");
@@ -284,8 +282,6 @@ test("an overlapping tick coalesces into one follow-up run", async () => {
   try {
     const { handle } = startFor(memoryDir, {
       now: fixedClock("2026-03-18T12:00:00.000Z"),
-      // Every tick reports the week as not yet done, so the follow-up run
-      // the coalescing produces is observable as a second synthesis.
       weekDone: async () => false,
       synthesizeWeekly: async () => {
         calls += 1;

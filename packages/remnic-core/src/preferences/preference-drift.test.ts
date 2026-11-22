@@ -1,22 +1,3 @@
-/**
- * Preference drift detection (issue #2371).
- *
- * Covers the acceptance matrix:
- *   1. Fixture namespace with a preference restated last week, one untouched
- *      for six months, and one with recent opposing evidence: shadow reports
- *      corroborated / stale / drifted respectively and writes NOTHING; apply
- *      stamps the first two and opens exactly one review item for the third.
- *   2. Resolving that review item with `supersede` writes a superseding
- *      memory through the real storage path, and the replacement is what a
- *      later read returns.
- *   3. `recallDamping: true` sinks a stale preference below an otherwise-equal
- *      fresh memory; with the flag off — including the string `"false"` — the
- *      ordering is byte-identical to the input.
- *   4. A failing evidence lookup marks the preference
- *      `skipped: backend_unavailable`, never `stale`.
- *   5. Window bounds are half-open `[start, end)`; runs are deterministic.
- *   6. Every non-active status is excluded from candidacy.
- */
 import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
@@ -120,7 +101,6 @@ const PREF_IDS = {
   drifted: "pref-drifted",
 };
 
-/** The acceptance fixture: three aging preferences plus their evidence. */
 async function seedFixture(storage: StorageManager): Promise<void> {
   await writeMemory(
     storage,
@@ -178,8 +158,6 @@ function findingFor(findings: PreferenceDriftFinding[], id: string): PreferenceD
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 1. Classification + shadow/apply
-// ════════════════════════════════════════════════════════════════════════════
 
 test("shadow scan classifies corroborated / stale / drifted and writes nothing", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-drift-shadow-"));
@@ -197,8 +175,6 @@ test("shadow scan classifies corroborated / stale / drifted and writes nothing",
     assert.equal(report.appliedCount, 0);
     assert.equal(report.reviewItemsOpened, 0);
 
-    // Shadow writes NOTHING — not the stamps, not the review queue, not even
-    // the run marker.
     const after = await storage.getMemoryById(PREF_IDS.stale);
     assert.equal(after?.frontmatter.driftState, undefined);
     assert.equal(listPairs(dir).total, 0);
@@ -266,7 +242,6 @@ test("re-running apply on identical fixtures is deterministic", async () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// 2. Review resolution
 // ════════════════════════════════════════════════════════════════════════════
 
 test("resolving a drift item with supersede retires the old preference for the new one", async () => {
@@ -294,7 +269,6 @@ test("resolving a drift item with supersede retires the old preference for the n
     assert.match(replacement!.content, /bun for package installs/);
     assert.equal(replacement?.frontmatter.status ?? "active", "active");
 
-    // The item is terminally resolved and leaves the actionable queue.
     assert.equal(readPair(dir, pairId)?.resolution, "supersede");
     assert.equal(listPairs(dir, { filter: "unresolved" }).total, 0);
   } finally {
@@ -338,7 +312,6 @@ test("a contradiction verb is refused on a drift item and vice versa", async () 
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// 3. Recall damping + annotation
 // ════════════════════════════════════════════════════════════════════════════
 
 const stalePreferenceFm = { category: "preference", driftState: "stale" as const };
@@ -412,7 +385,6 @@ test("annotateAfterDays emits an age note only past the window, and never mutate
     driftAgeNote({ category: "preference", created: "2026-01-05T00:00:00.000Z" }, on, NOW),
     "(stated 2026-01; not corroborated since)",
   );
-  // Inside the window → no note.
   assert.equal(
     driftAgeNote(
       { category: "preference", created: new Date(NOW.getTime() - 10 * DAY_MS).toISOString() },
@@ -421,9 +393,7 @@ test("annotateAfterDays emits an age note only past the window, and never mutate
     ),
     undefined,
   );
-  // A non-preference is never annotated.
   assert.equal(driftAgeNote({ category: "fact", created: "2026-01-05T00:00:00.000Z" }, on, NOW), undefined);
-  // lastCorroborated wins over created as the age anchor.
   assert.equal(
     driftAgeNote(
       { category: "preference", created: "2020-01-01T00:00:00.000Z", lastCorroborated: "2026-02-01T00:00:00.000Z" },
@@ -447,7 +417,6 @@ test("ranking is a total comparator — equal damped scores preserve input order
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// 4. Backend failure is not staleness
 // ════════════════════════════════════════════════════════════════════════════
 
 test("a failing evidence lookup reports skipped: backend_unavailable, never stale", async () => {
@@ -482,7 +451,6 @@ test("evidence with no judge verdict reports verification_unavailable, not corro
     const storage = new StorageManager(dir);
     await seedFixture(storage);
 
-    // No LLM at all: the judge returns `needs-user` for every pair.
     const report = await runPreferenceDriftScan({
       storage,
       config: driftConfig(),
@@ -510,7 +478,6 @@ test("evidence with no judge verdict reports verification_unavailable, not corro
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// 5. Window bounds + candidate gating
 // ════════════════════════════════════════════════════════════════════════════
 
 test("evidence exactly at the window start counts; at the run instant it does not", async () => {
@@ -547,7 +514,6 @@ test("only active preferences past minAgeDays are candidates", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-drift-gating-"));
   try {
     const storage = new StorageManager(dir);
-    // Every non-active status, plus a too-young preference and a non-preference.
     for (const status of ["pending_review", "rejected", "quarantined", "superseded", "archived"]) {
       await writeMemory(storage, `pref-${status}`, "preference", `Aging preference in ${status}.`, [
         `status: ${status}`,
@@ -604,7 +570,6 @@ test("the scan is a no-op with driftDetection.enabled off", async () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// 6. Config parsing + frontmatter round-trip
 // ════════════════════════════════════════════════════════════════════════════
 
 test("driftDetection defaults are off and parse from string-typed values", () => {
@@ -658,7 +623,6 @@ test("driftState and lastCorroborated round-trip through storage; corrupt values
     const corrupt = await storage.getMemoryById("pref-corrupt");
     assert.equal(corrupt?.frontmatter.driftState, undefined, "an unrecognized verdict must not survive");
 
-    // An unrecognized verdict is a caller bug on write, so the serializer throws.
     await assert.rejects(
       storage.writeMemoryFrontmatter(ok as MemoryFile, {
         driftState: "probably" as never,
@@ -693,8 +657,6 @@ test("a neutral drift pass preserves input order even with mixed rank sources", 
   const config = parseDriftDetectionConfig({ enabled: true, annotateAfterDays: 30 });
   const ordered = applyPreferenceDriftRanking(
     [
-      // Upstream effective score on the first entry, position-derived rank on
-      // the second: sorting those raw values would move the second ahead.
       { key: "scored.md", rank: 0.1, frontmatter: { category: "preference", created: NOW.toISOString() } },
       { key: "positional.md", rank: 0.5, frontmatter: undefined },
     ],

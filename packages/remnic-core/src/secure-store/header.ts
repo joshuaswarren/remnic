@@ -62,15 +62,6 @@ export const HEADER_FORMAT = "remnic.secure-store.header" as const;
 /** Current header format version. Bump on breaking schema changes. */
 export const HEADER_FORMAT_VERSION = 1 as const;
 
-/**
- * Magic bytes sealed under the master key at init time. Constant
- * across stores — there's no value in randomizing it because the
- * salt + IV + auth tag already make every verifier envelope unique.
- *
- * The string never appears in plaintext on disk; it only exists
- * inside an AES-GCM-sealed envelope. Its job is purely to give the
- * cipher something to authenticate.
- */
 export const VERIFIER_PLAINTEXT = Buffer.from("remnic-secure-store-v1", "utf8");
 
 /** AAD bound into the verifier envelope. */
@@ -130,7 +121,6 @@ export function buildHeader(options: {
 /** Stable JSON serialization with locked top-level key order. */
 export function serializeHeader(header: SecureStoreHeader): string {
   validateHeader(header);
-  // Inline metadata as a parsed object so it shares the same
   // canonical key ordering as the standalone metadata file.
   const metadataString = serializeMetadata(header.metadata);
   const metadataObject = JSON.parse(metadataString) as Record<string, unknown>;
@@ -144,7 +134,6 @@ export function serializeHeader(header: SecureStoreHeader): string {
   return JSON.stringify(ordered, null, 2);
 }
 
-/** Parse a header JSON string. Throws on any structural problem. */
 export function parseHeader(json: string): SecureStoreHeader {
   if (typeof json !== "string") {
     throw new Error("header input must be a string");
@@ -176,7 +165,6 @@ export function parseHeader(json: string): SecureStoreHeader {
   if (!/^[0-9a-fA-F]+$/.test(obj.verifier)) {
     throw new Error("header.verifier must be a hex-encoded string");
   }
-  // Codex P2 on PR #737: odd-length hex strings produce a malformed
   // Buffer via `Buffer.from(hex, "hex")` — Node silently truncates the
   // trailing nibble, yielding a buffer that is one byte shorter than
   // expected. Reject odd-length strings before they reach the cipher.
@@ -191,7 +179,6 @@ export function parseHeader(json: string): SecureStoreHeader {
   if (typeof obj.metadata !== "object" || obj.metadata === null) {
     throw new Error("header.metadata must be an object");
   }
-  // Reuse the metadata parser for nested validation. We re-stringify
   // the nested object and feed it through `parseMetadata` so any
   // schema drift is caught in one place.
   const metadata = parseMetadata(JSON.stringify(obj.metadata));
@@ -206,7 +193,6 @@ export function parseHeader(json: string): SecureStoreHeader {
   return header;
 }
 
-/** Validate a header object's invariants. Throws on the first problem. */
 export function validateHeader(header: SecureStoreHeader): void {
   if (header.format !== HEADER_FORMAT) {
     throw new Error(`header.format must be ${HEADER_FORMAT}`);
@@ -223,7 +209,6 @@ export function validateHeader(header: SecureStoreHeader): void {
   if (!/^[0-9a-fA-F]+$/.test(header.verifier)) {
     throw new Error("header.verifier must be a hex-encoded string");
   }
-  // Enforce even length: odd-length hex is silently truncated by
   // `Buffer.from(hex, "hex")` which yields a malformed envelope.
   if (header.verifier.length % 2 !== 0) {
     throw new Error(
@@ -264,7 +249,6 @@ export function verifyKey(header: SecureStoreHeader, candidateKey: Buffer): bool
  */
 export function deriveKeyFromHeader(header: SecureStoreHeader, passphrase: string): Buffer {
   const salt = decodeMetadataSalt(header.metadata);
-  // Cursor low on PR #737: a previous version branched on the
   // algorithm and returned `header.metadata.kdf.params` from both
   // arms — a no-op conditional. Pass the discriminated union member
   // through directly; `deriveKey` performs the algorithm dispatch.
@@ -335,7 +319,6 @@ export async function writeHeader(memoryDir: string, header: SecureStoreHeader):
   return target;
 }
 
-/** Convenience: build metadata + header in one call from a passphrase. */
 export function buildHeaderFromPassphrase(options: {
   passphrase: string;
   salt: Buffer;
@@ -358,7 +341,6 @@ export function buildHeaderFromPassphrase(options: {
   if (options.createdAt !== undefined) metadataOpts.createdAt = options.createdAt;
   if (options.note !== undefined) metadataOpts.note = options.note;
   const metadata = buildMetadata(metadataOpts);
-  // Cursor low on PR #737: same identical-branches ternary as in
   // `deriveKeyFromHeader`. The discriminated union already carries
   // the right shape; `deriveKey` dispatches on `algorithm`.
   const params: ScryptParams | Argon2idParams = metadata.kdf.params;

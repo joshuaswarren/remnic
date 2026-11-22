@@ -36,16 +36,10 @@ import {
   runUtilityLearningCliCommand,
 } from "../cli.js";
 
-/**
- * Register the research-status command group on the parent `engram` command.
- * Extracted verbatim from registerCli; behaviour-preserving.
- */
 export function registerResearchStatusCommands(
   cmd: CliCommand,
   orchestrator: Orchestrator,
 ): void {
-  // Resolve recall-operation gates once (#1566 Cluster C — harmonicRetrieval is a
-  // mixed-op flag read here on the CLI-search path as well as in recall).
   const caps = resolveCapabilities(orchestrator.config);
 cmd
   .command("objective-state-status")

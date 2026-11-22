@@ -1,19 +1,3 @@
-/**
- * Golden-corpus byte-parity test for the sealed-envelope write path
- * (issue #1989 PR2, umbrella #1988).
- *
- * For every corpus input, the memory is written twice — once through the
- * legacy `writeMemory(category, content, options)` form and once through
- * `composeMemoryEnvelope` + `writeSealedMemory` — into two independent
- * temp storage dirs. The persisted files must be BYTE-IDENTICAL after
- * normalizing only the volatile fields (`id` — embedded in the filename and
- * frontmatter — and the `created`/`updated`/auto-`expiresAt` timestamps
- * minted from the wall clock at write time).
- *
- * This is the enforcement artifact for the #1989 PR2 contract: "pure
- * factoring — byte-identical persisted output". If either path ever adds a
- * transform the other lacks, this suite fails.
- */
 
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
@@ -29,10 +13,8 @@ interface CorpusCase {
   name: string;
   category: MemoryCategory;
   content: string;
-  /** Envelope-owned fields. */
   envelope?: Partial<Omit<MemoryWriteInput, "content" | "category">>;
   source?: string;
-  /** Extras passed identically to both paths. */
   extras?: WriteMemoryOptions;
 }
 
@@ -94,7 +76,6 @@ const CORPUS: CorpusCase[] = [
 const VOLATILE_FRONTMATTER = /^(id|created|updated|expiresAt|contentHash):.*$/gm;
 
 function normalizeVolatile(fileText: string): string {
-  // `contentHash` is deterministic on content, but the hash covers the
   // sanitized body which is itself asserted byte-identical below — masking it
   // keeps this normalization list conservative rather than semantically load
   // bearing. id/created/updated/expiresAt are wall-clock/random.

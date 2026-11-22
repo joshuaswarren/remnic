@@ -40,7 +40,6 @@ export interface WeeklyDayTotal extends WeeklyKindTotals {
   categories: WeeklyCategoryTotal[];
 }
 
-/** First slice never computes a prior week; the field is present so callers cannot treat absence as zero. */
 export interface WeeklyPreviousPeriodUnavailable {
   available: false;
 }

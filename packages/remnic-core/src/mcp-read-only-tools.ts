@@ -1,16 +1,3 @@
-/**
- * Conservative allowlist of canonical MCP tool suffixes that are
- * unambiguously read-only. Tools in this set are tagged with
- * `annotations: { readOnlyHint: true }` so ChatGPT (and other MCP
- * clients that honor the hint) can skip per-call confirmation.
- *
- * The list is suffix-based so it covers both the `remnic.*` and
- * `engram.*` naming forms. Anything not on it stays unannotated:
- * uncertainty is resolved as "might mutate".
- *
- * Excluded by construction: anything that writes, runs a pipeline,
- * flushes, applies, records, imports, or destructively deletes.
- */
 export const MCP_READ_ONLY_TOOL_SUFFIXES: Readonly<Record<string, true>> = {
   recall: true,
   recall_explain: true,

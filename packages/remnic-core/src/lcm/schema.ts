@@ -147,7 +147,6 @@ function createTables(db: BetterSqlite3Database): void {
     `);
   }
 
-  // Upsert meta version
   db.prepare("INSERT OR REPLACE INTO lcm_meta (key, value) VALUES ('schema_version', ?)").run(
     String(LCM_SCHEMA_VERSION),
   );

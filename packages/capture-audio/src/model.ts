@@ -45,10 +45,6 @@ function existingFile(destination: string): boolean {
     entry = statSync(destination);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    // statSync follows symlinks, so ENOENT is either no directory entry at
-    // all or a dangling symlink. lstatSync tells them apart: if it succeeds,
-    // a broken symlink occupies the path and must be cleared, not silently
-    // treated as absent (a later rename/link would fail on it).
     try {
       lstatSync(destination);
     } catch (linkError) {
@@ -95,8 +91,6 @@ export async function downloadWhisperModel(input: ModelDownloadInput): Promise<M
   const temporary = path.join(input.directory, `.${filename}.${process.pid}.${crypto.randomUUID()}.tmp`);
   try {
     await pipeline(responseBodyToReadable(response.body), createWriteStream(temporary, { flags: "wx", mode: 0o600 }));
-    // Atomic same-directory rename: works on filesystems without hard-link
-    // support (FAT32/exFAT, some network mounts), unlike link()+rm().
     await rename(temporary, destination);
     return { path: destination, downloaded: true };
   } catch (error) {

@@ -1,19 +1,3 @@
-/**
- * recall-recognition-tier.test.ts — issue #2975 foundation slice.
- *
- * Pins the full-index recognition tier contract:
- *  - under-threshold namespaces recall by recognizing against the FULL
- *    compact index (every id+description line reaches the recognizer) and
- *    never touch vector search;
- *  - above-threshold namespaces route to vector search and never call the
- *    recognizer;
- *  - a missing (or unreadable) index falls back to vector search cleanly,
- *    without throwing;
- *  - the tier decision is deterministic and pure on (index, maxEntries);
- *  - recognizer picks are validated against the index and returned in
- *    index order, never recognizer order;
- *  - a failing recognizer degrades LOUDLY to vector search, labeled.
- */
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -89,20 +73,16 @@ test("decideRecognitionTier: deterministic decision table", () => {
 test("loadRecognitionIndex: missing, corrupt, wrong-shape, and future-version indexes return null without throwing", async () => {
   const dir = await tmpNamespace();
   try {
-    // Missing file.
     assert.equal(await loadRecognitionIndex(dir), null);
 
-    // Corrupt JSON.
     const file = recognitionIndexPath(dir);
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, "{ not json", "utf8");
     assert.equal(await loadRecognitionIndex(dir), null);
 
-    // Valid JSON, wrong shape.
     await writeFile(file, JSON.stringify({ version: 1, entries: "nope" }), "utf8");
     assert.equal(await loadRecognitionIndex(dir), null);
 
-    // Future schema version.
     await writeFile(
       file,
       JSON.stringify({ version: 99, entries: entries(2) }),
@@ -110,7 +90,6 @@ test("loadRecognitionIndex: missing, corrupt, wrong-shape, and future-version in
     );
     assert.equal(await loadRecognitionIndex(dir), null);
 
-    // Roundtrip: save then load returns the same index.
     const index: RecognitionIndex = { version: 1, entries: entries(2) };
     await saveRecognitionIndex(dir, index);
     assert.deepEqual(await loadRecognitionIndex(dir), index);
@@ -160,7 +139,6 @@ test("acceptance: under-threshold namespace uses the full-index path, not vector
     assert.deepEqual(outcome.vectorResults, []);
     assert.equal(outcome.degraded, undefined);
 
-    // Full-index proof: the recognizer saw EVERY index line.
     assert.equal(prompts.length, 1);
     for (const entry of index.entries) {
       assert.ok(prompts[0].includes(`${entry.id}: ${entry.description}`), `prompt must carry ${entry.id}`);

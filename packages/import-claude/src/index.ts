@@ -1,6 +1,4 @@
 // ---------------------------------------------------------------------------
-// @remnic/import-claude — public surface (issue #568 slice 3)
-// ---------------------------------------------------------------------------
 
 export { adapter, claudeAdapter } from "./adapter.js";
 export {

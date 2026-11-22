@@ -369,28 +369,6 @@ export async function buildExplicitCueRecallSection(
   const evidenceItems: ExplicitCueEvidenceItem[] = [];
   const seenTurns = new Set<string>();
 
-  // #1505 codex P2: gather cue evidence across the ordered LCM read key set
-  // (primary overlay → project/root fallbacks) into ONE shared accumulator
-  // (`evidenceItems` / `seenTurns`), so a branch-scoped session's project/root
-  // fallback cues are RECOVERED instead of being skipped by the old
-  // first-non-empty short-circuit. `seenTurns` is the historical local name;
-  // its keys use archive-row identity when available and fall back to
-  // `session_id`+`turn_index` for legacy engines. The budget is applied exactly
-  // once in the `buildEvidencePack` call below. `gatherAcrossReadSessions` isolates a
-  // per-key read failure (a corrupt/locked fallback index must not discard the
-  // other keys' cues); single-key recall runs each collector directly, so a
-  // failure propagates exactly as before.
-  //
-  // Ordering: gather by evidence TYPE first (turn references → content cues →
-  // lexical cues), then by read-key priority within each type. This is the
-  // section's deliberate value order, and it carries across keys — so a fallback
-  // key's high-value turn references precede the primary key's lower-value
-  // lexical cues under a tight budget, while a single key is byte-for-byte the
-  // pre-#1505 insertion order. We intentionally do NOT score-sort the merged set:
-  // explicit-cue's highest-value cues (turn references / content cues) are
-  // deliberately UNSCORED while lexical search hits carry numeric scores, so a
-  // score-DESC sort would invert the priority and demote turn references below
-  // weak lexical hits (cursor[bot] / codex P2 on this PR).
   const readSessionIds = resolveLcmReadSessionIds(options);
   await gatherAcrossReadSessions(readSessionIds, (sessionId) =>
     collectTurnReferenceEvidence({
@@ -445,18 +423,7 @@ export async function buildExplicitCueRecallSection(
     includeContentLexicalCues: options.includeContentLexicalCues,
     includeStructuredPlanCues: options.includeStructuredPlanCues,
   });
-  // Issue #1539 PR5: route through the unified spine to declare explicit-cue's
-  // policy explicitly. The call is behavior-idempotent — items are already
-  // deduped by `seenTurns` during collection (so the spine's id-dedup matches
-  // exactly), the constant scorer assigns rank=0 which `buildEvidencePack`
-  // ignores, and `preserveInsertionOrder` skips the sort so the deliberate
-  // value ordering (turn references -> content cues -> lexical cues, by evidence
-  // type then read-key priority) is preserved byte-for-byte.
   //
-  // The value is the DECLARED config: a fifth recall pipeline would be a config
-  // file, and this config documents explicit-cue's opt-outs (no scoring, id-only
-  // dedup, insertion-order preservation) as named fields instead of embedded
-  // code. See recall-pipeline-stages.ts for the spine contract.
   const rankedEvidenceItems = unifiedDedupeAndRank(evidenceItems, {
     query: "",
     intents: [],
@@ -3650,9 +3617,6 @@ function appendInventoryChangeLines(
     );
   }
   for (const change of changes) {
-    // The rendered change is stateful: whether a place/move removes an item
-    // depends on earlier take actions in `held`. Until the parser returns that
-    // full dependency chain, do not publish a misleading partial row receipt.
     lines.push(`[Action ${change.step}]: ${change.action} => ${change.change}`);
   }
 }
@@ -5710,12 +5674,6 @@ function candidateTurnIndexesForReference(
   }
 
   const pairedBase = reference.number * 2;
-  // Action/observation traces are stored as paired turns:
-  //   turn 2N     => [Action N]
-  //   turn 2N + 1 => [Observation N]
-  // Include the preceding observation so transition questions can compare the
-  // state before and after the action, but avoid pulling in Action N+1. Future
-  // actions caused explicit step questions to drift to the next step.
   for (let offset = -1; offset <= 1; offset += 1) {
     candidates.add(pairedBase + offset);
   }

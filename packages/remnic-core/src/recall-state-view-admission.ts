@@ -31,21 +31,6 @@ export function resolveRecallStateViewActive(
   return (options.stateView === true || config.recallStateViews === true) && isChangeOrientedQuery(query);
 }
 
-/**
- * Superseded-status filtering delegates to shouldFilterSupersededFromRecall
- * so recent-scan and the QMD safety filter share semantics (kill switch,
- * audit mode, PR #402).
- *
- * #1952: an active state view admits a superseded memory whose successor
- * ALSO survives this admission filter — a successor excluded by status or
- * path can never anchor (mirrors the filterSearchResultsByRecallSafety
- * fixpoint). Anchors grow through admitted chain links, so iterate to a
- * fixpoint.
- *
- * PR #713: when `as_of` is active, pass superseded candidates through here
- * — boostSearchResults's `[valid_at, invalid_at)` evaluation is the
- * authoritative historical gate. Other non-active statuses stay excluded.
- */
 export function filterRecentScanMemoriesForStateView(
   memories: readonly MemoryFile[],
   config: GenericRecallPathPolicy,
@@ -97,12 +82,8 @@ export function filterRecentScanMemoriesForStateView(
       ) {
         return true;
       }
-      // Include superseded memory only if the canonical gate says
-      // NOT to filter it (kill switch off or audit mode on).
       return !shouldFilterSupersededFromRecall(m.frontmatter, supersessionOptions);
     }
-    // Other non-active statuses (archived, retired, etc.) are
-    // excluded from the recent-scan path by default.
     return false;
   });
 }

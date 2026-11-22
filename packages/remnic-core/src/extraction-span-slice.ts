@@ -1,8 +1,3 @@
-/**
- * Isolated span slicer (issue #2333 leftover).
- *
- * Pure. Extraction wiring waits on the Phase A bench gate.
- */
 
 export function sliceSpanText(opts: {
   text: string;

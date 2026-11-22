@@ -1,17 +1,3 @@
-/**
- * Extraction / turn-ingestion lifecycle subject for the scenario-matrix harness
- * (issue #1993, PR2). This is the #1852 surface — the highest-churn stateful
- * area — retrofitted as the reference `LifecycleSubject`. Every row drives the
- * REAL `Orchestrator` (recall / processTurn / flushSession / restart) with only
- * the LLM extraction client stubbed at the established field seam; storage,
- * buffering, dedupe, namespace routing, and the before_reset abort wiring are
- * all exercised for real.
- *
- * Falsifiable by design (acceptance #1993): the `before-reset` row asserts the
- * abort-before-clear guard in extraction-run.ts (`throwIfAborted
- * ("before_clear_buffer")`) — inverting that guard fails THIS row and only this
- * row, because it is the only row that fires an abort mid-extraction.
- */
 
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -36,29 +22,18 @@ import { type LifecycleSubject, type MatrixRow, type MatrixRowId, runLifecycleMa
 interface ExtractionLifecycleState {
   memoryDir: string;
   cfg: PluginConfig;
-  /** Every orchestrator built for the row; teardown destroys all of them. */
   orchestrators: Orchestrator[];
-  /** The primary orchestrator's recorded extraction calls. */
   calls: BufferTurn[][];
-  /** Second-instance drain calls (restart row). */
   restartCalls?: BufferTurn[][];
-  /** Re-flush calls after an aborted before_reset flush (before-reset row). */
   secondFlushCalls?: BufferTurn[][];
-  /** The aborting before_reset flush's recorded extraction calls (before-reset row). */
   abortFlushCalls?: BufferTurn[][];
-  /** Whether the aborting before_reset flush rejected (before-reset row). */
   abortFlushRejected?: boolean;
-  /** Persisted fact count captured immediately after the aborted before_reset flush (must be 0). */
   abortedWriteCount?: number;
-  /** Facts containing the recovered turn after the recovery flush (before-reset row; must be 1). */
   recoveredFactCount?: number;
-  /** Facts containing the recovered turn after a further flush (before-reset row; must stay 1 — no duplicate). */
   factCountAfterExtraFlush?: number;
-  /** Extraction-call count captured right before the dedupe row's force flush. */
   callsBeforeForceFlush?: number;
 }
 
-/** Namespaces-on config with alice/bob principal prefix routing (identity rows). */
 function namespacedConfig(memoryDir: string): PluginConfig {
   return makeHarmonicLifecycleConfig(memoryDir, {
     namespacesEnabled: true,
@@ -78,19 +53,10 @@ function namespacedConfig(memoryDir: string): PluginConfig {
   });
 }
 
-/**
- * A sparse, opaque session id remembered (bound) to alice from a PRIOR session.
- * The key does not encode alice; only the remembered map binding resolves it to
- * her namespace — so the with-binding row exercises the binding, not prefix
- * routing (review finding: a `alice:*` key resolves to alice regardless).
- */
 const REMEMBERED_SESSION = "restored-session-9f2a";
 
-/** A sparse, opaque session id with NO remembered binding — resolves to no
- *  principal, so it must never reach another principal's memory. */
 const UNBOUND_SESSION = "unbound-session-0000";
 
-/** Map-mode config where {@link REMEMBERED_SESSION} is bound to alice. */
 function rememberedBindingConfig(memoryDir: string): PluginConfig {
   return makeHarmonicLifecycleConfig(memoryDir, {
     namespacesEnabled: true,
@@ -137,15 +103,7 @@ async function assertHarmonicEpisode(memoryDir: string, sessionKey?: string): Pr
 }
 
 
-/**
- * The out-of-process drain path: a buffered session is claimed into a drain
- * claim, the drain extracts it through the same pipeline, and the claim ends
- * empty. The live buffer keeps its in-memory copy; the drain tombstone makes
- * the owner subtract the drained turn instead of writing it back.
- */
 async function exerciseBufferDrain(state: ExtractionLifecycleState): Promise<void> {
-  // Its own memory root and orchestrator: the drain must not perturb the
-  // row's own extraction calls or fact counts.
   const memoryDir = await mkTempMemoryDir("extraction-drain-row");
   const cfg = makeHarmonicLifecycleConfig(memoryDir, { extraction: { spanMode: "on" } });
   const orchestrator = new Orchestrator(cfg);
@@ -181,18 +139,13 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
               ? makeHarmonicLifecycleConfig(memoryDir, {
                   extractionDedupeEnabled: true,
                   extractionDedupeWindowMs: 60_000,
-                  // Issue #2333: materialization sits inside the extraction
-                  // path, so the dedupe/replay row must hold with spanMode on.
                   extraction: { spanMode: "on" },
                 })
-              // Issue #2333: extraction-lifecycle rows (compaction flush,
-              // before_reset, …) must pass with `extraction.spanMode: "on"`.
               : makeHarmonicLifecycleConfig(memoryDir, { extraction: { spanMode: "on" } });
       primary = new Orchestrator(cfg);
       const calls = stubExtraction(primary, (turns) => spanBearingResult(turns));
       return { memoryDir, cfg, orchestrators: [primary], calls };
     } catch (err) {
-      // Transactional setup: a partial build must not leak the orchestrator or temp dir.
       await primary?.destroy().catch(() => undefined);
       await cleanupDir(memoryDir);
       throw err;
@@ -212,9 +165,6 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         return;
       }
       case "sparse-metadata-with-binding": {
-        // A binding remembered on disk from a prior session (the namespace root)
-        // is reused by a fresh sparse session — no explicit provider metadata
-        // on the turn, yet recall resolves through the same remembered binding.
         const aliceRoot = await resolveNamespaceStorageRoot(state.cfg, "alice");
         await seedFactFile(aliceRoot, "remembered-binding", "alice pins deploys to the us-east-2 region.");
         await primary.processTurn(
@@ -227,8 +177,6 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         return;
       }
       case "sparse-metadata-without-binding": {
-        // Alice's memory exists on disk, but THIS session's opaque key has no
-        // remembered binding to her — recall must not fabricate one to reach it.
         const aliceRoot = await resolveNamespaceStorageRoot(state.cfg, "alice");
         await seedFactFile(aliceRoot, "unbound", "alice pins deploys to the us-east-2 region.");
         await primary.processTurn(
@@ -261,7 +209,6 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
           "session-flushed"
         );
         assert.equal(await primary.waitForExtractionIdle(15_000), true);
-        // Park a second session's turn WITHOUT flushing, then restart.
         await primary.processTurn(
           "user",
           "The quota reconciler defers negative balances to manual review.",
@@ -272,7 +219,6 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         const second = new Orchestrator(makeHarmonicLifecycleConfig(state.memoryDir, { extraction: { spanMode: "on" } }));
         state.orchestrators.push(second);
         state.restartCalls = stubExtraction(second, (turns) => spanBearingResult(turns));
-        // Drain the buffer that survived the restart (state/buffer.json).
         await second.flushSession("session-parked", { reason: "session_end" });
         return;
       }
@@ -287,19 +233,12 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
       }
       case "before-reset": {
         await exerciseBufferDrain(state);
-        // Buffer a low-signal turn, then fire a before_reset flush whose abort
-        // trips mid-extraction. The abort wiring (the signal threaded from
-        // flushSession into runExtraction, guarding `before_persist` and
-        // `before_clear_buffer`) must abort BEFORE the buffer is cleared, so a
-        // timed-out reset cannot drop turns. Falsifiable (acceptance #1993):
-        // dropping the abortSignal threading fails THIS row and only this row.
         await primary.processTurn(
           "user",
           "The replay ledger checkpoint compacts after five hundred entries.",
           "session-reset"
         );
         const controller = new AbortController();
-        // Rewire the seam: extraction succeeds but trips the abort mid-flight.
         state.abortFlushCalls = stubExtraction(primary, (turns) => {
           controller.abort();
           return spanBearingResult(turns);
@@ -312,20 +251,13 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
           });
         state.abortFlushRejected = abortRejected;
 
-        // The aborted flush must persist NOTHING (abort guards before_persist):
-        // capture the fact count now, before the recovery flush writes the turn.
         state.abortedWriteCount = (await markdownFilesUnder(path.join(state.memoryDir, "facts"))).length;
 
-        // A fresh, non-aborted flush must find the turn still buffered AND must
-        // itself succeed — swallowing its failure would let a recovery-flush
-        // regression pass vacuously (the extraction call still bumps the count).
         state.secondFlushCalls = stubExtraction(primary, (turns) => spanBearingResult(turns));
         await primary.flushSession("session-reset", { reason: "before_reset" });
-        // The recovery flush must PERSIST the preserved turn as a fact...
         state.recoveredFactCount = (
           await memoryFilesContaining(path.join(state.memoryDir, "facts"), "replay ledger checkpoint")
         ).length;
-        // ...and a further flush (buffer now drained) must NOT duplicate it.
         await primary.flushSession("session-reset", { reason: "before_reset" });
         state.factCountAfterExtraFlush = (
           await memoryFilesContaining(path.join(state.memoryDir, "facts"), "replay ledger checkpoint")
@@ -345,13 +277,9 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         const content = "Please remember: the canary gate requires two green smoke runs.";
         await primary.processTurn("user", content, "session-dedupe");
         assert.equal(await primary.waitForExtractionIdle(15_000), true);
-        // An identical turn re-triggers but is suppressed inside the window.
         await primary.processTurn("user", content, "session-dedupe");
         assert.equal(await primary.waitForExtractionIdle(15_000), true);
-        // Record the count BEFORE the force flush: the in-window duplicate must
-        // already be suppressed, so exactly one extraction has happened so far.
         state.callsBeforeForceFlush = state.calls.length;
-        // Force-flush bypasses the dedupe fingerprint (skipDedupeCheck).
         await primary.flushSession("session-dedupe", { reason: "before_reset" });
         return;
       }

@@ -63,13 +63,6 @@ export type TombstoneBlockedCaptureIndexOptions = {
   readonly withHeldFileLock?: typeof withHeldFileLock;
 };
 
-/**
- * Durable targeted deduplication for tombstone-blocked explicit captures.
- *
- * The active fact-hash index intentionally excludes blocked rows. This small
- * companion index keeps the blocked identity visible without making every
- * authoritative active-index miss scan the full corpus.
- */
 export class TombstoneBlockedCaptureIndex {
   private readonly options: TombstoneBlockedCaptureIndexOptions;
   private index: ContentHashIndex | null = null;
@@ -132,10 +125,6 @@ export class TombstoneBlockedCaptureIndex {
               const state = value.state;
               if (state !== "pending" && state !== "committed") malformed = true;
               const markerStat = await stat(markerPath).catch(() => null);
-              // A torn payload can lose its JSON metadata, but the atomic
-              // marker filename and filesystem mtime still identify its owner
-              // and age. Preserve both so stale malformed markers can be
-              // reaped without treating a fresh pre-commit gap as abandoned.
               const createdAt =
                 typeof value.createdAt === "number" && Number.isFinite(value.createdAt)
                   ? value.createdAt
@@ -232,7 +221,6 @@ export class TombstoneBlockedCaptureIndex {
     return await this.readRebuildMarkers();
   }
 
-  // A pending marker protects the pre-commit gap; only committed markers are safe for another writer to clear.
   private async writeMarkerAtomically(markerPath: string, payload: string): Promise<void> {
     const temporaryPath = `${markerPath}.tmp-${process.pid}-${randomUUID()}`;
     try {
@@ -396,7 +384,6 @@ export class TombstoneBlockedCaptureIndex {
     return this.refreshPromise;
   }
 
-  /** Return blocked-row membership and authority from one index snapshot. */
   async check(
     content: string,
     category: string,
@@ -410,12 +397,10 @@ export class TombstoneBlockedCaptureIndex {
     return { has: index.has(key), authoritative: this.authoritative };
   }
 
-  /** Return whether a blocked row matches this explicit-capture identity. */
   async has(content: string, category: string, sourceConnector?: string): Promise<boolean> {
     return (await this.check(content, category, sourceConnector)).has;
   }
 
-  /** Return whether the in-memory index is safe to answer an authoritative miss. */
   async isAuthoritative(): Promise<boolean> {
     const index = await this.getIndex();
     if ((await this.hasRebuildRequired()) || !(await index.isDiskFingerprintCurrent())) {
@@ -424,22 +409,18 @@ export class TombstoneBlockedCaptureIndex {
     return this.authoritative;
   }
 
-  /** Reserve durable rebuild intent before a blocked memory file is committed. */
   async prepareWrite(): Promise<string> {
     return this.markRebuildRequired();
   }
 
-  /** Mark a prepared write committed once its memory file is durable. */
   async commitWrite(rebuildMarker: string): Promise<void> {
     await this.markRebuildCommitted(rebuildMarker);
   }
 
-  /** Drop a pending marker when the protected memory write never commits. */
   async discardWrite(rebuildMarker: string): Promise<void> {
     await this.clearRebuildRequired([rebuildMarker]);
   }
 
-  /** Add a newly persisted blocked row to the durable targeted index. */
   async add(memory: MemoryFile, rebuildMarker?: string): Promise<void> {
     if (!this.isBlocked(memory)) return;
     let index = await this.getIndex();
@@ -464,7 +445,6 @@ export class TombstoneBlockedCaptureIndex {
     await this.setAuthoritative(true);
   }
 
-  /** Rebuild the index after a blocked row changes or is removed. */
   async rebuildIfLoaded(ownedMarker?: string): Promise<void> {
     const index = this.index ?? ((await this.hasPersistedIndexOrMarkers()) ? this.getIndex() : null);
     if (!index) return;
@@ -482,7 +462,6 @@ export class TombstoneBlockedCaptureIndex {
     await this.setAuthoritative(rebuilt);
   }
 
-  /** Rebuild when either side of a write is blocked and its identity changed. */
   async sync(before: MemoryFile, after: MemoryFile, rebuildMarker?: string): Promise<void> {
     const beforeBlocked = this.isBlocked(before);
     const afterBlocked = this.isBlocked(after);
@@ -540,18 +519,8 @@ export class TombstoneBlockedCaptureIndex {
     await this.failOpen("invalidateMemory", () => this.rebuildIfLoaded(ownedMarker));
   }
 
-  /**
-   * Drop an already-committed write marker without re-reading the corpus. The
-   * offline-sync mutation path commits its marker around the file write, then
-   * must clear it even when the write cannot have changed the blocked key set
-   * (neither side tombstone-blocked) — otherwise the marker lingers until some
-   * later rebuild clears it. Mirrors the tail of `add`/`sync`.
-   */
   async clearCommittedWriteMarker(rebuildMarker: string): Promise<void> {
     await this.clearRebuildRequired([rebuildMarker]);
-    // getIndex() may have rebuilt while this marker was still pending and
-    // left authoritative=false. After the marker is gone, restore authority
-    // if no other uncommitted marker remains.
     await this.setAuthoritative(true);
   }
 

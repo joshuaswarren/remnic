@@ -1,31 +1,6 @@
-/**
- * Tool-scoped memory guard (issue #2183).
- *
- * A tool-related fact extracted from a specific agent integration carries an
- * UNQUALIFIED tool name — "use the search tool" — with no agent identity
- * attached (the conversation handed to the extraction LLM is rendered as
- * `[role] content` only). Promoting such a fact to the shared namespace lets a
- * DIFFERENT integration that exposes a same-named but incompatible tool (Pi
- * `search` = repo code search vs OpenClaw `search` = web search) consume it.
- *
- * `referencesAgentSpecificTool` flags fact text that references a specific
- * tool/command invocation rather than portable knowledge. The promotion guard
- * in `orchestration/extraction-persist.ts` uses it — when the producing
- * integration is known (`sourceConnector`) — to keep such a fact in that
- * integration's own namespace.
- *
- * Tuning bias: a FALSE POSITIVE is cheap — the fact stays in the narrower
- * namespace, the documented safe default. A FALSE NEGATIVE is the actual
- * cross-integration collision bug, so detection leans permissive — but it must
- * not fire on ordinary prose.
- */
 
 const BT = "`";
 
-// Generic tool names + host-tool names emitted by the agent adapters.
-// Evidence: "edit" — Pi messages.test.ts:43 ({ type: "toolCall", name: "edit" }).
-// "bash" — Pi messages.test.ts:70 (bashExecution tool rendering). "glob",
-// "webfetch", "task" — standard Claude Code tools (Pi wraps Claude Code).
 const GENERIC_TOOL_NAMES = [
   "read", "write", "search", "fetch", "browser", "exec", "shell", "memory",
   "edit", "bash", "glob", "webfetch", "task",
@@ -69,9 +44,6 @@ const ARGS = "(?:\\s+" + FLAG + "(?:\\s+" + OPCODE + "){0,4})?";
 const CLI_ARG_TOKEN = "(?:[a-z][a-z0-9-]{0,15}|" + FLAG_NAKED + "|" + OPCODE + ")";
 const CLI_ARG_RUN = "(?:\\s+" + CLI_ARG_TOKEN + "){1,4}";
 
-// Shared: a CLI tool or slash command optionally followed by a bounded
-// argument run. Used by BOTH the quoted and unquoted invocation arms so
-// quoting cannot diverge from unquoted again (#2183 round 20).
 const CMD_WITH_ARGS = "(?:(?:" + CLI_NAMES_CI + "|" + SLASH_GENERIC + ")" + CLI_ARG_RUN + ")";
 const QSTRICT_CONTENT =
   "(?:" + KNOWN_NAMES_ALT + "|[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+" + "|" + FLAG_NAKED + "|" + SLASH_CMD_TOKEN +
@@ -95,10 +67,6 @@ const TOOL_REFERENCE_CI = new RegExp(
 );
 
 function hasCapitalisedToolName(content: string): boolean {
-  // Structural discriminator: a capitalised identifier beside a tool/command
-  // keyword qualifies ONLY when preceded by an article or invocation verb (not
-  // sentence-initial), or connected via named/called/aka. This replaces the
-  // blocklist approach — a structural rule beats a growing STOP_WORDS set.
   for (const re of [
     /(?:the|a|an|this|that|these|those|use|run|call|invoke)\s+([A-Za-z][A-Za-z0-9]+)\b[\s'`<>]{0,4}\b(?:tool|command|subcommand)\b/gi,
     /\b(?:tool|command|subcommand)\b\s+(?:named|called|aka)\s+([A-Za-z][A-Za-z0-9]+)\b/gi,
@@ -114,10 +82,6 @@ function hasCapitalisedToolName(content: string): boolean {
 }
 
 function hasCamelCaseToolName(content: string): boolean {
-  // Case-sensitive: camelCase (lowercase start, interior uppercase) is a common
-  // host-tool naming convention (bashExecution, memoryStore, webFetch). Ordinary
-  // English words are never camelCase, and PascalCase (PostgreSQL, TypeScript)
-  // starts uppercase so is handled by hasCapitalisedToolName instead.
   const camelRe = /\b([a-z]{3,}[a-z0-9]*[A-Z][a-z][A-Za-z0-9]*)\b/g;
   let m;
   while ((m = camelRe.exec(content)) !== null) {
@@ -126,12 +90,10 @@ function hasCamelCaseToolName(content: string): boolean {
     const end = start + token.length;
     const before = content.slice(Math.max(0, start - 20), start);
     const after = content.slice(end);
-    // Invocation: preceded by a verb, followed by a clause boundary or call syntax.
     if (/(?:^|\s)(?:use|run|call|invoke)\s*$/i.test(before) &&
         /^(?:\s*(?:$|[.,;(:]|(?:when|before|after|to|with|for|on|in|if|unless|whenever)\b))/i.test(after)) {
       return true;
     }
-    // Keyword-adjacent: camelCase beside a tool/command keyword.
     if (/^(?:\s*(?:tool|command|subcommand)\b)/i.test(after) ||
         /(?:tool|command|subcommand)\s*$/i.test(before)) {
       return true;

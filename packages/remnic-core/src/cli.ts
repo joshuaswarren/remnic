@@ -925,12 +925,9 @@ function isWorkProjectStatus(value: string | undefined): value is "active" | "on
 export async function runTrainingExportCliCommand(
   opts: TrainingExportCliCommandOptions,
 ): Promise<void> {
-  // Expand ~ in user-facing paths (CLAUDE.md #17: applies to memoryDir AND
-  // output — Node.js fs does not expand ~ on any path).
   const expandedMemoryDir = expandTildePath(opts.memoryDir);
   const expandedOutput = expandTildePath(opts.output);
 
-  // 1. Validate format is registered (reject invalid per CLAUDE.md #51)
   const adapter = getTrainingExportAdapter(opts.format);
   if (!adapter) {
     const registered = listTrainingExportAdapters();
@@ -942,9 +939,6 @@ export async function runTrainingExportCliCommand(
     );
   }
 
-  // 2. Validate memoryDir exists and is a directory (CLAUDE.md #24: existsSync
-  // returns true for files; must use statSync().isDirectory() when a directory
-  // is required, otherwise we silently generate an empty export).
   const { statSync, existsSync } = await import("node:fs");
   if (!existsSync(expandedMemoryDir)) {
     throw new Error(
@@ -964,7 +958,6 @@ export async function runTrainingExportCliCommand(
     );
   }
 
-  // 3. Parse date filters (strict: reject overflowed dates like Feb 31)
   let since: Date | undefined;
   if (opts.since !== undefined) {
     since = parseStrictCliDate(opts.since, "--since");
@@ -975,7 +968,6 @@ export async function runTrainingExportCliCommand(
     until = parseStrictCliDate(opts.until, "--until");
   }
 
-  // 4. Convert memories to records
   const records = await convertMemoriesToRecords({
     memoryDir: expandedMemoryDir,
     since,
@@ -985,7 +977,6 @@ export async function runTrainingExportCliCommand(
     includeEntities: opts.includeEntities,
   });
 
-  // 5. Dry run — print statistics and return
   if (opts.dryRun) {
     opts.stdout.write(`Training export dry run\n`);
     opts.stdout.write(`Format: ${adapter.name}\n`);
@@ -1001,10 +992,8 @@ export async function runTrainingExportCliCommand(
     return;
   }
 
-  // 6. Format records using adapter
   const formatted = adapter.formatRecords(records);
 
-  // 7. Write to output file
   const { writeFile: fsWriteFile } = await import("node:fs/promises");
   const { dirname } = await import("node:path");
   const { mkdirSync } = await import("node:fs");
@@ -1808,20 +1797,9 @@ export async function runSessionRepairCliCommand(
   return { report, plan, applyResult };
 }
 
-// ---------------------------------------------------------------------------
-// Tier migration CLI adapters
 //
-// The public exports below accept two adapter shapes and normalize at this
-// boundary; registerCli always passes the coordinator shape internally.
-//   1. Coordinator shape — the orchestrator exposes the extracted
-//      TierMigrationCoordinator directly (current wiring).
-//   2. Legacy shape — the orchestrator formerly forwarded via
-//      getTierMigrationStatus / runTierMigrationNow delegates. External
-//      callers (tests, integrations) that still pass the old shape keep
-//      working.
 // ---------------------------------------------------------------------------
 
-/** Coordinator-shaped adapter for tier-status reads. */
 export interface TierStatusCoordinatorCliAdapter {
   readonly tierMigrationCoordinator: Pick<TierMigrationCoordinator, "getStatus">;
 }
@@ -1838,7 +1816,6 @@ export type TierStatusCliAdapter =
   | TierStatusCoordinatorCliAdapter
   | TierStatusLegacyCliAdapter;
 
-/** Coordinator-shaped adapter for tier-migrate runs. */
 export interface TierMigrateCoordinatorCliAdapter {
   readonly tierMigrationCoordinator: Pick<TierMigrationCoordinator, "runCycle">;
   readonly storage: StorageManager;
@@ -2307,16 +2284,11 @@ function parseSinceDurationMs(since: string): number {
 export function parseDurationToMs(raw: string): number | null {
   const trimmed = raw.trim();
 
-  // Plain number of days
   if (/^\d+$/.test(trimmed)) {
     const days = Number.parseInt(trimmed, 10);
     return Number.isFinite(days) && days > 0 ? days * 86_400_000 : null;
   }
 
-  // ISO 8601 duration: P[nY][nM][nW][nD][T[nH][nM][nS]]
-  // Calendar units are normalized for retention policy use: 1Y=365D, 1M=30D.
-  // Must be fully consumed by recognised components; partial matches like
-  // "P90DX" or "P1Yjunk" are rejected rather than silently truncated.
   const iso = trimmed.toUpperCase();
   if (!iso.startsWith("P")) return null;
 
@@ -3118,7 +3090,6 @@ export async function runReplayCliCommand(
 }
 
 // ---------------------------------------------------------------------------
-// Bulk-import CLI command
 // ---------------------------------------------------------------------------
 
 export interface BulkImportCliCommandOptions {
@@ -3149,20 +3120,7 @@ export interface BulkImportCliCommandOptions {
   stderr: Writable;
 }
 
-/**
- * Attempt to lazily register built-in bulk-import adapters.  Adapters
- * live in optional workspace packages (e.g. `@remnic/import-weclone`)
- * so that core stays framework-agnostic; we try the dynamic import and
- * silently continue if the package is absent or the adapter is already
- * registered.  Errors from the dynamic import are swallowed so a missing
- * optional package does not break other bulk-import sources.
- */
 async function ensureBuiltInBulkImportAdapters(): Promise<void> {
-  // weclone — imported via a computed specifier so the TypeScript dts
-  // resolver doesn't require `@remnic/import-weclone` to be present at
-  // core-build time.  The package declares it as an optional workspace
-  // dependency; if it's missing from a given deployment we silently
-  // skip registration.
   if (!getBulkImportSource("weclone")) {
     const wecloneSpecifier = "@remnic/" + "import-weclone";
     try {
@@ -3200,12 +3158,6 @@ export async function runBulkImportCliCommand(
     );
   }
 
-  // Guard: library callers that invoke `runBulkImportCliCommand` without an
-  // `ingestBatch` wiring must fail loudly BEFORE reading/parsing the file.
-  // Running the full parse would incur file I/O and memory pressure (imports
-  // can be 100k+ messages) only to inevitably throw inside processBatch. The
-  // adapter check above still fires first so `--source <unknown>` surfaces
-  // the more-actionable "Unknown bulk-import source" error.
   if (opts.dryRun !== true && typeof opts.ingestBatch !== "function") {
     throw new Error(
       "Bulk import persistence is not wired: no ingestBatch callback " +
@@ -3238,9 +3190,6 @@ export async function runBulkImportCliCommand(
   const processBatch: ProcessBatchFn =
     opts.ingestBatch ??
     (async () => {
-      // Defensive fallback: the pipeline never calls processBatch in dryRun
-      // mode and the guard above rejects non-dryRun without an ingestBatch,
-      // so reaching here would indicate a bug in the pipeline contract.
       throw new Error(
         "Bulk import persistence is not wired: no ingestBatch callback " +
           "was provided by the host CLI.",
@@ -3366,15 +3315,12 @@ async function walkMemoryMarkdownFiles(
   }
 
   const skip = (target: string, err: unknown): void => {
-    // ENOENT (optional dir absent) is silent; containment/other errors log.
     if (!(err instanceof Error && /ENOENT/.test(err.message))) {
       console.debug(`walkMemoryMarkdownFiles: skipping ${target}: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
   const walk = async (dir: string): Promise<void> => {
-    // Reject symlinked / non-directory roots and anything resolving outside the
-    // memory store before reading it.
     try {
       const dirStat = await lstat(dir);
       if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return;
@@ -3661,7 +3607,6 @@ export function registerCli(
           console.log(`QMD: ${orchestrator.qmd.isAvailable() ? "available" : "not available"}`);
           for (const line of await renderQmdBacklogStatus(orchestrator.qmd, orchestrator.config.qmdEmbeddingBacklogThreshold)) console.log(line);
 
-          // Category breakdown
           const categories: Record<string, number> = {};
           for (const m of memories) {
             categories[m.frontmatter.category] =
@@ -3806,9 +3751,6 @@ export function registerCli(
           if (!reportHasMachineReadableOutput(options)) console.log("OK");
         });
 
-      // Tier visibility (issue #686 PR 5/6) — operator-facing read-only
-      // surfaces for inspecting hot↔cold tier distribution and
-      // explaining why a single memory ended up where it did.
       const tierCmd = cmd
         .command("tier")
         .description(
@@ -3951,7 +3893,6 @@ export function registerCli(
         .action(async (...args: unknown[]) => {
           const options = (args[0] ?? {}) as Record<string, unknown>;
 
-          // Validate --older-than
           const olderThanRaw = options.olderThan ?? options["older-than"];
           if (typeof olderThanRaw !== "string" || olderThanRaw.trim().length === 0) {
             const msg = "purge: --older-than <duration> is required (e.g. --older-than P1Y or --older-than 365)";
@@ -3964,7 +3905,6 @@ export function registerCli(
             return;
           }
 
-          // Parse duration to ms
           const olderThanMs = parseDurationToMs(olderThanRaw.trim());
           if (olderThanMs === null || olderThanMs <= 0) {
             const msg = `purge: cannot parse duration '${olderThanRaw}'. Use ISO 8601 (P1Y, P90D, P30D) or plain days (365).`;
@@ -3977,7 +3917,6 @@ export function registerCli(
             return;
           }
 
-          // Validate --tier
           const tierRaw = typeof options.tier === "string" ? options.tier.trim() : "cold";
           if (tierRaw !== "cold" && tierRaw !== "all") {
             const msg = `purge: invalid --tier '${tierRaw}'. Valid values: cold, all`;
@@ -3990,14 +3929,9 @@ export function registerCli(
             return;
           }
 
-          // --confirm guard: must be literally "yes" to execute mutations.
-          // Validate explicitly BEFORE computing dryRun so that an invalid
-          // --confirm value (e.g. --confirm maybe) produces an error rather
-          // than silently falling back to dry-run mode.
           const confirmValue = options.confirm;
           const hasDryRunFlag = options.dryRun === true || options["dry-run"] === true;
 
-          // If --confirm was provided but is not "yes", reject immediately.
           if (confirmValue !== undefined && confirmValue !== "yes") {
             const msg =
               "purge: --confirm must be exactly \"yes\" to execute mutations. " +
@@ -4213,8 +4147,6 @@ export function registerCli(
             optionsRaw && typeof optionsRaw === "object"
               ? (optionsRaw as { dryRun?: boolean; apply?: boolean; json?: boolean })
               : {};
-          // Default to a non-destructive dry run unless --apply is given.
-          // Reject contradictory flags rather than silently choosing one.
           if (options.dryRun === true && options.apply === true) {
             throw new Error("Pass only one of --dry-run or --apply, not both.");
           }
@@ -4224,10 +4156,6 @@ export function registerCli(
             const note =
               "Namespace catalog is inert: it only runs when namespacesEnabled is true and namespaceCatalogEnabled is not false.";
             if (options.json === true) {
-              // Include `applied: false` so the inert JSON payload carries the SAME
-              // shape as the enabled path (cursor Low — NFDBM). An inert catalog
-              // rewrote nothing, so a `--apply` did NOT apply; automation that keys
-              // on `applied` must not misread a missing field as a completed rebuild.
               console.log(
                 JSON.stringify(
                   { dryRun, enabled: false, applied: false, records: [], skipped: [], note },
@@ -4238,13 +4166,6 @@ export function registerCli(
             } else {
               console.log(note);
             }
-            // Exit-code parity with the enabled path (cursor Medium — NFb5W): an
-            // inert catalog rewrote NOTHING, so a `--apply` (dryRun=false) did NOT
-            // apply. The enabled path sets `exitCode = 1` whenever a non-dry-run
-            // rebuild reports `applied: false`; an inert `--apply` is exactly that
-            // case, so exit-code-only automation must see a non-zero exit rather
-            // than read a no-op apply as a completed rebuild. A `--dry-run` (or the
-            // default dry run) inert call stays exit 0 — it never promised to write.
             if (!dryRun) {
               process.exitCode = 1;
             }
@@ -4255,10 +4176,6 @@ export function registerCli(
 
           if (options.json === true) {
             console.log(JSON.stringify({ enabled: true, ...result }, null, 2));
-            // Mirror the non-JSON failure signal (round 6, codex P2 — NEFoa): an
-            // `--apply` that could not acquire the lock returns `applied: false`
-            // and rewrote nothing, so automation must see a non-zero exit even in
-            // JSON mode rather than treating a no-op apply as a successful rebuild.
             if (!dryRun && result.applied === false) {
               process.exitCode = 1;
             }
@@ -4286,10 +4203,6 @@ export function registerCli(
           } else if (result.applied) {
             console.log("\nOK");
           } else {
-            // An --apply that could not acquire the cross-process rebuild lock
-            // ran compute-only and did NOT rewrite the catalog (NBn3n/NBsGG).
-            // Report the non-mutation explicitly and exit non-zero so scripts
-            // and operators retry rather than assume the rebuild persisted.
             console.log(
               "\nNOT APPLIED: another rebuild holds the lock; the catalog was NOT rewritten. Retry shortly.",
             );
@@ -4462,10 +4375,6 @@ export function registerCli(
           console.log("OK");
         });
 
-      // ── Capsule subcommand (issue #690 PR 4/4 + #676 PR 2-3/6) ─────────
-      // `remnic capsule export` — produce a portable V2 capsule archive.
-      // `remnic capsule import` — restore a capsule archive into a memory dir.
-      // --encrypt flag requires the secure-store to be unlocked (#690 PR 4/4).
       const capsuleCmd = cmd
         .command("capsule")
         .description("Portable capsule archive export / import (issue #676, #690)");
@@ -4509,12 +4418,6 @@ export function registerCli(
             name: parsed.name,
             root: memoryDir,
             since: parsed.since,
-            // Pass `includeKinds` only when the user explicitly provided it.
-            // Do NOT merge transcripts into an explicit list here: doing so would
-            // produce a hard-coded allow-list that silently drops other valid
-            // memory dirs (peers/, forks/, etc.). Instead, use `includeTranscripts`
-            // so the exporter adds transcripts while keeping the default "all dirs"
-            // walk. (Cursor / #747)
             includeKinds: parsed.includeKinds,
             includeTranscripts,
             peerIds: parsed.peerIds,
@@ -4577,10 +4480,6 @@ export function registerCli(
           console.log("OK");
         });
 
-      // ── Capsule merge / list / inspect (issue #676 PR 6/6) ──────────────
-      // Augments the export + import subcommands above with three-way merge,
-      // directory listing, and manifest inspection surfaces. Option parsing
-      // and rendering live in `capsule-cli.ts` for unit-testability.
 
       capsuleCmd
         .command("merge")
@@ -4605,11 +4504,6 @@ export function registerCli(
           const memoryDir = expandTildePath(orchestrator.config.memoryDir);
           const capsulesDir = defaultCapsulesDir(memoryDir);
 
-          // Resolve archive path — same 3-step precedence as `capsule inspect`
-          // so that merge also accepts capsule IDs from the store directory.
-          //   1. Explicit path (starts with /, ./, ../, or contains sep) → tilde-expand and use as-is.
-          //   2. Bare name matching an existing cwd file → resolve to absolute.
-          //   3. Otherwise treat as a capsule id and look up in the capsules store.
           const { stat: statMerge } = await import("node:fs/promises");
           let sourceArchive = expandTildePath(parsed.archive);
           const looksLikePath =
@@ -4638,10 +4532,6 @@ export function registerCli(
             }
           }
 
-          // Reject encrypted archives before attempting gunzip — mergeCapsule
-          // does not support decryption and would throw a confusing "not a
-          // valid gzip" error. Detect by extension and magic header.
-          // (Codex P1 PRRT_kwDORJXyws59so7S / Cursor PRRT_kwDORJXyws59spK7)
           if (sourceArchive.endsWith(".enc")) {
             const { isEncryptedCapsuleFile } = await import("./transfer/capsule-crypto.js");
             const encDetected = await isEncryptedCapsuleFile(sourceArchive).catch(() => true);
@@ -4698,15 +4588,11 @@ export function registerCli(
 
           const memoryDir = expandTildePath(orchestrator.config.memoryDir);
           const defaultDir = defaultCapsulesDir(memoryDir);
-          // Track whether --dir was explicitly supplied so we can give a clear
-          // error when it doesn't exist (Cursor PRRT_kwDORJXyws59spK8).
           const dirWasExplicit =
             typeof opts.dir === "string" && opts.dir.trim() !== "";
           const parsed = parseCapsuleListOptions(opts, defaultDir);
-          // Expand tilde in the resolved capsules dir (covers --dir ~/... inputs).
           const capsulesDir = expandTildePath(parsed.capsulesDir);
 
-          // Scan the capsule store directory for *.capsule.json.gz archives.
           const { readdir, readFile, stat } = await import("node:fs/promises");
           let dirEntries: string[];
           try {
@@ -4714,16 +4600,10 @@ export function registerCli(
           } catch (err) {
             const code = (err as NodeJS.ErrnoException).code;
             if (dirWasExplicit) {
-              // User explicitly provided --dir <path>: any error (including
-              // ENOENT) must be surfaced — a silent empty list would hide a
-              // typo or missing mount. (Cursor PRRT_kwDORJXyws59spK8)
               throw new Error(
                 `capsule list: cannot read --dir ${capsulesDir}: ${(err as Error).message}`,
               );
             }
-            // Default capsulesDir: ENOENT means the directory hasn't been
-            // created yet — treat as empty. Re-throw other errors (EACCES,
-            // ENOTDIR, …). (Codex P1 PRRT_kwDORJXyws59smmg)
             if (code !== "ENOENT") {
               throw new Error(
                 `capsule list: cannot read capsule store directory ${capsulesDir}: ${(err as Error).message}`,
@@ -4743,7 +4623,6 @@ export function registerCli(
           const entries: CapsuleListEntry[] = [];
           for (const archiveName of archives) {
             const archivePath = path.join(capsulesDir, archiveName);
-            // Capsule id is the filename stem before ".capsule.json.gz[.enc]".
             const id = archiveName
               .replace(/\.capsule\.json\.gz\.enc$/, "")
               .replace(/\.capsule\.json\.gz$/, "");
@@ -4823,18 +4702,7 @@ export function registerCli(
           const capsulesDir = defaultCapsulesDir(memoryDir);
           const parsed = parseCapsuleInspectOptions(archiveArg, opts);
 
-          // Resolve archive path.
           //
-          // Precedence (CLAUDE.md gotcha — bare relative names must not be
-          // misclassified as capsule ids):
-          //   1. If the argument looks like an explicit path (starts with /,
-          //      ./, ../, or contains a path separator) → use as-is after tilde
-          //      expansion.
-          //   2. Otherwise, check whether the argument resolves to an existing
-          //      file relative to cwd.  A bare name like "my-capsule.capsule.json.gz"
-          //      in the working directory must win over a capsule-id lookup.
-          //   3. If the file does not exist at cwd, treat as a capsule id and
-          //      look it up in the capsules store (plain then encrypted variant).
           const { stat } = await import("node:fs/promises");
           let archivePath = expandTildePath(parsed.archive);
           const looksLikePath =
@@ -4844,14 +4712,11 @@ export function registerCli(
             archivePath.includes(path.sep);
 
           if (!looksLikePath) {
-            // Step 2: check for an existing file at cwd before treating as id.
             const cwdResolved = path.resolve(archivePath);
             const cwdSt = await stat(cwdResolved).catch(() => null);
             if (cwdSt && cwdSt.isFile()) {
               archivePath = cwdResolved;
             } else {
-              // Step 3: Treat as a capsule id — find it in the capsules dir.
-              // Try plain archive first, then encrypted variant.
               const byId = path.join(capsulesDir, `${archivePath}.capsule.json.gz`);
               const byIdEnc = path.join(capsulesDir, `${archivePath}.capsule.json.gz.enc`);
               const st = await stat(byId).catch(() => null);
@@ -4868,13 +4733,10 @@ export function registerCli(
 
           const isEncrypted = archivePath.endsWith(".capsule.json.gz.enc");
 
-          // Derive sidecar path: strip ".enc" suffix first (if present), then
-          // replace ".capsule.json.gz" with ".manifest.json".
           const sidecarPath = archivePath
             .replace(/\.enc$/, "")
             .replace(/\.capsule\.json\.gz$/, ".manifest.json");
 
-          // Prefer sidecar manifest for cheap inspection.
           let sidecar: Record<string, unknown> | null = null;
           try {
             const { readFile } = await import("node:fs/promises");
@@ -4888,9 +4750,6 @@ export function registerCli(
           if (sidecar !== null) {
             manifest = sidecar;
           } else if (isEncrypted) {
-            // No sidecar — attempt in-memory decryption if the secure-store is
-            // unlocked.  decryptCapsuleFileInMemory returns the plaintext gzip
-            // bytes; we then gunzip and parse exactly like the plaintext path.
             const { gunzipCapsuleArchive } = await import("./transfer/capsule-gunzip.js");
             const { parseExportBundle } = await import("./transfer/types.js");
             let decryptedBuf: Buffer;
@@ -5125,14 +4984,6 @@ export function registerCli(
           const batchSizeRaw = parseInt(String(options.batchSize ?? "50"), 10);
           const batchSize = Number.isFinite(batchSizeRaw) && batchSizeRaw > 0 ? batchSizeRaw : 50;
           const platformRaw = typeof options.platform === "string" ? options.platform.trim() : "";
-          // Ask the orchestrator for the EXACT namespace bulk-import will
-          // write to, rather than assuming `config.defaultNamespace`. The two
-          // can differ — e.g. when `namespacesEnabled` is on and a policy
-          // named `"default"` exists alongside a different
-          // `config.defaultNamespace`, `defaultNamespaceForPrincipal` would
-          // pick the policy's `"default"`. Using the orchestrator's
-          // `bulkImportWriteNamespace()` guarantees the snapshot anchor
-          // matches `runExtraction`'s writeNamespaceOverride.
           const writeNamespace = orchestrator.bulkImportWriteNamespace();
           const writeStorage = await orchestrator.getStorageForNamespace(
             writeNamespace,
@@ -5166,10 +5017,6 @@ export function registerCli(
           }
         });
 
-      // Wearable transcript sources (Limitless / Bee / Omi). Every
-      // subcommand forwards to the shared runner in wearables/cli.ts so
-      // this host CLI and the standalone `remnic` CLI never fork
-      // behavior or formatting.
       {
         const wearablesCmd = cmd
           .command("wearables")
@@ -5495,9 +5342,6 @@ export function registerCli(
           }
           const options = (args[1] ?? {}) as Record<string, unknown>;
 
-          // Disclosure validation (CLAUDE.md rule 51): explicit values
-          // must be on the allow-list; otherwise reject loudly so a typo
-          // (e.g. --disclosure full) does not silently default to chunk.
           let disclosure: RecallDisclosure | undefined;
           if (options.disclosure !== undefined) {
             if (typeof options.disclosure !== "string" || !isRecallDisclosure(options.disclosure)) {
@@ -5508,11 +5352,6 @@ export function registerCli(
             disclosure = options.disclosure;
           }
 
-          // Top-K validation: positive integer or undefined.  Reject
-          // strings that don't parse so the operator notices typos.
-          // `Number.parseInt` silently truncates floats and accepts
-          // trailing garbage (`3.7` -> 3, `10abc` -> 10), so we require
-          // an exact decimal-integer match before parsing.
           let topK: number | undefined;
           if (options.topK !== undefined) {
             const raw = String(options.topK);
@@ -5534,12 +5373,6 @@ export function registerCli(
             typeof options.session === "string" && options.session.length > 0
               ? options.session
               : undefined;
-          // Strict --format validation: reject unrecognized values
-          // instead of silently defaulting (CLAUDE.md rule 51).
-          // Only "text" and "json" are supported; an absent flag falls
-          // back to "text" by intent, but `--format csv` (or anything
-          // else) must throw.  Mirrors --disclosure / --top-k strictness
-          // in the same handler.
           let format: "text" | "json" = "text";
           if (options.format !== undefined) {
             const raw = String(options.format).toLowerCase();
@@ -5551,8 +5384,6 @@ export function registerCli(
             format = raw as "text" | "json";
           }
 
-          // Issue #680 — `--as-of` validation at the input boundary
-          // (CLAUDE.md rule 51 / gotcha #14).
           let asOf: string | undefined;
           if (options.asOf !== undefined) {
             const raw = String(options.asOf).trim();
@@ -5568,8 +5399,6 @@ export function registerCli(
             asOf = raw;
           }
 
-          // Tag filter (issue #689). `--tag` accepts comma-separated
-          // and repeated invocations.
           let tags: string[] | undefined;
           if (options.tag !== undefined) {
             const raw = Array.isArray(options.tag)
@@ -5600,9 +5429,6 @@ export function registerCli(
             tagMatch = raw;
           }
 
-          // Issue #681 — `--include-low-confidence` is a boolean flag; no
-          // value coercion needed beyond checking presence (Commander sets
-          // it to `true` when the flag is present, undefined otherwise).
           const includeLowConfidence = options.includeLowConfidence === true;
 
           const accessService = new EngramAccessService(orchestrator);
@@ -5623,10 +5449,6 @@ export function registerCli(
             return;
           }
 
-          // Plain-text rendering.  Keep this terse — the JSON format is
-          // the canonical surface for tooling.  Per-result disclosure is
-          // shown inline so operators can confirm the requested depth
-          // was honored end-to-end.
           console.log(`=== Recall: "${query}" ===`);
           console.log(`namespace: ${response.namespace}`);
           console.log(`disclosure: ${response.disclosure}`);
@@ -5720,21 +5542,10 @@ export function registerCli(
           "Disclosure depth (chunk | section | raw). Populates the per-disclosure token-spend summary.",
         )
         .action(async (...args: unknown[]) => {
-          // Commander passes positional args first, then the options
-          // object as the last argument.  `parseXrayCliOptions` is a
-          // pure helper that throws listed-options errors for invalid
-          // --format / --budget / --namespace / --out values — it's
-          // imported from `recall-xray-cli.ts` so the validation path
-          // can be unit-tested without booting an orchestrator
-          // (CLAUDE.md rules 14 + 51).
           const parsed = parseXrayCliOptions(
             args[0],
             (args[1] ?? {}) as Record<string, unknown>,
           );
-          // Delegate through `EngramAccessService` to the orchestrator's atomic
-          // capture API, so CLI, HTTP, and MCP callers sharing an orchestrator
-          // also share one X-ray ordering domain and receive the snapshot owned
-          // by their invocation.
           const xrayService = new EngramAccessService(orchestrator);
           const response = await xrayService.recallXray({
             query: parsed.query,
@@ -5756,11 +5567,6 @@ export function registerCli(
           }
         });
 
-      // ── Patterns subcommand (issue #687 PR 4/4) ──────────────────────────
-      // `remnic patterns list` and `remnic patterns explain <id>` surface
-      // the pattern-reinforcement output written by PR 2/4.  Validation
-      // helpers live in `patterns-cli.ts` (pure functions, unit-testable
-      // without booting an orchestrator — CLAUDE.md rules 14 + 51).
       const patternsCmd = cmd
         .command("patterns")
         .description(
@@ -5790,7 +5596,6 @@ export function registerCli(
         )
         .action(async (...args: unknown[]) => {
           // Commander passes the options object as the only / last arg
-          // for a command with no positional arguments.
           const options = (args[0] ?? {}) as Record<string, unknown>;
           const parsed = parsePatternsListOptions(options);
           const memories = await orchestrator.storage.readAllMemories();
@@ -5824,17 +5629,7 @@ export function registerCli(
           console.log(renderPatternExplain(detail, parsed.format));
         });
 
-      // ── Connectors subcommand (issue #683 PR 6/N) ────────────────────────
-      // `remnic connectors list` — show all configured live connectors with
-      //   their enabled state, last poll time, and last error.
-      // `remnic connectors status` — same data, defaults to JSON for scripting.
-      // `remnic connectors run <name>` — manually trigger a single
-      //   `syncIncremental()` pass for the named connector (operator debug).
       //
-      // Pure-function helpers live in `connectors-cli.ts` so this handler
-      // stays thin and the logic is unit-testable without booting an
-      // orchestrator (CLAUDE.md rules 14 + 51).  Connector state is read from
-      // `<memoryDir>/state/connectors/<id>.json` via `listConnectorStates`.
       {
         function builtInConnectorDefinitions() {
           const cfg = orchestrator.config.connectors;
@@ -5882,12 +5677,6 @@ export function registerCli(
           ];
         }
 
-        /**
-         * Build the list of known connector rows from parsed config +
-         * persisted state.  Adding a new built-in connector here is a
-         * one-liner: add a row with the connector's id, display name, and
-         * enabled flag from `orchestrator.config.connectors`.
-         */
         async function buildConnectorRows(): Promise<ConnectorRow[]> {
           const states = await listConnectorStates(
             orchestrator.config.memoryDir,
@@ -5977,8 +5766,6 @@ export function registerCli(
               process.exitCode = 2;
               return;
             }
-            // Validate --format early so we can error before doing I/O.
-            // `run` defaults to "text" (same as `list`).
             let format: "text" | "markdown" | "json";
             try {
               format = parseConnectorsListOptions({ format: options.format }).format;
@@ -5990,23 +5777,11 @@ export function registerCli(
               return;
             }
 
-            // Route to the matching built-in connector.
             //
-            // Shared ingestFn and writeCursorFn are identical for every
-            // built-in connector; only the syncFn (connector-specific factory
-            // + config validator) differs.  Extract both as local closures so
-            // adding a new connector is a one-liner (Cursor thread
-            // PRRT_kwDORJXyws59slAJ — DRY the per-connector scaffolding).
             const { readConnectorState, withConnectorStateLock, writeConnectorState } = await import(
               "./connectors/live/state-store.js"
             );
 
-            /**
-             * Shared ingest callback: each fetched document is ingested as an
-             * assistant-role bulk-import turn so the extraction pipeline can
-             * distil it into memories.  The title (when present) is prepended
-             * as a Markdown heading to give the extractor extra context.
-             */
             const sharedIngestFn = async (docs: ConnectorDocument[]) => {
               const fetchedAt = new Date().toISOString();
               const turns = docs.map((doc) => ({
@@ -6019,12 +5794,6 @@ export function registerCli(
               await orchestrator.ingestBulkImportBatch(turns);
             };
 
-            /**
-             * Shared state-persistence callback: writes the connector's cursor
-             * and sync metadata to `<memoryDir>/state/connectors/<id>.json`.
-             * Used on both the success path (advancing cursor) and the error
-             * path (retaining prior cursor).
-             */
             const makeWriteCursorFn =
               (connectorName: string) =>
               async ({
@@ -6747,7 +6516,6 @@ export function registerCli(
           console.log("OK");
         });
 
-      // /health's replica monitor resolves peer-token SecretRefs at poll time (#2149).
       const accessService = new EngramAccessService(orchestrator, {
         resolveSecretRef: hostSecretRefResolver(registerOptions),
       });
@@ -6768,13 +6536,6 @@ export function registerCli(
           const options = (args[0] ?? {}) as Record<string, unknown>;
           const portRaw = parseInt(String(options.port ?? "4318"), 10);
           const maxBodyBytesRaw = parseInt(String(options.maxBodyBytes ?? "131072"), 10);
-          // Start the HTTP server FIRST so the port is available immediately,
-          // then initialize the orchestrator in the background.  Recall requests
-          // that arrive during warmup still work — orchestrator.recall() awaits
-          // its internal init gate (15s timeout) so callers get a correct (if
-          // slightly delayed) response rather than "connection refused".
-          // Resolve SecretRef authToken if config carries one (issue #757).
-          // The CLI flag override (--token) wins; otherwise, resolve config.
           const cliTokenOverride =
             typeof options.token === "string" && options.token.trim().length > 0
               ? options.token
@@ -6803,12 +6564,6 @@ export function registerCli(
           });
           console.log(JSON.stringify(status, null, 2));
           console.log("OK");
-          // Initialize the orchestrator AFTER the HTTP server is listening.
-          // Without this call the init gate Promise never resolves, so every
-          // recall waits the full 15s gate timeout — and QMD is never probed,
-          // causing the embedding fallback to load a 300 MB JSON on every cold
-          // path. But by running it here (not before), the port is available
-          // immediately while warmup proceeds in the background.
           await orchestrator.initialize();
         });
 
@@ -7007,11 +6762,6 @@ export function registerCli(
           const namespace = typeof options.namespace === "string" && options.namespace.trim().length > 0
             ? options.namespace.trim()
             : undefined;
-          // Route BOTH the undefined/default and explicit namespace through the
-          // router (#2033 finding 2): a store may live at a tokenized
-          // namespaces/<token>/ path, and the default can migrate off the legacy
-          // root, so storage.dir keeps the rebuild aligned with the namespace
-          // router and secure store. The raw resolver still validates the segment.
           await resolveMemoryDirForNamespace(orchestrator, namespace, { rejectUnsupportedOverride: true });
           const storage = await orchestrator.getStorageForNamespace(namespace);
           const result = await runRebuildMemoryLifecycleLedgerCliCommand({
@@ -7475,10 +7225,6 @@ export function registerCli(
             try {
               await unlink(filePath);
               deleted += 1;
-              // Per-delete corpus bump (Cursor Medium, #1902): dedupe removes
-              // active memory files directly (bypassing StorageManager), so bump
-              // each delete to keep a same-process or peer readAllMemories from
-              // recalling a duplicate that was already removed mid-batch.
               bumpMemoryCorpusVersionForDir(memoryDir);
             } catch (err) {
               console.log(`  failed to delete ${filePath}: ${String(err)}`);
@@ -7541,7 +7287,6 @@ export function registerCli(
             try {
               await unlink(filePath);
               deleted += 1;
-              // Per-delete corpus bump (Cursor Medium, #1902) — see dedupe-exact.
               bumpMemoryCorpusVersionForDir(memoryDir);
             } catch (err) {
               console.log(`  failed to delete ${filePath}: ${String(err)}`);
@@ -7575,7 +7320,6 @@ export function registerCli(
             return;
           }
 
-          // Probe in this CLI process before availability check.
           await orchestrator.qmd.probe();
 
           if (orchestrator.qmd.isAvailable()) {
@@ -7603,7 +7347,6 @@ export function registerCli(
               console.log();
             }
           } else {
-            // Fallback: search filenames
             const memories = await orchestrator.storage.readAllMemories();
             const lowerQuery = query.toLowerCase();
             const matches = memories.filter(
@@ -7677,9 +7420,6 @@ export function registerCli(
             return;
           }
           console.log(`Extracting ${turns.length} buffered turns...`);
-          // Trigger extraction by processing a dummy turn that forces extraction
-          // Actually we need to call the internal extraction method
-          // For now, inform the user
           console.log(
             "Use the memory system in conversation to trigger extraction, or wait for the buffer threshold.",
           );
@@ -7783,9 +7523,6 @@ export function registerCli(
           );
         });
 
-      // consolidate-undo (issue #561 PR 5) — reverts a consolidated memory
-      // by restoring each source from its page-version snapshot and
-      // archiving the target.  See `consolidation-undo.ts` for the helper.
       cmd
         .command("consolidate-undo <target>")
         .description(
@@ -7801,11 +7538,6 @@ export function registerCli(
             process.exitCode = 1;
             return;
           }
-          // Expand `~` first (gotcha #17 — Node's fs doesn't do this
-          // automatically).  Accept either an absolute path or a path
-          // relative to the configured memory directory so operators
-          // can point at the file the way they would in a text editor
-          // or via `ls`.
           const expandedTarget = expandTildePath(rawTarget);
           const targetPath = path.isAbsolute(expandedTarget)
             ? expandedTarget
@@ -7991,7 +7723,6 @@ export function registerCli(
             return;
           }
 
-          // Sort by access count descending
           const sorted = withAccess.sort(
             (a, b) => (b.frontmatter.accessCount ?? 0) - (a.frontmatter.accessCount ?? 0),
           );
@@ -8006,7 +7737,6 @@ export function registerCli(
             console.log();
           }
 
-          // Summary stats
           const totalAccess = withAccess.reduce((sum, m) => sum + (m.frontmatter.accessCount ?? 0), 0);
           console.log(`Total accesses tracked: ${totalAccess}`);
           console.log(`Memories with access data: ${withAccess.length} / ${memories.length}`);
@@ -8038,7 +7768,6 @@ export function registerCli(
             return;
           }
 
-          // Count by level
           const levelCounts: Record<string, number> = {
             critical: 0,
             high: 0,
@@ -8058,7 +7787,6 @@ export function registerCli(
           }
           console.log(`\n  Total scored: ${withImportance.length} / ${memories.length} memories\n`);
 
-          // Filter by level if specified
           let filtered = withImportance;
           if (filterLevel) {
             filtered = withImportance.filter(
@@ -8070,7 +7798,6 @@ export function registerCli(
             }
           }
 
-          // Sort by importance score descending
           const sorted = filtered.sort(
             (a, b) =>
               (b.frontmatter.importance?.score ?? 0) -
@@ -8133,7 +7860,6 @@ export function registerCli(
             return;
           }
 
-          // Sort by createdAt desc
           const sorted = summaries.sort(
             (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
           );
@@ -8225,7 +7951,6 @@ export function registerCli(
           const memories = await orchestrator.storage.readAllMemories();
 
           if (parentId) {
-            // Show chunks for specific parent
             const chunks = memories
               .filter((m) => m.frontmatter.parentId === parentId)
               .sort((a, b) => (a.frontmatter.chunkIndex ?? 0) - (b.frontmatter.chunkIndex ?? 0));
@@ -8250,11 +7975,9 @@ export function registerCli(
             return;
           }
 
-          // Show overall chunking stats
           const chunked = memories.filter((m) => m.frontmatter.tags?.includes("chunked"));
           const chunks = memories.filter((m) => m.frontmatter.parentId);
 
-          // Find orphaned chunks (parent no longer exists)
           const parentIds = new Set(chunked.map((m) => m.frontmatter.id));
           const orphans = chunks.filter((m) => !parentIds.has(m.frontmatter.parentId!));
 
@@ -8264,7 +7987,6 @@ export function registerCli(
           console.log(`  Orphaned chunks: ${orphans.length}`);
 
           if (chunked.length > 0) {
-            // Calculate average chunks per parent
             const avgChunks = chunks.length / chunked.length;
             console.log(`  Average chunks per parent: ${avgChunks.toFixed(1)}`);
           }
@@ -8280,7 +8002,6 @@ export function registerCli(
           }
         });
 
-      // Transcript commands
       cmd
         .command("transcript")
         .description("View conversation transcripts")
@@ -8293,11 +8014,7 @@ export function registerCli(
           const recent = options.recent;
           let channel = options.channel;
 
-          // Expand shorthand channel names to full sessionKey patterns
           if (channel && !channel.includes(":")) {
-            // Convert "main" -> "agent:generalist:main"
-            // Convert "discord" -> "agent:generalist:discord" (will match all discord channels)
-            // Convert "cron" -> "agent:generalist:cron" (will match all cron jobs)
             if (channel === "main") {
               channel = "agent:generalist:main";
             } else if (["discord", "slack", "cron", "telegram"].includes(channel)) {
@@ -8306,20 +8023,14 @@ export function registerCli(
           }
 
           if (date) {
-            // Read specific date. Use a half-open [start, next-day-00:00:00Z)
-            // window so `readRange`'s exclusive upper bound still covers the
-            // final second of the day (rule #35).
             const { start, end } = utcDayRange(date);
             const entries = await orchestrator.transcript.readRange(start, end, channel);
             console.log(formatTranscript(entries));
           } else if (recent) {
-            // Parse duration (e.g., "12h", "30m")
             const hours = parseDuration(recent);
             const entries = await orchestrator.transcript.readRecent(hours, channel);
             console.log(formatTranscript(entries));
           } else {
-            // Default: show today's transcript. Same half-open day window as
-            // the --date branch so the final second of the day is included.
             const today = new Date().toISOString().slice(0, 10);
             const { start, end } = utcDayRange(today);
             const entries = await orchestrator.transcript.readRange(start, end, channel);
@@ -8327,7 +8038,6 @@ export function registerCli(
           }
         });
 
-      // ── Sessions subcommand (issue #1496) ───────────────────────────────
       const sessionsCmd = cmd
         .command("sessions")
         .description("Inspect and migrate session transcript storage");
@@ -8344,13 +8054,11 @@ export function registerCli(
           const dryRunFlag = options.dryRun === true;
           const applyFlag = options.apply === true;
 
-          // Rule #51: reject contradictory flags rather than silently picking one.
           if (dryRunFlag && applyFlag) {
             console.error("Cannot pass both --dry-run and --apply. Choose one.");
             process.exit(1);
           }
 
-          // Safe default: dry-run when neither flag is given.
           const apply = applyFlag;
           const memoryDir = orchestrator.config.memoryDir;
 
@@ -8402,7 +8110,6 @@ export function registerCli(
           console.log("\nOK");
         });
 
-      // Checkpoint command
       cmd
         .command("checkpoint")
         .description("View current compaction checkpoint (if any)")
@@ -8420,7 +8127,6 @@ export function registerCli(
           console.log(orchestrator.transcript.formatForRecall(checkpoint.turns, 2000));
         });
 
-      // Summaries command
       cmd
         .command("hourly")
         .description("View hourly summaries")
@@ -8440,7 +8146,6 @@ export function registerCli(
           console.log(orchestrator.summarizer.formatForRecall(summaries, summaries.length));
         });
 
-      // ── Review subcommand (issue #520) ──────────────────────────────────
       const reviewCmd = cmd.command("review").description("Manage contradiction review queue");
 
       reviewCmd
@@ -8533,10 +8238,6 @@ export function registerCli(
               }
               return orchestrator.getStorageForNamespace(requested || orchestrator.config.defaultNamespace);
             },
-            // Catalog write touch (issue #1499 sweep): a contradiction merge can
-            // write a new memory to a dynamic namespace via the CLI resolve path,
-            // bypassing the extraction write path. Record it so QMD maintenance /
-            // writtenSince don't miss the write. Best-effort and failure-tolerant.
             onMergedMemoryWritten: (namespace, storageDir) => {
               // #1522: catalog touch handled at the storage chokepoint.
             },
@@ -8588,9 +8289,6 @@ export function registerCli(
           console.log(`  Cooled down: ${result.cooledDown}`);
         });
 
-      // ── Dreams subcommand (issue #678 PR 3+4) ───────────────────────────
-      // `remnic dreams status` — per-phase telemetry for the last N hours.
-      // `remnic dreams run`    — manually invoke a single phase pass.
       const dreamsCmd = cmd.command("dreams").description("Inspect and manually trigger Dreams consolidation pipeline phases");
 
       dreamsCmd
@@ -8655,7 +8353,6 @@ export function registerCli(
             return;
           }
 
-          // text format
           console.log(`Dreams status (last ${windowHours}h):`);
           console.log(`  Window: ${result.windowStart} → ${result.windowEnd}\n`);
           for (const phase of ["lightSleep", "rem", "deepSleep"] as const) {
@@ -8697,7 +8394,6 @@ export function registerCli(
             process.exit(1);
           }
 
-          // Accept both kebab-case (light-sleep) and camelCase (lightSleep).
           const phaseMap: Record<string, string> = {
             "light-sleep": "lightSleep",
             lightsleep: "lightSleep",
@@ -8741,12 +8437,6 @@ export function registerCli(
           }
         });
 
-      // ── Secure-store subcommand (issue #690 PR 2/4) ─────────────────────
-      // CLI for the at-rest encryption header + in-memory keyring. Pure
-      // primitives (KDF + cipher + metadata) shipped in PR 1/4. This PR
-      // wires the operator-facing init / unlock / lock / status flow.
-      // Storage integration (PR 3/4) and capsule export --encrypt (PR 4/4)
-      // build on the keyring registered here.
       const secureStoreCmd = cmd
         .command("secure-store")
         .description(
@@ -8921,7 +8611,6 @@ export function registerCli(
           console.log(renderStatusReport(report));
         });
 
-      // ── Peer Registry subcommand (issue #679 PR 4/5) ────────────────────
       const peerCmd = cmd.command("peer").description("Manage the peer registry (issue #679).");
 
       peerCmd
@@ -9007,11 +8696,6 @@ export function registerCli(
             console.error("peer id is required");
             process.exit(1);
           }
-          // Cursor L (PR #756 review): route through EngramAccessService.peerSet
-          // so the CLI shares the canonical create-or-update flow (existence
-          // check, kind validation, immutable-field preservation, notes/displayName
-          // merge) with HTTP and MCP. Reimplementing here previously risked
-          // silent divergence when the service-layer semantics changed.
           const peerSetService = new EngramAccessService(orchestrator);
           try {
             const result = await peerSetService.peerSet({
@@ -9042,12 +8726,6 @@ export function registerCli(
             console.error("peer id is required");
             process.exit(1);
           }
-          // Cursor M (PR #756 review): route through EngramAccessService.peerDelete
-          // so the CLI gets the same `assertPeerDirNotEscaped` + symlink + parent-
-          // inode-stable guards used by HTTP and MCP. The previous direct
-          // `path.join` + `fs.unlink` bypassed the storage module's protections
-          // and would have followed a symlinked `peers/<id>/` to an arbitrary
-          // `identity.md` outside `memoryDir`.
           const peerDeleteService = new EngramAccessService(orchestrator);
           try {
             const result = await peerDeleteService.peerDelete(id);
@@ -9062,7 +8740,6 @@ export function registerCli(
           }
         });
 
-      // ── peer forget (issue #679 completion) ────────────────────────────
       peerCmd
         .command("forget <id>")
         .description(
@@ -9082,9 +8759,6 @@ export function registerCli(
             console.error("peer id is required");
             process.exit(1);
           }
-          // Gotcha #14 — validate --confirm argument exists and equals "yes"
-          // exactly. An absent or non-"yes" value must refuse the operation
-          // rather than silently proceeding or defaulting.
           const confirm = typeof options.confirm === "string" ? options.confirm : "";
           if (confirm !== "yes") {
             console.error(
@@ -9154,7 +8828,6 @@ export function registerCli(
           }
         });
 
-      // ── peer migrate (issue #679 PR 5/5) ────────────────────────────────
       peerCmd
         .command("migrate")
         .description(
@@ -9208,7 +8881,6 @@ export function registerCli(
             }
             return;
           }
-          // Written successfully.
           console.log(`Migrated identity-anchor data to peers/self/identity.md.`);
           if (result.identityAnchorSource) {
             console.log(`  Read anchor:  ${result.identityAnchorSource}`);
@@ -9223,14 +8895,6 @@ export function registerCli(
           console.log(`with \`remnic peer show self\` before archiving legacy files.`);
         });
 
-      // ── Console subcommand (issue #688) ─────────────────────────────────
-      // PR 1/3 (#721) shipped the structured engine-state aggregator
-      // and the `--state-only` flag (one-shot JSON snapshot). PR 2/3
-      // wires the interactive TUI: invoking `remnic console` with no
-      // flags starts a clear+repaint refresh loop. Trace replay
-      // (`--trace <session-id>`) lands in PR 3/3 along with the HTTP
-      // `/console/state` endpoint and the MCP `engram.console_state`
-      // tool.
       cmd
         .command("console")
         .description(
@@ -9260,7 +8924,6 @@ export function registerCli(
             console.log(JSON.stringify(snapshot, null, 2));
             return;
           }
-          // Replay mode: fully sandboxed, no orchestrator state read.
           if (typeof options.trace === "string" && options.trace.length > 0) {
             const { replayTrace, parseSpeedFlag } = await import(
               "./console/trace.js"
@@ -9276,11 +8939,6 @@ export function registerCli(
               process.exitCode = 2;
               return;
             }
-            // Codex P2: mirror the live TUI's SIGINT handling so
-            // Ctrl-C aborts replay cleanly. Without this, Node's
-            // default SIGINT terminates the process before
-            // `replayTrace`'s `finally` block restores the cursor,
-            // leaving the terminal in a hidden-cursor state.
             const replayAbort = new AbortController();
             const replaySigintHandler = () => replayAbort.abort();
             process.on("SIGINT", replaySigintHandler);
@@ -9298,7 +8956,6 @@ export function registerCli(
             }
             return;
           }
-          // Live TUI mode, optionally with trace recording.
           const { runConsoleTui } = await import("./console/tui.js");
           let recorder:
             | {
@@ -9323,16 +8980,6 @@ export function registerCli(
             await handle.done;
           } finally {
             if (recorder) {
-              // Codex P1 (PR #732 follow-up): `recorder.close()`
-              // drains the internal writeChain, which can block
-              // indefinitely on a wedged network-backed filesystem.
-              // Race the drain against a 2s deadline so Ctrl-C exits
-              // the CLI cleanly even when a write is stuck. If the
-              // timeout wins, log a warning so the operator knows
-              // some final frames may have been lost and shutdown
-              // proceeds. `flushWithTimeout` returns a structured
-              // result instead of throwing so shutdown ordering stays
-              // deterministic.
               const CLOSE_TIMEOUT_MS = 2000;
               const { flushWithTimeout } = await import("./console/trace.js");
               const flushResult = await flushWithTimeout(
@@ -9344,12 +8991,6 @@ export function registerCli(
                   `[remnic console] trace flush timed out after ${CLOSE_TIMEOUT_MS}ms; some final frames may be lost`,
                 );
               }
-              // Codex P2 (PR #732 round 5): surface flush errors at
-              // warn level so operators learn about I/O failures instead
-              // of silently losing them. The error message is
-              // stringified (not spread with %o) to avoid accidentally
-              // logging object internals that might contain paths or
-              // other sensitive strings.
               if (flushResult.error != null) {
                 const msg =
                   flushResult.error instanceof Error
@@ -9362,7 +9003,6 @@ export function registerCli(
             }
           }
         });
-      // ── Chat — conversational memory inspection + correction (#1583) ────
       cmd
         .command("chat")
         .description("Conversational memory inspection and correction (issue #1583)")
@@ -9397,7 +9037,6 @@ function formatTranscript(entries: TranscriptEntry[]): string {
 }
 
 function parseDuration(duration: string): number {
-  // Parse strings like "12h", "30m", "2h30m"
   const hours = duration.match(/(\d+)h/);
   const minutes = duration.match(/(\d+)m/);
   let total = 0;

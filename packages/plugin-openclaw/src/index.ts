@@ -13,11 +13,9 @@
  * OpenClaw loads this package via `openclaw.plugin.json` → `main` field.
  */
 
-// Re-export the full plugin — no modifications
 export * from "../../../src/index.js";
 export { default } from "../../../src/index.js";
 
-// Bridge mode resolution, same-host daemon detection, and health checks
 export {
   checkDaemonHealth,
   // Deprecated; retained so existing importers keep resolving (AGENTS.md §11).
@@ -30,7 +28,6 @@ export {
   type BridgeModeRequest,
 } from "./bridge.js";
 
-// Public artifacts for memory-wiki bridge mode
 export {
   listRemnicPublicArtifacts,
   type RemnicPublicArtifact,

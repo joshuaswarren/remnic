@@ -44,7 +44,6 @@ async function run(argv: string[], env: NodeJS.ProcessEnv = {}): Promise<Capture
   return { code, out, err };
 }
 
-// A stable scratch dir shared by the init round-trip test.
 const initDir = mkdtempSync(path.join(tmpdir(), "csr-cli-init-"));
 function runIn(dir: string, argv: string[], env: NodeJS.ProcessEnv = {}): Promise<Captured> {
   const out: string[] = [];
@@ -107,7 +106,6 @@ test("start refuses a non-loopback host without binding", async () => {
 });
 
 test("start rejects an out-of-range port", async () => {
-  // coerceNumber raises a config error (exit 1), matching the capture-audio CLI.
   const r = await run(["start", "--foreground", "--port", "99999"]);
   assert.equal(r.code, 1);
 });
@@ -178,20 +176,16 @@ test("ensurePrivateDir refuses a symlinked private directory and creates a real 
 
 test("ensureSpoolParentDir creates absent 0700, rejects symlink/non-private, never chmods existing", () => {
   const base = mkdtempSync(path.join(tmpdir(), "csr-spoolp-"));
-  // Absent parent → created 0700.
   ensureSpoolParentDir(path.join(base, "fresh", "spool.sqlite"));
   assert.equal(existsSync(path.join(base, "fresh")), true);
   if (process.platform !== "win32") {
     assert.equal(statSync(path.join(base, "fresh")).mode & 0o777, 0o700);
   }
-  // Existing private parent → accepted (idempotent, no throw).
   ensureSpoolParentDir(path.join(base, "fresh", "spool.sqlite"));
-  // Symlinked parent → rejected.
   const realDir = path.join(base, "real");
   mkdirSync(realDir, { mode: 0o700 });
   symlinkSync(realDir, path.join(base, "link"));
   assert.throws(() => ensureSpoolParentDir(path.join(base, "link", "spool.sqlite")), CaptureInputError);
-  // Existing group/other-accessible parent → rejected AND left untouched (not chmod'd).
   if (process.platform !== "win32") {
     const shared = path.join(base, "shared");
     mkdirSync(shared);

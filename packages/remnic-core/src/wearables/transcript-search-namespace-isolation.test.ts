@@ -40,7 +40,6 @@ const dates = (results: ReadonlyArray<{ date: string }>): string[] =>
 test("transcript search is scoped to the caller namespace: A sees only A, B never sees the default transcript, the default caller still sees default (#2123)", async () => {
   const h = await buildMeetingsNamespaceHarness();
   try {
-    // Physical transcripts under each namespace root.
     await (await h.storageForNs("nsA")).writeWearableDayTranscript(SOURCE, DATE_A, transcriptFile("alpha standup notes"));
     await (await h.storageForNs("nsB")).writeWearableDayTranscript(SOURCE, DATE_B, transcriptFile("bravo standup notes"));
     await (await h.storageForNs("default")).writeWearableDayTranscript(SOURCE, DATE_DEFAULT, transcriptFile("delta standup notes"));
@@ -51,9 +50,6 @@ test("transcript search is scoped to the caller namespace: A sees only A, B neve
     const hit = (date: string, snippet: string): SearchResult =>
       ({ path: `wearables/${SOURCE}/${date}.md`, score: 0.9, snippet } as unknown as SearchResult);
 
-    // Collection-partitioned index. The default hit is ALSO registered under
-    // the root key (collection === undefined) so a non-scoped (pre-fix) search
-    // returns the default transcript — that is exactly the breach under test.
     const index: Record<string, SearchResult[]> = {
       "\u0000root": [hit(DATE_DEFAULT, "delta standup notes")],
       [base]: [hit(DATE_DEFAULT, "delta standup notes")],
@@ -86,7 +82,6 @@ test("transcript search is scoped to the caller namespace: A sees only A, B neve
     const dRes = await search("default", "op");
     assert.deepEqual(dates(dRes), [DATE_DEFAULT], "the default/machine-owner caller still sees default transcripts");
 
-    // The indexed search was scoped per caller: no query ran against the root
     // collection (undefined) — that is the pre-fix breach.
     assert.ok(
       !searchedCollections.includes(undefined),

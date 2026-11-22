@@ -15,8 +15,6 @@ import type { OfflineSyncChangeset } from "@remnic/core";
 const IMPRESSIONS_REL = "state/recall_impressions.jsonl";
 const PENDING_DIR_REL = "state/recall_impressions.jsonl.pending.d";
 
-// A remote snapshot with no files: the pull phase neither overwrites nor deletes
-// the freshly folded local active file, so the fold stays observable after a run.
 const EMPTY_REMOTE_SNAPSHOT = {
   format: "remnic.offline-sync.snapshot.v1",
   schemaVersion: 1,
@@ -27,10 +25,6 @@ const EMPTY_REMOTE_SNAPSHOT = {
   files: [],
 };
 
-// Write one durable pending recall-impression spill exactly as
-// LastRecallStore.spillImpression() does (#2033): a `<uuid>.jsonl` file inside
-// the offline-sync-EXCLUDED pending dir. The unique nonce lets the assertions
-// prove this specific row was folded rather than dropped by the exclude.
 async function seedPendingImpression(root: string): Promise<string> {
   const nonce = randomUUID();
   const line = JSON.stringify({
@@ -47,8 +41,6 @@ async function seedPendingImpression(root: string): Promise<string> {
   return nonce;
 }
 
-// After a run, the drain must have folded every pending spill into the active
-// file: the pending dir is empty and the synced active file carries the row.
 async function assertImpressionFolded(root: string, nonce: string): Promise<void> {
   const pendingEntries = await readdir(path.join(root, PENDING_DIR_REL)).catch(() => [] as string[]);
   assert.deepEqual(pendingEntries, [], "every pending spill must be folded and finalized");
@@ -60,9 +52,6 @@ test("offline sync drains pending impression spills before building the initial 
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-inline-"));
   const originalFetch = globalThis.fetch;
   try {
-    // Only the excluded pending spill exists — the active file does not yet. If
-    // the snapshot at index.ts:9051 were built before the drain, the recorded
-    // impression would be stranded in the excluded pending dir and never folded.
     const nonce = await seedPendingImpression(root);
     const statePath = path.join(root, ".offline-sync", "state", "test.json");
     await writeOfflineSyncState(statePath, {
@@ -192,9 +181,6 @@ test("offline sync drains pending impression spills before the post-direct-push 
   try {
     const nonce = await seedPendingImpression(root);
 
-    // A large file forces the direct-push path, so a SECOND push snapshot is
-    // rebuilt at index.ts:9222 (guarded by directPushedPaths.size > 0). The
-    // drained impression must remain folded on disk across that rebuild.
     const largePath = "facts/large.bin";
     const largeContent = Buffer.alloc(OFFLINE_SYNC_DIRECT_PUSH_MIN_BYTES, 65);
     await mkdir(path.join(root, "facts"), { recursive: true });
@@ -208,8 +194,6 @@ test("offline sync drains pending impression spills before the post-direct-push 
       includeTranscripts: true,
       lastSyncedAt: "2026-05-31T00:00:00.000Z",
       baseFiles: [
-        // Present in the base with a different digest so it is a direct-push
-        // candidate rather than an unchanged no-op.
         { path: largePath, bytes: OFFLINE_SYNC_DIRECT_PUSH_MIN_BYTES, sha256: "b".repeat(64), mtimeMs: 0 },
       ],
     });
@@ -273,9 +257,6 @@ test("offline sync honors configured impression bounds without rotating into exc
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-rotation-"));
   const originalFetch = globalThis.fetch;
   try {
-    // The active file fits below the configured cap, but the pending row would
-    // exceed it. A configured bound must defer the spill rather than silently
-    // falling back to rotation-off or moving rows into an excluded archive.
     const activePath = path.join(root, IMPRESSIONS_REL);
     await mkdir(path.dirname(activePath), { recursive: true });
     const seeded = `${JSON.stringify({ seeded: "x".repeat(40) })}\n`;
@@ -341,9 +322,6 @@ test("offline sync aborts (never pushes) when the pending impression drain canno
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-abort-"));
   const originalFetch = globalThis.fetch;
   try {
-    // A real pending spill is present, but the active impression path is a
-    // directory, so every append attempt fails. The durable row cannot be
-    // committed, and the drain helper must abort before building a snapshot.
     await mkdir(path.join(root, IMPRESSIONS_REL), { recursive: true });
     await seedPendingImpression(root);
 
@@ -409,9 +387,6 @@ test("offline sync folds pending lifecycle spills before building the push snaps
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-drain-inline-"));
   const originalFetch = globalThis.fetch;
   try {
-    // Only the excluded lifecycle pending spill exists. If the snapshot were
-    // built before the lifecycle drain, this promotion row would be stranded in
-    // the excluded pending dir and dropped on a push-then-discard.
     const nonce = await seedPendingLifecycle(root);
     const statePath = path.join(root, ".offline-sync", "state", "test.json");
     await writeOfflineSyncState(statePath, {
@@ -468,9 +443,6 @@ test("offline sync aborts (never pushes) when the lifecycle drain cannot complet
   const originalFetch = globalThis.fetch;
   try {
     await seedPendingLifecycle(root);
-    // The active ledger path is a DIRECTORY, so the fold's append fails on every
-    // attempt: the durable row can never be committed, so the drain aborts rather
-    // than let runOfflineSyncOnce build and push a snapshot that omits it.
     await mkdir(path.join(root, LIFECYCLE_LEDGER_REL), { recursive: true });
 
     const statePath = path.join(root, ".offline-sync", "state", "test.json");
@@ -553,7 +525,6 @@ test("offline sync refreshes generation deferrals after content hydration", asyn
       }
       if (url.pathname.endsWith("/offline-sync/files")) {
         hydrated = true;
-        // The daemon indexes while an unrelated content request is in flight.
         await writeFile(path.join(root, shardPath), indexedDuringHydration);
         return json({ ...EMPTY_REMOTE_SNAPSHOT, files: [{
           ...newFact, contentBase64: Buffer.from("remote fact").toString("base64"),

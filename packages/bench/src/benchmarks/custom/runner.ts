@@ -1,6 +1,3 @@
-/**
- * Custom benchmark runner.
- */
 
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -28,13 +25,6 @@ export async function runCustomBenchmarkFile(
     benchmark,
   };
 
-  // PR #1591 round-7 (OU-so): wire the judge cache into the custom
-  // benchmark path so --judge-cache-dir / --no-judge-cache are honored for
-  // llm_judge custom benchmarks instead of silently ignored. Mirrors
-  // runBenchmark's primary-judge wiring; the custom path has no phase-timeout
-  // guard, so the cache simply wraps the system judge before scoring. The
-  // restore+drain run in a finally so a thrown run never leaves the caller's
-  // adapter holding a cache wrapper.
   let cacheRestore: (() => Promise<void>) | undefined;
   let cacheCounters: JudgeCacheCounters | undefined;
   if (
@@ -59,14 +49,6 @@ export async function runCustomBenchmarkFile(
         provider: runOptions.judgeProvider ?? null,
         cache: new JudgeCache({ dir: cacheDir }),
       });
-      // PR #1591 round-8 (round-9 update): try in-place mutation first
-      // (preserves `this` for class-based adapters with #private fields).
-      // When the property is frozen/getter-only the assignment throws, so
-      // fall back to a delegating Proxy (createJudgeOverrideProxy) that
-      // overrides only `judge` and binds every other method to the original
-      // adapter. Object.create would have changed `this` and broken private
-      // member access for read-only adapters (thread PRRT_kwDORJXyws6OVjxR,
-      // cursor bugbot) — the same defect fixed in runBenchmark round-9.
       let systemJudgeMutatedInPlace = false;
       try {
         runOptions.system.judge = wrapped.judge;

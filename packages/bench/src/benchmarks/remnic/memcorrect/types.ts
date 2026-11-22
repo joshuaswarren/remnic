@@ -140,7 +140,6 @@ export interface MemCorrectScenario {
   unrelatedProbes: UnrelatedProbe[];
 }
 
-/** The full seeded corpus. */
 export interface MemCorrectCorpus {
   options: MemCorrectGeneratorOptions;
   scenarios: MemCorrectScenario[];
@@ -152,7 +151,6 @@ export interface MemCorrectGeneratorOptions {
   personaCount: number;
   /** Facts per persona, spread across categories. */
   factsPerPersona: number;
-  /** PRNG seed. */
   seed: number;
   /** Anchor "now"; all timestamps derive from this. */
   nowIso: string;

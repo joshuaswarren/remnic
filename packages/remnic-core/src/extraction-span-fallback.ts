@@ -52,11 +52,8 @@ export function tallySpanFallbacks(outcomes: readonly string[]): SpanFallbackTal
   }
   const attempts = outcomes.length;
   if (attempts === 0) {
-    // No measurement. Never 0 and never NaN: 0 would pass the gate's
-    // `< 15` check on no data, and NaN would fail it for the same absence.
     return { attempts: 0, fallbacks: 0, fallbackRatePct: null };
   }
-  // Cap at 4 decimal places so repeated tallies are byte-identical.
   const fallbackRatePct = Math.round((fallbacks / attempts) * 100 * 10_000) / 10_000;
   return { attempts, fallbacks, fallbackRatePct };
 }

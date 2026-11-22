@@ -238,9 +238,6 @@ test("failureDiag carries the completion's finish_reason (issue #3387)", { concu
 });
 
 test("runtime honors a per-request dispatcher (regression canary for #2148)", async () => {
-  // The fix assumes fetch applies `init.dispatcher`. If a future runtime
-  // silently ignores it, the 300s cap returns with no other signal — so
-  // assert the mechanism itself rather than trusting it.
   const server = await startSlowHeaderServer(2_500);
   const tight = new Agent({ headersTimeout: 250, bodyTimeout: 250 });
   try {
@@ -266,7 +263,6 @@ test("runtime honors a per-request dispatcher (regression canary for #2148)", as
 });
 
 test("client dispatcher carries the configured budget, not undici's default", async () => {
-  // One server, two budgets: the only variable is localLlmTimeoutMs.
   const server = await startSlowHeaderServer(2_500);
   const pools: Agent[] = [];
   try {
@@ -484,19 +480,12 @@ test("a process-wide custom dispatcher is left in place", async () => {
     await proxy.close();
   }
 
-  // ...and the widened pool returns once the default transport is back.
   const restored = new ChatTransport().dispatcherFor(900_000);
   assert.ok(restored);
   await restored.close();
 });
 
 test("an explicit opt-in widens the pool even when a custom global dispatcher is installed", async () => {
-  // Some hosts install a process-wide dispatcher (for example an agent runtime's
-  // managed proxy) that is unrelated to the LAN model server. There the 300s
-  // header cap stood silently and every slow completion died with `fetch failed`
-  // at 301s. REMNIC_LOCAL_LLM_DIRECT=1 declares that the local endpoint is
-  // reached directly, so the transport uses its own pool. Without the flag the
-  // previous behavior (leave the custom dispatcher alone) is unchanged.
   const original = getGlobalDispatcher();
   const proxy = new ProxyAgent("http://127.0.0.1:9");
   const priorFlag = process.env.REMNIC_LOCAL_LLM_DIRECT;
@@ -523,9 +512,6 @@ test("an explicit opt-in widens the pool even when a custom global dispatcher is
 });
 
 test("REMNIC_LOCAL_LLM_DIRECT=1 also sends availability probes around a global proxy dispatcher", async () => {
-  // A host whose global dispatcher cannot reach the LAN model server would fail
-  // checkAvailability() before any chat request runs, so direct mode must cover
-  // the probe as well as ChatTransport.post.
   const server = http.createServer((_req, res) => {
     res.setHeader("content-type", "application/json");
     res.end('{"data":[]}');

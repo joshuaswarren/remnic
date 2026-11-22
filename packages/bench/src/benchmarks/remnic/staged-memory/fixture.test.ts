@@ -1,9 +1,3 @@
-/**
- * Behavior-focused tests for the staged-memory fixture (issue #2346):
- * byte determinism per seed, hash/structure tamper rejection, path-safety
- * rejection, distractor counts 3/5/7, and dataset hygiene on generated
- * fixtures.
- */
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -35,7 +29,6 @@ async function makeTempDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "staged-memory-fixture-"));
 }
 
-/** Generate a fresh drift corpus in a temp dir so tests never share state. */
 async function makeDriftDir(seed = 11): Promise<string> {
   const dir = await makeTempDir();
   await generateDriftCorpus({ users: 2, epochs: 4, seed, outDir: dir });
@@ -168,7 +161,6 @@ test("a symlinked cases file is rejected", async (t) => {
   await cleanup(driftDir, out);
 });
 
-/** Re-hash a tampered fixture so structural checks (not hash checks) fire. */
 async function tamperAndRehash(out: string, tamper: (fixtureCases: StagedMemoryCaseV1[]) => void): Promise<void> {
   const casesPath = path.join(out, "cases.jsonl");
   const rows = (await readFile(casesPath, "utf8"))

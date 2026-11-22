@@ -9,8 +9,6 @@ import { fileURLToPath } from "node:url";
 
 const pkgDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-// Node has no `sqlite` module without the `node:` prefix, so a bundle that drops the prefix
-// fails with ERR_MODULE_NOT_FOUND the moment a daemon starts.
 test("the built daemon keeps the node: prefix on node:sqlite", { timeout: 120_000 }, () => {
   const outDir = mkdtempSync(path.join(tmpdir(), "capture-dist-"));
   const tsupBin = path.join(path.dirname(createRequire(import.meta.url).resolve("tsup/package.json")), "dist", "cli-default.js");

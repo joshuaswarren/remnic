@@ -1,12 +1,3 @@
-/**
- * Correction storage-integration regression tests (#1672).
- *
- * Proves the three wiring-level fixes that prevent fact resurrection and
- * stale-candidate planning:
- *  - item 2: isEligibleCorrectionCandidate excludes archived memories.
- *  - item 3: applyEditMemory recomputes contentHash from the patched body.
- *  - item 4: appendTombstoneFn emits one tombstone per derived supersession key.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -63,8 +54,6 @@ function fakeMemoryFile(over: Partial<MemoryFile["frontmatter"]> & { id: string 
 }
 
 // ---------------------------------------------------------------------------
-// item 2: lifecycle-aware candidate filter
-// ---------------------------------------------------------------------------
 
 test("#1672 item 2: isEligibleCorrectionCandidate accepts an active, non-archived memory", () => {
   const m = fakeMemoryFile({ id: "m1", status: "active" });
@@ -94,7 +83,6 @@ test("support passport records are not correction candidates", () => {
 });
 
 // ---------------------------------------------------------------------------
-// item 3: contentHash recomputed on edit
 // ---------------------------------------------------------------------------
 
 test("#1672 item 3: applyEditMemory recomputes contentHash from the patched body", async () => {
@@ -129,7 +117,6 @@ test("#1672 item 3: applyEditMemory leaves non-fact contentHash untouched (only 
     await applyEditMemory(wiring, "default", id, "likes light mode");
     const after = await storage.getMemoryById(id);
     assert.equal(after!.content, "likes light mode");
-    // Non-fact categories are not content-hash indexed, so no hash is forced.
     assert.ok(!after!.frontmatter.contentHash, "non-fact edit must not synthesize a contentHash");
   } finally {
     await cleanup();
@@ -198,7 +185,6 @@ test("#2128 retirement completes after cancellation during the durable write", a
 });
 
 // ---------------------------------------------------------------------------
-// Rescope cancellation transaction
 // ---------------------------------------------------------------------------
 
 test("#2128 rescope retires the source when cancellation lands after destination write", async () => {
@@ -377,7 +363,6 @@ test("#2206 audit adapter returns its committed id despite cancellation", async 
 });
 
 // ---------------------------------------------------------------------------
-// item 4: per-key tombstone emission
 // ---------------------------------------------------------------------------
 
 test("#1672 item 4: appendTombstoneFn emits one tombstone per supersession key, each carrying contentHash", async () => {
@@ -394,7 +379,6 @@ test("#1672 item 4: appendTombstoneFn emits one tombstone per supersession key, 
     });
     assert.ok(firstId, "appendTombstoneFn must return the first tombstone id");
 
-    // Read the tombstone store directly to count entries.
     const store = (storage as any).tombstoneStore ?? await (storage as any).getTombstoneStore();
     const all = store.snapshot?.() ?? store.all?.() ?? [];
     const matching = Array.isArray(all)

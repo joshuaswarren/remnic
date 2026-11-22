@@ -174,8 +174,6 @@ test("build reports the disabled state when the subsystem is off", async () => {
 
 test("show rejects a syntactically valid but impossible calendar id via MeetingsInputError", async () => {
   const deps = makeDeps();
-  // mtg-2026-13-40-... matches the id SHAPE but 2026-13-40 is not a real date;
-  // this must be a clean input error (exit 1), never a 500 from the path validator.
   const result = await run(deps, ["show", "mtg-2026-13-40-abcdef01"]);
   assert.equal(result.code, 1);
   assert.match(result.err, /not a real calendar date/);
@@ -201,16 +199,12 @@ test("build text output surfaces a SANITIZED reindex-hook warning (no raw error 
 });
 
 test("findings 7+8 — list/show expose a record when enabled, nothing when meetings.enabled is false", async () => {
-  // Build a real record with the subsystem enabled, then prove EACH read surface
-  // surfaces that record when enabled (so the disabled negatives below are not
-  // vacuous), then flip config off and confirm the same surfaces expose nothing.
   const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
   const source: MeetingsDaySource = { loadDayData: () => dayData() };
   const enabled: MeetingsCliDeps = { store, builder: new MeetingsBuilder({ source, store, config: config() }), config: config() };
   await run(enabled, ["build", "--date", DATE]);
   const id = (await store.listMeetingIds(DATE))[0]!;
 
-  // Positive baseline: enabled reads DO surface the record on every path.
   const listAllEnabled = await run(enabled, ["list"]);
   assert.match(listAllEnabled.out, new RegExp(id), "enabled list surfaces the stored record");
   const listDayEnabled = await run(enabled, ["list", "--date", DATE]);
@@ -221,7 +215,6 @@ test("findings 7+8 — list/show expose a record when enabled, nothing when meet
   assert.match(shownEnabled.out, /kind: meeting/, "enabled show prints the record");
   assert.match(shownEnabled.out, new RegExp(id), "enabled show prints the requested record's id");
 
-  // Now the same surfaces with the subsystem OFF must expose nothing.
   const disabled: MeetingsCliDeps = {
     store,
     builder: new MeetingsBuilder({ source, store, config: config({ enabled: false }) }),
@@ -255,8 +248,6 @@ test("build text output surfaces a SANITIZED memory-generation warning (no raw e
       source,
       store,
       config: config(),
-      // The injected generator rejects AFTER records persist; buildDay isolates
-      // it into summary.memoryWarning. The text renderer must surface that line.
       memoryGenerator: { onRecordsBuilt: async () => { throw new Error("qdrant offline at 10.0.0.9:6333"); } },
     }),
     config: config(),

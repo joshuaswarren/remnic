@@ -30,16 +30,8 @@ test("withGraphWriteLock: a peer append between read and rewrite is never discar
   const graphUrl = new URL("./graph.ts", import.meta.url).href;
   const APPENDS = 60;
   const REWRITES = 30;
-  // Large labels widen the read/write windows so the pre-lock race window
-  // is exercised on every round, not just occasionally.
   const pad = "y".repeat(2048);
 
-  // Worker source: plain JS, no nested template literals (tombstones.test.ts
-  // pattern). Worker 0 seeds node-owned edges, then alternates
-  // removeNodeEdgesForRewrite/restoreRemovedNodeEdges — each round is a
-  // read-modify-rename of entity.jsonl. Worker 1 appends distinct edges
-  // through appendEdge. Without the cross-process lock, the rewriter's
-  // stale snapshot discards appends that land inside its read→rename window.
   const workerSource = [
     "(async () => {",
     "const jsonl = await import(process.argv[1]);",
@@ -67,8 +59,6 @@ test("withGraphWriteLock: a peer append between read and rewrite is never discar
   ].join("\n");
 
   function runWorker(workerId: number): Promise<void> {
-    // The workers below resolve their modules from argv URLs at runtime —
-    // a static import cannot express "the file under test, by URL".
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const child = spawn(
       process.execPath,
@@ -105,10 +95,6 @@ test("withGraphWriteLock: a peer append between read and rewrite is never discar
   );
 });
 
-// ── Round N+19 (A): the lock's mtime heartbeat is a timer; it cannot fire
-// while a synchronous parse/serialize blocks the event loop, so a peer can
-// stale-break the lock past the 30s window and publish its own write. A
-// section about to publish must revalidate ownership and abort on loss.
 
 test("withGraphWriteLock: refresh reports a peer-replaced lock and the guarded publish refuses (round N+19 A)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-locklost-"));
@@ -126,8 +112,6 @@ test("withGraphWriteLock: refresh reports a peer-replaced lock and the guarded p
 
   await withGraphWriteLock(filePath, async (lock) => {
     assert.equal(await lock.refresh(), true, "an unbroken lock refreshes");
-    // Simulate the stalled-section consequence: a peer stale-broke our lock
-    // and published its own (the row above is its write).
     const lockPath = `${filePath}.lock`;
     await unlink(lockPath).catch(() => undefined);
     await writeFile(lockPath, `${process.pid} peer-${randomUUID()} ${new Date().toISOString()}\n`, "utf8");
@@ -142,9 +126,6 @@ test("removeNodeEdgesForRewrite: a stale-broken lock aborts the rewrite instead 
   const filePath = graphFilePath(dir, "entity");
   await mkdir(path.dirname(filePath), { recursive: true });
   const NODE = "facts/mine.md";
-  // A corpus large enough that the section's chunked parse yields to the
-  // event loop many times, giving the simulated peer's break a guaranteed
-  // landing window inside the section (before the publish guard).
   const rows: string[] = [];
   for (let i = 0; i < 59_999; i += 1) {
     rows.push(
@@ -208,9 +189,6 @@ test("writeGraphJsonlAtomic: the rename itself revalidates ownership and refuses
 
   await withGraphWriteLock(filePath, async (lock) => {
     assert.equal(await lock.refresh(), true, "an unbroken lock refreshes");
-    // The N+20 A window: the CALLER's ownership check has passed, then the
-    // section stalls past the 30s stale window — a peer breaks the lock and
-    // publishes its own write — and the section resumes at the rename.
     const lockPath = `${filePath}.lock`;
     await unlink(lockPath).catch(() => undefined);
     await writeFile(lockPath, `${process.pid} peer-${randomUUID()} ${new Date().toISOString()}\n`, "utf8");

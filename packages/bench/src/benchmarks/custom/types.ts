@@ -1,6 +1,3 @@
-/**
- * Custom benchmark schema types.
- */
 
 import type { BenchmarkCategory } from "../../types.js";
 

@@ -1,14 +1,3 @@
-/**
- * Deep-recall policy LLM budget/cancellation regressions (issue #2915).
- *
- * One `timeoutMs` budget must span the local and fallback legs: the fallback
- * leg receives only what the local leg left on the clock, and never starts
- * once the budget is spent. A spent budget also starts neither leg. The
- * transport cancellation signal reaches both legs and rejects as AbortError
- * when the signal is already aborted, when abort lands during the local
- * leg, and when abort lands during the fallback. Deterministic: legs
- * advance a patched clock instead of sleeping.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -60,7 +49,6 @@ test("one step timeout spans both legs: a spent budget never starts the fallback
   Date.now = () => clock;
   try {
     const { localLlm, fallbackLlm, fallbackCalls } = fakeClients({
-      // The local leg burns the whole 50ms budget before failing.
       localBehavior: () => {
         clock += 60;
         return Promise.reject(new Error("local leg failed"));
@@ -115,7 +103,6 @@ test("the fallback leg receives only the budget the local leg left (issue #2915)
 });
 
 test("the cancellation signal reaches both legs and stops the fallback after abort (issue #2915)", async () => {
-  // Part A — a live signal is forwarded to both legs' options.
   const live = fakeClients({
     localBehavior: () => Promise.reject(new Error("local leg failed")),
   });
@@ -132,7 +119,6 @@ test("the cancellation signal reaches both legs and stops the fallback after abo
   assert.equal(live.localCalls[0]?.signal, liveController.signal, "the local leg received the transport signal");
   assert.equal(live.fallbackCalls[0]?.signal, liveController.signal, "the fallback leg received the transport signal");
 
-  // Part B — cancellation during the local leg stops before the fallback.
   const cancelled = fakeClients({
     localBehavior: () => {
       liveController.abort();

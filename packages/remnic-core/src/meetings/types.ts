@@ -15,7 +15,6 @@ import type {
   FusionConversationInput,
 } from "../wearables/fusion/types.js";
 
-/** A contiguous meeting-app foreground span (derived from activity in a later slice). */
 export interface MeetingAppSpan {
   /** Meeting app label (e.g. "Zoom", "Google Meet"). */
   app: string;
@@ -63,14 +62,12 @@ export interface DetectedMeeting {
   title?: string;
 }
 
-/** Per-day detection input (assembled by a later wiring slice). */
 export interface MeetingsDetectionInput {
   date: string;
   appSpans: MeetingAppSpan[];
   audioWindows: MeetingAudioWindow[];
 }
 
-/** Detection-relevant configuration (full parseConfig wiring lands in a later slice). */
 export interface MeetingsDetectionConfig {
   /** Meeting-app match patterns (used when deriving app spans from activity). */
   appPatterns: string[];

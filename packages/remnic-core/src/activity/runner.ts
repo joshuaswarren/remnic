@@ -94,7 +94,6 @@ export interface ActivitySyncRunOptions {
   analysisDeps?: TimelineAnalysisClients;
 }
 
-/** Previous calendar date via pure date arithmetic (no DST wall-clock drift). */
 function previousIsoDate(date: string): string {
   const parsed = new Date(`${date}T00:00:00Z`);
   parsed.setUTCDate(parsed.getUTCDate() - 1);
@@ -161,8 +160,6 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
   const ownStore = options.store === undefined;
   const store = options.store ?? ActivityStore.open(options.memoryDir);
   const results: ActivitySourceRunItem[] = [];
-  // Local dates that gained new snapshots this run (any source). Drives the
-  // meetings rebuild fan-out so a backfilled OLDER day is rebuilt too.
   const touchedDates = new Set<string>();
 
   try {
@@ -174,8 +171,6 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
         inserted: 0,
         duplicates: 0,
         digestsWritten: 0,
-        // Cursors are now per (machine, date); report the last synced day's
-        // cursor. Null until a day advances it.
         cursor: null,
       };
       try {
@@ -196,31 +191,17 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
             item.duplicates += result.duplicates;
             if (result.digestWritten) item.digestsWritten += 1;
             item.cursor = result.cursor;
-            // A day that synced durably counts as ran, even if a later day in
-            // the window fails (ran = at least one durable day).
             item.ran = true;
-            // The day's rows/digest/cursor are durable; a failed post-digest
-            // reindex is a separate, already-sanitized signal (not a sync
-            // failure) so the scheduler can observe a stale index.
             if (result.reindexError !== undefined) item.reindexError = result.reindexError;
           } catch (dateError) {
-            // One bad day (a malformed historical snapshot, a per-day daemon
-            // error) must not starve the remaining dates — record it and move
-            // on. Dates are processed oldest-first, so continuing keeps today's
-            // sync alive when an old backfill day is broken. An abort, though,
-            // halts the whole run.
             item.error = sanitizedSyncError(dateError);
             if (options.signal?.aborted) break;
           }
         }
       } catch (error) {
-        // Client construction failed: no date could run for this source.
         item.error = sanitizedSyncError(error);
       }
       results.push(item);
-      // An abort halts the WHOLE run: the in-flight source above is recorded
-      // (its fast-failing attempt reports an error), but no later source builds
-      // a client or contacts a daemon — teardown settles promptly.
       if (options.signal?.aborted) break;
     }
     if (options.config.timeline.enabled && !options.signal?.aborted) {

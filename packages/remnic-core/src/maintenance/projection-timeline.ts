@@ -1,10 +1,3 @@
-/**
- * Projection timeline assembly.
- *
- * The lifecycle ledger is streamed one event at a time. Dedup keeps the same
- * winner as sort-then-first-wins (stable `compareMemoryLifecycleEvents`, file
- * order on ties) without materializing the unsorted ledger beside the result.
- */
 import path from "node:path";
 import { throwIfAborted } from "../abort-error.js";
 import { log } from "../logger.js";
@@ -100,7 +93,6 @@ function internPool(): <T extends string>(value: T) => T {
   };
 }
 
-/** Share repeated ledger scalars so a long ledger does not keep one string per row. */
 function internLedgerEvent(event: MemoryLifecycleEvent, intern: <T extends string>(value: T) => T): void {
   event.memoryId = intern(event.memoryId);
   event.eventType = intern(event.eventType);

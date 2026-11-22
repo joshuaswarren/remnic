@@ -155,7 +155,6 @@ test("writeConvergeCursor & readConvergeCursor: atomic write roundtrip", async (
       peer: { path: "facts/peer.md", sha256: shaB },
     }]);
 
-    // Update existing cursor atomically
     const updated: ConvergeCursorState = {
       ...read,
       lastConvergedAt: new Date().toISOString(),
@@ -207,9 +206,6 @@ test("normalizeConvergePeerUrl: non-URL peers trim trailing slashes", () => {
 });
 
 test("normalizeConvergePeerUrl: stays linear on long unparseable slash runs", () => {
-  // No scheme, so the URL constructor throws and the fallback branch runs;
-  // the trailing "a" means no suffix of slashes can match, which is the
-  // backtracking worst case for the old /\/+$/ trim.
   const peerUrl = "/".repeat(50_000) + "a";
   const startedAt = Date.now();
   const normalized = normalizeConvergePeerUrl(peerUrl);

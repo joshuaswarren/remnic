@@ -3,12 +3,6 @@ export interface SyntheticCorrectionReplacement {
   newValue: string;
 }
 
-/**
- * Parse only the deterministic correction forms emitted by the synthetic
- * MemCorrect corpus, plus the adapter conformance canary. This is deliberately
- * not a general natural-language parser: the demo server should exercise the
- * benchmark protocol without pretending to be a production memory engine.
- */
 export function parseSyntheticCorrection(content: string): SyntheticCorrectionReplacement | undefined {
   const trimmed = content.trim();
   const patterns: ReadonlyArray<{

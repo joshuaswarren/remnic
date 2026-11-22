@@ -208,7 +208,6 @@ interface PendingPairedAnswerReplay {
   entry: PairedAnswerReplayEntry;
 }
 
-/** Convenience: guard an arbitrary iterable shape into an async iterator. */
 async function* toAsyncIterable<T>(iter: Iterable<T> | AsyncIterable<T>): AsyncIterable<T> {
   for await (const value of iter as AsyncIterable<T>) {
     yield value;
@@ -390,9 +389,6 @@ function appendCompletedTask(
     ctx.options.pairedAnswerReplayCache?.set(pendingReplay.key, pendingReplay.entry);
   }
   tasks.push(task);
-  // Pass the GLOBAL total (ctx.totalCount), not a per-plan total —
-  // `tasks.length` is cumulative across every plan in ctx.plans, so a
-  // per-plan divisor would overflow to "N/3" nonsense in plan 2+.
   ctx.options.onTaskComplete?.(task, tasks.length, ctx.totalCount);
 }
 
@@ -437,17 +433,9 @@ async function executeTrialWithFailure(
         ? { attributionWitness: attributionCapture.witness }
         : {}),
       details: {
-        // Preserve the trial's category so a failed trial is still attributed
-        // to its per-category bucket (computeCategoryAggregates), keeping the
-        // per-category breakdown consistent with the overall aggregates that
-        // already count this failure row (issue #1878).
         ...(typeof trial.extraDetails?.categoryName === "string"
           ? { categoryName: trial.extraDetails.categoryName }
           : {}),
-        // `error` is retained for compatibility with existing diagnostics.
-        // The structured marker is the authoritative run-status signal; an
-        // arbitrary benchmark-owned `extraDetails.error` must not make a
-        // successful trial look failed.
         error: message,
         benchmarkFailure: {
           kind: "trial_execution_failure",
@@ -713,9 +701,6 @@ async function executeTrial(
     answered = refineTrialAnswer(trial, recalledText, answered);
   }
 
-  // Post-answer hook runs before the judge so dataset-specific signals
-  // (e.g. LongMemEval `search_hits`) are observed from the same
-  // post-ingest, post-recall system state as the recall/answer calls.
   const hookResult = trial.postAnswerHook
     ? await trial.postAnswerHook({
         question: trial.question,
@@ -724,12 +709,6 @@ async function executeTrial(
       })
     : { extraScores: undefined, extraDetails: undefined };
 
-  // Only invoke the LLM judge when judge-backed metrics are in the spec.
-  // Cursor review feedback on PR 596: unconditionally calling the judge
-  // billed non-judge runs for an API call per trial and inflated the
-  // `TaskResult` latency/token totals. The zero-valued placeholder
-  // below keeps the downstream arithmetic unchanged for runs that
-  // don't opt into the judge.
   const judgeRequested =
     ctx.metricsSpec.metrics.includes("llm_judge") || ctx.metricsSpec.metrics.includes("judge_accuracy");
   const judgeResult = judgeRequested
@@ -766,8 +745,6 @@ async function executeTrial(
         }
         break;
       default: {
-        // Unreachable — validated in validateContext. Keep as a sanity
-        // guard; CLAUDE.md rule 53 (enumerate all non-active states).
         const exhaustive: never = metric;
         throw new Error(`PublishedBenchmarkHarness: metric ${String(exhaustive)} not handled.`);
       }
@@ -1047,9 +1024,6 @@ async function buildBenchmarkResult(
     results: {
       tasks,
       aggregates: aggregateTaskScores(tasks.map((task) => task.scores)),
-      // Per-category breakdown for benchmarks that stamp a `categoryName`
-      // detail (LoCoMo). Omitted when empty so other benchmarks' output shape
-      // is unchanged (issue #1878).
       ...(Object.keys(categoryAggregates).length > 0 ? { categoryAggregates } : {}),
     },
     environment: {

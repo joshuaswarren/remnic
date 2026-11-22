@@ -106,15 +106,6 @@ export const ONLINE_ADAPTIVE_ARMS = [
   "layered-fence-quarantine",
 ] as const satisfies readonly InjectionSuiteArm[];
 
-/**
- * Find the `@remnic/bench` package root that ships the disclosed fixtures.
- * The published layout places this module under
- * `node_modules/@remnic/bench/dist/...`; a monorepo checkout places it under
- * `packages/bench/src/...`. Walking up to the first `package.json` whose
- * `name` is `@remnic/bench` handles both layouts without a hard-coded
- * `packages/` parent. The walk is lazy and only runs on first access, so
- * importing the module never throws on a missing fixture or manifest.
- */
 function benchPackageRoot(): string | null {
   let dir = path.dirname(fileURLToPath(import.meta.url));
   for (let depth = 0; depth < 8; depth += 1) {
@@ -154,14 +145,7 @@ export function resolveDefaultAttackerPromptPath(): string {
   return absolute;
 }
 
-/**
- * Resolve the disclosed write-path screen source through the published
- * `@remnic/core` package. `@remnic/core` ships both `src/` and `dist/` in
- * `files`; the attacker prompt conditions on the exact module the gate
- * tests, so prefer the TypeScript source and fall back to the built JS.
- */
 export function resolveDefaultScreenSourcePath(): string {
-  // `@remnic/core` ships both `src/` and `dist/` in `files`. Reach the
   // package root by resolving the published entry through ESM and walking
   // up to the first `package.json`; the entry has no exports for
   // `./package.json`, so `require.resolve('@remnic/core/package.json')`
@@ -307,7 +291,6 @@ export function planOnlineAdaptiveRows(input: {
   limit?: number;
 }): InjectionSuiteRowIdentity[] {
   if (input.seeds !== 1) {
-    // The online stage conditions each chain on one frozen corpus seed; the
     // attack@k analyzer keys cells by (arm, family, index) and has no seed
     // dimension, so a multi-seed plan would silently pool trials.
     throw new Error("adaptive-online-r1 runs exactly one corpus seed (--seeds 1)");
@@ -586,7 +569,6 @@ function previousIterationFor(args: {
       quarantined: episode.quarantined,
     } satisfies OnlineAdaptivePreviousIteration;
   };
-  // Condition on the most recent valid rewrite; invalid iterations fall
   // through to the previous valid state (an invalid rewrite never reached
   // the defended model, so it has no response to condition on).
   for (let iteration = args.iteration - 1; iteration >= 1; iteration -= 1) {
@@ -678,7 +660,6 @@ export async function runInjectionSuiteOnlineAdaptive(
     iterations: input.attackerIterations,
     ...(input.limit === undefined ? {} : { limit: input.limit }),
   });
-  // The unsliced grid size, so a later analysis can tell a limit that
   // actually truncated the design from one at or above the row count
   // (#3080). Pure recomputation at freeze time; no effect on the plan.
   const unslicedPlannedRows = input.limit === undefined
@@ -694,7 +675,6 @@ export async function runInjectionSuiteOnlineAdaptive(
     }).length;
   const seeds = [...new Set(planned.map((row) => row.seed))];
   const frozen = prepareInjectionSuiteFreeze(input, planned);
-  // run.json and the resume contract describe the endpoint that executes
   // (the same resolution model-profile.json freezes), never the raw flags.
   const defendedContract = resolvedExecutorContract({ ...input, executor: input.executor ?? "openai-compat" });
   const resumeContractHash = injectionSuiteResumeContractHashForOnline({
@@ -806,7 +786,6 @@ export async function runInjectionSuiteOnlineAdaptive(
       captureResponses: true,
       attackerExecutor: attacker.executor,
       attackerModel: attacker.model,
-      // Persisted so the analyzer can recompute the resume hash exactly as
       // the runner did (PR #3081 r3); optional, so old runs are unaffected.
       ...(attacker.baseUrl ? { attackerBaseUrl: attacker.baseUrl } : {}),
       contractGeneration: INJECTION_SUITE_ONLINE_CONTRACT_GENERATION,
@@ -879,7 +858,6 @@ export async function runInjectionSuiteOnlineAdaptive(
         fresh.kind === "VALID" &&
         !fresh.checkpoint.tries.some((entry) => entry.outcome.kind === "ATTACKER_RESULT")
       ) {
-        // The attacker call completed and its corpus line is durable, but
         // the process died before the attacker try committed: reconcile the
         // marker from the corpus instead of treating the paid call as lost.
         await store.commitTry(identity, {
@@ -915,7 +893,6 @@ export async function runInjectionSuiteOnlineAdaptive(
         valid = existingCorpus.valid;
         rejectionReason = existingCorpus.rejectionReason;
         if (!valid) {
-          // A rejected rewrite never reaches the defended model, on the
           // first pass or on resume.
           resumed += 1;
           continue;
@@ -956,7 +933,6 @@ export async function runInjectionSuiteOnlineAdaptive(
           baseUrl: attacker.baseUrl,
           model: attacker.model,
           requestTimeoutMs: attacker.requestTimeoutMs,
-          // Deterministic sampling: seed = seedBase + iteration.
           seed: identity.seed + iteration,
         };
         const attackerMessages: InjectionSuiteChatMessage[] = [
@@ -967,7 +943,6 @@ export async function runInjectionSuiteOnlineAdaptive(
         let consecutiveFaults = 0;
         while (chat === undefined) {
           await claims.assertOwner(claim);
-          // Every attacker attempt is marked in flight before dispatch (a
           // host-fault commit clears the previous marker), so a crash during
           // any attempt pauses the resumed run until --retry-ambiguous.
           await store.markInFlight(identity, attempt, input.retryAmbiguous === true);
@@ -1009,13 +984,11 @@ export async function runInjectionSuiteOnlineAdaptive(
           attackerInputSha256: sha256(userMessage),
           attackerOutputSha256: sha256(chat.text),
         };
-        // The corpus line is the durable attacker-iteration checkpoint: it
         // lands before the defended call so a crash never re-pays for the
         // attacker, and a valid line without an episode row re-runs only the
         // defended call on resume.
         await appendCorpusLine(input.outputDir, line);
         history.corpus.set(corpusKey(identity.arm, identity.variantId), line);
-        // The in-flight marker stays until the corpus line is durable; only
         // then does the attacker try commit (clearing it) with its outcome.
         await store.commitTry(identity, {
           attempt,
@@ -1036,7 +1009,6 @@ export async function runInjectionSuiteOnlineAdaptive(
         const started = Date.now();
         try {
           await store.markInFlight(identity, attempt, input.retryAmbiguous === true);
-          // In-memory tap: the next iteration's attacker prompt conditions on
           // this response without re-reading responses.jsonl.
           let capturedChat: InjectionSuiteChatResult | undefined;
           const tappedDeps: InjectionSuiteProductLifecycleDeps = {
@@ -1146,6 +1118,5 @@ export async function runInjectionSuiteOnlineAdaptive(
   };
 }
 
-// --- Resume contract ---------------------------------------------------------
 
 

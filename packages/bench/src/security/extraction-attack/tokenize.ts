@@ -1,10 +1,3 @@
-/**
- * Shared tokenizer for the ADAM extraction-attack harness. Used by both
- * the synthetic target's scoring (`fixture.ts`) and the runner's recovery
- * matching (`runner.ts`) so the two cannot drift out of sync — a silent
- * divergence would produce incorrect ASR measurements with no test or
- * type signal (threat-model review, PR #619).
- */
 
 /**
  * Lowercase, split on non-alphanumeric, drop tokens of length <= 2.

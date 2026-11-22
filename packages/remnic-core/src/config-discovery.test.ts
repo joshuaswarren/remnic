@@ -1,11 +1,3 @@
-/**
- * Shared config discovery (issue #2796).
- *
- * The server and CLI resolve their config through `discoverConfigPath`; the
- * OpenClaw bridge probes `configPathCandidates` directly. These tests pin the
- * identity the P1 fix restored: for every home-reference form, both surfaces
- * must land on the same file.
- */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -38,9 +30,6 @@ test("env config paths expand every home-reference form on both surfaces", async
     const expected = path.join(home, "opt", "remnic.json");
     for (const form of ["$HOME/opt/remnic.json", "${HOME}/opt/remnic.json", "~/opt/remnic.json"]) {
       process.env.REMNIC_CONFIG_PATH = form;
-      // The bridge probes candidates[0]; the server/CLI resolver returns the
-      // explicit path. Same form in, same file out — a daemon the server can
-      // discover is never invisible to the bridge.
       assert.equal(configPathCandidates()[0], expected, `configPathCandidates: ${form}`);
       assert.equal(discoverConfigPath().path, expected, `discoverConfigPath: ${form}`);
       assert.equal(discoverConfigPath().explicit, true, `explicit: ${form}`);

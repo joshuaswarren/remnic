@@ -1,18 +1,3 @@
-/**
- * Tests for the session-delta pure differ + state persistence
- * (issue #1548 Track A PR 4).
- *
- * Contract under test (the issue's three-state matrix + edge cases):
- *  - first_run: no prior state → no delta AND nextState initialized.
- *    A first session must NOT claim "0 changes" (rule 34).
- *  - unchanged: prior head == current head → suppressed, not rendered.
- *  - changed: prior head is an ancestor of current → real delta with caps.
- *  - unreachable_head: prior head missing from repo (force-push/rebase) →
- *    tagged { ok:false, code:"unreachable_head" }, never a crash.
- *  - rule 27: slice(-n) guard against n === 0.
- *  - rule 25 / rule 54: state write is temp-file-then-rename; read-back round-trips.
- *  - parseLogOutput: handles multi-commit + multi-file + blank-line blocks.
- */
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
@@ -38,8 +23,6 @@ import {
 } from "./session-delta.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────────────────────────────────
 
 function slice(head: string, commits: GitCommit[] = [], files: string[] = []): GitLogSlice {
   return { commits, touchedFiles: files, currentHead: head };
@@ -48,7 +31,6 @@ function slice(head: string, commits: GitCommit[] = [], files: string[] = []): G
 const PRIOR: LastSeenState = { head: "aaa111", at: "2026-06-01T10:00:00Z" };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Three-state matrix
 // ──────────────────────────────────────────────────────────────────────────
 
 test("first_run: null prior state → no delta, nextState initialized", () => {
@@ -60,7 +42,6 @@ test("first_run: null prior state → no delta, nextState initialized", () => {
   }
   assert.equal(result.nextState.head, "bbb222");
   assert.ok(result.nextState.at);
-  // The first_run shape carries NO delta field — callers must suppress.
   assert.equal("delta" in result, false);
 });
 
@@ -92,12 +73,10 @@ test("changed: real delta returned with commits + summary", () => {
   assert.equal(result.delta.commits.length, 2);
   assert.equal(result.delta.touchedFiles.length, 2);
   assert.equal(result.nextState.head, "ccc333");
-  // Summary line is deterministic and locale-stable.
   assert.match(result.delta.summaryLine, /^Since 2026-06-01: 2 commits, 2 files touched\.$/);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Edge cases — rule 34 (tagged failures, never silent)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("unreachable_head: head changed but zero commits → tagged failure", () => {
@@ -110,7 +89,6 @@ test("unreachable_head: head changed but zero commits → tagged failure", () =>
   assert.equal(result.code, "unreachable_head");
   assert.match(result.detail, /aaa111/);
   assert.match(result.detail, /fff999/);
-  // nextState still advances so the next call sees the new head.
   assert.equal(result.nextState.head, "fff999");
 });
 
@@ -125,7 +103,6 @@ test("summary line falls back to raw timestamp when malformed", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Caps — rule 27 (slice(-n) guard against n === 0)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("capCommits: keeps the most-recent N commits", () => {
@@ -135,7 +112,6 @@ test("capCommits: keeps the most-recent N commits", () => {
   }));
   const capped = capCommits(commits, MAX_DELTA_COMMITS);
   assert.equal(capped.length, MAX_DELTA_COMMITS);
-  // Most-recent (tail) wins.
   assert.equal(capped[capped.length - 1]!.sha, "sha29");
 });
 
@@ -172,9 +148,6 @@ test("computeSessionDelta caps a large delta to MAX constants", () => {
 });
 
 test("computeSessionDelta reports uncapped totals alongside capped slices (issue #1630 fix 1)", () => {
-  // A repo exceeding both caps: 100 commits / 200 files. The slices are
-  // capped for transport, but totalCommits/totalTouchedFiles must report
-  // the TRUE delta size so summaries never under-report.
   const commitCount = 100;
   const fileCount = 200;
   const commits: GitCommit[] = Array.from({ length: commitCount }, (_, i) => ({
@@ -187,20 +160,15 @@ test("computeSessionDelta reports uncapped totals alongside capped slices (issue
     assert.fail(`expected changed, got ${JSON.stringify(result)}`);
     return;
   }
-  // Capped display lists — transport-sized.
   assert.equal(result.delta.commits.length, MAX_DELTA_COMMITS);
   assert.equal(result.delta.touchedFiles.length, MAX_DELTA_FILES);
-  // Uncapped totals — the true delta size, NOT the capped slice length.
   assert.equal(result.delta.totalCommits, commitCount);
   assert.equal(result.delta.totalTouchedFiles, fileCount);
-  // The summary line must report the UNCAPPED totals, not the capped slice
-  // length — otherwise the briefing under-reports the delta size (codex review).
   assert.match(result.delta.summaryLine, /100 commits, 200 files touched/);
   assert.ok(!result.delta.summaryLine.match(/^.*20 commits, 50 files/), "summary must NOT use capped counts");
 });
 
 test("computeSessionDelta totals equal slice lengths when under the cap (issue #1630 fix 1)", () => {
-  // Below the caps, totals === slice lengths (no information lost).
   const commits: GitCommit[] = [
     { sha: "u1", subject: "under cap 1" },
     { sha: "u2", subject: "under cap 2" },
@@ -218,7 +186,6 @@ test("computeSessionDelta totals equal slice lengths when under the cap (issue #
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// State persistence — rule 25 (write after compute) + rule 54 (temp+rename)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("state path: namespace sanitized into the filename", () => {
@@ -228,7 +195,6 @@ test("state path: namespace sanitized into the filename", () => {
 
 test("state path: unsafe namespace characters sanitized defensively", () => {
   const p = sessionDeltaStatePath("/mem", "../escape!!");
-  // No path traversal — the '..' is collapsed.
   assert.ok(!p.includes("escape!!"));
   assert.ok(!p.includes("../"));
 });
@@ -263,7 +229,6 @@ test("writeLastSeenState: temp file cleaned up after rename (rule 54)", async ()
     await writeLastSeenState(statePath, { head: "abc", at: "2026-07-01T00:00:00Z" });
     const { readdir } = await import("node:fs/promises");
     const entries = await readdir(dir);
-    // Only state.json should remain — no leftover .tmp-* file.
     assert.deepEqual(entries, ["state.json"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -310,7 +275,6 @@ test("writeLastSeenState: invalid state throws (rule 51)", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Git invoker + slice resolution
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeInvoker(responses: Array<{ args: string[]; stdout: string; exitCode?: number }>): SessionDeltaGitInvoker {
@@ -367,7 +331,6 @@ test("resolveSlice: real delta with commits + files", () => {
   assert.equal(result.slice.commits.length, 2);
   assert.equal(result.slice.commits[0]!.sha, "aaa");
   assert.equal(result.slice.commits[1]!.subject, "fix: second");
-  // De-duplicated + sorted touched files.
   assert.deepEqual(result.slice.touchedFiles, ["src/a.ts", "src/b.ts"]);
 });
 
@@ -387,7 +350,6 @@ test("resolveSlice: git log exit 128 → empty slice (unreachable head) → empt
     { args: ["log", "--reverse", "--pretty=format:%H\x1f%s", "--name-only", "oldhead..newhead"], stdout: "", exitCode: 128 },
   ]);
   const result = resolveSlice("/repo", "oldhead", invoker);
-  // Returns ok with empty slice; the differ converts this to unreachable_head.
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.equal(result.slice.commits.length, 0);
@@ -400,8 +362,6 @@ test("resolveSlice: git log exit 127 (timeout/spawn) \u2192 git_failed, not unre
     { args: ["log", "--reverse", "--pretty=format:%H\x1f%s", "--name-only", "oldhead..newhead"], stdout: "", exitCode: 127 },
   ]);
   const result = resolveSlice("/repo", "oldhead", invoker);
-  // Transient failure \u2192 git_failed, NOT empty-slice/unreachable.
-  // The state marker must NOT advance so the next call retries.
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.equal(result.code, "git_failed");
@@ -409,7 +369,6 @@ test("resolveSlice: git log exit 127 (timeout/spawn) \u2192 git_failed, not unre
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// parseLogOutput — direct unit test
 // ──────────────────────────────────────────────────────────────────────────
 
 test("parseLogOutput: handles blank-line-separated blocks", () => {
@@ -428,7 +387,6 @@ test("parseLogOutput: handles blank-line-separated blocks", () => {
   assert.equal(commits.length, 2);
   assert.equal(commits[0]!.sha, "sha1");
   assert.equal(commits[1]!.subject, "subject two");
-  // file1.ts deduplicated.
   assert.equal(touchedFiles.length, 2);
   assert.deepEqual(touchedFiles, ["file1.ts", "file2.ts"]);
 });
@@ -440,7 +398,6 @@ test("parseLogOutput: empty input → empty results", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Read-back from disk proves the file shape on disk (rule: verify on disk)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("writeLastSeenState writes JSON with head + at keys", async () => {

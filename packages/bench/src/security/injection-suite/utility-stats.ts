@@ -56,7 +56,6 @@ export function analyzeInjectionSuiteUtility(
     if (observation.arm === "none") baseline.set(key, observation);
     if (observation.arm === "fencing") fencing.set(key, observation);
   }
-  // Completeness: every planned (benchmark, item) x seed must be observed
   // for BOTH arms. The universe comes from the plan when the runner supplies
   // one (so a benchmark, item, or seed that never produced an observation
   // still counts as missing) and from the observations otherwise; observed
@@ -147,7 +146,6 @@ export function analyzeInjectionSuiteUtility(
 
   const rng = createSeededRandom(H5_DECISION_RULE.analysis.statisticsSeed);
   const draws: number[] = [];
-  // Cluster-aware bootstrap: resample items (clusters) with replacement and
   // include every seed-level pair inside each resampled item, so repeated
   // seeds per item do not inflate effective n.
   const clusterBuckets = new Map<string, { base: number; fenced: number }[]>();

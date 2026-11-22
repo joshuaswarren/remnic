@@ -125,11 +125,6 @@ function rememberProjectionRebuildChild(
   }
 }
 
-/**
- * SIGKILL scheduled rebuild children. A scheduler dispose passes its own
- * state so another instance's child keeps running. Process exit passes no
- * owner and kills every child.
- */
 export function terminateScheduledProjectionRebuilds(
   owner?: ProjectionRebuildScheduleState,
 ): void {
@@ -222,13 +217,11 @@ function isRunnerSuccess(message: unknown): message is ProjectionRebuildForkResu
     && typeof row.entityMentionRows === "number";
 }
 
-/** Fork the projection rebuild. Arguments are path, namespace, and timestamp only. */
 export async function forkProjectionRebuild(
   request: ProjectionRebuildForkRequest,
   options?: {
     timeoutMs?: number;
     spawnChild?: () => ChildProcess;
-    /** Scheduler that owns this child. Dispose kills only that owner's child. */
     owner?: ProjectionRebuildScheduleState;
     /** Invoked after exit listeners are attached. Tests use this to disconnect. */
     onChild?: (child: ChildProcess) => void;
@@ -296,7 +289,6 @@ function storageIsUnlocked(storage: InjectedStorage | undefined): boolean {
 
 export async function maybeRebuildMemoryProjectionScheduled(opts: {
   config: PluginConfig;
-  /** The daemon's live root storage, when available (secure-store unlock). */
   getStorage?: () => InjectedStorage | undefined;
   state: ProjectionRebuildScheduleState;
   /** Test seam. Production forks {@link forkProjectionRebuild}. */
@@ -318,7 +310,6 @@ export async function maybeRebuildMemoryProjectionScheduled(opts: {
   const rootStorage = opts.getStorage?.();
   const memoryDir = rootStorage ? rootStorage.dir : config.memoryDir;
 
-  // On-disk freshness check: survives restarts and cross-process CLI rebuilds.
   const rebuiltAt = readProjectionRebuiltAt(memoryDir);
   const rebuiltAtMs = rebuiltAt ? Date.parse(rebuiltAt) : Number.NaN;
   if (Number.isFinite(rebuiltAtMs) && now - rebuiltAtMs < intervalMs) {

@@ -1,4 +1,3 @@
-/** Fields on {@link BufferState} used by observe-buffer idempotency (#3368). */
 export interface BufferAdmissionIdempotencyState {
   admissionIdempotency?: Record<string, number>;
   admissionIdempotencyOrder?: string[];
@@ -6,7 +5,6 @@ export interface BufferAdmissionIdempotencyState {
 
 export const BUFFER_ADMISSION_IDEMPOTENCY_CAP = 512;
 
-/** Client observe idempotency keys are namespaced by durable capture scope. */
 export function scopeObserveBufferAdmissionIdempotencyKey(input: {
   sessionKey: string;
   writeNamespace: string;
@@ -21,7 +19,6 @@ export function scopeObserveBufferAdmissionIdempotencyKey(input: {
 export function ensureAdmissionIdempotencyMap(state: BufferAdmissionIdempotencyState): Record<string, number> {
   const existing = state.admissionIdempotency;
   if (existing && Object.getPrototypeOf(existing) === null) return existing;
-  // SAFETY: prototype-free map contract for observe idempotency keys (#3368).
   const map = Object.create(null) as Record<string, number>;
   if (existing) {
     for (const key of Object.keys(existing)) {

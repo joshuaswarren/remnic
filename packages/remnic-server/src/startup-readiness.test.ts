@@ -9,14 +9,6 @@ import { z } from "zod";
 import { startServer, type ServerResult } from "./index.js";
 import { completeStartupReadiness, createStartupSyncEnsurers } from "./startup-readiness.js";
 
-/**
- * Regression for #3253: the standalone readiness warm-up must search the
- * default namespace's real QMD collection (namespace-aware routing: suffixed
- * collection for a migrated default namespace, legacy flat-root base
- * collection for a flat store) instead of passing the namespace name as a
- * collection. The boot tests exercise the production wiring through
- * startServer, with a recording remote search backend as the only seam.
- */
 
 interface RecordedSearch {
   query: string;
@@ -202,7 +194,6 @@ async function testReadinessWarmupUsesResolvedCollection(options: {
       `readiness warm-up searched the wrong collection (${options.expectedLabel}): ` +
         `${JSON.stringify(readinessSearches)}`,
     );
-    // Flat-root routing overfetches candidates before filtering nested namespaces.
     assert.ok(
       readinessSearches.every((entry) => entry.maxResults === (entry.collection === "engram" ? 50 : 1)),
       `readiness warm-up must retain the native candidate budget: ${JSON.stringify(readinessSearches)}`,
@@ -260,7 +251,6 @@ interface FakeEnsurerOrchestrator {
   syncGate: PromiseWithResolvers<boolean>;
 }
 
-// The fake mirrors the real backend's mid-run availability flip: probe()
 // sets available=true before collection ensure finishes (qmd.ts
 // recordProbeSuccess), which is exactly the window #3518's second read found
 // the readiness gate trusting.
@@ -273,7 +263,6 @@ function fakeEnsurerOrchestrator() {
     readyGate: Promise.withResolvers<boolean>(),
     syncGate: Promise.withResolvers<boolean>(),
   };
-  // SAFETY: createStartupSyncEnsurers touches only the stubbed surface
   // (deferredSyncSucceeded, qmd.isAvailable/debugStatus, the two sync entry
   // points); the fake omits the rest of Orchestrator by design.
   const orchestrator = {

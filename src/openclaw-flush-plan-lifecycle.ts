@@ -416,9 +416,6 @@ async function reconcileOpenClawFlushPlanReplacementFile(params: {
     }
   }
 
-  // OpenClaw can recreate or append to this file while Remnic is cleaning up a
-  // rotated snapshot. Re-read at the last possible point so the overwrite merges
-  // fresh appends instead of writing from the stale snapshot above.
   const latest = await readSafeFlushPlanReplacementContent(params.flushPlanPath);
   if (!latest.ok) return latest;
   const latestReconciled = reconcileOpenClawFlushPlanReplacementContent({

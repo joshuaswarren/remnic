@@ -24,14 +24,11 @@ export class CodexAdapter implements EngramAdapter {
   readonly id = "codex";
 
   matches(context: AdapterContext): boolean {
-    // Primary: MCP clientInfo from initialize handshake (exact match)
     if (context.clientInfo?.name === "codex-mcp-client") return true;
 
-    // Also match on clientInfo name containing "codex" for forward compat
     const clientName = context.clientInfo?.name?.toLowerCase() ?? "";
     if (clientName.includes("codex") && clientName !== "codex-mcp-client") return true;
 
-    // Fallback: user-configured client identifier header
     const clientId = headerValue(context.headers, "x-engram-client-id");
     if (clientId?.toLowerCase() === "codex") return true;
 
@@ -42,7 +39,6 @@ export class CodexAdapter implements EngramAdapter {
     // MCP session ID (standard MCP header, server-assigned)
     const mcpSessionId = headerValue(context.headers, "mcp-session-id");
 
-    // Namespace: explicit header > default
     const namespaceHeader = headerValue(context.headers, "x-engram-namespace");
 
     return {

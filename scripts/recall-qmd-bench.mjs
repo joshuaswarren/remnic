@@ -1,19 +1,3 @@
-/**
- * Read-only QMD stage-timing bench for the Remnic daemon hybrid plan.
- *
- * lex + vec + synthetic hyde, limit 20, candidateLimit 40, rerank on.
- * `norerank` is the same plan with skipRerank. Nothing here lowers top-k.
- *
- *   QMD_STORE_MODULE=/path/to/@tobilu/qmd/dist/store.js \
- *   QMD_COLLECTION=<collection> \
- *   QMD_FORCE_CPU=1 \
- *   OUTDIR=/tmp/recall-after \
- *   node scripts/recall-qmd-bench.mjs /path/to/queries.json daemon
- *
- * queries.json is a JSON array of strings. The script writes
- * qNN-<mode>.json files. Compare with scripts/recall-qmd-compare.mjs.
- * It prints stage timings on stderr and does not echo document paths.
- */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";

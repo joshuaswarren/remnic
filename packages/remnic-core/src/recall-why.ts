@@ -1,56 +1,12 @@
-/**
- * Recall-miss diagnosis (issue #3033).
- *
- * `remnic xray` explains the attribution of results that WERE returned.
- * Nothing explained an absence, so an operator who expected a memory back
- * could not tell their own configuration from a product defect. This module
- * answers the other question: given a query, which pipeline stage dropped
- * the memory I expected?
- *
- * Host-agnostic and strictly READ-ONLY: it persists nothing, indexes
- * nothing, and never mutates recall behaviour. It is deliberately NOT gated
- * by `recallDirectAnswerEnabled` (which gates the xray tier-explain block) —
- * a diagnostic that only works once the feature you are diagnosing is
- * already enabled is useless.
- *
- * Reuse, never fork (AGENTS.md rule 22 / issue decision 3). The pipeline is
- * not re-implemented here. Every stage decision comes from one of exactly
- * two places:
- *
- *   1. The `RecallXraySnapshot` the REAL recall published — its
- *      `results` / `headroomResults` / `appliedResults` / `filters` /
- *      `appliedResultLimit` fields already record what each stage saw and
- *      admitted. That snapshot IS the existing stage recorder.
- *   2. The same shared predicates the pipeline itself calls, injected
- *      through {@link RecallWhyDeps} so a caller cannot accidentally supply
- *      a divergent copy: `planRecallMode`, `isGenericRecallExcludedPath`,
- *      `ACTIVE_STATUSES`, and the shared namespace resolver.
- *
- * Stage order follows the recall contract in AGENTS.md
- * ("Retrieval/Intent/Cache Guardrails" #1): candidate retrieval headroom ->
- * policy filters -> rerank/boost -> cap -> format. A memory is reported
- * against the EARLIEST stage that dropped it.
- *
- * Empty is not failed (Review Prevention Checklist #22): a search-backend
- * outage returns `{ ok: false, failure: { reason: "backend_unavailable" } }`
- * and never "0 candidates".
- */
 
 import { ACTIVE_STATUSES } from "./contradiction/contradiction-scan.js";
 import type { RecallXrayResult, RecallXraySnapshot } from "./recall-xray.js";
 import type { MemoryStatus, RecallPlanMode } from "./types.js";
 
-/**
- * Pipeline stages, in contract order. Frozen `as const` WITHOUT a
- * `readonly RecallWhyStage[]` annotation so the derived union below stays
- * narrow (Review Prevention Checklist #47).
- */
 export const RECALL_WHY_STAGES = Object.freeze(["retrieval", "policy-filter", "rerank", "cap", "format"] as const);
 
 export type RecallWhyStage = (typeof RECALL_WHY_STAGES)[number];
 
-// Pins the narrow union: an unused @ts-expect-error is itself a compile
-// error, so widening RECALL_WHY_STAGES to string[] fails the build.
 // @ts-expect-error "bogus" is not a RecallWhyStage
 const _stageUnionIsNarrow: RecallWhyStage = "bogus";
 void _stageUnionIsNarrow;
@@ -220,8 +176,6 @@ const REMEDIATION: Record<RecallWhyDropReason, string> = {
  * that dropped it plus a remediation hint.
  */
 export async function explainRecallMiss(query: string, opts: RecallWhyOptions): Promise<RecallWhyReport> {
-  // Validate the EXACT value — never normalize first (checklist #45). A
-  // whitespace-only query is a caller fault, not an empty query.
   if (typeof query !== "string" || query.length === 0 || query.trim().length === 0) {
     throw new RecallWhyInputError("recallWhy: query is required and must be non-empty");
   }
@@ -240,8 +194,6 @@ export async function explainRecallMiss(query: string, opts: RecallWhyOptions): 
   });
 
   if (!outcome.ok) {
-    // Empty != failed. The retrieval stage reports the outage; no stage
-    // downstream of it ran, so none is reported as having seen zero.
     return {
       schemaVersion: "1",
       query,
@@ -301,7 +253,6 @@ export async function explainRecallMiss(query: string, opts: RecallWhyOptions): 
   };
 }
 
-// ─── Stage attribution ────────────────────────────────────────────────────
 
 /**
  * Retrieval-stage note per planner mode. `full` and `graph_mode` run the
@@ -314,9 +265,6 @@ const PLANNER_MODE_NOTE: Partial<Record<RecallPlanMode, string>> = {
 
 function buildStages(snapshot: RecallXraySnapshot | null, plannerMode: RecallPlanMode): RecallWhyStageRecord[] {
   if (snapshot === null) {
-    // No snapshot published: either the planner short-circuited recall or
-    // retrieval produced nothing to capture. Both are honest zero-candidate
-    // states, distinct from the backend-outage branch above.
     return [
       {
         stage: "retrieval",
@@ -345,10 +293,6 @@ function buildStages(snapshot: RecallXraySnapshot | null, plannerMode: RecallPla
       stage: "retrieval",
       considered: captured.length,
       admitted: captured.length,
-      // Both stage paths annotate the retrieval row from the SAME table, so
-      // a planner mode can never be reported on one path and dropped on the
-      // other. Modes with no note omit the key rather than setting it to
-      // undefined, keeping the JSON shape byte-stable.
       ...(PLANNER_MODE_NOTE[plannerMode] !== undefined ? { reason: PLANNER_MODE_NOTE[plannerMode] } : {}),
       drops: [],
     },
@@ -418,7 +362,6 @@ function policyReasonFor(rejectedBy: string): RecallWhyDropReason {
   return "not-a-candidate";
 }
 
-// ─── --expect trace ───────────────────────────────────────────────────────
 
 async function traceExpectation(
   expect: string,
@@ -444,8 +387,6 @@ async function traceExpectation(
   const base = { expect, matched: true, memoryId: ref.memoryId, path: ref.path };
 
   if (snapshot !== null) {
-    // The snapshot is authoritative about what actually happened, so it is
-    // consulted before any predicate is re-evaluated.
     if (snapshot.appliedResults.some((r) => matchesRef(r, ref))) {
       return { ...base, recalled: true };
     }
@@ -474,11 +415,6 @@ async function traceExpectation(
     }
   }
 
-  // The memory never reached the capture. Attribute it to the earliest
-  // stage whose own predicate rejects it, in contract order: the planner
-  // gates retrieval, then the policy filters run namespace -> path ->
-  // status (the order `filterRecallCandidates` and the state-view
-  // admission apply them in).
   if (plannerMode === "no_recall") {
     return {
       ...base,
@@ -539,7 +475,6 @@ async function traceExpectation(
   };
 }
 
-// ─── Internals ────────────────────────────────────────────────────────────
 
 function matchesRef(result: RecallXrayResult, ref: RecallWhyMemoryRef): boolean {
   return result.memoryId === ref.memoryId || result.path === ref.path;
@@ -551,8 +486,6 @@ function nonEmpty(value: string | undefined): string | undefined {
 }
 
 function nonNegativeInt(value: unknown): number {
-  // Reject non-finite explicitly rather than letting NaN fall through a
-  // comparison (checklist #45).
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
   const floored = Math.floor(value);
   return floored > 0 ? floored : 0;

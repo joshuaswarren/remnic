@@ -1,11 +1,3 @@
-/**
- * Recall navigation unit tests (issue #1956).
- *
- * Window authority (served / not-served / expired-by-window), disclosure
- * deepening, traverse relation semantics, budget clamping + disclosure
- * spend, entity neighbors — over a real RecallHandleHistoryStore and real
- * StorageManager instances so the storage-facing seams behave as shipped.
- */
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -107,7 +99,6 @@ test("expand serves served ids at deeper disclosure and rejects unserved/expired
     assert.ok(section.ok);
     assert.equal(section.items[0]?.disclosure, "section");
 
-    // chunk is not deeper than what recall already served → typed refusal.
     const chunk = await runRecallNavigation(f.depsFor(), {
       action: "expand",
       memoryId: id,
@@ -118,7 +109,6 @@ test("expand serves served ids at deeper disclosure and rejects unserved/expired
     assert.equal(chunk.error, "not_deeper");
     assert.match(chunk.message, /deeper/);
 
-    // Never-served id → not_served naming the constraint.
     const stranger = await writeMemory(storage, "Never recalled by this session.");
     const unserved = await runRecallNavigation(f.depsFor(), {
       action: "expand",
@@ -130,7 +120,6 @@ test("expand serves served ids at deeper disclosure and rejects unserved/expired
     assert.equal(unserved.error, "not_served");
     assert.match(unserved.message, /windowSnapshots|recall snapshots/);
 
-    // Window expiry: with windowSnapshots=3, four newer recalls evict the id.
     for (let i = 0; i < 4; i += 1) {
       const newer = await writeMemory(storage, `displacing recall ${i}`);
       await f.history.record(SESSION, [newer]);
@@ -162,8 +151,6 @@ test("traverse filters by relation, clamps limits, and skips foreign-namespace t
         { targetId: elaborated, linkType: "related", strength: 0.7 },
       ],
     });
-    // A link whose target lives only in another namespace must resolve to
-    // nothing here: neighbors come from the SAME resolved storage.
     const foreign = await writeMemory(f.storages.ns_bob!, "Bob-namespace memory.");
     const withForeign = await writeMemory(storage, "Second source memory.", {
       links: [{ targetId: foreign, linkType: "references", strength: 0.5 }],
@@ -212,8 +199,6 @@ test("traverse filters by relation, clamps limits, and skips foreign-namespace t
     assert.equal(badRelation.error, "unknown_relation");
     assert.match(badRelation.message, /supports/);
 
-    // Cross-namespace link: the target is invisible in the resolved
-    // namespace, so the traverse returns zero neighbors — no leak, no error.
     const foreignTraverse = await runRecallNavigation(f.depsFor(), {
       action: "traverse",
       memoryId: withForeign,

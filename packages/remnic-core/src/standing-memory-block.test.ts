@@ -128,7 +128,6 @@ test("three-band layering: pinned full first, fresh full, older compressed to a 
   const built = buildStandingMemoryBlock({ entries: [OLD_LONG, FRESH, PINNED], nowMs: NOW });
   const body = built.lines.filter((line) => line.startsWith("- "));
   assert.deepEqual(built.bandCounts, { pinned: 1, fresh: 1, compressed: 1, dropped: 0 });
-  // Band rank, then id order: pinned band has p-core alone.
   assert.equal(body[0], `- ${PINNED.description}`);
   assert.equal(body[1], `- ${FRESH.description}`);
   const hookLine = body[2] ?? "";

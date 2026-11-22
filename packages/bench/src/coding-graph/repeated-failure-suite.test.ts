@@ -1075,8 +1075,6 @@ test("only host faults retry while a terminal task result is never rerun", async
 test("host faults short of exhaustion are auditable and the row recovers", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-exhausted-"));
   try {
-    // Three faults against the frozen six-attempt budget: the row must record
-    // every fault with verifiable trace evidence and then complete normally.
     await runFake(outputDir, [
       new DeterministicDriver("exhausted-profile", "6".repeat(64), 3),
     ]);
@@ -1114,7 +1112,6 @@ test("host faults short of exhaustion are auditable and the row recovers", async
         }
         assert.equal(entry.outcome.kind, "TASK_RESULT");
       }
-      // Recovery before the budget runs out must not invalidate the row.
       assertRecord(checkpoint.terminal, "checkpoint terminal");
       assert.notEqual(checkpoint.terminal.invalidReason, "HOST_RETRIES_EXHAUSTED");
     }
@@ -1126,8 +1123,6 @@ test("host faults short of exhaustion are auditable and the row recovers", async
 test("a zero-retry audit pauses the run and persists the exhausting fault", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-zero-retries-"));
   try {
-    // Decision rule v10: exhausting the retry budget pauses the suite instead
-    // of marking the row invalid, so a transient outage cannot void a run.
     await assert.rejects(
       runRepeatedFailureSuite({
         outputDir,
@@ -1144,8 +1139,6 @@ test("a zero-retry audit pauses the run and persists the exhausting fault", asyn
       }),
       /Host API fault retries exhausted/,
     );
-    // The attempt that stopped the run is committed before the pause so a
-    // resumed run replays from the next attempt with a complete history.
     const checkpointNames = await readdir(path.join(outputDir, "checkpoints"));
     assert.ok(checkpointNames.length > 0);
     for (const name of checkpointNames) {

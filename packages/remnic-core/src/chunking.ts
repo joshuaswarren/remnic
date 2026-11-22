@@ -17,7 +17,6 @@ export interface ChunkingConfig {
 }
 
 export interface Chunk {
-  /** Chunk content */
   content: string;
   /** 0-based index */
   index: number;
@@ -26,13 +25,11 @@ export interface Chunk {
 }
 
 export interface ChunkResult {
-  /** Whether content was chunked */
   chunked: boolean;
   /** Array of chunks (length 1 if not chunked) */
   chunks: Chunk[];
 }
 
-/** Default chunking configuration */
 export const DEFAULT_CHUNKING_CONFIG: ChunkingConfig = {
   targetTokens: 200,
   minTokens: 150,
@@ -172,20 +169,12 @@ export function joinSentences(sentences: string[]): string {
 }
 
 
-/**
- * Chunk content into overlapping segments at sentence boundaries.
- *
- * @param content - The text content to chunk
- * @param config - Chunking configuration
- * @returns ChunkResult with chunks array
- */
 export function chunkContent(
   content: string,
   config: ChunkingConfig = DEFAULT_CHUNKING_CONFIG,
 ): ChunkResult {
   const totalTokens = estimateTokenCount(content);
 
-  // Don't chunk if below minimum threshold
   if (totalTokens < config.minTokens) {
     return {
       chunked: false,
@@ -199,7 +188,6 @@ export function chunkContent(
 
   const sentences = splitSentences(content);
 
-  // If we couldn't split into multiple sentences, don't chunk
   if (sentences.length <= 1) {
     return {
       chunked: false,
@@ -220,17 +208,13 @@ export function chunkContent(
     const sentence = sentences[i];
     const sentenceTokens = estimateTokenCount(sentence);
 
-    // Add sentence to current chunk
     currentChunkSentences.push(sentence);
     currentTokens += sentenceTokens;
 
-    // Check if we've reached target size (with some flexibility)
-    // Allow going over by up to 50% to avoid tiny final chunks
     const atTarget = currentTokens >= config.targetTokens;
     const isLastSentence = i === sentences.length - 1;
 
     if (atTarget || isLastSentence) {
-      // Create chunk from accumulated sentences
       const chunkContent = joinSentences(currentChunkSentences);
       chunks.push({
         content: chunkContent,
@@ -239,9 +223,7 @@ export function chunkContent(
       });
       chunkIndex++;
 
-      // Start new chunk with overlap (if not at end)
       if (!isLastSentence) {
-        // Keep last N sentences for overlap.
         // Guard: slice(-0) === slice(0), which returns the ENTIRE array
         // (CLAUDE.md gotcha #27). When overlapSentences is 0, clear fully.
         const overlapCount = Math.min(config.overlapSentences, currentChunkSentences.length);
@@ -256,7 +238,6 @@ export function chunkContent(
     }
   }
 
-  // Only consider it "chunked" if we got multiple chunks
   return {
     chunked: chunks.length > 1,
     chunks,
@@ -275,23 +256,17 @@ export function reassembleChunks(chunks: string[]): string {
   if (chunks.length === 1) return chunks[0];
 
   // For overlapping chunks, we need to deduplicate
-  // Simple approach: use full first chunk, then non-overlapping parts of subsequent chunks
-  // This is imperfect but handles most cases
   const result: string[] = [chunks[0]];
 
   for (let i = 1; i < chunks.length; i++) {
     const prevChunk = chunks[i - 1];
     const currChunk = chunks[i];
 
-    // Find overlap by looking for common suffix/prefix
-    // Try to find where the previous chunk ends in the current chunk
     const prevSentences = splitSentences(prevChunk);
     const currSentences = splitSentences(currChunk);
 
-    // Find how many sentences from prev are at the start of curr
     let overlapCount = 0;
     for (let j = 0; j < Math.min(prevSentences.length, currSentences.length); j++) {
-      // Check if last N sentences of prev match first N sentences of curr
       const prevEnd = prevSentences.slice(-(j + 1));
       const currStart = currSentences.slice(0, j + 1);
 
@@ -300,11 +275,9 @@ export function reassembleChunks(chunks: string[]): string {
       }
     }
 
-    // Add non-overlapping portion
     if (overlapCount > 0 && overlapCount < currSentences.length) {
       result.push(joinSentences(currSentences.slice(overlapCount)));
     } else if (overlapCount === 0) {
-      // No detected overlap, add full chunk
       result.push(currChunk);
     }
     // If overlapCount === currSentences.length, skip (fully contained)

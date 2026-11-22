@@ -1,112 +1,3 @@
-/**
- * openCypher read subset — hand-written recursive-descent parser + executor.
- *
- * Issue #1552 PR3. This module is the thin, deletable Cypher layer over the
- * structured store API (`searchGraph` / `traverse`). It compiles a strict
- * read-only subset of openCypher to those primitives — there is NO SQL
- * string assembly from user input anywhere; the structured API already
- * parameterizes every bind (rule 51).
- *
- * ## Supported grammar (strict subset)
- *
- * ```
- * query        := MATCH pattern [WHERE where_clause] RETURN return_list [LIMIT int]
- * pattern      := node_pattern (rel_pattern node_pattern)*
- * node_pattern := '(' [var] [':' label] ['{' prop_map '}'] ')'
- * prop_map     := key ':' literal (',' key ':' literal)*
- * rel_pattern  := ('<-'? '--' bracket '--' '->'?)
- *                | ('<-'  bracket '--')          // incoming:  <-[...]-   (also <-[...]--)
- *                | ('--'  bracket '->')          // outgoing:  -[...]->  (also --[...]->)
- *                | ('<-'? '--' bracket '--' '->'?)   // canonical form
- * bracket      := '[' [':' type ('|' ':' type)*] ['*' range] ']'
- * range        := int ('..' int)? | '..' int
- * where_clause := comparison ((AND | OR) comparison)*
- * comparison   := var '.' key op literal
- * op           := '=' | '<>' | '!=' | '>' | '<' | '>=' | '<='
- * return_list  := return_item (',' return_item)*
- * return_item  := var | var '.' key
- * literal      := string | number | 'true' | 'false' | 'null'
- * ```
- *
- * Direction (resolved from the dashes/arrows around the bracket):
- *   - `-[...]->`  → outgoing (follow src→dst edges)
- *   - `<-[...]-`  → incoming (follow dst→src edges)
- *   - `-[...]-`   → both
- *
- * Variable-length hops:
- *   - `-[:CALLS*1..3]->` → between 1 and 3 CALLS hops (inclusive)
- *   - `-[:CALLS*2]->`    → exactly 2 hops
- *   - `-[:CALLS..3]->`   → 1..3 hops (default min = 1)
- *   - `-[:CALLS*]->`     → REJECTED (unbounded — see rejection table)
- *
- * ## Compile target
- *
- * Single-node patterns compile to `searchGraph({ label })`. Fixed-length
- * relationship patterns compile to `traverse({ start, direction, edgeTypes,
- * maxDepth })`, filtering the returned hits to the relationship's depth
- * range. VARIABLE-length patterns (`*M..N` / `*N`) compile to the path-
- * enumerating primitive `traversePaths` (issue #1650) so an exact `*N`
- * honors concrete length-N paths; endpoints are filtered by PATH LENGTH
- * and deduped by node id. Property filters in node patterns
- * (`{name: "foo"}`) and WHERE conditions are applied in JS as post-filters
- * on the bound nodes.
- *
- * Variable-length patterns enumerate concrete relationship-simple paths via
- * `traversePaths` (issue #1650). Each path is cycle-safe under RELATIONSHIP
- * UNIQUENESS (a single path never reuses an edge), capped at `maxHops` and a
- * total-path cap. `*M..N` returns a node when a path of length in `[M, N]`
- * reaches it; exact `*N` (N > 1) thus includes a node reachable at BOTH a
- * shorter and a length-N path (the length-N path qualifies). The result is
- * deduped by node id, so `*1..N` ("reachable within N hops") is unchanged
- * from the prior BFS behavior — only exact `*N` (N > 1) gains paths the
- * shortest-depth BFS dropped. If enumeration hits the store's maxPaths cap,
- * the success result carries `truncated: true` so callers can detect a
- * partial endpoint set instead of silently dropping reachable nodes.
- *
- * ## Read-only by construction
- *
- * The parser only recognizes the tokens `MATCH`, `WHERE`, `RETURN`,
- * `LIMIT`, `AND`, `OR`, `true`, `false`, `null`. Every write/mutation
- * clause token (`CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH`, `REMOVE`,
- * `DROP`, `CALL`, `YIELD`, `UNION`, `WITH`, `ORDER`, `BY`, `SKIP`,
- * `OPTIONAL`, `EXPLAIN`, `PROFILE`, `USE`, `FOREACH`, `LOAD`,
- * `CONSTRAINT`, `INDEX`) is rejected with a clear error naming the
- * supported grammar (rule 51). The module has no code path that writes
- * to the store.
- *
- * ## Rejection table (each has a dedicated test)
- *
- *   - `CREATE (n:Function)`            → unsupported clause (read-only)
- *   - `MATCH (n) DELETE n`             → unsupported clause
- *   - `MATCH (n) SET n.x = 1`          → unsupported clause
- *   - `MATCH (a)-[:CALLS*]->(b) ...`   → unbounded `*` (must specify range)
- *   - `MATCH (a:NotALabel) ...`        → unknown label (lists valid options)
- *   - `MATCH (a) RETURN *`             → `RETURN *` not in subset
- *   - `MATCH (a)-[:CALLS]->(b) RETURN a, c`  → unbound variable `c`
- *   - `MATCH (a:Function {name: 123}) ...`   → wrong-type literal matches
- *                                              nothing (standard Cypher;
- *                                              NOT a parse error — a numeric
- *                                              `name` never equals a string)
- *   - `MATCH (a:Function WHERE ...`     → missing `)` / missing RETURN
- *   - `MATCH (a:Function)` (no RETURN)  → missing RETURN
- *
- * ## Scale caveat
- *
- * The subset is aimed at interactive exploration over indexed graphs. The
- * start-node resolution uses `searchGraph` (capped at 1000 rows by the
- * store); the inline `name`/`filePath` property filter and a supported
- * single-conjunction first-variable WHERE equality term are pushed down
- * to the index BEFORE the cap, so an exact-name lookup is found even when
- * the matching node sorts after the cap on a large graph. Values
- * containing LIKE metacharacters (`%`/`_`) and multi-group (OR) WHERE
- * clauses are NOT pushed down — they fall back to the capped scan, so on
- * graphs with more than 1000 nodes of the starting label such queries can
- * still false-negative; use the inline literal form for guaranteed
- * Relationship expansion uses `traverse` (fixed hops) or `traversePaths`
- * (variable length, issue #1650); both are cycle-safe and depth/length
- * capped. See the compile-target note for the path-length semantics of
- * variable-length `*N`.
- */
 import type {
   GraphStore,
   SearchHit,
@@ -116,24 +7,9 @@ import type {
 
 import { MAX_TRAVERSE_PATHS_HOPS } from "../graph-store.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Label universe — the documented schema's node labels.
 //
-// The store persists `nodes.label` as the symbol `kind` (lowercase:
-// `function`, `class`, `method`, `interface`, `enum`, `type`, `module`).
-// The remaining labels (`Project`, `Package`, `Folder`, `File`, `Route`,
-// `Resource`) are part of the documented schema universe but are not
-// emitted by the current ingest pipeline; queries against them simply
-// return zero rows. We ACCEPT the full documented universe so the grammar
-// matches the issue's stated 12+ label list, and REJECT everything outside
-// it with a clear error (rejection table).
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * PascalCase Cypher label → the lowercase value stored in `nodes.label`.
- * Labels whose DB form is not produced by ingest still map to a sensible
- * storage key so the query is structurally valid (returns empty).
- */
 const CYPHER_LABEL_TO_DB_LABEL: Record<string, string> = {
   Project: "project",
   Package: "package",
@@ -150,13 +26,11 @@ const CYPHER_LABEL_TO_DB_LABEL: Record<string, string> = {
   Resource: "resource",
 };
 
-/** Sorted list of accepted Cypher labels — used in rejection messages. */
 const VALID_CYPHER_LABELS: readonly string[] = Object.keys(
   CYPHER_LABEL_TO_DB_LABEL,
 ).sort();
 
 // ──────────────────────────────────────────────────────────────────────────
-// Public result types.
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -180,7 +54,6 @@ export type CypherValue = CypherScalar | CypherNodeValue;
 /** One result row — a map from RETURN-item column name to its value. */
 export type CypherRow = Record<string, CypherValue>;
 
-/** Failure codes. Distinct from the store codes — Cypher has its own. */
 export type CypherFailureCode =
   | "parse_error" // generic grammar failure
   | "unsupported_clause" // CREATE / SET / DELETE / unbounded `*` / RETURN *
@@ -195,7 +68,6 @@ export type CypherFailureCode =
 export interface CypherFailure {
   ok: false;
   code: CypherFailureCode;
-  /** Human-readable explanation including the supported grammar hint. */
   message: string;
   /**
    * Present only for `unknown_label`: the accepted label list, so callers
@@ -222,15 +94,12 @@ export interface CypherSuccess {
 export type CypherResult = CypherSuccess | CypherFailure;
 
 // ──────────────────────────────────────────────────────────────────────────
-// AST types.
 // ──────────────────────────────────────────────────────────────────────────
 
 interface NodePattern {
   /** Variable name; undefined for an anonymous node `( )`. */
   varName?: string;
-  /** PascalCase label as written (`Function`, `Class`, ...). */
   label?: string;
-  /** Inline property filters from `{key: value, ...}`. */
   properties: Array<{ key: string; value: CypherScalar }>;
 }
 
@@ -257,7 +126,6 @@ interface Comparison {
 
 type WhereTerm = Comparison;
 interface WhereClause {
-  /** Flat OR-of-AND-of-terms. We support AND+OR; no precedence gymnastics. */
   orGroups: WhereTerm[][];
 }
 
@@ -278,7 +146,6 @@ interface CypherAst {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Tokenizer.
 // ──────────────────────────────────────────────────────────────────────────
 
 type TokenType =
@@ -311,7 +178,6 @@ type TokenType =
 
 interface Token {
   type: TokenType;
-  /** Raw source text of the token (for identifiers, strings, numbers). */
   text: string;
   /** 0-based offset in the source, for error messages. */
   pos: number;
@@ -329,11 +195,6 @@ const KEYWORDS: Record<string, true> = {
   null: true,
 };
 
-/**
- * Tokens whose presence ANYWHERE in the query unambiguously signals a
- * write/mutation intent or a clause outside the read subset. They are
- * rejected with `unsupported_clause` carrying a tailored message.
- */
 const WRITE_OR_OUTSIDE_CLAUSES: Record<string, string> = {
   create: "CREATE is a write clause; this Cypher layer is read-only (MATCH/WHERE/RETURN/LIMIT only).",
   merge: "MERGE is a write clause; this Cypher layer is read-only.",
@@ -401,12 +262,10 @@ class Tokenizer {
   tokenize(): Token[] {
     while (this.i < this.src.length) {
       const ch = this.src[this.i]!;
-      // Whitespace.
       if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
         this.i += 1;
         continue;
       }
-      // Line comments `//` (Cypher) and block comments `/* */`.
       if (ch === "/" && this.src[this.i + 1] === "/") {
         const nl = this.src.indexOf("\n", this.i);
         this.i = nl === -1 ? this.src.length : nl + 1;
@@ -424,26 +283,18 @@ class Tokenizer {
         continue;
       }
       const start = this.i;
-      // Strings — double or single quoted. Backslash escapes are preserved
-      // literally (the subset doesn't need them); the closing quote is the
-      // next unescaped matching quote.
       if (ch === '"' || ch === "'") {
         this.readString(ch, start);
         continue;
       }
-      // Numbers — digits, or `.`-leading fractional. A leading `-` is
-      // emitted as a DASH token so the parser can negate a NUMBER in the
-      // literal position (the tokenizer never looks that far ahead).
       if (isDigit(ch) || (ch === "." && isDigit(this.src[this.i + 1]!))) {
         this.readNumber(start);
         continue;
       }
-      // Identifiers / keywords — [A-Za-z_][A-Za-z0-9_]*
       if (isIdentStart(ch)) {
         this.readWord(start);
         continue;
       }
-      // Punctuation & operators — maximal munch.
       const two = this.src.slice(this.i, this.i + 2);
       const three = this.src.slice(this.i, this.i + 3);
       if (three === "-->") {
@@ -550,9 +401,6 @@ class Tokenizer {
     while (j < this.src.length) {
       const c = this.src[j]!;
       if (c === "\\") {
-        // Preserve the escape sequence verbatim — the subset doesn't
-        // interpret \n / \t / \" / \\; it stores and matches the raw two
-        // characters. This is documented and tested.
         chars.push(c);
         chars.push(this.src[j + 1] ?? "");
         j += 2;
@@ -577,7 +425,6 @@ class Tokenizer {
       j += 1;
       while (j < this.src.length && isDigit(this.src[j]!)) j += 1;
     }
-    // Exponent (e.g. 1e3). Rare in property filters but cheap to accept.
     if (this.src[j] === "e" || this.src[j] === "E") {
       j += 1;
       if (this.src[j] === "+" || this.src[j] === "-") j += 1;
@@ -612,7 +459,6 @@ function isIdentPart(c: string): boolean {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Parser.
 // ──────────────────────────────────────────────────────────────────────────
 
 class Parser {
@@ -624,9 +470,6 @@ class Parser {
   }
 
   parse(): CypherAst {
-    // Cypher queries in the subset MUST start with MATCH. Any other
-    // leading token — including a write clause like CREATE — is rejected
-    // here with the supported-grammar hint.
     this.expectKeyword("match");
     const match = this.parseMatch();
 
@@ -643,7 +486,6 @@ class Parser {
       limit = this.parseNonNegativeInt("LIMIT");
     }
 
-    // Anything after LIMIT (other than EOF) is outside the subset.
     const tok = this.peek();
     if (tok.type !== "EOF") {
       throw this.unsupportedAfter(tok);
@@ -653,12 +495,10 @@ class Parser {
     return { match, where, return: returnItems, limit };
   }
 
-  // ── MATCH / pattern ────────────────────────────────────────────────────
 
   private parseMatch(): MatchClause {
     const nodes: NodePattern[] = [this.parseNode()];
     const rels: RelPattern[] = [];
-    // A pattern continues while the next token begins a relationship.
     while (this.startsWithRelationship()) {
       const rel = this.parseRelationship();
       nodes.push(this.parseNode());
@@ -669,9 +509,6 @@ class Parser {
 
   private startsWithRelationship(): boolean {
     const t = this.peek();
-    // A relationship starts with a left-side dash run: `<-` (ARROW_L),
-    // `--` (DASHDASH), or `-` (DASH). A bare `<` (LT) is NOT a valid
-    // relationship start — incoming uses `<-`, tokenized as ARROW_L.
     return (
       t.type === "ARROW_L" ||
       t.type === "DASHDASH" ||
@@ -696,7 +533,6 @@ class Parser {
     const properties: Array<{ key: string; value: CypherScalar }> = [];
     if (this.peek().type === "LBRACE") {
       this.advance();
-      // Empty `{}` is allowed.
       if (this.peek().type !== "RBRACE") {
         properties.push(this.parseProp());
         while (this.peek().type === "COMMA") {
@@ -717,16 +553,8 @@ class Parser {
     return { key: keyTok.text, value };
   }
 
-  /**
-   * Parse `<leftDash> [bracket] <rightDash>`. Direction is resolved from
-   * the two dash runs: `-[...]->` outgoing, `<-[...]-` incoming,
-   * `-[...]-` / `--[...]--` both. The bracket is required.
-   */
   private parseRelationship(): RelPattern {
     const leftDir = this.consumeLeftDashRun();
-    // The bracket `[...]` is REQUIRED in the subset — bare `-->` without
-    // a bracket is rejected because the grammar documents the bracketed
-    // form and we want one shape to test.
     if (this.peek().type !== "LBRACK") {
       throw parseError(
         this.peek().pos,
@@ -777,14 +605,6 @@ class Parser {
   }
 
   private parseRange(): { min: number; max: number } {
-    // Forms accepted:
-    //   N        → exactly N (min=max=N)
-    //   N..M     → min=N, max=M
-    //   ..M      → min=1, max=M  (default min)
-    // Forms REJECTED:
-    //   (empty)  → bare `*` — unbounded → unsupported_clause
-    //   N..      → unbounded max → unsupported_clause
-    //   ..       → unbounded max → unsupported_clause
     const tok = this.peek();
     const hasLower = tok.type === "NUMBER";
     let min = 1;
@@ -796,7 +616,6 @@ class Parser {
     }
     if (this.peek().type === "DOTDOT") {
       this.advance();
-      // After `..`, a NUMBER is required (we don't accept unbounded max).
       if (this.peek().type === "NUMBER") {
         max = this.parseNonNegativeInt("the maximum hop count");
       } else {
@@ -807,7 +626,6 @@ class Parser {
         );
       }
     } else if (!hasLower) {
-      // Bare `*` with nothing after it.
       throw parseError(
         tok.pos,
         "Unbounded variable-length `*` is not supported. Specify a range, e.g. `*1..3` or `*2`. The read subset rejects unbounded traversal.",
@@ -820,13 +638,7 @@ class Parser {
     return { min, max };
   }
 
-  // ── dash-run consumption ───────────────────────────────────────────────
 
-  /**
-   * Left-side dash-run result. `"incoming"` = `<-` arrow; `"dash"` = bare
-   * `-`/`--` (direction-neutral — the OTHER side's arrow wins, or undirected
-   * if neither side has an arrow); `"none"` = nothing present.
-   */
   private consumeLeftDashRun(): "incoming" | "dash" | "none" {
     const t = this.peek();
     if (t.type === "ARROW_L") {
@@ -840,10 +652,6 @@ class Parser {
     return "none";
   }
 
-  /**
-   * Right-side dash-run result. `"outgoing"` = `->`/`-->` arrow; `"dash"`
-   * = bare `-`/`--` (direction-neutral); `"none"` = nothing present.
-   */
   private consumeRightDashRun(): "outgoing" | "dash" | "none" {
     const t = this.peek();
     if (t.type === "ARROW_R") {
@@ -857,10 +665,8 @@ class Parser {
     return "none";
   }
 
-  // ── WHERE ──────────────────────────────────────────────────────────────
 
   private parseWhere(): WhereClause {
-    // Flat OR-of-AND: split on OR, each side is AND-joined terms.
     const orGroups: WhereTerm[][] = [];
     orGroups.push(this.parseAndGroup());
     while (this.consumeKeyword("or")) {
@@ -924,10 +730,8 @@ class Parser {
     }
   }
 
-  // ── RETURN ─────────────────────────────────────────────────────────────
 
   private parseReturn(): ReturnItem[] {
-    // Reject `RETURN *` explicitly — it's outside the subset.
     if (this.peek().type === "STAR") {
       throw parseError(
         this.peek().pos,
@@ -941,7 +745,6 @@ class Parser {
       items.push(this.parseReturnItem());
     }
     if (items.length === 0) {
-      // parseReturnItem always produces one; defensive.
       throw parseError(this.peek().pos, "RETURN requires at least one item.");
     }
     return items;
@@ -966,7 +769,6 @@ class Parser {
     return { kind: "var", varName: varTok.text };
   }
 
-  // ── numeric helpers ────────────────────────────────────────────────────
 
   private parseNonNegativeInt(label: string): number {
     const tok = this.peek();
@@ -984,11 +786,9 @@ class Parser {
     throw parseError(tok.pos, `Expected a non-negative integer for ${label}.`);
   }
 
-  // ── literals ───────────────────────────────────────────────────────────
 
   private parseLiteral(): CypherScalar {
     const tok = this.peek();
-    // Optional leading `-` for negative numbers.
     let negate = false;
     if (tok.type === "DASH") {
       negate = true;
@@ -1029,9 +829,6 @@ class Parser {
         this.advance();
         return null;
       }
-      // Any other WORD here is a bare identifier where a literal was
-      // expected — almost certainly a typo or an unsupported construct.
-      // If it's a write/outside keyword, surface that message.
       const outside = WRITE_OR_OUTSIDE_CLAUSES[t.text.toLowerCase()];
       if (outside) {
         throw parseError(t.pos, outside);
@@ -1043,19 +840,16 @@ class Parser {
     );
   }
 
-  // ── AST validation ─────────────────────────────────────────────────────
 
   private validateAst(
     match: MatchClause,
     where: WhereClause | undefined,
     returnItems: ReturnItem[],
   ): void {
-    // Collect bound variable names (anonymous nodes contribute nothing).
     const bound = new Set<string>();
     for (const n of match.nodes) {
       if (n.varName) bound.add(n.varName);
     }
-    // Validate labels.
     for (const n of match.nodes) {
       if (n.label !== undefined && !(n.label in CYPHER_LABEL_TO_DB_LABEL)) {
         throw parseError(
@@ -1066,7 +860,6 @@ class Parser {
         );
       }
     }
-    // Validate WHERE variable references.
     if (where) {
       for (const group of where.orGroups) {
         for (const term of group) {
@@ -1080,7 +873,6 @@ class Parser {
         }
       }
     }
-    // Validate RETURN variable references.
     for (const item of returnItems) {
       if (!bound.has(item.varName)) {
         throw parseError(
@@ -1092,7 +884,6 @@ class Parser {
     }
   }
 
-  // ── token helpers ──────────────────────────────────────────────────────
 
   private peek(): Token {
     return this.tokens[this.i]!;
@@ -1120,7 +911,6 @@ class Parser {
     if (t.type === "WORD" && t.text.toLowerCase() === kw) {
       return this.advance();
     }
-    // Helpful: if it's a write/outside clause, lead with that message.
     if (t.type === "WORD") {
       const outside = WRITE_OR_OUTSIDE_CLAUSES[t.text.toLowerCase()];
       if (outside) {
@@ -1164,11 +954,6 @@ function resolveDirection(
   left: "incoming" | "dash" | "none",
   right: "outgoing" | "dash" | "none",
 ): RelDirection {
-  // Arrows on each side carry direction; bare dashes are direction-neutral.
-  //   -[...]->  : left="dash",  right="outgoing" → outgoing
-  //   <-[...]-  : left="incoming", right="dash"   → incoming
-  //   -[...]-   : left="dash",  right="dash"      → both (undirected)
-  //   <-[...]-> : left="incoming", right="outgoing" → conflict (reject)
   const leftArrow = left === "incoming";
   const rightArrow = right === "outgoing";
   if (leftArrow && rightArrow) {
@@ -1183,7 +968,6 @@ function resolveDirection(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Errors.
 // ──────────────────────────────────────────────────────────────────────────
 
 class CypherParseError extends Error {
@@ -1222,7 +1006,6 @@ function describeToken(t: Token): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Public parse API.
 // ──────────────────────────────────────────────────────────────────────────
 
 export type CypherParseResult =
@@ -1272,10 +1055,8 @@ export function parseCypher(query: string): CypherParseResult {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Executor — compiles the AST to searchGraph / traverse calls.
 // ──────────────────────────────────────────────────────────────────────────
 
-/** Property-access aliases — both camelCase and snake_case work. */
 const PROP_ALIASES: Record<string, keyof CypherNodeValue> = {
   name: "name",
   qualifiedname: "qualifiedName",
@@ -1312,13 +1093,6 @@ function readProperty(node: CypherNodeValue, key: string): CypherScalar {
 }
 
 function compareValues(a: CypherScalar, op: Comparison["op"], b: CypherScalar): boolean {
-  // Type-coercion rules (deliberately simple, documented):
-  //   - number op number → numeric compare
-  //   - string op string → lexical compare
-  //   - bool op bool → for = / <> only
-  //   - null involved → false for ordering ops; =/<> follow SQL three-valued
-  //     logic (null = anything → unknown → false here; null <> anything → false)
-  //   - mixed types for ordering → false (no coercion)
   if (a === null || b === null) {
     if (op === "=" || op === "<>" || op === "!=") {
       // SQL: NULL = x and NULL <> x are both UNKNOWN → false.
@@ -1330,7 +1104,6 @@ function compareValues(a: CypherScalar, op: Comparison["op"], b: CypherScalar): 
   if (op === "<>" || op === "!=") return a !== b;
   if (typeof a !== typeof b) return false;
   if (typeof a === "boolean") {
-    // Booleans only support = / <> (handled above).
     return false;
   }
   if (op === ">") return (a as number | string) > (b as number | string);
@@ -1340,46 +1113,17 @@ function compareValues(a: CypherScalar, op: Comparison["op"], b: CypherScalar): 
   return false;
 }
 
-/**
- * A binding tracks both the named variables (for WHERE / RETURN) AND the
- * most-recently-resolved node by position (`lastNode`). The positional
- * cursor is what makes anonymous nodes work: `MATCH ()-[:CALLS]->(b)`
- * starts from every node (anonymous first node) and traverses forward,
- * and `MATCH (a)-[:CALLS]->()-[:CALLS]->(c)` flows through the anonymous
- * middle node without dropping the path (cursor Bugbot: 'Anonymous nodes
- * break path expansion').
- */
 interface Binding {
   varByName: Map<string, CypherNodeValue>;
   lastNode: CypherNodeValue;
 }
 
-/**
- * Push ONE `name` / `filePath` equality filter down to the structured
- * `searchGraph` filters so the candidate set is narrowed by the index
- * BEFORE the 1000-row cap applies. A specific name like `"runServer"`
- * narrows from the whole graph to a handful of rows, so a low-degree
- * node with an exact name match is no longer truncated out (cursor
- * Bugbot: 'Start search truncates before filters').
- *
- * Only LITERAL values are pushed: a `%`/`_` in the value would act as a
- * LIKE wildcard under searchGraph's `LIKE ... COLLATE NOCASE`, ballooning
- * the candidate set (e.g. `"foo_bar"` matching `fooXbar`). Such values
- * fall back to the capped label scan + exact post-filter instead
- * (chatgpt-codex-connector: 'Escape LIKE wildcards before start-node
- * pushdown'). The first writer wins (inline properties take priority
- * over a WHERE term) so two constraints on the same field don't clobber
- * each other. The post-filter ({@link matchesNodePattern} /
- * {@link matchesWhere}) always enforces exact case-sensitive equality,
- * so this narrowing never loses a valid row.
- */
 function pushFilterToSearch(
   query: { namePattern?: string; filePattern?: string },
   key: string,
   value: CypherScalar,
 ): void {
   if (typeof value !== "string") return;
-  // Skip LIKE metacharacters so the pushed pattern stays literal-exact.
   if (value.includes("%") || value.includes("_")) return;
   const k = key.toLowerCase();
   if (k === "name" && query.namePattern === undefined) {
@@ -1397,17 +1141,6 @@ function pushFilterToSearch(
  * hold an AST (e.g. a cached plan) can skip re-parsing.
  */
 export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
-  // 1. Resolve the FIRST node pattern via searchGraph. The label + any
-  //    inline `name`/`filePath` property filters are pushed down so the
-  //    candidate set is narrowed by the index before the 1000-row cap;
-  //    a supported first-variable WHERE equality term (`f.name = "x"`) is
-  //    pushed down too when WHERE is a single conjunction (no top-level
-  //    OR), so `MATCH (f) WHERE f.name = "rare"` is narrowed before the
-  //    cap rather than after (chatgpt-codex-connector: 'Push down first-
-  //    node WHERE filters before capping'). Remaining inline properties +
-  //    the full WHERE are applied as JS post-filters. A closed store
-  //    surfaces as `{ ok: false, code: "store_closed" }` from searchGraph
-  //    itself (we don't reach into the private `closed` flag).
   const firstNode = ast.match.nodes[0]!;
   const searchQuery: {
     label?: string;
@@ -1421,10 +1154,6 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
   for (const { key, value } of firstNode.properties) {
     pushFilterToSearch(searchQuery, key, value);
   }
-  // Single OR-group ⇒ pure conjunction ⇒ every term is a necessary
-  // condition, so pushing a first-var `=` term down only narrows. With OR
-  // (multiple groups) we push nothing — a term true on one branch is not
-  // necessary overall, and pushing it would drop the other branch's rows.
   if (ast.where && ast.where.orGroups.length === 1 && firstNode.varName) {
     for (const term of ast.where.orGroups[0]!) {
       if (term.varName === firstNode.varName && term.op === "=") {
@@ -1446,24 +1175,12 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
       return { varByName, lastNode: node };
     });
 
-  // OR-across every variable-length expansion: any traversePaths cap hit
-  // makes the final result a partial endpoint set (issue #1650).
   let truncated = false;
 
-  // 2. Walk the remaining (rel, node) pairs, expanding each binding via
-  //    traverse. The traverse start is the binding's POSITIONAL lastNode,
-  //    not a named variable — so anonymous nodes anywhere in the path
-  //    still pass the cursor forward.
   for (let idx = 0; idx < ast.match.rels.length; idx += 1) {
     const rel = ast.match.rels[idx]!;
     const nodePattern = ast.match.nodes[idx + 1]!;
     const nextBindings: Binding[] = [];
-    // Surface an oversized variable-length depth as a query-level failure
-    // instead of letting the store cap silently drop results: the store
-    // rejects maxHops > MAX_TRAVERSE_PATHS_HOPS, but this loop's invalid_query
-    // skip would otherwise hide it and return an empty success
-    // (cursor Bugbot: 'Hop cap yields silent drops'; chatgpt-codex-
-    // connector P2: 'Propagate oversized variable-length').
     if (rel.isVarLength && rel.maxHops > MAX_TRAVERSE_PATHS_HOPS) {
       const range =
         rel.minHops === rel.maxHops
@@ -1476,21 +1193,12 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
       };
     }
     for (const binding of bindings) {
-      // Collect candidate endpoint nodes for THIS binding + rel.
       const candidates: CypherNodeValue[] = [];
       if (rel.isVarLength) {
-        // Variable-length (`*M..N` / `*N`) compiles to the path-enumerating
-        // primitive (issue #1650) so an exact `*N` honors concrete length-N
-        // paths, not just BFS shortest-depth reachability. A node reachable
-        // at both a shorter and a length-N path is now returned for the
-        // length-N path, fixing the dropped-endpoint bug.
         const tp = store.traversePaths({
           start: binding.lastNode.nodeId,
           direction: rel.direction,
           ...(rel.types.length > 0 ? { edgeTypes: rel.types } : {}),
-          // Push minHops into the store so its maxPaths cap counts only
-          // in-range paths, not the shorter prefixes an exact *N must walk
-          // (cursor Bugbot: 'Path cap ignores hop minimum').
           minHops: Math.max(1, rel.minHops),
           maxHops: rel.maxHops,
         });
@@ -1507,10 +1215,6 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
           }
           return storeFailureToCypher(tp);
         }
-        // Path enumeration may have stopped at the maxPaths cap -- surface
-        // that so callers can detect an incomplete result instead of
-        // silently omitting reachable nodes (cursor Bugbot: 'Ignores path
-        // enumeration truncation').
         if (tp.truncated) truncated = true;
         // A `*0..N` bound includes the trivial length-0 path (the start
         // node itself) -- traversePaths only yields length >= 1 paths.
@@ -1521,8 +1225,6 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
           candidates.push(nodeToValue(hit));
         }
       } else {
-        // Fixed-length single hop (no `*`): BFS traverse is exact for
-        // direct neighbors -- the original compile target, unchanged.
         const t = store.traverse({
           start: binding.lastNode.nodeId,
           direction: rel.direction,
@@ -1546,11 +1248,6 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
           candidates.push(nodeToValue(hit));
         }
       }
-      // Shared: dedupe by node id (one binding per distinct endpoint),
-      // apply the target node pattern, then bind. Deduping by node id
-      // preserves the read-subset's reachability contract for `*1..N`
-      // (one row per reachable node), even though var-length now
-      // enumerates paths internally (issue #1650).
       const seen = new Set<string>();
       for (const node of candidates) {
         if (seen.has(node.nodeId)) continue;
@@ -1572,17 +1269,14 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
     if (bindings.length === 0) break;
   }
 
-  // 3. Apply WHERE (resolves variables by name — anonymous nodes have none).
   if (ast.where) {
     bindings = bindings.filter((b) => matchesWhere(b.varByName, ast.where!));
   }
 
-  // 4. Apply LIMIT.
   if (ast.limit !== undefined) {
     bindings = bindings.slice(0, ast.limit);
   }
 
-  // 5. Project RETURN (resolves variables by name).
   const columns = ast.return.map((item) =>
     item.kind === "var" ? item.varName : `${item.varName}.${item.key}`,
   );
@@ -1607,13 +1301,6 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
 }
 
 function matchesNodePattern(node: CypherNodeValue, pattern: NodePattern): boolean {
-  // Enforce the parsed `:Label`. The FIRST node's label is already pushed
-  // into searchGraph's `label` filter, so this is a no-op for it; for
-  // relationship TARGET nodes this is the only place the parsed label is
-  // enforced (cursor Bugbot: 'Relationship node labels not enforced' —
-  // without this, `MATCH (a:Function)-[:CALLS]->(b:Type)` returned
-  // Function nodes for `b`). `pattern.label` is validated at parse time,
-  // so the mapped db label always exists when set.
   if (pattern.label !== undefined) {
     const dbLabel = CYPHER_LABEL_TO_DB_LABEL[pattern.label];
     if (dbLabel !== undefined && node.label !== dbLabel) return false;
@@ -1629,7 +1316,6 @@ function matchesWhere(
   varByName: Map<string, CypherNodeValue>,
   where: WhereClause,
 ): boolean {
-  // OR-of-AND.
   return where.orGroups.some((group) =>
     group.every((term) => {
       const node = varByName.get(term.varName);
@@ -1644,8 +1330,6 @@ function storeFailureToCypher(f: {
   ok: false;
   code: string;
 }): CypherFailure {
-  // Map store failure codes to Cypher failure codes (1:1 for the shared
-  // suffix; store_closed is checked up-front in executeAst).
   switch (f.code) {
     case "db_locked":
       return { ok: false, code: "db_locked", message: "Database is locked." };
@@ -1663,7 +1347,6 @@ function storeFailureToCypher(f: {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Public execute API.
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -1681,7 +1364,6 @@ export function executeCypher(store: GraphStore, query: string): CypherResult {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Exports for tests / type narrowing.
 // ──────────────────────────────────────────────────────────────────────────
 
 export {

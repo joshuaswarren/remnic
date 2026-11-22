@@ -1,9 +1,3 @@
-/**
- * Question file format (issue #1946 extraction from storage.ts so the
- * surface file stays under its structural ceiling). Pure text parsing —
- * no filesystem, no caches; StorageManager delegates through so the
- * selfDeps consumers (MemoryReadStore) keep their seam unchanged.
- */
 import path from "node:path";
 
 export interface ParsedQuestionFile {

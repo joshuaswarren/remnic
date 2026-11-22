@@ -14,11 +14,6 @@ export interface StartupDiscovery<T> {
   complete: boolean;
 }
 
-/**
- * Bound any startup discovery that must not hold a readiness gate forever.
- * Discovery APIs such as the namespace catalog do not accept an AbortSignal,
- * so a late result is deliberately ignored after the configured fallback wins.
- */
 export async function startupDiscoveryWithTimeout<T>(
   discover: () => Promise<T>,
   configuredFallback: T,
@@ -49,12 +44,6 @@ export async function startupDiscoveryWithTimeout<T>(
   }
 }
 
-/**
- * Bound the complete startup collection-check batch, not just each individual
- * check. This preserves service availability when a backend ignores an abort
- * signal or a check promise never settles: startup continues with fail-open
- * `unknown` states and the normal background retry path can repair search.
- */
 export async function qmdStartupCollectionChecksWithTimeout(
   checks: readonly Promise<QmdStartupCollectionCheckResult>[],
   namespaces: readonly string[],

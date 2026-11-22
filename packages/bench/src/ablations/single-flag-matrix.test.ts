@@ -35,9 +35,6 @@ test("every cell carries the required metadata for an artifact note + STATUS log
 });
 
 test("each cell flips exactly one primary flag (the single-flag invariant)", () => {
-  // The contradiction-scan cell sets a nested object; the other two set a
-  // single boolean. The invariant under test is that the PRIMARY toggle is
-  // unique per cell and matches `primaryFlag`.
   for (const cell of SINGLE_FLAG_ABLATION_MATRIX) {
     const overrides = cell.configOverrides;
     if (cell.primaryFlag === "recallMemoryWorthFilterEnabled") {
@@ -52,8 +49,6 @@ test("each cell flips exactly one primary flag (the single-flag invariant)", () 
         `${cell.id}: memory-worth cell must touch only recallMemoryWorthFilterEnabled`
       );
     } else if (cell.primaryFlag === "contradictionDetectionEnabled") {
-      // The contradiction axis is the INLINE write-path gate, not the cron
-      // (the cron never fires during a bench replay — see matrix doc).
       assert.equal(
         overrides.contradictionDetectionEnabled,
         true,
@@ -106,12 +101,6 @@ test("getAblationCell throws on unknown id (fail fast at the runner boundary)", 
 });
 
 test("each cell's override actually changes the merged config vs the bench baseline (non-no-op)", () => {
-  // The real correctness guarantee: flipping the cell's flag must produce a
-  // DIFFERENT effective config than the baseline alone — otherwise the
-  // ablation measures nothing. The bench baseline omits most ablation keys
-  // (so the cell flips from the config.ts default) but explicitly pins
-  // contradictionDetectionEnabled=false; either way the cell's value must
-  // differ from the baseline value for the primary flag.
   const baseline = buildBenchBaselineRemnicConfig();
   for (const cell of SINGLE_FLAG_ABLATION_MATRIX) {
     const cellValue = cell.configOverrides[cell.primaryFlag];
@@ -124,11 +113,6 @@ test("each cell's override actually changes the merged config vs the bench basel
 });
 
 test("each cell's override differs from the config.ts parsed default (catches silent default drift)", () => {
-  // The bench baseline may omit a key (so the cell flips from the config.ts
-  // default) or pin it explicitly. But if someone changes a config.ts default
-  // to match a cell's override, the cell becomes a no-op while the bench-baseline
-  // test above still passes. This test catches that drift by comparing against
-  // the actual parsed config defaults (PR #1751 cursor review).
   const defaults = parseConfig({});
   for (const cell of SINGLE_FLAG_ABLATION_MATRIX) {
     const cellValue = cell.configOverrides[cell.primaryFlag] as boolean;
@@ -141,10 +125,6 @@ test("each cell's override differs from the config.ts parsed default (catches si
   }
 });
 test("each cell's configOverrides win over the baseline when merged (override semantics)", () => {
-  // The runner merges `{ ...resolved.adapterOptions.configOverrides, ...cell.configOverrides }`.
-  // Since the baseline omits these keys, the merged result carries exactly the
-  // cell's value — proving the override lands and is not clobbered by a stale
-  // baseline setting.
   const baseline = buildBenchBaselineRemnicConfig();
   for (const cell of SINGLE_FLAG_ABLATION_MATRIX) {
     const merged = { ...baseline, ...cell.configOverrides };

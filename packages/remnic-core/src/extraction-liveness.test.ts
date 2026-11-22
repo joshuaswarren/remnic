@@ -41,7 +41,6 @@ function bufferFor(state: BufferState): SmartBuffer {
   );
 }
 
-// ── parseExtractionLivenessConfig ────────────────────────────────────────────
 
 test("parseExtractionLivenessConfig: defaults enabled=true, staleWindowMs=24h", () => {
   assert.deepEqual(parseExtractionLivenessConfig({}), {
@@ -63,8 +62,6 @@ test("parseExtractionLivenessConfig: honors a valid integer staleWindowMs (numbe
 });
 
 test("parseExtractionLivenessConfig: rejects fractional/non-positive/non-numeric staleWindowMs (§1/§17/§39)", () => {
-  // Fractional values must be REJECTED, not floored: "0.5"→0 would make every
-  // backlog instantly stale and 1.9→1 is a silent reinterpretation.
   for (const bad of ["0.5", 1.9, 0, -5, "abc"]) {
     assert.throws(
       () => parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: bad } }),
@@ -75,8 +72,6 @@ test("parseExtractionLivenessConfig: rejects fractional/non-positive/non-numeric
 });
 
 test("parseExtractionLivenessConfig: rejects an explicit null staleWindowMs; only an absent key defaults (round 9 finding 1 parity)", () => {
-  // An explicit `null` is invalid input, not "use the default" — mirrors
-  // config.ts parseIntegerInClosedRange. Only an absent key (undefined) defaults.
   assert.throws(
     () => parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: null } }),
     /staleWindowMs must be an integer greater than or equal to 1/,
@@ -92,7 +87,6 @@ test("parseExtractionLivenessConfig: rejects a non-object block", () => {
   assert.throws(() => parseExtractionLivenessConfig({ extractionLiveness: [] }), /must be a plain object/);
 });
 
-// ── evaluateExtractionLiveness: degraded matrix ──────────────────────────────
 
 const ENABLED = { enabled: true, staleWindowMs: WINDOW };
 const ancient = new Date(NOW - 10 * WINDOW).toISOString();
@@ -180,11 +174,9 @@ test("evaluate: an unreadable buffer degrades with a distinct reason, even with 
   assert.match(status.degradedReason ?? "", /unreadable/);
   assert.match(status.degradedReason ?? "", /ENOENT: buffer\.json missing/);
 
-  // Distinct from a genuinely empty buffer: same fresh watermark, no read failure → healthy.
   const empty = evaluateExtractionLiveness({ config: ENABLED, lastExtractionAt: fresh, snapshot: snapshot(), nowMs: NOW });
   assert.equal(empty.degraded, false, "an empty buffer with a fresh watermark stays healthy");
 
-  // The master gate still suppresses degradation when the feature is disabled.
   const disabled = evaluateExtractionLiveness({
     config: { enabled: false, staleWindowMs: WINDOW },
     lastExtractionAt: fresh,
@@ -231,7 +223,6 @@ test("evaluate: an unreadable watermark degrades with a distinct reason, even wi
   assert.match(status.degradedReason ?? "", /watermark unreadable/);
   assert.match(status.degradedReason ?? "", /EIO: meta\.json unreadable/);
 
-  // The three fault classes carry distinct reasons (meta-read vs buffer-read vs never-extracted).
   const bufferFail = evaluateExtractionLiveness({
     config: ENABLED,
     lastExtractionAt: new Date(NOW).toISOString(),
@@ -248,7 +239,6 @@ test("evaluate: an unreadable watermark degrades with a distinct reason, even wi
   });
   assert.match(neverExtracted.degradedReason ?? "", /no successful extraction on record/);
 
-  // A meta-read failure takes precedence over staleness when both would degrade.
   const metaOverStale = evaluateExtractionLiveness({
     config: ENABLED,
     lastExtractionAt: null,
@@ -260,7 +250,6 @@ test("evaluate: an unreadable watermark degrades with a distinct reason, even wi
   assert.match(metaOverStale.degradedReason ?? "", /watermark unreadable/);
 });
 
-// ── SmartBuffer.getBufferSnapshot ────────────────────────────────────────────
 
 test("getBufferSnapshot: empty buffer reports zeros and a null oldest", async () => {
   const snap = await bufferFor({ turns: [], lastExtractionAt: null, extractionCount: 0 }).getBufferSnapshot();
@@ -345,7 +334,6 @@ test("evaluate: emits only the aggregate watermark scope", () => {
   assert.equal(status.watermarkScope, "aggregate");
 });
 
-// ── ExtractionLivenessWarnThrottle ───────────────────────────────────────────
 
 test("throttle: warns once per staleness window and again after it elapses; resets on recovery", () => {
   const degraded: ExtractionLivenessStatus = {
@@ -381,7 +369,6 @@ test("summarizeExtractionLiveness: fails closed for legacy root-store-only stora
   assert.ok(doctorCheck.summary.includes("aggregate watermark unavailable"));
 });
 
-// ── renderExtractionLivenessStats ────────────────────────────────────────────
 
 test("renderExtractionLivenessStats: emits watermark, backlog, and a degraded verdict", async () => {
   let rootReads = 0;
@@ -466,7 +453,6 @@ test("renderExtractionLivenessStats: reports DEGRADED + unavailable counts when 
       },
     },
     buffer: {
-      // Empty buffer: proves a meta-read failure degrades even with nothing buffered.
       getBufferSnapshot: async (): Promise<ExtractionBufferSnapshot> => ({
         bufferedSessionCount: 0,
         pendingTurnCount: 0,
@@ -496,21 +482,16 @@ test("resolveExtractionLivenessConfig: absent or partial block defaults to enabl
     "explicit enabled honored; missing window defaults",
   );
   assert.deepEqual(resolveExtractionLivenessConfig({ staleWindowMs: 5000 }), { enabled: true, staleWindowMs: 5000 });
-  // A present-but-invalid window (0/fractional) falls back rather than making every backlog instantly stale.
   assert.equal(resolveExtractionLivenessConfig({ staleWindowMs: 0 }).staleWindowMs, 86_400_000);
   assert.equal(resolveExtractionLivenessConfig({ staleWindowMs: 1.9 }).staleWindowMs, 86_400_000);
   assert.equal(resolveExtractionLivenessConfig({ staleWindowMs: "5000" }).staleWindowMs, 5000, 'numeric string "5000" parses');
   assert.equal(resolveExtractionLivenessConfig({ staleWindowMs: "0.5" }).staleWindowMs, 86_400_000, "fractional string falls back");
-  // enabled is coerced like parseExtractionLivenessConfig: string opt-outs read as falsy (#2155 review).
   assert.equal(resolveExtractionLivenessConfig({ enabled: "false" }).enabled, false, 'string "false" disables');
   assert.equal(resolveExtractionLivenessConfig({ enabled: "0" }).enabled, false, 'string "0" disables');
   assert.equal(resolveExtractionLivenessConfig({ enabled: "true" }).enabled, true, 'string "true" enables');
 });
 
 test("summarizeExtractionLiveness: no throw when the extractionLiveness block is absent or partial (host/legacy config)", async () => {
-  // A PluginConfig built directly (host adapter / older persisted config) can omit
-  // the block or leave it partial; every liveness surface must return a sane status
-  // rather than crash (#2155 review).
   for (const config of [{}, { extractionLiveness: {} }, { extractionLiveness: { enabled: true } }]) {
     const check = await summarizeExtractionLiveness(
       config as never,
@@ -522,7 +503,6 @@ test("summarizeExtractionLiveness: no throw when the extractionLiveness block is
   }
 });
 
-// ── evaluateExtractionLiveness: claimed drain backlog (#3442) ────────────────
 
 const freshTs = new Date(NOW).toISOString();
 const emptySnap = snapshot();

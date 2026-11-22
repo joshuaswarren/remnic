@@ -1,12 +1,3 @@
-/**
- * Regression: shared-item authority envelope wiring (issue #1957, control 1).
- *
- * Exercises the REAL manager write/read paths end to end:
- * writeAgentOutput stamps `sharedBy`/`authority` (+ optional `expiresAt`/
- * `supersedes`) frontmatter; cross-signals and daily curation resolve and
- * surface them. Least privilege holds everywhere: a missing, unrecognized,
- * or un-flagged binding authority denies — it never elevates.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -36,7 +27,6 @@ test("authority envelope round-trips write -> cross-signals -> curation", async 
   const { manager, dir } = await makeManager();
   t.after(() => rm(dir, { recursive: true, force: true }));
 
-  // Within the write TTL policy (issue #2920): strictly future, ≤10 years.
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
   const fp = await manager.writeAgentOutput({
     agentId: "agent-alpha",
@@ -69,7 +59,6 @@ test("missing or unrecognized authority denies — never elevates", async (t) =>
   const { manager, dir } = await makeManager();
   t.after(() => rm(dir, { recursive: true, force: true }));
 
-  // Unrecognized authority at write time is rejected, not reinterpreted.
   await assert.rejects(
     manager.writeAgentOutput({
       agentId: "agent-alpha",
@@ -80,7 +69,6 @@ test("missing or unrecognized authority denies — never elevates", async (t) =>
     /authority must be informational, advisory, or binding/,
   );
 
-  // Legacy item with no envelope resolves least-privileged on read.
   const date = today();
   const legacyDir = path.join(dir, "agent-outputs", "agent-legacy", date);
   await mkdir(legacyDir, { recursive: true });
@@ -97,7 +85,6 @@ test("missing or unrecognized authority denies — never elevates", async (t) =>
   assert.equal(legacy.authority, "informational");
   assert.equal(legacy.sharedBy, "agent-legacy");
 
-  // A stored unrecognized authority value also denies on read.
   const bogusPath = path.join(legacyDir, "120100-bogus.md");
   await writeFile(
     bogusPath,
@@ -113,7 +100,6 @@ test("binding authority requires the config opt-in at write and on read", async 
   const gated = await makeManager();
   t.after(() => rm(gated.dir, { recursive: true, force: true }));
 
-  // Default config: a binding request is denied at the write boundary.
   await assert.rejects(
     gated.manager.writeAgentOutput({
       agentId: "agent-alpha",
@@ -124,7 +110,6 @@ test("binding authority requires the config opt-in at write and on read", async 
     /requires an explicit binding flag/,
   );
 
-  // Stored binding without the flag downgrades to advisory on read.
   const date = today();
   const bindingDir = path.join(gated.dir, "agent-outputs", "agent-alpha", date);
   await mkdir(bindingDir, { recursive: true });
@@ -138,7 +123,6 @@ test("binding authority requires the config opt-in at write and on read", async 
   const stored = gatedSignals.report.sources.find((s) => s.path === bindingPath);
   assert.equal(stored?.authority, "advisory", "un-flagged stored binding must downgrade");
 
-  // Opt-in config: binding writes succeed and resolve as binding on read.
   const open = await makeManager({ sharedContextAllowBindingAuthority: true });
   t.after(() => rm(open.dir, { recursive: true, force: true }));
   const fp = await open.manager.writeAgentOutput({
@@ -155,9 +139,6 @@ test("binding authority requires the config opt-in at write and on read", async 
 });
 
 test("a whitespace-padded stored authority stays informational even with binding enabled", async (t) => {
-  // Regression (issue #1957 review): the stored token is validated EXACTLY.
-  // Trimming first would let `" binding "` resolve as binding when the opt-in
-  // is on, and as advisory when it is off — both above informational.
   const date = today();
   for (const allowBinding of [false, true]) {
     const { manager, dir } = await makeManager({ sharedContextAllowBindingAuthority: allowBinding });
@@ -179,8 +160,6 @@ test("a whitespace-padded stored authority stays informational even with binding
     );
   }
 
-  // The same exactness holds at the write boundary: padded is rejected, not
-  // normalized into a privileged class.
   const open = await makeManager({ sharedContextAllowBindingAuthority: true });
   t.after(() => rm(open.dir, { recursive: true, force: true }));
   await assert.rejects(

@@ -1,36 +1,4 @@
 #!/usr/bin/env node
-/**
- * Validate-before-write state helper for pr-loop watchers (issue #2781).
- *
- * Watchers derive state-file fields from `gh` reads. When GitHub answers a
- * read with a RATE_LIMIT error body, that body can leak into a field and the
- * written `.pr-loop/pr-<n>-state.json` stops parsing as JSON — every later
- * state read then fails. This module validates each gh-derived field against
- * its expected shape BEFORE any write:
- *
- * - a rate-limited read writes an explicit `terminal: "RATE_LIMITED"` record
- *   (valid JSON, `ready: false`) instead of the error body;
- * - any other malformed read refuses to overwrite the last good state;
- * - `terminal: "MERGE_READY"` is never taken from the caller: it is computed
- *   from the validated fields, and `--terminal MERGE_READY` while a blocking
- *   field remains is rejected, because the supervisor stops on that exact
- *   value. Terminal values describing conditions (RATE_LIMITED etc.) may
- *   still be supplied, but only from the explicit TERMINAL_STATES allow-list;
- *   a typo like `--terminal MERGE_RAEDY` is rejected instead of persisted,
- *   because consumers match these exact strings and a malformed record can
- *   keep polling alive indefinitely;
- * - the PR number must be a complete positive integer within
- *   Number.MAX_SAFE_INTEGER, so `--pr abc` or `12junk` is rejected instead
- *   of parsed into null / a prefix number, and an all-digit argument like
- *   99999999999999999999 is rejected instead of serializing with precision
- *   loss that attributes state to the wrong PR;
- * - writes go to a sibling temp file renamed over the destination, so a
- *   crash mid-write leaves the previous valid state intact.
- *
- * A RATE_LIMITED record is recoverable: the next healthy iteration overwrites
- * it. The supervisor stop-grep only matches MERGE_READY, so a rate-limited
- * watcher keeps looping and heals itself once the window resets.
- */
 
 import { realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -223,7 +191,6 @@ export function writePrLoopState({
   return { wrote: false, reason: validation.reason };
 }
 
-/** Write to a sibling temp file, then rename over the destination. */
 function writeStateAtomically(stateFile, record) {
   const tmpFile = `${stateFile}.${process.pid}.tmp`;
   try {

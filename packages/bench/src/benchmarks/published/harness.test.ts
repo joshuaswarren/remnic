@@ -39,11 +39,6 @@ function attributionWitnessFromTask(task: unknown): unknown {
 }
 
 
-/**
- * Fake system under test that records every call into a deterministic
- * log. Recall always returns a synthesized string containing the session
- * ID + the question so tests can verify session routing.
- */
 function makeFakeSystem(opts?: {
   recallPrefix?: string;
   searchHits?: number;
@@ -510,7 +505,6 @@ test("runPublishedHarness postAnswerHook runs between answer and judge", async (
 
   assert.deepEqual(order, ["respond", "hook", "judge"]);
   assert.equal(result.results.tasks[0]?.scores.search_hits, 4);
-  // Search call happened on the live system during the hook.
   assert.ok(calls.some((call) => call.kind === "search"));
 });
 
@@ -1212,8 +1206,6 @@ test("runPublishedHarness is deterministic across repeated runs with same seed",
   const a = await run();
   const b = await run();
 
-  // `id` and `timestamp` are non-deterministic by design (UUID +
-  // wall-clock). Every other field must be identical.
   assert.equal(a.meta.seeds[0], b.meta.seeds[0]);
   assert.equal(a.meta.mode, b.meta.mode);
   assert.equal(a.meta.benchmark, b.meta.benchmark);
@@ -1292,7 +1284,6 @@ test("runPublishedHarness skips LLM judge when llm_judge is not in metrics spec"
   assert.equal(judgeInvocations, 0, "judge should not be invoked");
   const task = result.results.tasks[0]!;
   assert.ok(!("llm_judge" in task.scores));
-  // Judge latency/tokens should NOT be folded into cost totals.
   assert.equal(result.cost.inputTokens, 1); // responder only
   assert.equal(result.cost.outputTokens, 2); // responder only
   assert.ok(!calls.some((call) => call.kind === "judge"), "no judge call should have been made");

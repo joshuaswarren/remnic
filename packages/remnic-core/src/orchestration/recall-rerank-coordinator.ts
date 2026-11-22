@@ -1,19 +1,3 @@
-/**
- * Recall rerank coordinator — extracted from the orchestrator (issue #1526).
- *
- * Owns the post-retrieval result-ranking subsystem: Memory-Worth reranking,
- * TrustScore scoring + quarantine, reasoning-trace boost, and MMR
- * diversification/limiting. Behavior-preserving move from orchestrator.ts —
- * no logic changes; the orchestrator constructs one instance and keeps thin
- * delegating methods so existing call sites (recallInternal,
- * applyColdFallbackPipeline) continue to work.
- *
- * Config, storage, and the QMD-result memory reader are accessed through
- * getter callbacks (not captured at construction) so that post-construction
- * reassignment of the orchestrator's live fields is honored. This mirrors
- * the ConversationIndexCoordinator / TierMigrationCoordinator accessor
- * pattern.
- */
 
 import { resolveCapabilities, type CapabilitySet } from "../capabilities.js";
 import type { PluginConfig, QmdSearchResult, MemoryFile } from "../types.js";
@@ -75,13 +59,6 @@ export class RecallRerankCoordinator {
     preferredNamespace?: string,
   ) => Promise<MemoryFile | null>;
 
-  // Per-namespace corpus-fallback caches (issue #1905). Keyed on the shared
-  // cross-process memory-corpus version rather than a wall-clock TTL: the old
-  // 30s TTL was SHORTER than recall p50 (~30.5s) so every steady-state recall
-  // was a guaranteed miss + full-corpus scan. The corpus version bumps on every
-  // memory mutation (StorageManager.getMemoryCorpusVersion / patchHotMemoriesCache),
-  // including mw_success/mw_fail counter writes, so a version match means the
-  // derived map is still current and can be served; a mismatch re-derives.
   private readonly memoryWorthCounterCache = new Map<
     string,
     { version: number; counters: ReadonlyMap<string, MemoryWorthCounters> }
@@ -92,22 +69,10 @@ export class RecallRerankCoordinator {
     { version: number; cachedAt: number; signals: ReadonlyMap<string, TrustSignals> }
   >();
 
-  /**
-   * Cap on distinct namespaces retained in the corpus-fallback caches. Each
-   * entry holds a derived per-namespace map; on high-cardinality namespace
-   * workloads an unbounded map would grow without limit (#1905, Cursor). Map
-   * preserves insertion order, so overflow evicts the oldest namespace.
-   */
   private static readonly CORPUS_FALLBACK_CACHE_MAX_NAMESPACES = 64;
 
-  // Trust-signal age bound (TRUST_SIGNAL_CACHE_MAX_AGE_MS) lives in
-  // trust-score-stage.ts — that module owns the signal cache's read/write and
-  // the TTL check (signals bake `now` into their values). This coordinator only
-  // owns the memory-worth counter cache, whose values are raw (no `now`), so it
-  // is version-keyed only.
 
 
-  /** Insert-ordered bounded set: evict the oldest namespace on overflow. */
   private static capCache<K, V>(cache: Map<K, V>, max: number): void {
     while (cache.size > max) {
       const oldest = cache.keys().next().value;
@@ -139,30 +104,15 @@ export class RecallRerankCoordinator {
     // backward-compatible. When present, counters are seeded from it directly
     // and the O(corpus) `readAllMemories` scan is skipped for warm candidates.
     preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
-    // Cooperative cancellation (issue #1905, Codex); additive + last.
     abortSignal?: AbortSignal,
   ): Promise<QmdSearchResult[]> {
     const config = this.getConfig();
     const counters = new Map<string, MemoryWorthCounters>();
-    // Paths examined via preloaded frontmatter (issue #1905, Codex). A candidate
-    // whose frontmatter is present but has no mw_success/mw_fail is a NEUTRAL
-    // prior — it must NOT be treated as "missing", otherwise the corpus scan +
-    // direct-read fallback fire for every uninstrumented hot-QMD candidate and
-    // the O(candidates) fast path is defeated. Track preloaded paths separately
-    // from counters and exclude them from every fallback.
     const preloadedPaths = new Set<string>();
 
-    // O(candidates) fast path (issue #1905): seed counters directly from
-    // frontmatter already loaded on the hot path. The
-    // `mw_success === undefined && mw_fail === undefined` guard matches
-    // `buildMemoryWorthCounterMap` exactly so a candidate with no counters is a
-    // neutral prior, identical to the corpus scan.
     if (preloadedFrontmatter) {
       for (const r of results) {
         const key = memoryMapKey(r);
-        // Composite (namespace, path) key is authoritative — it can never hit a
-        // wrong-namespace entry. The bare-path fallback keeps path-keyed callers
-        // working and is inert in production (loaded maps are composite-keyed).
         const mem = preloadedFrontmatter.get(key) ?? preloadedFrontmatter.get(r.path);
         if (!mem) continue;
         preloadedPaths.add(key);
@@ -176,11 +126,6 @@ export class RecallRerankCoordinator {
       }
     }
 
-    // Corpus-level fallback (config-gated): candidates still missing from the
-    // preloaded map probe a per-namespace counter map. The map is cached and
-    // invalidated by the shared cross-process corpus version (not a wall-clock
-    // TTL), so it actually hits in steady state. Only the candidate rows are
-    // copied out — never the whole ~99K-entry map (issue #1905).
     if (config.recallTrustStageCorpusFallbackEnabled) {
       const seenNamespaces = new Set<string>();
       for (const ns of namespaces) {
@@ -207,13 +152,8 @@ export class RecallRerankCoordinator {
             );
           }
           for (const r of results) {
-            // Skip candidates already satisfied by a counter OR already examined
-            // via preloaded frontmatter (neutral prior — no corpus lookup needed).
             const key = memoryMapKey(r);
             if (counters.has(key) || preloadedPaths.has(key)) continue;
-            // A namespaced result belongs to exactly one namespace: never seed
-            // its counters from a different namespace's corpus map, or two
-            // same-path results in different namespaces collapse (#2020).
             if (r.namespace !== undefined && r.namespace !== ns) continue;
             const c = nsMap.get(r.path);
             if (c) counters.set(key, c);
@@ -227,17 +167,10 @@ export class RecallRerankCoordinator {
       }
     }
 
-    // For candidates still absent (cold-tier / archive, or corpus fallback
-    // disabled), try a direct per-path read. Bounded-parallel (≤16) to match
-    // loadSearchResultMemoryMap's batch size (issue #1905). Errors are swallowed
-    // so a single unreadable archive entry can't break the whole recall.
     const missing = results.filter(
       (r) => !counters.has(memoryMapKey(r)) && !preloadedPaths.has(memoryMapKey(r)),
     );
     if (missing.length > 0) {
-      // Use the first-seen namespace's storage as the reader — all
-      // StorageManagers share the same on-disk format, and readMemoryByPath
-      // takes an absolute path so the baseDir doesn't have to match.
       let reader: StorageManager | null = null;
       for (const ns of namespaces) {
         try {
@@ -251,7 +184,6 @@ export class RecallRerankCoordinator {
         const readerNn = reader;
         const BATCH = 16;
         for (let off = 0; off < missing.length; off += BATCH) {
-          // Cooperative cancellation between batches (#1905, Codex).
           if (abortSignal?.aborted) break;
           await Promise.all(
             missing.slice(off, off + BATCH).map(async (r) => {
@@ -282,25 +214,10 @@ export class RecallRerankCoordinator {
       }
     }
 
-    // If no memory in the candidate set has any counter data, the filter
-    // would be a no-op — skip the reorder to avoid spurious log spam.
     if (counters.size === 0) return results;
 
-    // Preserve upstream ordering (reranker, specialized tiers, etc.) for
-    // neutral candidates. The upstream stages set `memoryResults` in their
-    // intended order but often leave `r.score` as the raw QMD score. If we
-    // sorted by `r.score * multiplier` directly, neutral candidates
-    // (multiplier 1.0) would snap back to raw-QMD order and silently undo
-    // the reranker. Feed the filter a synthetic monotone-decreasing rank
-    // score so it uses input position as the baseline, then applies the
-    // multiplier on top. Ties fall back to the stable secondary key in
-    // `applyMemoryWorthFilter`.
     const rankedInputs = results.map((r, i) => ({
-      // Composite (namespace, path) identity so same-path results in different
-      // namespaces stay distinct through the filter and reconstruction (#2020).
       path: memoryMapKey(r),
-      // Large positive rank score so multiplier math stays well-scaled and
-      // we never hit zero; descending so earlier items rank higher.
       score: results.length - i,
     }));
     const filtered = applyMemoryWorthFilter(rankedInputs, {
@@ -312,14 +229,6 @@ export class RecallRerankCoordinator {
           : undefined,
     });
 
-    // Reconstruct the QmdSearchResult list in the new order. `.score` is
-    // preserved from the upstream pipeline (rerank, tier scoring, etc.) —
-    // we only reorder. Writing the synthetic rank-weighted score back
-    // would contaminate downstream logic (telemetry, confidence gates)
-    // that expects the original QMD/rerank score semantics.
-    // Divide rank × multiplier by pool size: a positive scaling preserves
-    // MMR's normalized relevance while keeping additive boosts meaningful.
-    // Neutral stages leave upstream metadata untouched.
     const adjusted = filtered.some((item) => item.multiplier !== 1);
     const byPath = new Map(results.map((r) => [memoryMapKey(r), r]));
     const reordered: QmdSearchResult[] = [];
@@ -367,15 +276,10 @@ export class RecallRerankCoordinator {
       config.recallMemoryWorthHalfLifeMs > 0
         ? config.recallMemoryWorthHalfLifeMs / (24 * 60 * 60 * 1000)
         : undefined;
-    // Cold-tier direct-fallback reader: resolve once, reuse for every missing
-    // candidate (mirrors the memory-worth filter's reader selection).
     let fallbackReader: StorageManager | null = null;
     const signals = await buildTrustSignalsForRerank(
       results.map((r) => ({
         path: r.path,
-        // Signals are keyed by the SAME composite key the trust stage looks up
-        // (trustResultKey), and preloaded frontmatter by memoryMapKey, so
-        // same-path results in different namespaces stay distinct (#2020).
         signalKey: trustResultKey(r),
         lookupKey: memoryMapKey(r),
         namespace: r.namespace,
@@ -403,9 +307,6 @@ export class RecallRerankCoordinator {
           );
           return memory ? memory.frontmatter : null;
         },
-        // Corpus version bumps on every memory mutation (including mw counter
-        // writes) — keys the per-namespace signal cache so it invalidates on
-        // the next write instead of a wall-clock TTL (issue #1905).
         getNamespaceVersion: async (ns) => (await this.getStorage(ns)).getMemoryCorpusVersion(),
       },
       { cache: this.trustSignalCache },
@@ -421,7 +322,6 @@ export class RecallRerankCoordinator {
     if (signals.size === 0) {
       return { results, trustByPath: null };
     }
-    // Synthetic monotone-decreasing rank so the multiplier rebias is applied
     const rankedInputs = results.map((r, i) => ({
       path: r.path,
       key: trustResultKey(r),
@@ -451,10 +351,7 @@ export class RecallRerankCoordinator {
       if (bucket) bucket.push(result);
       else byKey.set(key, [result]);
     }
-    // Same rule as the Memory Worth stage. Quarantined items keep multiplier
-    // 1, so they never make the stage look adjusted.
     const adjusted = stage.admitted.some((item) => item.multiplier !== 1);
-    // Excluded rows must not compress relevance against MMR's diversity term.
     const relevanceScale = stage.admitted.reduce((max, item) => Math.max(max, item.score), 0) || 1;
     const admitted: QmdSearchResult[] = [];
     for (const item of stage.admitted) {
@@ -496,9 +393,6 @@ export class RecallRerankCoordinator {
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
   }> {
-    // The trust stage and the Memory Worth multiplier are mutually exclusive
-    // (rule 39); the preference-drift stage runs AFTER whichever one applied,
-    // on every branch, so its gate is uniform across recall paths (§27).
     let staged = results;
     let trustByPath: Map<string, TrustStageResultItem> | null = null;
     if (caps.recallTrustScore && results.length > 0) {
@@ -570,10 +464,6 @@ export class RecallRerankCoordinator {
         }
       }
 
-      // Branches without a preloaded map (embedding fallback) read the
-      // candidates directly. Bounded-parallel at the same batch size the
-      // Memory Worth stage uses, and only for the handful of candidates the
-      // branch actually returned — never a corpus scan.
       if (missing.length > 0) {
         let reader: StorageManager | null = null;
         for (const ns of namespaces) {
@@ -606,8 +496,6 @@ export class RecallRerankCoordinator {
         }
       }
 
-      // Preserve upstream effective relevance when available; otherwise use
-      // normalized input position, not stale raw retrieval scores.
       const ranked = results.map((r, i) => ({
         key: memoryMapKey(r),
         rank: typeof r.effectiveScore === "number" && Number.isFinite(r.effectiveScore)
@@ -619,8 +507,6 @@ export class RecallRerankCoordinator {
         now: new Date(),
       });
 
-      // Compose damping into the upstream scale. Annotation-only runs
-      // leave upstream relevance untouched.
       const adjusted = ordered.some((item) => item.multiplier !== 1);
       const byKey = new Map(results.map((r) => [memoryMapKey(r), r]));
       const rankByKey = new Map(ranked.map((r) => [r.key, r.rank]));
@@ -628,9 +514,6 @@ export class RecallRerankCoordinator {
       for (const item of ordered) {
         const original = byKey.get(item.key);
         if (!original) continue;
-        // `driftNote` is copied onto a NEW result object — never mutated in
-        // place — so a shared upstream result can't leak an annotation into an
-        // unrelated branch. The copy keeps the upstream effective relevance.
         const annotated: QmdSearchResult = item.note
           ? { ...original, driftNote: item.note }
           : original;
@@ -668,8 +551,6 @@ export class RecallRerankCoordinator {
       typeof limit === "number" && Number.isFinite(limit)
         ? Math.max(0, Math.floor(limit))
         : 0;
-    // #2859: reconcile pairs before the user cap/MMR so orphan removal
-    // happens pre-truncation, never post-cap.
     const candidates =
       stateViewActive === true && Array.isArray(results)
         ? reconcileStateViewPairs(results)
@@ -697,7 +578,6 @@ export class RecallRerankCoordinator {
         return appliedCache;
       }
       const ordered = resolveOrderedPool();
-      // #2859: the cap counts complete evidence packets, not rows.
       appliedCache =
         stateViewActive === true ? capStateViewPackets(ordered, safeLimit) : ordered.slice(0, safeLimit);
       return appliedCache;
@@ -756,11 +636,6 @@ export class RecallRerankCoordinator {
     if (!caps.recallMmr) return results;
     if (!Array.isArray(results) || results.length < 2) return results;
 
-    // Config is runtime API (see AGENTS.md §4): preserve `0` as a true zero
-    // limit rather than coercing it to a non-zero value. A configured topN of
-    // 0 means "apply MMR over an empty window" — i.e. skip the reorder and
-    // return the upstream candidates unchanged. This keeps read-time
-    // behavior symmetric with the write-time semantics parseConfig exposes.
     const config = this.getConfig();
     const configuredTopN = config.recallMmrTopN;
     const topN =
@@ -770,9 +645,6 @@ export class RecallRerankCoordinator {
     if (topN === 0) return results;
     const lambda = config.recallMmrLambda ?? 0.7;
 
-    // Delegate to the pure helper so candidate keying (path-first, index
-    // suffixed for uniqueness) and the head-of-list diversity metric are
-    // exercised by the same code path that the unit tests cover.
     const { reordered, diversity } = reorderRecallResultsWithMmr(results, {
       lambda,
       topN,

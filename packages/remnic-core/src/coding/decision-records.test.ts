@@ -1,15 +1,3 @@
-/**
- * Tests for `decision-records` — the pure track-A storage contract.
- *
- * Issue #1548 Track A PR 1: decision-record data shape, parse/serialize,
- * validation, and the supersede mutation. Storage format is markdown +
- * YAML frontmatter under the coding namespace; this file exercises the
- * pure module so wiring into orchestrator persist (PR 2) is a thin
- * registration, not a behaviour change.
- *
- * Pure module under test — no filesystem, no orchestrator. Tests assert
- * the contract, not the current implementation detail.
- */
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -26,8 +14,6 @@ import {
   serializeDecisionRecord,
 } from "./decision-records.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Fixture factories
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeInput(overrides: Partial<DecisionRecordInput> = {}): DecisionRecordInput {
@@ -58,7 +44,6 @@ function mkRec(id: string, status: DecisionRecord["status"]): DecisionRecord {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Round-trip parse/serialize
 // ──────────────────────────────────────────────────────────────────────────
 
 test("serializeDecisionRecord: produces byte-identical output for the same record", () => {
@@ -128,7 +113,6 @@ test("serializeDecisionRecord: empty entityRefs list is preserved", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Validation
 // ──────────────────────────────────────────────────────────────────────────
 
 test("parseDecisionRecord: invalid status rejects with the valid set in the error", () => {
@@ -151,8 +135,6 @@ test("parseDecisionRecord: invalid status rejects with the valid set in the erro
 });
 
 test("parseDecisionRecord: missing/undefined status defaults to 'proposed' (least-privileged)", () => {
-  // Status omitted; every other required field supplied so the parser's
-  // contract test for the status default is isolated.
   const fm = [
     'id: "ADR-0007"',
     'title: "Draft with no declared status yet"',
@@ -189,7 +171,6 @@ test("isDecisionStatus: narrows raw strings to DecisionStatus; rejects booleans/
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Supersede
 // ──────────────────────────────────────────────────────────────────────────
 
 test("applySupersede: writes the new record BEFORE mutating the old one", () => {
@@ -238,10 +219,6 @@ test("applySupersede: throws when the replaced record is missing", () => {
 
 
 test("applySupersede: throws when the replacement id collides with an unrelated existing record (chatgpt-codex review)", () => {
-  // chatgpt-codex-connector review (PR #1590): an operator typo or MCP
-  // rename that supplies a replacement.id already present in the record
-  // set must not silently overwrite that unrelated decision. The collision
-  // path MUST throw — the caller picks a fresh id and retries.
   const records: DecisionRecord[] = [
     {
       id: "ADR-0001",
@@ -278,10 +255,6 @@ test("applySupersede: throws when the replacement id collides with an unrelated 
 });
 
 test("applySupersede: allows same-id replacement (in-place body swap)", () => {
-  // The one collision we intentionally allow: replacement.id === targetId.
-  // This is the in-place body-swap path — the entry stays in its position
-  // in the listing and the new record carries the supersede edge back to
-  // the OLD body that was replaced.
   const records: DecisionRecord[] = [
     {
       id: "ADR-0001",
@@ -309,10 +282,6 @@ test("applySupersede: allows same-id replacement (in-place body swap)", () => {
 });
 
 test("applySupersede result round-trips through serialize/parse (issue #1548 review)", () => {
-  // The classic on-disk shape after supersede: the old record carries
-  // `status: "superseded"` and no `supersedes` field (the edge lives on
-  // the replacement). The parser MUST accept both shapes — only the
-  // listing filter excludes superseded records, not the parser.
   const initial: DecisionRecord[] = [
     {
       id: "ADR-0001",
@@ -334,12 +303,6 @@ test("applySupersede result round-trips through serialize/parse (issue #1548 rev
     entityRefs: [],
   };
   const next = applySupersede(initial, "ADR-0001", replacement);
-  // Round-trip the whole set through serialize + parse. Comparing the
-  // status-presence and id/path fields rather than `deepEqual` because
-  // `supersedes: undefined` differs from "key absent" under strict
-  // equality (deepEqual) even though the data is the same — the surface
-  // contract is "each record must parse without throwing", not byte
-  // identity.
   for (const record of next) {
     const serialized = serializeDecisionRecord(record);
     const reparsed = parseDecisionRecord(serialized);
@@ -348,7 +311,6 @@ test("applySupersede result round-trips through serialize/parse (issue #1548 rev
     assert.equal(reparsed.title, record.title);
   }
 
-  // Spot-check the canonical shape invariants on the superseded record.
   const a = next.find((r) => r.id === "ADR-0001");
   if (!a) throw new Error("ADR-0001 missing after applySupersede (test invariant violated)");
   assert.equal(a.status, "superseded");
@@ -356,11 +318,6 @@ test("applySupersede result round-trips through serialize/parse (issue #1548 rev
 });
 
 test("parseDecisionRecord: accepts status 'superseded' without a supersedes field", () => {
-  // Round-trip a record produced by applySupersede — the on-disk shape
-  // for a superseded record has no supersedes field (the edge is on the
-  // *replacement*). The parser is permissive (rule 51: only the four
-  // declared enum values are valid; field presence is the listing filter's
-  // concern).
   const serialized = serializeDecisionRecord({
     id: "ADR-0001",
     title: "Old guidance",
@@ -376,10 +333,6 @@ test("parseDecisionRecord: accepts status 'superseded' without a supersedes fiel
 });
 
 test("serializeDecisionRecord: round-trips entityRefs containing backslashes and quotes", () => {
-  // Cursor review-round bug d16b2a18: `parseFlowList` used to not honour
-  // backslash escapes inside quoted elements, so any ref containing a `"`
-  // would close its own element early and merge with the next ref. The
-  // serializer must escape such refs and the parser must decode them.
   for (const refs of [
     ["plain"],
     ["with\"quote"],
@@ -399,7 +352,6 @@ test("serializeDecisionRecord: round-trips entityRefs containing backslashes and
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Listing
 // ──────────────────────────────────────────────────────────────────────────
 
 test("ACTIVE_DECISION_STATUSES: explicit set covers proposed + accepted only", () => {
@@ -422,7 +374,6 @@ test("listActive: empty input returns empty array (no null/undefined leaking)", 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Determinism contract (rule 23 — hash rawContent, not timestamped rendering)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("serializeDecisionRecord: body changes change the byte output (so dedup hashes can detect them)", () => {

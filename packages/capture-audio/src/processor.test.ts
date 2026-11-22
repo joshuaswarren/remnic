@@ -178,7 +178,6 @@ test("silent chunks after speech finalize the conversation once the gap elapses"
   }
 });
 
-// Seconds-granularity UTC timestamp on the fixtures' capture day.
 const t = (s: number): string => `2026-07-24T00:00:${String(s).padStart(2, "0")}.000Z`;
 
 const finalSegments = (spool: Spool) =>
@@ -254,7 +253,6 @@ test("diarization: same-voice segments share one non-self cluster and are not th
     assert.equal(segs[0].speakerKey, segs[1].speakerKey, "one synthetic voice -> one cluster (no fragmentation)");
     assert.notEqual(segs[0].speakerKey, "self");
     assert.equal(segs[0].isWearer, false, "a guest voice on the mic is NOT the wearer");
-    // Only the guest cluster is captured here, so per-append persistence stores
     // it; `self` durability is enrollment's job (it seeds the clusterer + spool).
     const clusters = spool.readSpeakerClusters();
     assert.ok(
@@ -1045,7 +1043,6 @@ test("a pre-commit failure also rewinds restart-recovery state", async () => {
       { text: "after restart", startUtc: t(3), endUtc: t(4) },
     ] };
 
-    // ONE processor for both attempts: a fresh instance would resume from its
     // own untouched flags, which would let the test pass even if the rollback
     // never restored them.
     const proc = createChunkProcessor(withinGap);
@@ -1120,7 +1117,6 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
     const ev = chunk({ path: "/tmp/raw/shrink.wav" });
     const cid = chunkStableId(ev);
     const cleaned: string[] = [];
-    // Named, not indexed: `noUncheckedIndexedAccess` makes `two[0]` optional,
     // which breaks contextual typing of the deps object it is passed through.
     const segmentA: TranscribedSegment = { text: "A", startUtc: t(1), endUtc: t(2) };
     const segmentB: TranscribedSegment = { text: "B", startUtc: t(40), endUtc: t(41) };
@@ -1174,7 +1170,6 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
       false,
       "a shorter transcript never completes the chunk",
     );
-    // `assert.deepEqual` is an assertion signature, so comparing against `[]`
     // would narrow `cleaned` to `never[]` for the rest of the test.
     assert.equal(cleaned.length, 0, "and its raw audio is retained for another replay");
 
@@ -1325,7 +1320,6 @@ test("a manifest failure holds the whole ready window, not just one chunk", asyn
       deps(guarded, {
         reorderWindowMs: 0,
         onError: () => undefined,
-        // Distinct, non-overlapping spans: cross-channel dedup must not be
         // what makes this assertion pass.
         transcribe: async (input) =>
           input.wavPath.endsWith("a.wav")
@@ -1396,7 +1390,6 @@ test("a silent chunk completes and reclaims its audio", async () => {
     const ev = chunk();
     const proc = createChunkProcessor(
       deps(spool, {
-        // Speech first, then silence, on ONE processor: the silent chunk must
         // not hold the conversation the speech chunk opened.
         transcribe: async (input) =>
           input.wavPath.endsWith("speech.wav") ? [{ text: "hello", startUtc: t(1), endUtc: t(2) }] : [],
@@ -1526,7 +1519,6 @@ test("a gap-crossing chunk cannot close a conversation held for replay", async (
       segments: [{ channel: "mic", text: "A", startUtc: t(1), endUtc: t(2), isWearer: true }],
     });
 
-    // The silent replay and a much later healthy chunk release in ONE batch.
     // A real instant hours later: `t()` only formats seconds, so a large value
     // would build an invalid ISO string and the chunk would fail before it
     // could join the batch, making this test vacuous.
@@ -1673,7 +1665,6 @@ test("a hold does not keep an unrelated conversation open", async () => {
     const proc = createChunkProcessor(
       deps(spool, {
         onError: () => undefined,
-        // A window wider than the span keeps both chunks for ONE batch, which
         // is where the pre-append snapshot matters.
         reorderWindowMs: 24 * 60 * 60 * 1000,
         // The retained chunk replays silently — so it reaches the completion

@@ -99,7 +99,6 @@ async function defaultWeekDone(memoryDir: string, weekId: string): Promise<boole
 }
 
 async function defaultMarkWeekDone(memoryDir: string, weekId: string): Promise<void> {
-  // Atomic: a partially written marker must never satisfy the skip check.
   await writeFileAtomically(compoundingWeeklyDoneMarkerPath(memoryDir, weekId), `${new Date().toISOString()}\n`);
 }
 

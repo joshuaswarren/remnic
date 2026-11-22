@@ -1,15 +1,3 @@
-/**
- * Service-binding tests for the recall-miss diagnosis (issue #3033).
- *
- * `recall-why.test.ts` covers the pure stage attribution. This file covers
- * the orchestrator binding: the namespace ACL gate, the expected-memory
- * lookup across readable namespaces, and — the reason the pipeline carries a
- * `degradationSink` at all — that a backend which fails MID-recall is
- * reported as `backend_unavailable` and never as an empty pipeline
- * (Review Prevention Checklist #22).
- *
- * All fixture data is synthetic.
- */
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -57,19 +45,15 @@ function emptySnapshot(query: string): RecallXraySnapshot {
 interface StubOptions {
   config: PluginConfig;
   memories?: MemoryFile[];
-  /** Degradations the stub pipeline pushes into the caller's sink. */
   degradations?: SearchDegradation[];
   qmdAvailable?: boolean;
-  /** Thrown by the stub recall, to exercise the fault path. */
   recallError?: Error;
 }
 
 interface Stub {
   orchestrator: Orchestrator;
-  /** Namespaces the expected-memory lookup actually read. */
   readNamespaces: string[];
   recallCalls: number;
-  /** True when the service handed the pipeline a degradation sink. */
   sinkSupplied: boolean;
 }
 
@@ -90,9 +74,6 @@ function makeStub(options: StubOptions): Stub {
     ) {
       stub.recallCalls += 1;
       stub.sinkSupplied = Array.isArray(invocation?.degradationSink);
-      // Stand in for the real pipeline: it fills the SAME array it was
-      // handed, which is exactly what `options.degradationSink ?? []` in
-      // recall-internal.ts makes possible.
       for (const degradation of options.degradations ?? []) {
         invocation?.degradationSink?.push(degradation);
       }
@@ -122,13 +103,11 @@ async function withConfig<T>(raw: Record<string, unknown>, run: (config: PluginC
 
 const identityResolver = { resolveNamespace: (namespace?: string) => namespace ?? "default" };
 
-// ─── backend failure is an outage, never an empty pipeline (#22) ───────────
 
 test("a degradation raised mid-recall reports backend_unavailable, not zero candidates", async () => {
   await withConfig({ qmdEnabled: true }, async (config) => {
     const stub = makeStub({
       config,
-      // The availability probe passes; the failure happens during the recall.
       qmdAvailable: true,
       degradations: [{ backend: "qmd", code: "daemon_timeout", detail: "no response in 5000ms" }],
     });
@@ -139,8 +118,6 @@ test("a degradation raised mid-recall reports backend_unavailable, not zero cand
     assert.equal(response.report?.failure?.reason, "backend_unavailable");
     assert.match(response.report?.failure?.detail ?? "", /qmd:daemon_timeout/);
     assert.match(response.report?.failure?.detail ?? "", /no response in 5000ms/);
-    // Only the retrieval stage is reported: no downstream stage ran, so none
-    // may claim it "considered 0".
     assert.deepEqual(
       response.report?.stages.map((s) => s.stage),
       ["retrieval"]
@@ -195,7 +172,6 @@ test("an honest empty recall stays ok:true", async () => {
   });
 });
 
-// ─── --expect resolution against the store ────────────────────────────────
 
 test("--expect resolves an exact id and reports the stage that dropped it", async () => {
   await withConfig({ qmdEnabled: true }, async (config) => {
@@ -240,7 +216,6 @@ test("an unmatched --expect says nothing matched rather than naming a stage fals
   });
 });
 
-// ─── namespace scope (rule 42 / checklist #30) ─────────────────────────────
 
 test("a namespace the principal cannot read is refused without running a recall", async () => {
   await withConfig(
@@ -276,9 +251,6 @@ test("the expected-memory lookup reads only the namespaces the recall is scoped 
     const stub = makeStub({ config, memories: [memoryFile({ id: "fact-kept-0001" })] });
     await runRecallWhy(
       { orchestrator: stub.orchestrator, ...identityResolver },
-      // `expect` deliberately matches NOTHING: an early exact-id hit would
-      // stop the scan after the first namespace and hide a widened scope,
-      // so the lookup is forced to exhaust every namespace it is given.
       { query: QUERY, namespace: "team-alpha", expect: "fact-absent-9999" }
     );
     assert.deepEqual(
@@ -289,7 +261,6 @@ test("the expected-memory lookup reads only the namespaces the recall is scoped 
   });
 });
 
-// ─── input validation (#1 / #45) ───────────────────────────────────────────
 
 test("an empty or whitespace-only query is rejected before namespace resolution", async () => {
   await withConfig({ qmdEnabled: true }, async (config) => {

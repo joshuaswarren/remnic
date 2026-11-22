@@ -1,21 +1,3 @@
-/**
- * Integration tests for the orchestrator's coding-namespace overlay surface
- * (issue #569 PR 2).
- *
- * These tests use `Object.create(Orchestrator.prototype)` to exercise the
- * overlay helpers in isolation — no storage, no extraction. The end-to-end
- * contract being verified:
- *
- *   1. A session without a coding context gets the default namespace.
- *   2. A session with a coding context + `codingMode.projectScope: true`
- *      gets a `project-<id>` overlay on both read and write paths.
- *   3. Disabling `codingMode.projectScope: false` exactly restores the
- *      default namespace (CLAUDE.md #30 escape hatch).
- *   4. Rule 42 invariant: read-path overlay and write-path overlay return
- *      the same namespace for the same session + context.
- *   5. Isolation: two sessions on different projects resolve to different
- *      namespaces — cross-project leakage cannot occur at the routing layer.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -24,13 +6,9 @@ import { Orchestrator } from "../orchestrator.js";
 import type { CodingContext, CodingModeConfig, PluginConfig } from "../types.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Minimal orchestrator stub
-// ──────────────────────────────────────────────────────────────────────────
 
 type OrchestratorLike = {
   config: PluginConfig;
-  // The private map on the real orchestrator — we mirror its name so the
-  // methods under test read from the same slot.
   _codingContextBySession: Map<string, CodingContext>;
   setCodingContextForSession: Orchestrator["setCodingContextForSession"];
   getCodingContextForSession: Orchestrator["getCodingContextForSession"];
@@ -43,7 +21,6 @@ type OrchestratorLike = {
 function makeOrchestrator(codingMode: Partial<CodingModeConfig> = {}): OrchestratorLike {
   const orch = Object.create(Orchestrator.prototype) as OrchestratorLike;
   orch._codingContextBySession = new Map<string, CodingContext>();
-  // Minimal PluginConfig — only the fields the overlay path reads.
   orch.config = {
     namespacesEnabled: true,
     defaultNamespace: "default",
@@ -71,7 +48,6 @@ function contextFor(projectId: string, branch: string | null = "main"): CodingCo
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Basic setters / getters
 // ──────────────────────────────────────────────────────────────────────────
 
 test("setCodingContextForSession: stores context; getCodingContextForSession returns it", () => {
@@ -100,7 +76,6 @@ test("setCodingContextForSession: empty sessionKey is a no-op (defensive)", () =
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Overlay on write path
 // ──────────────────────────────────────────────────────────────────────────
 
 test("applyCodingNamespaceOverlay: returns base unchanged when no context attached", () => {
@@ -111,9 +86,6 @@ test("applyCodingNamespaceOverlay: returns base unchanged when no context attach
 test("applyCodingNamespaceOverlay: combines base + project overlay when context is set and projectScope on", () => {
   const orch = makeOrchestrator();
   orch.setCodingContextForSession("session-A", contextFor("origin:abcdef12"));
-  // Rule 42 / principal isolation: overlay is COMBINED with the principal
-  // base, not a replacement. Two principals in the same repo thus get
-  // distinct namespaces (`alice-project-…` vs `bob-project-…`).
   assert.equal(
     orch.applyCodingNamespaceOverlay("session-A", "default"),
     "default-project-origin-abcdef12",
@@ -138,11 +110,6 @@ test("applyCodingNamespaceOverlay: different principals on same repo get isolate
 });
 
 test("applyCodingNamespaceOverlay: principal base namespace preserves case", () => {
-  // Regression: sanitizeFragment() was lowercasing the base, so two valid
-  // but case-differing principal identifiers (`Alice` vs `alice`) would
-  // collapse to the same combined namespace. The router accepts
-  // [A-Za-z0-9._-]{1,64}, so case is a legal discriminator and must not
-  // be dropped on the write / read paths.
   const orch = makeOrchestrator();
   orch.setCodingContextForSession("A-sess", contextFor("origin:deadbeef"));
   orch.setCodingContextForSession("a-sess", contextFor("origin:deadbeef"));
@@ -168,10 +135,6 @@ test("applyCodingNamespaceOverlay: projectScope=false returns base unchanged (es
 });
 
 test("applyCodingNamespaceOverlay: namespacesEnabled=false returns base unchanged", () => {
-  // When namespacesEnabled is off the storage router maps every namespace
-  // to the same directory — a `project-*` overlay would create apparent
-  // route separation with no actual isolation. In that mode, coding mode
-  // degrades to unscoped behavior.
   const orch = makeOrchestrator();
   (orch.config as unknown as { namespacesEnabled: boolean }).namespacesEnabled = false;
   orch.setCodingContextForSession("session-A", contextFor("origin:abcdef12"));
@@ -182,7 +145,6 @@ test("applyCodingNamespaceOverlay: namespacesEnabled=false returns base unchange
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Overlay on read path
 // ──────────────────────────────────────────────────────────────────────────
 
 test("applyCodingRecallOverlay: no context → null (caller uses its existing namespaces)", () => {
@@ -211,14 +173,9 @@ test("applyCodingRecallOverlay: namespacesEnabled=false → null", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Rule 42 — read path and write path resolve consistently
 // ──────────────────────────────────────────────────────────────────────────
 
 test("CLAUDE.md #42: read and write paths resolve the same namespace for the same principal + session", () => {
-  // With the principal-scoped combine, the write-path namespace is
-  // `<principal>-project-<id>` and the read-path self namespace is the
-  // combine of the same principal base with the overlay. Both must be
-  // identical for the same (sessionKey, baseNamespace) pair.
   const orch = makeOrchestrator();
   orch.setCodingContextForSession("session-A", contextFor("origin:deadbeef"));
 
@@ -226,14 +183,10 @@ test("CLAUDE.md #42: read and write paths resolve the same namespace for the sam
   const writeNs = orch.applyCodingNamespaceOverlay("session-A", base);
   const recallOverlay = orch.applyCodingRecallOverlay("session-A");
   assert.ok(recallOverlay);
-  // The read path callers also perform the combine; here we verify the
-  // equivalence contract: a raw overlay + base combined on the read path
-  // must match the write-path namespace.
   assert.equal(writeNs, `${base}-${recallOverlay!.namespace}`);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Isolation invariant — two projects, two namespaces
 // ──────────────────────────────────────────────────────────────────────────
 
 test("two sessions on different projects resolve to different namespaces (no cross-project leakage)", () => {

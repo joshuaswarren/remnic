@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 // `remnic import-lossless-claw` runner. Wraps the pure parser
 // (./import-lossless-claw-args.ts) with I/O: opening the source DB, opening
 // the destination LCM DB, and printing the summary.
@@ -26,12 +25,6 @@ export { parseImportLosslessClawArgs };
 export type { ImportLosslessClawCmdArgs };
 export type { ImportLosslessClawModule } from "./optional-import-lossless-claw.js";
 
-/**
- * Reject file paths used as directory args (CLAUDE.md gotcha #24), but
- * permit non-existent directories — `ensureLcmStateDir` creates them with
- * `recursive: true` during a real run, and `--dry-run` does not need the
- * directory to exist at all.
- */
 function assertDirectoryOrAbsent(p: string, label: string): void {
   if (fs.existsSync(p) && !fs.statSync(p).isDirectory()) {
     throw new Error(`${label} is not a directory: ${p}`);
@@ -77,7 +70,6 @@ export async function cmdImportLosslessClaw(
 
   try {
     assertFile(parsed.src, "--src");
-    // CLI flag inputs go through expandTilde at parse time. When the
     // memory-dir flag is absent, the resolver can still return raw
     // `~/...` paths from env/config; expand here too so we don't end
     // up reading/creating a literal `~/...` directory (CLAUDE.md
@@ -97,7 +89,6 @@ export async function cmdImportLosslessClaw(
       throw err;
     }
 
-    // Dry-run must not mutate destination storage (Codex P2). The dest
     // resolution rules are:
     //   * existing on-disk lcm.sqlite       → open read-only so dedup
     //                                          counts reflect reality

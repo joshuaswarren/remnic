@@ -87,9 +87,6 @@ export async function preflightLocalLabRole(
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_PREFLIGHT_TIMEOUT_MS;
   const endpoint = discoveryEndpointFor(input.provider, input.baseUrl);
-  // Always create an internal controller with the timeout timer, even when a
-  // caller signal is supplied. Without this, a caller-provided signal
-  // disables the documented per-request timeout entirely (codex review, #1573 PR2).
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("preflight timeout")), timeoutMs);
   if (options.signal) {

@@ -1,9 +1,3 @@
-/**
- * Default on-disk memory sink: `suggest` mode writes review-queue
- * files under `<stateDir>/suggestions/`, `store` mode writes directly
- * under `<stateDir>/records/`. Hosts with a live Remnic daemon pass
- * their own XMemorySink instead.
- */
 
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -17,7 +11,6 @@ export interface FileSinkOptions {
   mode: "suggest" | "store";
 }
 
-/** On-disk sink honoring the memoryMode trust gate by directory. */
 export function createFileSink(options: FileSinkOptions): XMemorySink {
   const root = path.join(expandTildePath(options.stateDir), options.mode === "store" ? "records" : "suggestions");
   const write = async (suggestion: XMemorySuggestion): Promise<void> => {

@@ -384,10 +384,6 @@ test("FTS5 migration: old-schema nodes_fts (content=nodes, no contentless_delete
       "post-migration: nodes_fts CREATE must include contentless_delete=1",
     );
 
-    // The FTS index was rebuilt from surviving nodes — both terms are
-    // searchable and map back via fts_index. (Note: SQLite returns the
-    // rowid as a JS number which loses precision at int64 magnitude, so
-    // we assert via the fts_index reverse map, not raw rowid equality.)
     const ftsHits = expectRows<{ rowid: number }>(
       db.prepare("SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH 'greet'").all(),
       ["rowid"],

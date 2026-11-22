@@ -109,7 +109,6 @@ function parseArgs(argv: string[]): Args {
         args.help = true;
         break;
       default:
-        // ignore unknown tokens — keeps the hook loosely coupled
         break;
     }
   }
@@ -209,8 +208,6 @@ export function extractRemnicConfigFromRaw(
     const config = entry["config"];
     return isPlainRecord(config) ? config : entry;
   }
-  // Legacy / developer config layout: the top-level object IS the plugin
-  // config. Only accept it when this is not an OpenClaw-shaped config.
   if (!Object.prototype.hasOwnProperty.call(raw, "plugins")) {
     return raw;
   }
@@ -220,19 +217,7 @@ export function extractRemnicConfigFromRaw(
 export function loadRawConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): Record<string, unknown> {
-  // Try the common config locations without importing bootstrap.ts (which
-  // pulls in the full orchestrator). A missing config is fine — parseConfig
-  // produces sane defaults.
   //
-  // Order of precedence:
-  //   1. `REMNIC_CONFIG` env var (developer escape hatch)
-  //   2. `OPENCLAW_CONFIG_PATH` / `OPENCLAW_ENGRAM_CONFIG_PATH` — the same
-  //      env vars the Remnic plugin reads at runtime
-  //   3. `~/.openclaw/openclaw.json` — standard OpenClaw install location
-  //   4. Legacy `~/.config/remnic/config.json`, `~/.config/engram/config.json`,
-  //      `~/.remnic/config.json`
-  //
-  // OpenClaw-shaped configs are resolved through the shared slot-aware helper.
   for (const candidate of configCandidates(env)) {
     if (!fs.existsSync(candidate.path)) continue;
     let raw: unknown;
@@ -288,7 +273,6 @@ async function main(): Promise<number> {
     );
   }
   if (args.memoryDir) {
-    // parseConfig already locked in a memoryDir, but the CLI override wins.
     (config as unknown as Record<string, unknown>).memoryDir = args.memoryDir;
   }
 

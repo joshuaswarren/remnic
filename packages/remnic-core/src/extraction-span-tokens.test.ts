@@ -57,7 +57,6 @@ test("spanModeSavesTokens: long generated value beats small offsets", () => {
 });
 
 test("spanModeSavesTokens: equal costs return false", () => {
-  // (0, 12) costs 2 tokens; 5..8 generated chars also cost 2 tokens.
   assert.equal(
     spanModeSavesTokens({ generatedCharCount: 8, start: 0, end: 12 }),
     false,

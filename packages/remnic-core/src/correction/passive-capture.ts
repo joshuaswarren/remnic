@@ -1,28 +1,3 @@
-/**
- * correction/passive-capture.ts — routes detected passive corrections to the
- * Correction Contract (#1580) by mode: queue, auto, or off (issue #1581).
- *
- * This module is the thin handoff between the extraction post-processing step
- * (which calls `detectPassiveCorrections`) and the CorrectionService's
- * `plan()` / `apply()` pipeline. It adds NO parallel correction logic (rule 22)
- * — the planner does all the locating/classifying; this module only decides
- * whether to queue the resulting plan for review or auto-apply it.
- *
- * Guards (auto mode):
- *   - plan confidence ≥ confidenceFloor
- *   - classification ∈ {outdated, wrong}
- *   - affected.length ≤ autoApplyMaxAffected
- *   - every action ∈ {supersede, edit, retract} (never auto-apply
- *     rescope/redaction_rule/never_store — those are policy changes)
- * If ANY guard fails, the plan falls back to queue.
- *
- * Session scoping (rule 42): a correction detected in session S plans only
- * against S's readable namespaces. The CorrectionService already enforces this
- * through its namespace policy; this module passes the session-scoped context.
- *
- * Dedup: fingerprint detected corrections by `bufferKey + normalizedCorrectionText`
- * so parallel sessions / re-flushes don't double-plan.
- */
 
 import { log } from "../logger.js";
 import type { PassiveCorrection } from "./passive-correction-detector.js";
@@ -37,8 +12,6 @@ import {
   enqueuePassiveCorrectionNotification,
 } from "./passive-correction-notifications.js";
 
-// ---------------------------------------------------------------------------
-// Config + context
 // ---------------------------------------------------------------------------
 
 export type CorrectionCaptureMode = "off" | "queue" | "auto";
@@ -69,11 +42,9 @@ export interface PassiveCaptureContext {
 }
 
 // ---------------------------------------------------------------------------
-// Deps (injected — the orchestrator wires these)
 // ---------------------------------------------------------------------------
 
 export interface PassiveCaptureDeps {
-  /** Plan a correction through the Correction Contract. */
   planCorrection(
     request: CorrectionRequest,
     opts?: { abortSignal?: AbortSignal },
@@ -102,7 +73,6 @@ export interface PassiveCaptureDeps {
 }
 
 // ---------------------------------------------------------------------------
-// Telemetry
 // ---------------------------------------------------------------------------
 
 export interface PassiveCaptureTelemetry {
@@ -118,7 +88,6 @@ export function emptyTelemetry(): PassiveCaptureTelemetry {
 }
 
 // ---------------------------------------------------------------------------
-// Dedup fingerprint
 // ---------------------------------------------------------------------------
 
 /** Normalize correction text for fingerprinting (case + whitespace + punctuation). */
@@ -136,7 +105,6 @@ function correctionFingerprint(bufferKey: string, correction: PassiveCorrection)
 }
 
 // ---------------------------------------------------------------------------
-// Auto-apply guards
 // ---------------------------------------------------------------------------
 
 /** Action kinds that are safe to auto-apply (state-preserving, not policy changes). */
@@ -170,10 +138,6 @@ export function evaluateAutoApplyGuards(
   if (plan.affected.length > config.autoApplyMaxAffected) {
     return "affected_too_large";
   }
-  // An empty action list is a no-op plan (review: "queue plans that contain no
-  // actions"). Auto-applying it would mark a correction as applied, write an
-  // audit record + notification, and record the dedup fingerprint — yet nothing
-  // changed. Suppress so it queues for human review instead.
   if (plan.actions.length === 0) {
     return "empty_plan";
   }
@@ -186,7 +150,6 @@ export function evaluateAutoApplyGuards(
 }
 
 // ---------------------------------------------------------------------------
-// Main entry: capture passive corrections
 // ---------------------------------------------------------------------------
 
 export interface PassiveCaptureResult {
@@ -219,21 +182,11 @@ export async function capturePassiveCorrections(
 
   for (const correction of corrections) {
     if (ctx.abortSignal?.aborted) return { telemetry, plans };
-    // 1. Dedup — checked before planning, but the fingerprint is only
-    //    recorded AFTER a successful plan so a transient planning failure
-    //    can be retried on a later flush (review: "dedup blocks retry
-    //    after failure").
     const fp = correctionFingerprint(ctx.bufferKey, correction);
     if (dedupState.has(fp)) {
       continue;
     }
 
-    // 2. Resolve `[m:xxxx]` handles to concrete memory ids (review:
-    //    "memory handles not resolved"). The planner resolveTargetMemories
-    //    expects memory ids, not raw handle tokens — passing a handle
-    //    string would throw "target memory not found". Unresolvable handles
-    //    are dropped so the planner falls back to text search (graceful
-    //    degradation; a correction without a resolved target is still valid).
     let targetIds: string[] | undefined;
     if (correction.handles.length > 0 && deps.resolveHandle && ctx.sessionKey) {
       const resolved: string[] = [];
@@ -244,7 +197,6 @@ export async function capturePassiveCorrections(
       if (resolved.length > 0) targetIds = resolved;
     }
 
-    // 3. Build + plan
     const request: CorrectionRequest = {
       text: correction.correctedAssertion || correction.sourceExcerpt,
       ...(targetIds ? { targetIds } : {}),
@@ -263,20 +215,17 @@ export async function capturePassiveCorrections(
       continue;
     }
     plans.push(plan);
-    // Record the fingerprint only after a successful plan.
     dedupState.add(fp);
     if (ctx.abortSignal?.aborted) {
       telemetry.queued += 1;
       return { telemetry, plans };
     }
 
-    // 3. Dispatch by mode
     if (config.mode === "queue") {
       telemetry.queued += 1;
       continue;
     }
 
-    // mode === "auto"
     const suppression = evaluateAutoApplyGuards(plan, config, ctx.isLiveSession);
     if (suppression) {
       telemetry.suppressedReasons[suppression] =
@@ -285,7 +234,6 @@ export async function capturePassiveCorrections(
       continue;
     }
 
-    // Guards passed — auto-apply
     try {
       const outcome = await deps.applyCorrection(plan.planId, {
         confirm: true,
@@ -294,14 +242,7 @@ export async function capturePassiveCorrections(
         ...(ctx.principal ? { principal: ctx.principal } : {}),
         abortSignal: ctx.abortSignal,
       });
-      // A partial outcome means some actions failed (per-action races or
-      // storage failures). Don't count it as auto-applied or notify — queue
-      // for human review instead (review: "partial outcomes as failures").
       if (outcome.status !== "applied") {
-        // Partial outcome: some actions applied, some failed. The plan is
-        // consumed (status 'partial', not 'pending'), so it won't appear in
-        // listPending — do NOT increment queued (review: "partial not
-        // re-queued"). The audit record captures which actions failed.
         log.warn(
           `passive-correction: plan ${plan.planId} applied partially — some actions failed (see audit record)`,
         );
@@ -309,7 +250,6 @@ export async function capturePassiveCorrections(
       }
       telemetry.autoApplied += 1;
 
-      // Enqueue notification for the next briefing
       try {
         const dir = await deps.storageDir(ctx.namespace);
         await enqueuePassiveCorrectionNotification(dir, {
@@ -319,7 +259,6 @@ export async function capturePassiveCorrections(
           createdAt: new Date().toISOString(),
         });
       } catch (err) {
-        // Notification is best-effort — never block on it.
         log.debug(`passive-correction: notification enqueue failed (non-fatal): ${err}`);
       }
     } catch (err) {
@@ -334,7 +273,6 @@ export async function capturePassiveCorrections(
 }
 
 // ---------------------------------------------------------------------------
-// Notification summary builder
 // ---------------------------------------------------------------------------
 
 function buildNotificationSummary(plan: CorrectionPlan): string {

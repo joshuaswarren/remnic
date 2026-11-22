@@ -22,7 +22,6 @@ describe("transformMem0Export", () => {
       filePath: "/tmp/mem0.json",
     });
     const memories = transformMem0Export(parsed);
-    // 3 of 4 entries have non-empty content; the `   ` one is skipped.
     assert.equal(memories.length, 3);
     for (const m of memories) {
       assert.equal(m.sourceLabel, "mem0");

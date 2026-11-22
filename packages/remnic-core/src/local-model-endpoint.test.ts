@@ -15,14 +15,11 @@ import {
 } from "./local-model-endpoint.js";
 
 // ---------------------------------------------------------------------------
-// Resolvers
-// ---------------------------------------------------------------------------
 
 test("resolveFaithfulnessGateEndpoint: null when either key empty (default = no pointer)", () => {
   assert.equal(resolveFaithfulnessGateEndpoint({ extractionFaithfulnessModel: "", extractionFaithfulnessBaseUrl: "" }), null);
   assert.equal(resolveFaithfulnessGateEndpoint({ extractionFaithfulnessModel: "m", extractionFaithfulnessBaseUrl: "" }), null);
   assert.equal(resolveFaithfulnessGateEndpoint({ extractionFaithfulnessModel: "", extractionFaithfulnessBaseUrl: "http://x/v1" }), null);
-  // whitespace-only counts as empty.
   assert.equal(resolveFaithfulnessGateEndpoint({ extractionFaithfulnessModel: "  ", extractionFaithfulnessBaseUrl: "http://x/v1" }), null);
 });
 
@@ -44,7 +41,6 @@ test("resolveCorrectionIntentEndpoint: same contract as the gate resolver", () =
 });
 
 // ---------------------------------------------------------------------------
-// callOpenAiCompatibleChat — injected fetch, no network
 // ---------------------------------------------------------------------------
 
 /** Build a minimal Response-shaped object the caller reads (ok, json, .json). */
@@ -81,7 +77,6 @@ test("callOpenAiCompatibleChat: happy path — first choice content + reported m
   );
   assert.equal(result?.content, '[{"index":0,"verdict":"entailed"}]');
   assert.equal(result?.modelUsed, "remnic-faithfulness-gate-v1");
-  // URL joined correctly (no double slash), body carries model + json_object format.
   assert.equal(calledUrl, "http://localhost:11434/v1/chat/completions");
   assert.equal(calledBody?.model, "remnic-faithfulness-gate-v1");
   assert.deepEqual(calledBody?.response_format, { type: "json_object" });

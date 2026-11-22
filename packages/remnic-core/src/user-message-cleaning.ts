@@ -11,7 +11,6 @@
  * second cleaner drifting beside it.
  */
 
-/** Never-matching header pattern for callers with no platform envelope. */
 const NO_PLATFORM_HEADER = /$a/;
 
 const WRAPPER_OPEN = "<supermemory-context";

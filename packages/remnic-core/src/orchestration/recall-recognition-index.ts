@@ -158,10 +158,6 @@ export async function maintainRecognitionIndexAfterWrite(args: {
   await withIndexChain(indexPath, () =>
     withRecognitionIndexLock(args.memoryDir, async () => {
       const loaded = await loadRecognitionIndex(args.memoryDir);
-      // `changes` is the full set the caller wants published. Persist-path
-      // bootstraps from the active corpus when the file is absent so a
-      // first post-enable write cannot mint a 1-id index that recall would
-      // treat as authoritative.
       const entries = applyChanges(loaded?.entries ?? [], changes);
       await saveRecognitionIndex(args.memoryDir, buildRecognitionIndex(entries));
     }),

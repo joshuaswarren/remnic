@@ -1,7 +1,3 @@
-/**
- * Deterministic smoke tests for the Letta MemCorrect adapter (issue #1727).
- * No network — fake fetch drives the full request/response cycle.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -9,8 +5,6 @@ import { LettaMemCorrectAdapter } from "./letta-adapter.js";
 import { MissingCredentialError } from "./shared.js";
 import { FakeFetchBuilder } from "./fake-fetch.js";
 
-// ---------------------------------------------------------------------------
-// Keyless
 // ---------------------------------------------------------------------------
 
 test("letta: keyless adapter throws MissingCredentialError", async () => {
@@ -39,7 +33,6 @@ test("letta: missing model throws even with key+baseUrl", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Full cycle
 // ---------------------------------------------------------------------------
 
 test("letta: ingestTurn creates agent then sends message", async () => {
@@ -195,7 +188,6 @@ test("letta: reset() deletes known agents", async () => {
   await adapter.ingestTurn("s1", "user", "hello", "2026-07-07T00:00:00Z");
   await adapter.reset();
   assert.equal(ff.countRequests("DELETE", "/v1/agents/"), 1);
-  // Agent re-created on next ingest.
   await adapter.ingestTurn("s1", "user", "again", "2026-07-07T00:01:00Z");
   const postResetCreations = ff.requests.filter(
     (r) => r.method === "POST" && r.url.endsWith("/v1/agents/"),
@@ -235,14 +227,9 @@ test("letta: agent creation failure surfaces error", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// #1747 review-round-3: Letta partial-failure reset must not keep dead agents
 // ---------------------------------------------------------------------------
 
 test("letta: reset() drops successfully-deleted agents even when a later delete fails", async () => {
-  // Agent-1 (s1) deletes cleanly (204); agent-2 (s2) fails (500). Without the
-  // per-entry fix, s1's mapping to the now-dead agent-1 would linger and the
-  // next ensureAgent for s1 would reuse the dead id instead of creating a new
-  // agent.
   const ff = new FakeFetchBuilder()
     .when(
       "POST",
@@ -267,17 +254,12 @@ test("letta: reset() drops successfully-deleted agents even when a later delete 
   });
   await adapter.ingestTurn("s1", "user", "hello", "2026-07-07T00:00:00Z");
   await adapter.ingestTurn("s2", "user", "world", "2026-07-07T00:01:00Z");
-  // reset deletes agent-1 (204 → mapping dropped), then agent-2 (500 → throws).
   await assert.rejects(() => adapter.reset(), /Letta reset could not clean/);
-  // s1's mapping was removed by the successful delete, so re-ingesting s1 MUST
-  // create a fresh agent rather than reuse the dead agent-1 id.
   await adapter.ingestTurn("s1", "user", "again", "2026-07-07T00:02:00Z");
   const creations = ff.requests.filter(
     (r) => r.method === "POST" && r.url.endsWith("/v1/agents/"),
   ).length;
   assert.equal(creations, 3, "s1 re-created a new agent after partial reset");
-  // The LAST message (the re-ingested turn) targeted agent-3, not the dead
-  // agent-1 — assertRequest finds the first match, so filter to the last.
   const msgReqs = ff.requests.filter(
     (r) => r.method === "POST" && r.url.includes("/messages"),
   );

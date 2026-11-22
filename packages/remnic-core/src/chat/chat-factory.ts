@@ -92,9 +92,6 @@ export async function processChatMessage(opts: {
     throw new Error("no_llm_available");
   }
 
-  // Load or create the session FIRST so the engine inherits the session's
-  // namespace/sessionKey scope (rule 42 — every tool call flows with that
-  // identity; the executor must not use a different scope than the session).
   let session;
   if (opts.chatSessionId) {
     session = await loadChatSession(opts.memoryDir, opts.chatSessionId);
@@ -128,9 +125,6 @@ export async function processChatMessage(opts: {
     content: opts.message,
   });
 
-  // Snapshot pending state BEFORE the turn so we only persist a marker when
-  // state actually changed (Thread 15 — a normal turn must not clear an
-  // active pending plan/promotion from an earlier turn).
   const priorPendingPlanId = session.pendingPlanId;
   const priorPendingPromotionId = session.pendingPromotionId;
 
@@ -141,21 +135,15 @@ export async function processChatMessage(opts: {
     content: result.reply,
   });
 
-  // Persist pending-plan/promotion state so a later turn can confirm it
-  // (append-only — loadChatSession scans for the latest unresolved marker).
   if (result.pendingPlan?.planId) {
     await markPendingPlan(opts.memoryDir, session.id, result.pendingPlan.planId);
   } else if (session.pendingPromotionId && !priorPendingPromotionId) {
-    // A promotion just became pending this turn.
     await markPendingPromotion(opts.memoryDir, session.id, session.pendingPromotionId);
   } else if (priorPendingPlanId && !session.pendingPlanId) {
-    // A pending plan was consumed (applied) this turn.
     await markPlanResolved(opts.memoryDir, session.id, priorPendingPlanId);
   } else if (priorPendingPromotionId && !session.pendingPromotionId) {
-    // A pending promotion was consumed (applied) this turn.
     await markPromotionResolved(opts.memoryDir, session.id, priorPendingPromotionId);
   }
-  // else: no pending-state change this turn — do NOT append a marker.
 
   return result;
 }

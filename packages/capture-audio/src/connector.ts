@@ -42,7 +42,6 @@ export const DESKTOP_SOURCE_ID = "desktop";
 export const DESKTOP_DISPLAY_NAME = "Desktop audio";
 const DEFAULT_BASE_URL = `http://${DEFAULT_HOST}:${DEFAULT_PORT}`;
 
-/** Bounded probe timeout so a wedged daemon reports unreachable instead of hanging. */
 const PROBE_TIMEOUT_MS = 15_000;
 
 function withTimeout(signal: AbortSignal | undefined): AbortSignal {
@@ -66,11 +65,6 @@ function baseUrlIsLoopback(baseUrl: string): boolean {
   }
 }
 
-/**
- * Resolve the daemon bearer token. The local token file is read ONLY for
- * a loopback base URL — a remote reader must supply the token explicitly
- * (config/env), never inherit this machine's local token.
- */
 export function resolveCaptureAudioToken(
   configured: string | undefined,
   baseUrl: string,
@@ -93,8 +87,6 @@ export function resolveCaptureAudioToken(
 function daemonSegmentToWearable(seg: DaemonSegment): WearableTranscriptSegment {
   return {
     text: seg.textRaw,
-    // The wearables speaker registry owns naming; the connector only
-    // supplies the stable per-source key (spk_<n> | self | "unknown").
     speakerKey: seg.speakerKey ?? "unknown",
     isWearer: seg.isWearer,
     startIso: seg.startUtc,
@@ -118,7 +110,6 @@ interface DesktopClientOptions {
   getToken: () => string | undefined;
 }
 
-/** Linear trailing-slash trim (avoids a backtracking regex on the base URL). */
 function trimTrailingSlashes(value: string): string {
   let end = value.length;
   while (end > 0 && value.charCodeAt(end - 1) === 47 /* "/" */) end--;
@@ -144,7 +135,6 @@ class DesktopClient {
     try {
       res = await fetch(`${this.#baseUrl}/v1/health`, { headers: this.#headers(), signal: withTimeout(signal) });
     } catch (err) {
-      // Honor caller cancellation; do not mislabel a deliberate abort.
       if (signal?.aborted) throw err;
       // Timeout / connection refused / DNS / offline: the daemon isn't
       // reachable. This is NOT an auth failure and must never throw (AC2).
@@ -176,10 +166,7 @@ class DesktopClient {
       if (opts.cursor) url.searchParams.set("cursor", opts.cursor);
       res = await fetch(url, { headers: this.#headers(), signal: withTimeout(opts.signal) });
     } catch (err) {
-      // Honor caller cancellation instead of reporting a daemon fault.
       if (opts.signal?.aborted) throw err;
-      // Timeout, offline daemon, or a malformed configured baseUrl all
-      // surface consistently as unreachable (never a raw TypeError).
       throw new DesktopDaemonError(
         `desktop capture daemon unreachable at ${this.#baseUrl} (is remnic-capture-audio running?)`,
       );
@@ -209,8 +196,6 @@ class DesktopClient {
 
 export function createDesktopConnector(options: WearableConnectorFactoryOptions): WearableSourceConnector {
   const baseUrl = options.settings.baseUrl?.trim() || DEFAULT_BASE_URL;
-  // One client per connector, but the token is resolved per request (below)
-  // so env / on-disk token rotation takes effect without a rebuild.
   let client: DesktopClient | null = null;
   const getClient = (): DesktopClient => {
     if (!client) {
@@ -232,7 +217,6 @@ export const wearableConnectorRegistration: WearableConnectorRegistration = {
   factory: createDesktopConnector,
 };
 
-/** Idempotently register the desktop connector with the core registry. */
 export function ensureDesktopConnectorRegistered(): boolean {
   if (getWearableConnector(DESKTOP_SOURCE_ID) !== undefined) return false;
   registerWearableConnector(wearableConnectorRegistration);

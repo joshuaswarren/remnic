@@ -1,13 +1,4 @@
 #!/usr/bin/env node
-// Scoped anti-slop gate: lint changed JavaScript/TypeScript sources and fail
-// only when an anti-slop diagnostic lands on an added/changed line, compared
-// against a git base ref. Unchanged debt never blocks; syntax errors and tool
-// failures fail closed.
-//
-// `--disable-nested-config` keeps source-directory oxlint configs from
-// overriding the root gate policy; `--no-error-on-unmatched-pattern` lets a
-// change whose sources are all covered by ignorePatterns lint to zero matches
-// instead of erroring.
 //
 // Ratcheted baseline: tracked files are also linted at the base revision, and a
 // finding is reported when it lands on an added/changed line OR when the same
@@ -80,13 +71,11 @@ export function isAntiSlopDiagnostic(diagnostic) {
   return isNonEmptyText(diagnostic.code) && diagnostic.code.startsWith(ANTI_SLOP_CODE_PREFIX);
 }
 
-// Decoders for the untrusted tool output; runtime `typeof` narrowing is
 // banned by the gate's own rules, so check constructors at this boundary.
 function isNonEmptyText(value) {
   return value !== null && value !== undefined && value.constructor === String && value.length > 0;
 }
 
-// Byte offsets (oxlint spans) to 1-based inclusive line ranges.
 export function byteLineStarts(contents) {
   const starts = [0];
   for (let index = 0; index < contents.length; index += 1) {

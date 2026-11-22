@@ -1,16 +1,3 @@
-/**
- * Meetings config parsing — strict, loud, and default-safe (issue #1900).
- *
- * Mirrors the wearables/procedural blocks in config.ts: shape violations and
- * unparseable values throw with actionable messages (CLAUDE.md rule 51);
- * boolean-ish strings coerce via the shared helper (rule 36); every numeric
- * knob is bounds-checked; the master gate defaults OFF (rule 48) so base
- * installs see zero behavior change.
- *
- * This slice wires only the keys detection + fusion + the record store need.
- * The memory-generation knobs (summaryMode, sourceTrust, autoApproveTrust,
- * reviewTrust) land with the trust-pipeline slice.
- */
 
 import { coerceBool, coerceNumber } from "../connectors/coerce.js";
 import { DEFAULT_MEETING_APP_PATTERNS } from "./detect.js";
@@ -93,8 +80,6 @@ function parseAppPatterns(value: unknown): string[] {
     }
     patterns.push(entry);
   }
-  // Additive over the shipped defaults so a user extension never silently
-  // drops a built-in meeting app (issue #1900 — appPatterns is additive).
   const merged = [...DEFAULT_MEETING_APP_PATTERNS, ...patterns];
   return [...new Set(merged)];
 }
@@ -170,9 +155,6 @@ export function parseMeetingsConfig(value: unknown): MeetingsConfig {
     autoApproveTrust: parseTrust01(raw.autoApproveTrust, "meetings.autoApproveTrust", DEFAULT_AUTO_APPROVE_TRUST),
     reviewTrust: parseTrust01(raw.reviewTrust, "meetings.reviewTrust", DEFAULT_REVIEW_TRUST),
   };
-  // decideSmart checks the auto-approve band FIRST, so autoApproveTrust below
-  // reviewTrust fails open (a claim under the review bar would auto-activate).
-  // Reject the inversion loudly rather than silently mis-gate meeting facts.
   if (config.autoApproveTrust < config.reviewTrust) {
     throw new Error(
       `meetings.autoApproveTrust (${config.autoApproveTrust}) must be >= meetings.reviewTrust ` +

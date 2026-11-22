@@ -33,7 +33,6 @@ test("maps a macOS transcript: source→speakerKey, microphone→wearer, absolut
   const conv = noteToConversation(note);
   assert.equal(conv.id, "not_a");
   assert.equal(conv.source, GRANOLA_SOURCE_ID);
-  // Calendar event title/time win over the note's own fields.
   assert.equal(conv.title, "Roadmap review");
   assert.equal(conv.summary, "Reviewed the roadmap.");
   assert.equal(conv.startIso, "2026-03-10T14:00:00.000Z");
@@ -63,7 +62,6 @@ test("iOS diarization_label becomes the speakerKey and suppresses the wearer gue
   assert.equal(conv.segments[0]?.speakerKey, "Speaker A");
   assert.equal(conv.segments[0]?.isWearer, undefined);
   assert.equal(conv.segments[1]?.speakerKey, "Speaker B");
-  // No calendar event → start falls back to the first transcript time.
   assert.equal(conv.startIso, "2026-03-10T09:00:01.000Z");
 });
 
@@ -77,7 +75,6 @@ test("degrades to a single note segment when a summary exists without a transcri
   const conv = noteToConversation(note);
   assert.equal(conv.segments.length, 1);
   assert.deepEqual(conv.segments[0], { text: "Quick standup, nothing blocking.", speakerKey: "note" });
-  // No calendar/transcript time → falls back to created_at.
   assert.equal(conv.startIso, "2026-03-10T09:00:00.000Z");
 });
 

@@ -15,19 +15,8 @@ type BriefingMemoryReader = {
   cancellable?: boolean;
 };
 
-/**
- * Deadline for the legacy full-read fallback (issue #2779). Storage doubles
- * that predate `readMemoriesWindow()` can only answer with a full-corpus
- * `readAllMemories()`, which is unbounded work; on a large corpus that read
- * alone can outlast the 60s MCP client timeout. Arm an AbortController with
- * this budget (well under 60s, leaving room for entity reads and follow-ups)
- * and fail open with an empty read. The deadline reaches the read as an
- * abort signal (the #2307 corpus-read contract), so the scan stops at its
- * next boundary instead of being abandoned to run on in the background.
- */
 export const BRIEFING_FULL_READ_FALLBACK_MS = 30_000;
 
-/** Options for {@link safeReadMemories}. */
 export interface SafeReadMemoriesOptions {
   /** Test seam overriding {@link BRIEFING_FULL_READ_FALLBACK_MS}. */
   fallbackDeadlineMs?: number;
@@ -42,7 +31,6 @@ export interface SafeReadMemoriesOptions {
 type BriefingReadMode = "windowed" | "full-read-fallback";
 type BriefingReadOutcome = "success" | "timeout" | "error";
 
-/** Internal marker: the fallback deadline fired and the read was aborted. */
 class BriefingReadTimedOut extends Error {
   constructor(readonly deadlineMs: number) {
     super("briefing full-read fallback timed out");
@@ -50,7 +38,6 @@ class BriefingReadTimedOut extends Error {
   }
 }
 
-/** Internal marker: the adapter's readAllMemories predates the signal contract. */
 class LegacyReadUnsupported extends Error {
   constructor() {
     super("readAllMemories does not accept an abort signal");
@@ -76,11 +63,6 @@ const SAFE_ERROR_CLASSES: Record<string, true> = {
   EngramAccessInputError: true,
 };
 
-/**
- * Sanitize adapter-controlled Error.name before structured discriminator logs
- * (issue #2827). Allow-lists known system/remnic error names and maps any
- * unrecognized or backend-controlled names to a safe bounded class ("CustomError").
- */
 function errorClass(err: unknown): string {
   if (err instanceof Error) {
     const name = err.name;
@@ -105,11 +87,6 @@ function bestEffortLog(level: "info" | "warn", message: string): void {
   }
 }
 
-/**
- * One structured, content-free discriminator per briefing memory read
- * (issue #2779): `mode`, `durationMs`, `count` when known, `outcome`, and on
- * failure a safe error class — never error messages or memory content.
- */
 function logBriefingMemoryRead(
   mode: BriefingReadMode,
   outcome: BriefingReadOutcome,
@@ -146,9 +123,6 @@ export async function safeReadMemories(
     return memories;
   } catch (err) {
     if (isAbortError(err) && options.signal?.aborted) {
-      // Caller cancellation is not a read failure: rethrow it so the briefing
-      // rejects instead of degrading into an empty corpus (issue #3139). The
-      // own fallback deadline is reported as BriefingReadTimedOut below.
       throw err;
     }
     if (err instanceof BriefingReadTimedOut) {
@@ -183,18 +157,12 @@ async function readBriefingMemories(
   mode: BriefingReadMode,
   options: SafeReadMemoriesOptions,
 ): Promise<MemoryFile[]> {
-  // A briefing only needs memories inside its lookback window. Avoid parsing
-  // the full corpus on cache misses; keep the full-read fallback for custom
-  // StorageManager-compatible callers that predate readMemoriesWindow().
   if (mode === "windowed") {
     const readOptions: WindowedMemoryReadOptions = { updatedAfter: window.from };
     if (options.signal) readOptions.abortSignal = options.signal;
     const result = await storage.readMemoriesWindow!(readOptions);
     return result.memories;
   }
-  // Refuse legacy adapters that do not explicitly declare cancellation support (#2827).
-  // Require affirmative cancellation support (`true` on one explicit marker) before fallback.
-  // Do not rely on Function.length, which is zero for default/rest/bound functions.
   const isCancellable =
     storage.supportsAbortSignal === true ||
     storage.supportsCancellation === true ||
@@ -212,14 +180,8 @@ async function readBriefingMemories(
   }, deadlineMs);
   const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
   try {
-    // Direct await, no Promise.race: the signal IS the deadline. A
-    // signal-aware read settles on abort (AbortError at its next scan
-    // boundary, #2307), so nothing is left scanning in the background once
-    // this function returns.
     const memories = await storage.readAllMemories({ abortSignal: signal });
     if (deadlineFired) {
-      // A double that resolves partial rows instead of rejecting on abort
-      // must not have them served as a complete corpus.
       throw new BriefingReadTimedOut(deadlineMs);
     }
     return memories;

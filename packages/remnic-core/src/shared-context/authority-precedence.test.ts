@@ -34,7 +34,6 @@ test("resolveSharedAuthority keeps advisory and informational regardless of the 
 
 test("resolveSharedAuthority maps unrecognized strings to informational without normalizing", () => {
   // Flag on proves these stay informational because of the exact-value
-  // check, not because binding was denied.
   for (const authority of ["BINDING", "mandatory", " binding", "binding ", ""]) {
     assert.equal(resolveSharedAuthority({ authority, allowBinding: true }), "informational");
   }
@@ -105,15 +104,12 @@ test("sorting a shuffled mixed list is deterministic", () => {
   assert.deepEqual(first, second);
 });
 
-// Review round 2: the flag was read twice — once to validate, once to decide.
-// A getter that changes between those reads is the whole attack.
 test("a changing allowBinding getter cannot smuggle binding through", () => {
   let reads = 0;
   const input = {
     authority: "binding",
     get allowBinding() {
       reads += 1;
-      // undefined for the validation read, true for the decision read.
       return reads === 1 ? undefined : true;
     },
   };

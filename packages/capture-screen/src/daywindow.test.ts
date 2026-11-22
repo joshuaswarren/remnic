@@ -44,7 +44,6 @@ test("invalid date and timezone are rejected", () => {
   assert.throws(() => activityDayWindow("2026-07-20", "Not/AZone"), CaptureInputError);
 });
 
-// Read the local wall clock and offset through Intl so the historical-LMT
 // fixtures below derive every expectation from the runtime's own tzdata
 // instead of hard-coding one tzdata release's seconds (ICU bundles differ:
 // Asia/Manila's 1844 LMT is −15:56:08 on recent tzdata, −15:56:00 on older
@@ -69,7 +68,6 @@ function offsetMsAt(ms: number, timezone: string): number {
 }
 
 test("second-granularity skipped date resolves the true transition instant and owns no interval (Asia/Manila 1844)", () => {
-  // Regression for #2821: capture-screen's inlined copy truncated offsets to
   // whole minutes, so the skipped date owned a 60000 ms window instead of
   // none and the 1845-01-01 boundary landed a minute late.
   const tz = "Asia/Manila";
@@ -89,7 +87,6 @@ test("second-granularity skipped date resolves the true transition instant and o
 });
 
 test("repeated midnight at a seconds-carrying LMT starts at the first occurrence (America/Cancun 1922)", () => {
-  // Regression for #2821: the inlined copy truncated the −05:47:04 LMT to
   // −05:47, so the day started 4 seconds late and 12m56s of it misattributed
   // to the prior date.
   const tz = "America/Cancun";

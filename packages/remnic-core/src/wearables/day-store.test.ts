@@ -148,7 +148,6 @@ test("invalid timezone falls back to UTC clock rendering instead of crashing", (
 
 
 test("decodeTranscriptBody decodes segment text but leaves headings/locations untouched (#1849)", () => {
-  // Hand-written stored body: segment text carries the escaped forms
   // (backslash-n for a newline) exactly as composeDayTranscriptBody
   // serializes them, while the title/location are NOT escaped on write.
   const body =
@@ -163,8 +162,6 @@ test("decodeTranscriptBody decodes segment text but leaves headings/locations un
   // Segment text IS decoded: backslash-n -> real newline.
   assert.ok(decoded.includes("Line one.\nLine two."), "segment newline decoded");
   assert.ok(!decoded.includes("Line one.\\nLine two."), "no escaped-newline leak in segment");
-  // Title and location are NOT escaped on write, so a literal backslash
-  // there must pass through verbatim (only segment text is decoded).
   assert.ok(decoded.includes("· C:\\roadmap (conversation c1)"), "title backslash untouched");
   assert.ok(decoded.includes("*Location: D:\\data*"), "location backslash untouched");
 });
@@ -192,10 +189,6 @@ test("decodeTranscriptBody recovers original segment text from a composed body (
 
 
 test("speaker label with markdown delimiters round-trips through compose → parse and decodeTranscriptBody (#1849)", () => {
-  // A speaker label containing `**`, `[`, `]` — the exact characters that
-  // delimit a segment line. Without safe serialization the label breaks
-  // parseTranscriptSegmentLine parsing; with escape/unescape it round-trips
-  // losslessly through composition, parsing, and display decoding.
   const registry = emptySpeakerRegistry();
   registry.selfName = "Me";
   registry.speakers["bee:SPEAKER_01"] = {
@@ -214,8 +207,6 @@ test("speaker label with markdown delimiters round-trips through compose → par
     },
   ];
   const body = composeDayTranscriptBody("bee", "2026-06-10", "UTC", conversations, registry);
-  // The raw stored body escapes the delimiters so the parser never sees
-  // a forged `**` or `[` boundary inside the label.
   assert.ok(
     body.includes("**A\\*\\*B**"),
     "label delimiters are escaped in the stored body: " + body,
@@ -237,9 +228,6 @@ test("speaker label with markdown delimiters round-trips through compose → par
 });
 
 test("legacy raw label without escape sequences parses and decodes verbatim (#1849)", () => {
-  // A hand-written stored body whose label was NEVER escaped (a pre-
-  // escaper transcript). decodeTranscriptBody and the segment-line parser
-  // must treat it as a no-op: no backslash sequences => unchanged label.
   const body =
     "# bee transcript — 2026-06-10\n" +
     "\n" +
@@ -252,10 +240,7 @@ test("legacy raw label without escape sequences parses and decodes verbatim (#18
 });
 
 test("legacy body with literal backslash-n/backslash-r is never decoded (#1849)", () => {
-  // A pre-escaper transcript whose segment text contains the LITERAL
   // two-character sequences \n and \r (not escape sequences). The
-  // format-aware decoder MUST leave them byte-for-byte unchanged so the
-  // original content is never corrupted.
   const legacyBody =
     "# bee transcript — 2026-06-10\n" +
     "\n" +
@@ -268,11 +253,7 @@ test("legacy body with literal backslash-n/backslash-r is never decoded (#1849)"
     legacyBody,
     "legacy body must not be decoded without an explicit format marker",
   );
-  // Even when explicitly told the body IS escaped, the literal sequences
   // \n / \r WOULD be decoded — but only NEW-format bodies (meta carries
-  // formatVersion >= 2) are ever passed escaped=true by the service.
-  // Here we verify the SAFETY of the default: callers that forget the
-  // flag never corrupt legacy content.
   assert.equal(
     decodeTranscriptBody(legacyBody, false),
     legacyBody,
@@ -343,8 +324,6 @@ test("parseTranscriptSegmentLine handles single-char label and empty text", () =
 });
 
 test("parseTranscriptSegmentLine preserves backslash escape sequences in label/text", () => {
-  // Escaped labels/text from the escape-aware serializer carry literal
-  // backslash sequences that must survive the linear parser unchanged.
   const m = parseTranscriptSegmentLine("**Pat \\*Smith\\*** [09:00]: Hello \\n world.");
   assert.ok(m);
   assert.equal(m!.label, "Pat \\*Smith\\*");
@@ -363,9 +342,7 @@ test("parseTranscriptSegmentLine returns null for non-segment lines", () => {
 });
 
 test("parseTranscriptSegmentLine is linear-safe on adversarial repeated delimiters (#1849)", () => {
-  // A line with many '*' chars must not cause polynomial backtracking.
   // The linear scan finds the first '**' followed by \s[ — or returns
-  // null — without exploring exponential alternatives.
   const longLabel = "a".repeat(10_000);
   const adversarial = `**${longLabel}** [09:00]: text`;
   const m = parseTranscriptSegmentLine(adversarial);
@@ -378,7 +355,6 @@ test("parseTranscriptSegmentLine is linear-safe on adversarial repeated delimite
   const noClose = "**" + "*".repeat(10_000);
   assert.equal(parseTranscriptSegmentLine(noClose), null);
 
-  // All stars followed by valid suffix — the first '**' positions are
   // all stars (not followed by \s), so the scan walks the entire run
   // in O(n) and finds the '** ' before '['.
   const allStars = "**" + "*".repeat(10_000) + "** [09:00]: text";

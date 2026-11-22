@@ -1,11 +1,3 @@
-/**
- * Output-schema registry for MCP tools — extracted from access-mcp.ts to
- * keep that file under the 3000-LOC structural ratchet.
- *
- * Contains the per-suffix JSON-Schema declarations (derived from
- * production TS return contracts) and the application helper that
- * assigns schemas to tool objects.
- */
 
 const T_STRING = { type: "string" } as const;
 const T_NUMBER = { type: "number" } as const;
@@ -16,7 +8,6 @@ const T_NULLABLE_OBJECT = { type: ["object", "null"] } as const;
 const T_NULLABLE_STRING = { type: ["string", "null"] } as const;
 const T_NULLABLE_NUMBER = { type: ["number", "null"] } as const;
 
-/** Build a JSON Schema object type with the given properties. */
 function objectSchema(
   properties: Record<string, Readonly<Record<string, unknown>>>,
   required?: readonly string[]
@@ -29,7 +20,6 @@ function objectSchema(
   };
 }
 
-/** RecallNavigationResult-shaped schema — shared by memory_expand/memory_traverse. */
 function navigationResultSchema(): Record<string, unknown> {
   return objectSchema(
     {
@@ -54,7 +44,6 @@ function navigationResultSchema(): Record<string, unknown> {
   );
 }
 
-/** MemoryStoreBrowseResult-shaped schema — shared by memory_ls/tree/find. */
 function browseResultSchema(): Record<string, unknown> {
   return objectSchema(
     {
@@ -73,12 +62,6 @@ function browseResultSchema(): Record<string, unknown> {
   );
 }
 
-/**
- * Per-suffix outputSchema registry. Tools not present here fall back to
- * `{ type: "object", additionalProperties: true }` in the constructor pass.
- * The `chatgpt_memory_inspector` tool ships its own precise schema and is
- * intentionally absent — the apply pass skips tools that already have one.
- */
 const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   recall: objectSchema({
     query: T_STRING,
@@ -150,13 +133,8 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     { ok: T_BOOLEAN, error: T_NULLABLE_STRING, entries: T_ARRAY, trace: T_ARRAY, rendered: T_STRING },
     ["entries", "trace"]
   ),
-  // RecallNavigationResult union (recall-navigation.ts): success carries
-  // items/budget/disclosureSpend; error carries error/message. ok/action/
-  // rendered are the fields every variant returns.
   memory_expand: navigationResultSchema(),
   memory_traverse: navigationResultSchema(),
-  // MemoryStoreBrowseResult union (memory-browse.ts): success carries
-  // entries/total/truncated; typed refusals carry error/message. ok/verb/
   // rendered are the fields every variant returns.
   memory_ls: browseResultSchema(),
   memory_tree: browseResultSchema(),

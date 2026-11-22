@@ -1,9 +1,3 @@
-/**
- * Issue #3139 — the briefing's default deadline.
- *
- * The budget is a server-side limit, not a client cancellation: exhausting it
- * must surface as an explicit TimeoutError, never as an empty result.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";

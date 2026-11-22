@@ -15,7 +15,6 @@ const PRONOUN_MAP: Record<string, { types: string[]; possessive: boolean; group:
   "him": { types: ["person"], possessive: false, group: "masc" },
   "his": { types: ["person"], possessive: true, group: "masc" },
   "she": { types: ["person"], possessive: false, group: "fem" },
-  // "her" omitted — ambiguous between object ("saw her") and possessive ("her stack")
   "they": { types: ["company", "project", "other"], possessive: false, group: "they" },
   "them": { types: ["company", "project", "other"], possessive: false, group: "they" },
   "their": { types: ["company", "project", "other"], possessive: true, group: "they" },
@@ -55,13 +54,11 @@ export function resolveCoReferences(fact: string, entities: EntityMention[]): st
 
     matchingEntries.push({ pronoun, info, entity: candidates[0] });
 
-    // Track which referent groups target the matched entity's actual type (not all candidate types)
     const matchedType = candidates[0].type;
     if (!typeToGroups.has(matchedType)) typeToGroups.set(matchedType, new Set());
     typeToGroups.get(matchedType)!.add(info.group);
   }
 
-  // Determine which entity types have ambiguous multi-group references
   const ambiguousTypes = new Set<string>();
   for (const [type, groups] of typeToGroups) {
     const matchedEntities = entities.filter((e) => e.type === type);
@@ -70,7 +67,6 @@ export function resolveCoReferences(fact: string, entities: EntityMention[]): st
     }
   }
 
-  // Filter out entries whose entity type is ambiguous
   const safeEntries = matchingEntries.filter(
     (e) => !e.info.types.some((t) => ambiguousTypes.has(t)),
   );
@@ -93,7 +89,6 @@ export function resolveCoReferences(fact: string, entities: EntityMention[]): st
     );
   }
 
-  // Restore placeholders with actual entity names
   for (let i = 0; i < placeholders.length; i++) {
     result = result.replaceAll(`\x00ENTITY_${i}\x00`, placeholders[i]);
   }
@@ -143,7 +138,6 @@ const TEMPORAL_PATTERNS: Array<{
       return `around ${formatDate(d)}`;
     },
   },
-  // Simple patterns last
   {
     pattern: /\byesterday\b/gi,
     replace: (now) => {
@@ -177,11 +171,6 @@ export function anchorTemporalExpressions(fact: string, now: Date): string {
   return result;
 }
 
-/**
- * Full de-linearization pipeline: temporal anchoring first, then coreference.
- * Order matters: entity names may contain temporal words (e.g., "project-tomorrow")
- * which would be corrupted if temporal anchoring ran after coreference insertion.
- */
 export function delinearize(
   factContent: string,
   entities: EntityMention[],

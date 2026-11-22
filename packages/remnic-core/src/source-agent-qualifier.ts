@@ -21,10 +21,6 @@ export function resolveSourceConnector(turns: readonly BufferTurn[]): string | u
   return /[\u0000-\u001F\u007F]/.test(derived) ? undefined : derived;
 }
 
-// Same bound as the recall renderer (CONNECTOR_LABEL_MAX_LENGTH) but a DIFFERENT
-// policy: recall TRUNCATES past the bound (a truncated display label cannot
-// mislead), while the prompt SUPPRESSES (a truncated id could collide with a
-// different connector). Do not "fix" this inconsistency — it is deliberate.
 export function headerConnector(connector: string | undefined): string | undefined {
   return connector !== undefined && connector.length <= CONNECTOR_LABEL_MAX_LENGTH ? connector : undefined;
 }
@@ -70,7 +66,6 @@ export function applyGroundingWithConnector(
   };
   const known = buildKnownConnectors(ctx.sourceConnector);
   // Scope-forcing is decoupled from strip/restore (runs without a trusted
-  // connector) but gated on the capability: flag off = byte-identical pre-#2183.
   const scoped = ctx.scopeClassificationEnabled === false
     ? result
     : forceProjectScopeOnAnyQualifier(result, known);

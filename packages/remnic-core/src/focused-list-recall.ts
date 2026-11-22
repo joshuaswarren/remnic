@@ -63,15 +63,6 @@ export async function buildFocusedListRecallSection(
     return "";
   }
 
-  // #1505 codex P2: gather candidates across the ordered LCM read key set
-  // (primary overlay → project/root fallbacks) and UNION them into the existing
-  // rank/dedupe/budget pass, so a stronger project-fallback candidate is not
-  // masked by a weak primary-key hit. `rankAndDedupeFocusedListItems` applies
-  // the section-appropriate dedupe and relevance rank; the budget is applied
-  // exactly once below. `gatherAcrossReadSessions` isolates a per-key read
-  // failure so a corrupt/locked fallback index can't discard the primary key's
-  // candidates; the single-key path runs exactly one collect and propagates a
-  // failure as before — byte-for-byte the pre-#1505 behavior.
   const items: EvidencePackItem[] = [];
   await gatherAcrossReadSessions(resolveLcmReadSessionIds(options), async (sessionId) => {
     items.push(...(await collectFocusedListItems({ ...options, sessionId }, intent)));

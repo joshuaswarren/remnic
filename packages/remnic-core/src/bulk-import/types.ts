@@ -1,6 +1,4 @@
 // ---------------------------------------------------------------------------
-// Bulk-import pipeline types and validation
-// ---------------------------------------------------------------------------
 
 import { parseIsoOffsetTimestamp } from "../utils/iso-timestamp.js";
 import type { SourceConnectorProvenance } from "../types.js";
@@ -72,7 +70,6 @@ export interface BulkImportSourceAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Validation helpers
 // ---------------------------------------------------------------------------
 
 const VALID_ROLES: ReadonlySet<string> = new Set(["user", "assistant", "other"]);

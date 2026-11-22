@@ -100,7 +100,6 @@ test("show prints a provenance header naming the vault note, then the section", 
     assert.equal(result.code, 0);
     assert.match(result.out[0]!, /^# journal source: .*2026-08-20\.md :: Journal$/);
     assert.equal(result.out.slice(1).join("\n"), "user text");
-    // Read-only: the note is untouched.
     assert.match(fs.readFileSync(note, "utf8"), /card/);
   });
 });
@@ -167,7 +166,6 @@ test("memoryDir mode is unchanged: show and edit-path use the journal day file",
   }
 });
 
-// ── extract fixtures (issue #1987 review-only pass wiring) ──────────────────
 
 function reviewVaultConfigFor(vaultPath: string, timezone = "UTC"): PluginConfig {
   return parseConfig({
@@ -344,7 +342,6 @@ test("omitted --date derives from activity.timezone, not the host clock (opposin
     assert.ok(east.out[0]!.endsWith(path.join("journal", "2026-08-21.md")), east.out[0]);
     const west = await capture(pagoPago, ["edit-path"], countingDeps({ now }));
     assert.ok(west.out[0]!.endsWith(path.join("journal", "2026-08-20.md")), west.out[0]);
-    // Explicit --date always wins over the zone-derived default.
     const explicit = await capture(kiritimati, ["edit-path", "--date", "2026-08-19"], countingDeps({ now }));
     assert.ok(explicit.out[0]!.endsWith(path.join("journal", "2026-08-19.md")), explicit.out[0]);
   } finally {
@@ -406,7 +403,6 @@ test("extract runs the review pass: counts, pending_review only, hash-skip on re
     assert.equal(fake.writes[0]!.status, "pending_review", "candidates are never auto-approved");
     assert.deepEqual(fake.writes[0]!.tags, ["journal", "journal-day:2026-08-20"]);
 
-    // The day's hash advanced, so the identical rerun hash-skips.
     const rerun = await capture(config, ["extract", "--date", "2026-08-20"], countingDeps({ extractionDeps: async () => fake.deps }));
     assert.equal(rerun.code, 0);
     assert.deepEqual(rerun.out, ["unchanged 2026-08-20 (hash-skip)"]);

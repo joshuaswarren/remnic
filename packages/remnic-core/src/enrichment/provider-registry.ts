@@ -20,15 +20,10 @@ export class EnrichmentProviderRegistry {
     this.providers.set(provider.id, provider);
   }
 
-  /** Look up a single provider by id. */
   get(id: string): EnrichmentProvider | undefined {
     return this.providers.get(id);
   }
 
-  /**
-   * Return all registered providers whose id appears in the config's
-   * `providers` list with `enabled: true`.
-   */
   listEnabled(config: EnrichmentPipelineConfig): EnrichmentProvider[] {
     const enabledIds = new Set(
       config.providers
@@ -44,16 +39,10 @@ export class EnrichmentProviderRegistry {
     return result;
   }
 
-  /**
-   * Return providers that should run for a given importance level.
-   * Providers are resolved from `config.importanceThresholds[level]` and
-   * filtered to only those that are both registered and enabled.
-   */
   getForImportance(
     level: ImportanceLevel,
     config: EnrichmentPipelineConfig,
   ): EnrichmentProvider[] {
-    // "trivial" entities never get enrichment providers
     if (level === "trivial") return [];
 
     const thresholds = config.importanceThresholds;

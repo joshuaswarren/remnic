@@ -1,28 +1,3 @@
-/**
- * correction/correction-executor.ts — the only writer for corrections
- * (issue #1580 PR 2).
- *
- * Applies a {@link CorrectionPlan} in NON-DESTRUCTIVE ORDER
- * (rule 25 / checklist §14 — new state confirmed before old state destroyed):
- *
- *   1. Write replacement / edited memories first (through the injected
- *      persist pipeline so catalog/reindex/dedup fire — rule 43; edits go
- *      through page-versioning so every change is revertable).
- *   2. Then supersede / retract losers: status flip + `validUntil` stamp
- *      (#1578, when gated on) + tombstone append (#1579).
- *   3. Then propagation: QMD reindex for touched files, graph edge updates,
- *      belief-ledger claim status (optional-package dynamic import, rule 57),
- *      profile.md line removal when an affected memory was profile-sourced.
- *   4. Append an audit record to `corrections/` capturing plan + outcome —
- *      corrections are themselves memories, searchable and namespaced.
- *   5. Partial failure → tagged partial result (rule 34; checklist §22):
- *      never a half-applied plan reported as success, and never old state
- *      destroyed for an action whose replacement write failed.
- *
- * Concurrency: a plan may be applied exactly once. A second apply of the same
- * plan is rejected (plan consumed). Backed by the planner's atomic plan-store
- * (`markConsumed`) under `serializeMutations` keyed by plan id (rule 40).
- */
 
 import { raceAbort, throwIfAborted } from "../abort-error.js";
 import { log } from "../logger.js";
@@ -38,8 +13,6 @@ import {
 } from "./correction-contract.js";
 import type { CorrectionPlanner } from "./correction-planner.js";
 
-// ---------------------------------------------------------------------------
-// Injected collaborators
 // ---------------------------------------------------------------------------
 
 /** A memory the executor is operating on (subset of MemoryFile). */
@@ -177,7 +150,6 @@ export interface ExecutorDeps {
 }
 
 // ---------------------------------------------------------------------------
-// Executor
 // ---------------------------------------------------------------------------
 
 export class CorrectionExecutor {
@@ -212,8 +184,6 @@ export class CorrectionExecutor {
         "Correction apply requires explicit confirmation (correction.applyRequiresConfirm)."
       );
     }
-    // serializeMutations on the plan id so two concurrent applies of the SAME
-    // plan serialize — the second observes the consumed status and rejects.
     return serializeMutations(`correction-apply:${namespace}:${planId}`, () =>
       this.applyInternal(namespace, planId, opts.canWriteDestination, opts.abortSignal)
     );
@@ -245,7 +215,6 @@ export class CorrectionExecutor {
     if (plan.status === "discarded") {
       throw new CorrectionContractError(`Correction plan ${planId} has been discarded.`);
     }
-    // TTL check — expired plans are rejected with a clear error.
     if (this.deps.now().getTime() > new Date(plan.expiresAt).getTime()) {
       await this.planner.markConsumed(namespace, planId, "discarded");
       throw new CorrectionContractError(
@@ -253,7 +222,6 @@ export class CorrectionExecutor {
       );
     }
 
-    // Re-validate every action shape before applying (defense in depth).
     for (const action of plan.actions) {
       validateCorrectionAction(action);
       if (action.kind === "redaction_rule") {
@@ -261,20 +229,10 @@ export class CorrectionExecutor {
       }
     }
 
-    // Optimistically mark the plan `applying` BEFORE any mutation (review
-    // thread OgIqt). If the process dies mid-apply — or the final
-    // markConsumed("applied"|"partial") fails — the plan stays `applying`
-    // and is NOT silently retryable. If cancellation arrives before the
-    // first mutation, reset the plan to `pending` so it remains actionable.
-    // A partially-applied plan must never be re-applied wholesale: re-running
-    // succeeded actions would duplicate replacements, tombstones, and audits.
-    // This mark runs inside the serializeMutations lock so concurrent applies serialize.
     throwIfAborted(abortSignal, "correction apply aborted");
     try {
       await this.planner.markConsumed(namespace, planId, "applying");
     } catch {
-      // If we cannot even mark the plan in-progress, the filesystem is
-      // likely unwritable and mutations would fail too — fail closed now.
       throw new CorrectionContractError(
         `Correction plan ${planId}: cannot mark in-progress (filesystem unwritable?) — aborting before any mutation.`
       );
@@ -339,19 +297,10 @@ export class CorrectionExecutor {
       }
     };
 
-    // ── Phase 1: replacement / edit writes (new state first) ───────────────
-    // For each supersede with a replacement, write the replacement FIRST. If
-    // the write fails, the loser is NOT superseded (§14: never destroy old
-    // state for an action whose replacement write failed).
     for (const action of plan.actions) {
       if (await stopBeforeNewAction()) break;
 
       if (action.kind === "supersede" && action.replacement) {
-        // Preflight the loser BEFORE writing the replacement (review thread
-        // Of0pz): if the loser was deleted between plan and apply, writing a
-        // replacement creates an orphan fact that supersedes nothing. Phase 2
-        // (retireAndTombstone) re-checks via getMemory, so verifying here
-        // keeps the two phases in agreement and avoids the orphan write.
         let loser: ExecutorMemory | null;
         try {
           loser = await this.deps.getMemory(namespace, action.loserId, abortSignal);
@@ -395,10 +344,6 @@ export class CorrectionExecutor {
           mutationCommitted = true;
           results.push({ action, status: "applied", memoryId: newId });
           appliedTouched.push(newId);
-          // A replacement and retirement form one non-destructive transaction.
-          // Once the replacement is durable, cancellation cannot interrupt the
-          // retirement half and leave both memories active. This remains inside
-          // the apply plan's serializeMutations lock.
           const retirementResultBeforePhase2 = results.at(-1);
           await this.retireAndTombstone(namespace, action, "supersession", results, appliedTouched, {
             supersededBy: newId,
@@ -471,9 +416,6 @@ export class CorrectionExecutor {
       }
     }
 
-    // ── Phase 2: retire losers + tombstones ───────────────────────────────
-    // Only run for supersede/retract actions whose replacement write (if any)
-    // succeeded. A supersede WITHOUT a replacement is a pure retract.
     for (const action of plan.actions) {
       const needsPhase2Work =
         action.kind === "retract" ||
@@ -484,7 +426,6 @@ export class CorrectionExecutor {
         if (action.kind === "supersede" && retiredReplacementActions.has(action)) continue;
       if (action.kind === "supersede") {
         const replacementResult = results.find((r) => r.action === action && r.status === "applied");
-        // If the replacement write failed, skip retirement (§14).
         if (action.replacement && !replacementResult) {
           continue;
         }
@@ -537,11 +478,6 @@ export class CorrectionExecutor {
         }
       } else if (action.kind === "rescope") {
         try {
-          // Authorize the destination namespace BEFORE the move — the plan's
-          // toNamespace comes from the LLM/persisted plan and must not bypass
-          // the write ACL (review thread: authorize-rescope-destination).
-          // canWriteDestination defaults to allow when absent (single-tenant,
-          // where the source namespace already resolved to a writable scope).
           const allowed = canWriteDestination
             ? await raceAbort(
                 canWriteDestination(action.toNamespace, abortSignal),
@@ -564,14 +500,8 @@ export class CorrectionExecutor {
             abortSignal
           );
           mutationCommitted = true;
-          // #1678 (thread OiiV6): report the DESTINATION memory id, not the
-          // source. The source is archived by the move; callers that re-fetch
-          // the reported id need the live (destination) memory, otherwise they
-          // observe an archived fact and the correction looks like a no-op.
           results.push({ action, status: "applied", memoryId: destId });
           appliedTouched.push(action.memoryId); // source id for source-side propagation
-          // Propagate the destination memory in its namespace too (review
-          // thread: propagate-rescoped-destination) — best-effort.
           try {
             await this.deps.propagate(action.toNamespace, [destId], undefined);
           } catch {
@@ -600,9 +530,6 @@ export class CorrectionExecutor {
     }
     await throwIfAbortedBeforeCommitAndReset();
 
-    // ── Phase 3: propagation (post-write reindex + graph) ─────────────────
-    // Best-effort: a propagation failure is recorded as a warning on the
-    // outcome, never as a failed action (it runs AFTER the §14 guarantee).
     const propagationWarnings: string[] = [];
     if (appliedTouched.length > 0) {
       try {
@@ -625,7 +552,6 @@ export class CorrectionExecutor {
         });
       }
     }
-    // ── Phase 4: audit record ─────────────────────────────────────────────
     const anyFailed = results.some((r) => r.status === "failed");
     const status: CorrectionOutcome["status"] =
       anyFailed || cancellationRequestedAfterCommit ? "partial" : "applied";
@@ -663,11 +589,6 @@ export class CorrectionExecutor {
       ];
     }
 
-    // ── Phase 5: mark plan consumed ───────────────────────────────────────
-    // Corrections are already applied (phases 1-4 succeeded). A markConsumed
-    // failure must NOT propagate — that would make a client retry re-apply all
-    // corrections (review thread: applyInternal-plan-unconsumed). Record as a
-    // warning; the pending plan is reconciled by TTL discard on the next pass.
     try {
       await this.planner.markConsumed(namespace, planId, status);
     } catch (err) {
@@ -699,12 +620,6 @@ export class CorrectionExecutor {
         return;
       }
       const validUntil = this.deps.biTemporalEnabled ? this.deps.now().toISOString() : undefined;
-      // Write the tombstone BEFORE retiring the source memory (review thread
-      // PG9): if appendTombstone throws here, retireMemory has not run yet, so
-      // the source stays active, the action fails cleanly, and a retry
-      // operates on un-mutated state with no resurrection window. A tombstone
-      // for a still-active memory (if retire later fails) is benign — it only
-      // blocks re-ingestion of the same content, which is exactly the intent.
       const tombstoneId = await this.deps.appendTombstone(
         namespace,
         {
@@ -713,11 +628,6 @@ export class CorrectionExecutor {
           rawContent: memory.rawContent,
           ...(memory.entityRef ? { entityRef: memory.entityRef } : {}),
           ...(memory.supersessionKey ? { supersessionKey: memory.supersessionKey } : {}),
-          // #1672 item 4: carry the canonical contentHash (exact tier) and the
-          // full supersession-key set (keyed tier) so paraphrased re-observations
-          // of the same supersession identity are blocked, not just the literal
-          // body. Without these the tombstone projected from a structured fact
-          // dropped both fields and the fact could resurrect.
           ...(memory.contentHash ? { contentHash: memory.contentHash } : {}),
           ...(memory.supersessionKeys && memory.supersessionKeys.length > 0
             ? { supersessionKeys: memory.supersessionKeys }
@@ -725,9 +635,6 @@ export class CorrectionExecutor {
         },
         abortSignal
       );
-      // A committed tombstone and source retirement form one transaction from
-      // the caller's point of view. Once append succeeds, cancellation must
-      // not prevent retirement and leave an active source behind the block.
       await this.deps.retireMemory(
         namespace,
         memoryId,
@@ -762,11 +669,6 @@ export class CorrectionExecutor {
  */
 export const CORRECTION_ERROR_MAX = 500;
 export function sanitizeErrorMessage(raw: string): string {
-  // Collapse any absolute POSIX path (/Users/foo/..., /.config/..., /tmp/a@b/...) and
-  // Windows path (C:\Users\...) to a neutral <path> placeholder.
-  // Capture the leading delimiter (start/space/quote) in group 1 so the path
-  // itself is consumed and replaced — the prior non-capturing prefix bound $1
-  // to the path, which survived and had <path> appended AFTER it.
   const stripped = raw
     .replace(/(^|[\s:'"(])\/(?:[^\s'">)\\]+\/)+[^\s'">)\\]*/g, "$1<path>")
     .replace(/(^|[\s:'"(])[A-Za-z]:\\[^\s'">)\\]+(?:\\[^\s'">) ]*)*/g, "$1<path>");

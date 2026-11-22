@@ -98,10 +98,6 @@ export class RemnicLedgerStore implements LedgerStore {
       id: "pending",
       memoryId: "pending",
     };
-    // Sealed-envelope write (issue #1989 PR4): claims are system-serialized
-    // but structured attributes (ledger.sourceText, evidence excerpts) may
-    // exceed the envelope's value-length limit — SALVAGE keeps oversized
-    // fields from aborting a valid claim; drops warn-logged.
     const claimEnvelope = composeSalvagedEnvelope(
       "belief-ledger",
       {
@@ -123,12 +119,6 @@ export class RemnicLedgerStore implements LedgerStore {
       status: remnicMemoryStatusForClaim(pending),
     });
 
-    // #1645: a tombstone-blocked claim write lands pending_review (no active
-    // copy). getClaim hides pending_review (HIDDEN_REMNIC_STATUSES), so the
-    // readback below would throw a misleading "could not be read back" error
-    // that looks transient — callers retry and multiply pending_review rows.
-    // Check the block BEFORE readback and throw a distinct, honest error so the
-    // caller knows this content is permanently blocked, not transiently failed.
     if (tombstoneBlocked) {
       throw new RemnicLedgerTombstoneBlockedError(memoryId);
     }
@@ -285,9 +275,6 @@ export class RemnicLedgerStore implements LedgerStore {
     reason: string
   ): Promise<void> {
     try {
-      // Sealed-envelope write (issue #1989 PR4): system-built audit body.
-      // Audit-trail correction — system-built body, salvage for the same
-      // attribute-limit reason as the claim write.
       await this.storage.writeSealedMemory(
         composeSalvagedEnvelope(
           "belief-ledger:audit",

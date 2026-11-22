@@ -1,12 +1,3 @@
-/**
- * Recognition-index write-path subject for the scenario-matrix harness
- * (issue #2975).
- *
- * Every canonical row drives the real maintainRecognitionIndexAfterWrite
- * seam twice: gate off (zero index I/O, no index file) and gate on
- * (the write's id is visible to loadRecognitionIndex). Restart rows
- * reload from disk; replay rows prove an id upsert is idempotent.
- */
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";

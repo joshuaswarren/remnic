@@ -40,11 +40,8 @@ import {
 } from "./local-model-endpoint.js";
 import { extractJsonCandidates } from "./json-extract.js";
 
-// Re-export for callers importing from this module.
 export type { FaithfulnessFrontmatter } from "./types.js";
 
-// ---------------------------------------------------------------------------
-// Public types
 // ---------------------------------------------------------------------------
 
 /**
@@ -95,7 +92,6 @@ export interface FaithfulnessCheckInput {
  */
 
 // ---------------------------------------------------------------------------
-// Sealed prompt (hash lets #1573-style caching key on it)
 // ---------------------------------------------------------------------------
 
 const FAITHFULNESS_SYSTEM_PROMPT = `You are a faithfulness verifier for a memory system. Given a QUOTE from the source conversation and an extracted FACT, determine whether the FACT is supported by the QUOTE.
@@ -130,26 +126,13 @@ export const FAITHFULNESS_PROMPT_HASH = createHash("sha256")
   .digest("hex");
 
 // ---------------------------------------------------------------------------
-// Prompt construction
 // ---------------------------------------------------------------------------
 
-/**
- * Build the user-prompt payload for a batch of (fact, quote) pairs.
- * Each pair is numbered so the LLM's response can be correlated back.
- *
- * Context (when provided) is included after the quote, clearly delimited,
- * so the model knows it is supplementary — not the primary evidence.
- */
 function buildBatchPrompt(inputs: FaithfulnessCheckInput[], contextChars: number): string {
   const parts: string[] = [];
   for (let i = 0; i < inputs.length; i++) {
     const inp = inputs[i];
     if (!inp) continue;
-    // The QUOTE is the primary entailment evidence and is already bounded
-    // upstream (provenance.maxQuoteChars / locateFactQuote). Send it whole
-    // so the verifier never judges entailment on a truncated span. Only the
-    // supplementary CONTEXT is bounded by contextChars (the config's "window
-    // around the quote" semantics — cursor review).
     parts.push(`--- Item ${i} ---
 QUOTE: "${inp.quote}"`);
     if (inp.context && inp.context.trim().length > 0) {
@@ -164,14 +147,10 @@ Respond with the JSON array entry for index ${i}.`);
 }
 
 // ---------------------------------------------------------------------------
-// Response parsing
 // ---------------------------------------------------------------------------
 
 const VALID_VERDICTS = new Set<string>(["entailed", "contradicted", "unsupported"]);
 
-/**
- * Parsed LLM response entry — validated shape.
- */
 interface ParsedFaithfulnessEntry {
   index: number;
   verdict: FaithfulnessVerdict;
@@ -207,8 +186,6 @@ export function parseFaithfulnessResponse(
     if (map) return map;
   }
 
-  // Last resort: the model may have returned bare objects without array
-  // wrapping — try parsing the whole thing as a single entry.
   try {
     const single = JSON.parse(raw.trim());
     const map = parseEntries([single], expectedCount);
@@ -220,16 +197,6 @@ export function parseFaithfulnessResponse(
   return null;
 }
 
-/**
- * True when `map` contains an entry for every integer index in
- * [0, expectedCount). The local parse-fallback gate uses this to accept a
- * local model-lab response only when it is COMPLETE: size alone is
- * insufficient because a malformed response with duplicate/fractional indexes
- * can yield expectedCount distinct map keys without covering index 0..N-1
- * (codex P2 PRRT_kwDORJXyws6O7PfY). parseEntries now rejects non-integer
- * indexes so the two checks agree, but the explicit coverage loop documents
- * the invariant and stays robust to any future parser relaxation.
- */
 function coversAllIndexes(
   map: Map<number, ParsedFaithfulnessEntry>,
   expectedCount: number,
@@ -246,11 +213,6 @@ function parseEntries(
   expectedCount: number,
 ): Map<number, ParsedFaithfulnessEntry> | null {
   if (!Array.isArray(data)) {
-    // Accept object-wrapped arrays — {"results":[...]}, {"verdicts":[...]},
-    // {"entries":[...]}, {"facts":[...]} — a common JSON-object prompt shape the
-    // extraction-judge parser already accepts. Rejecting them marked the whole
-    // batch malformed_output; in enforce mode those facts then wrote as ACTIVE
-    // (gate bypass — codex Ob4RO).
     if (data && typeof data === "object") {
       for (const key of ["results", "verdicts", "entries", "facts"]) {
         const inner = (data as Record<string, unknown>)[key];
@@ -281,7 +243,6 @@ function parseEntries(
 }
 
 // ---------------------------------------------------------------------------
-// LLM call helper
 // ---------------------------------------------------------------------------
 
 interface LlmCallResult {
@@ -313,22 +274,8 @@ async function callFaithfulnessLlm(
     { role: "user", content: userPrompt },
   ];
 
-  // Issue #1585 model-lab pointer: when an explicit local fine-tuned endpoint
-  // is configured (base URL + model name), try it FIRST — it is the cheapest,
-  // deterministic path the operator opted into by setting
-  // extractionFaithfulnessBaseUrl. Unset (the default) skips this entirely,
-  // preserving byte-identical pre-feature routing (rule 39). Any failure
-  // (network, non-2xx, malformed body, timeout) returns null and falls through
-  // to the configured chain (checklist §4 graceful degradation).
   const localEndpoint = resolveFaithfulnessGateEndpoint(config);
   if (localEndpoint) {
-    // Give the local probe a SMALLER budget than the outer batch timeout so a
-    // wedged local model returns null (and falls through to the configured
-    // chain) before the batch timer fires. The local endpoint is meant to be
-    // the fast path; if it cannot answer within half the budget (min 500ms),
-    // abandon it and let the fallback chain use the remainder (codex P2 — the
-    // advertised graceful fallback must actually reach the chain, not be starved
-    // by a hanging probe sharing the full batch budget).
     const probeBudgetMs = Math.max(500, Math.floor(timeoutMs / 2));
     const result = await callOpenAiCompatibleChat(
       localEndpoint,
@@ -338,24 +285,11 @@ async function callFaithfulnessLlm(
         maxTokens: 2048,
         responseFormatJson: true,
         timeoutMs: probeBudgetMs,
-        // Forward the batch signal so the probe aborts the instant the batch
-        // budget elapses, not after probeBudgetMs (issue #1700 nit #5).
         ...(signal ? { signal } : {}),
       },
       fetchImpl,
     );
     if (result?.content) {
-      // Issue #1700 nit #6: pre-validate the local endpoint response shape.
-      // Default (extractionFaithfulnessLocalParseFallback=false) returns the
-      // content as-is -- a 200-with-garbage local response surfaces
-      // malformed_output, alerting the operator to a misconfigured endpoint.
-      // When the operator opts into resilient fallback, an unparseable OR
-      // PARTIAL local response falls through to the configured chain instead
-      // of surfacing. parseFaithfulnessResponse is truthy as soon as ONE entry
-      // is valid, so accept the local response only when the parsed verdict
-      // map covers every expected index -- otherwise the missing indexes would
-      // surface as malformed_output downstream, defeating the resilient
-      // fallback (codex P2 PRRT_kwDORJXyws6O6zwZ).
       if (!config.extractionFaithfulnessLocalParseFallback) {
         return { content: result.content, modelUsed: result.modelUsed };
       }
@@ -373,23 +307,8 @@ async function callFaithfulnessLlm(
     }
   }
 
-  // extractionFaithfulnessModel is the LOCAL served model's name (e.g.
-  // remnic-faithfulness-gate-v1). When a local endpoint is configured it
-  // belongs to that endpoint ONLY — it must NOT leak into the fallback chain
-  // as a gateway/local-LLM override, or a local outage forces the configured
-  // chain onto an unavailable local-only model and turns graceful fallback
-  // into backend_unavailable (codex P2 PRRT_kwDORJXyws6Otp-L). Decouple: the
-  // override reaches the fallback chain only when NO local endpoint is
-  // configured (the pre-feature model-override contract, preserved
-  // byte-identical — rule 39).
   const modelOverride = localEndpoint ? undefined : (config.extractionFaithfulnessModel || undefined);
 
-  // Skip the local backend when (a) modelSource is "gateway", or (b) a
-  // faithfulness model override is set. The local client always sends
-  // config.localLlmModel and silently ignores options.model, so a local
-  // success would run the wrong model and prevent the override from ever
-  // reaching the gateway. Routing straight to the gateway honors the
-  // override (codex review PRRT_kwDORJXyws6ObYQ8).
   const skipLocal = config.modelSource === "gateway" || Boolean(modelOverride);
   const gatewayChain = gatewayTaskChainOptions(config);
 
@@ -421,7 +340,6 @@ async function callFaithfulnessLlm(
     }
   }
 
-  // Try fallback LLM
   if (fallbackLlm) {
     try {
       const result = await fallbackLlm.chatCompletion(
@@ -448,12 +366,6 @@ async function callFaithfulnessLlm(
   return { content: null, modelUsed: null };
 }
 
-/**
- * Call the local LLM's chatCompletion through a narrow, typed interface.
- * LocalLlmClient.chatCompletion accepts an options bag that includes an
- * `operation` discriminator; we forward it so the client can route
- * appropriately.
- */
 interface LocalLlmCallOptions {
   temperature: number;
   maxTokens: number;
@@ -472,9 +384,6 @@ async function callLocalLlm(
   messages: Array<{ role: "system" | "user"; content: string }>,
   options: LocalLlmCallOptions,
 ): Promise<LocalLlmCallResponse> {
-  // LocalLlmClient.chatCompletion returns { content: string } — we use a
-  // typed call signature so no `any` leaks. The local client does not
-  // expose modelUsed, so we return "local" as the model identifier.
   const result = await client.chatCompletion(messages, options);
   return {
     content: result?.content ?? null,
@@ -482,12 +391,8 @@ async function callLocalLlm(
 }
 
 // ---------------------------------------------------------------------------
-// Core batch check
 // ---------------------------------------------------------------------------
 
-/**
- * Result of a batch faithfulness check — per-input results plus timing.
- */
 export interface FaithfulnessBatchResult {
   results: FaithfulnessResult[];
   /** Wall-clock duration of the LLM call (0 when backend was not called). */
@@ -532,7 +437,6 @@ export async function checkFaithfulnessBatch(
       ? config.extractionFaithfulnessContextChars
       : 400;
 
-  // Partition: inputs with a real quote vs. inputs without one.
   const results: FaithfulnessResult[] = new Array(inputs.length);
   const checkableIndices: number[] = [];
   const checkableInputs: FaithfulnessCheckInput[] = [];
@@ -558,14 +462,6 @@ export async function checkFaithfulnessBatch(
 
   let timedOut = false;
   const controller = new AbortController();
-  // Race the LLM call against the budget so the batch fails open at
-  // `timeoutMs` regardless of which backend is in flight. The local backend
-  // ignores the batch AbortSignal (it aborts each attempt via its own
-  // controller keyed on `timeoutMs`), so awaiting callFaithfulnessLlm directly
-  // could block past the budget on a slow/retrying local verifier. The timer
-  // both aborts the fallback (which honors the signal) and resolves the race
-  // so the batch returns promptly; the in-flight local call aborts on its own
-  // per-attempt timeoutMs. (codex review PRRT_kwDORJXyws6ObgMJ.)
   // Manual deferred instead of Promise.withResolvers (ES2024) — plugin-openclaw's
   // standalone tsconfig targets ES2022 lib and this module is reachable from its
   // type graph, so withResolvers would TS2550 there.
@@ -594,8 +490,6 @@ export async function checkFaithfulnessBatch(
     const settled = await Promise.race([
       callPromise.then(
         (r) => ({ done: true as const, result: r }),
-        // An unexpected throw is treated as "no content" (backend_unavailable)
-        // so the race never rejects and the outer catch is the final safety net.
         () => ({ done: true as const, result: { content: null, modelUsed: null } }),
       ),
       racedTimeout.then(() => ({ done: false as const })),
@@ -603,9 +497,6 @@ export async function checkFaithfulnessBatch(
     const elapsedMs = Date.now() - startedAt;
 
     if (!settled.done) {
-      // The budget elapsed before any backend returned content. Fail open as
-      // timeout; the orphaned callPromise resolves/rejects harmlessly (the
-      // fallback was aborted; the local client aborts on its own timeoutMs).
       for (const idx of checkableIndices) {
         results[idx] = { ok: false, error: { code: "timeout" } };
       }
@@ -614,10 +505,6 @@ export async function checkFaithfulnessBatch(
 
     const llmResult = settled.result;
 
-    // Cursor review: if the LLM returned usable content, use it even when
-    // the abort timer raced — a response that lands just as the timer fires
-    // has real verdicts. Only fall back to timeout errors when there is no
-    // content to parse (the call genuinely did not complete in time).
     if (timedOut && !llmResult.content) {
       for (const idx of checkableIndices) {
         results[idx] = { ok: false, error: { code: "timeout" } };
@@ -652,7 +539,6 @@ export async function checkFaithfulnessBatch(
           ...(entry.rationale ? { rationale: entry.rationale } : {}),
         };
       } else {
-        // LLM response was missing this index
         results[inputIdx] = { ok: false, error: { code: "malformed_output" } };
       }
     }
@@ -690,11 +576,7 @@ function isAbortError(err: unknown): boolean {
 
 
 // ---------------------------------------------------------------------------
-// Extraction-path orchestration helpers (issue #1576)
 //
-// These wrap checkFaithfulnessBatch + verdict application so the orchestrator
-// holds only thin delegation (ground rule 4: god files gain thin wiring only).
-// The core algorithm lives above; these are call-site glue.
 // ---------------------------------------------------------------------------
 
 /**
@@ -718,10 +600,6 @@ export function createFaithfulnessCounters(): FaithfulnessGateCounters {
   return { entailed: 0, contradicted: 0, unsupported: 0, unchecked: 0, skippedNoSpan: 0 };
 }
 
-/**
- * Structural slice of an extracted fact that the gate reads. Kept loose so
- * this pure module does not depend on the full `ExtractedFact` type.
- */
 export interface FaithfulnessGateFact {
   content: string;
   sources?: { quote?: string }[];
@@ -738,9 +616,6 @@ export interface FaithfulnessGateFact {
  * so the caller records `unchecked`/`skipped_no_span` and proceeds — a gate
  * outage must never block memory writes (checklist §4).
  */
-// Common English stopwords — filtered before overlap scoring so function
-// words (the, a, is, ...) don't dilute the signal between a fact and its
-// source sentence.
 const STOPWORDS = new Set([
   "the","a","an","and","or","but","is","are","was","were","be","been","being",
   "to","of","in","on","at","for","with","from","by","as","it","its","this","that",
@@ -749,12 +624,6 @@ const STOPWORDS = new Set([
   "s","very","really","just","so","than","then","there","here","about","into","over","under",
 ]);
 
-/**
- * Crude stemmer: strip common suffixes so "prefers"/"prefer",
- * "using"/"use", "started"/"start" collapse to one token. Not a real
- * stemmer — just enough to raise recall for the interim locator (#1575 will
- * replace this with NLI-verified spans).
- */
 function crudeStem(word: string): string {
   if (word.length > 5 && word.endsWith("ing")) return word.slice(0, -3);
   if (word.length > 4 && word.endsWith("ed")) return word.slice(0, -2);
@@ -797,18 +666,6 @@ function overlapCoefficient(a: Set<string>, b: Set<string>): number {
 const LOCATE_QUOTE_MIN_OVERLAP = 0.3;
 
 /**
- * Locate the best-matching verbatim span (sentence) from the source turn text
- * for an extracted fact, by token overlap. Returns the quote when a confident
- * match is found, `undefined` otherwise (the gate then records
- * skipped_no_span — never judged against an unrelated span).
- *
- * This is the interim source-text locator that makes the gate functional on
- * real extraction output (where #1575 has not yet attached per-fact
- * `sources`). It produces a genuine located quote per fact so the gate
- * consumes a span, not the whole conversation (issue #1576 design constraint).
- * #1575's NLI-verified per-fact locator will replace this when it lands.
- */
-/**
  * Extract a bounded window of `sourceText` centered on the located `quote`,
  * bounded by `contextChars` (the config's "window around the quote" semantics).
  *
@@ -836,8 +693,6 @@ export function extractContextWindow(
   let idx: number;
   if (matchedOffset !== undefined && matchedOffset >= 0) {
     const at = sourceText.indexOf(quote, matchedOffset);
-    // Fall back to the first occurrence if the matched offset is stale (e.g.
-    // the quote was bounded and is not a literal substring at that offset).
     idx = at >= 0 ? at : sourceText.indexOf(quote);
   } else {
     idx = sourceText.indexOf(quote);
@@ -848,7 +703,6 @@ export function extractContextWindow(
   const half = Math.floor(contextChars / 2);
   let start = Math.max(0, center - half);
   const end = Math.min(sourceText.length, start + contextChars);
-  // Re-anchor start so the window uses the full budget when end clamped.
   start = Math.max(0, end - contextChars);
   const window = sourceText.slice(start, end).trim();
   return window.length > 0 ? window : undefined;
@@ -944,17 +798,9 @@ function boundedWindow(
   maxChars: number,
 ): { text: string; start: number } {
   if (matchedPositions.length === 0) {
-    // Defensive: overlap scoring accepted the candidate but no individual
-    // token matched (e.g. all matches were stopwords). Fall back to prefix.
     const end = Math.min(text.length, maxChars);
     return { text: text.slice(0, end), start: 0 };
   }
-  // matchedPositions is sorted ascending (the regex scans left-to-right), so a
-  // two-pointer sliding window finds the densest maxChars-wide cluster in O(n)
-  // instead of O(n^2). This matters when a long unpunctuated candidate carries
-  // many repeats of a fact token (pasted logs, minified text) — thousands of
-  // positions would otherwise stall extraction before the LLM call (codex
-  // PRRT_kwDORJXyws6Ocih3).
   let bestAnchor = matchedPositions[0]!;
   let bestCount = 0;
   let bestLast = bestAnchor;
@@ -973,8 +819,6 @@ function boundedWindow(
       bestLast = matchedPositions[j]!;
     }
   }
-  // The densest cluster [bestAnchor, bestLast] fits within maxChars by
-  // construction; center a maxChars window on its midpoint, clamped to text.
   const center = Math.floor((bestAnchor + bestLast) / 2);
   const half = Math.floor(maxChars / 2);
   let start = Math.max(0, center - half);
@@ -994,12 +838,6 @@ export function locateFactQuote(
   if (factTokens.size === 0) return undefined;
   const candidates = splitSourceCandidates(sourceText);
   if (candidates.length === 0) return undefined;
-  // Pick the best-overlap candidate. Tiebreak equal own-overlap scores by a
-  // "context" score that includes the immediately PRECEDING candidate's text,
-  // so a repeated anaphoric line ("It launched in March") resolves to the
-  // occurrence whose neighbor names the fact's entity (issue #1633, codex
-  // PRRT_kwDORJXyws6Oce-S). Without this tiebreak the first occurrence wins
-  // even when the second is the one the fact refers to.
   let best: { candidate: SourceCandidate; score: number; contextScore: number } | null = null;
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i]!;
@@ -1020,10 +858,6 @@ export function locateFactQuote(
   if (text.length <= maxQuoteChars) {
     return { quote: text, offset: start };
   }
-  // Build a bounded window around the densest cluster of matched terms instead
-  // of returning the first maxQuoteChars prefix (issue #1633). Returning the
-  // prefix drops supporting words that fall after char ~600, routing
-  // actually-entailed facts to pending_review in enforce mode.
   const matched = locateMatchedTokens(factTokens, text);
   const win = boundedWindow(text, matched, maxQuoteChars);
   return { quote: win.text, offset: start + win.start };
@@ -1043,20 +877,10 @@ export async function runFaithfulnessGateBatch(
    */
   sourceText = "",
 ): Promise<Map<number, FaithfulnessResult> | null> {
-  // Phase 1 — build the checkable inputs. This is pure (no LLM, no throw):
-  // locateFactQuote and the source/span selection never reject. Keeping it
-  // outside the try lets the catch walk the same inputs to tag a pipeline
-  // failure as "unchecked" rather than dropping it on the floor.
   const inputs: { factIndex: number; input: FaithfulnessCheckInput }[] = [];
   for (let fi = 0; fi < facts.length; fi++) {
     const f = facts[fi];
     if (!f || typeof f.content !== "string" || !f.content.trim()) continue;
-    // Prefer #1575 verified spans; fall back to a located quote from the
-    // source turn text so the gate runs even before per-fact sources are
-    // attached. Without either, the fact is skipped_no_span (never gated).
-    // A composite fact may be supported by multiple adjacent spans — collect
-    // every valid source quote so the verifier sees the full evidence, not
-    // just sources[0] (codex review PRRT_kwDORJXyws6ObYQ_).
     const sources = Array.isArray(f.sources) ? f.sources : [];
     const sourceQuotes = sources
       .map((s) => (s && typeof s.quote === "string" ? s.quote.trim() : ""))
@@ -1067,18 +891,11 @@ export async function runFaithfulnessGateBatch(
     if (sourceQuotes.length > 0) {
       quote = sourceQuotes.join("\n");
     } else {
-      // Fallback locator returns the matched span AND its offset so the
-      // context window centers on the occurrence that actually matched the
-      // fact, not the first indexOf hit (issue #1633).
       const located = locateFactQuote(f.content, sourceText);
       if (!located) continue; // no located span — applyFaithfulnessVerdict tags skipped_no_span
       quote = located.quote;
       matchedOffset = located.offset;
     }
-    // Pass source context into the verifier so extractionFaithfulnessContextChars
-    // actually applies in the fallback-locator path (codex P2
-    // PRRT_kwDORJXyws6OblI1). #1575 verified spans already carry full evidence,
-    // so context is only synthesized for the fallback locator.
     const fallbackContext =
       usingFallbackLocator
         ? extractContextWindow(
@@ -1110,20 +927,10 @@ export async function runFaithfulnessGateBatch(
       const entry = inputs[j];
       if (entry) resultsByFactIndex.set(entry.factIndex, batch.results[j]!);
     }
-    // Verdict-distribution counters are bumped in applyFaithfulnessVerdict
-    // (at the per-fact apply point), NOT here, so console_state reflects
-    // facts that actually reached verdict application — not facts later
-    // dropped by dedup, importance, or judge gates (cursor review).
     log.info(
       `extraction-faithfulness[${mode}]: ${inputs.length} facts checked, ${batch.elapsedMs}ms`,
     );
   } catch (err) {
-    // Fail-open: a pipeline error never blocks writes (checklist §4). Tag each
-    // checkable fact as backend_unavailable so applyFaithfulnessVerdict records
-    // "unchecked" (issue spec: backend failure → unchecked). Returning null
-    // here would make a shadow/enforce batch failure indistinguishable from
-    // gate-off, losing the telemetry signal (cursor review). Facts with no
-    // located span stay absent → skipped_no_span at apply time.
     log.warn(
       `extraction-faithfulness: pipeline error, tagging ${inputs.length} checkable facts as unchecked (fail-open): ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -1161,7 +968,6 @@ export function applyFaithfulnessVerdict(
   }
   const result = resultsByFactIndex.get(factLoopIndex);
   if (!result) {
-    // No result for this fact index — it had no verified source span.
     counters.skippedNoSpan++;
     return {
       faithfulness: { verdict: "skipped_no_span", at: new Date().toISOString() },
@@ -1190,7 +996,6 @@ export function applyFaithfulnessVerdict(
     }
     return { faithfulness: fm, enforceStatus };
   }
-  // Backend failure — record as unchecked, fact proceeds (graceful degradation).
   counters.unchecked++;
   return {
     faithfulness: { verdict: "unchecked", at: new Date().toISOString() },
@@ -1198,7 +1003,6 @@ export function applyFaithfulnessVerdict(
   };
 }
 // ---------------------------------------------------------------------------
-// Frontmatter serialization (single-line JSON, like provenance sources)
 // ---------------------------------------------------------------------------
 
 /**
@@ -1224,7 +1028,6 @@ export function serializeFaithfulnessFields(fm: MemoryFrontmatter, lines: string
       canonical[key] = val;
     }
   }
-  // verdict is always present on a valid FaithfulnessFrontmatter
   if (!canonical.verdict) return;
   lines.push(`faithfulness: ${JSON.stringify(canonical)}`);
 }

@@ -176,9 +176,6 @@ export function isDirectRunPath(argvPath, moduleUrl = import.meta.url) {
 }
 
 function main() {
-  // Route pnpm through the repo wrapper: fleet hosts have no global `pnpm`
-  // and a bare spawn dies with ENOENT at the last step of `check-types`
-  // (issue #2781). The wrapper forwards stdio, so piped output still works.
   const result = spawnSync(
     process.execPath,
     [

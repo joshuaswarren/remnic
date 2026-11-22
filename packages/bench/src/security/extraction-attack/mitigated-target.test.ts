@@ -12,7 +12,6 @@ import { createMitigatedTarget } from "./mitigated-target.js";
 import { runMitigatedBaseline } from "./baseline.js";
 
 test("createMitigatedTarget returns empty hits when budget is exceeded", async () => {
-  // Memories in namespace "other" so cross-namespace queries retrieve actual
   // hits. Same-namespace queries (namespace "default") return empty from the
   // synthetic target's namespace filter, which is fine — the test only needs
   // to verify budget accounting, not recall result content.
@@ -32,13 +31,11 @@ test("createMitigatedTarget returns empty hits when budget is exceeded", async (
     principalNamespace: "default",
   });
 
-  // Same-namespace queries should not count against the budget.
   for (let i = 0; i < 5; i++) {
     const hits = await mitigated.recall("test", { namespace: "default" });
     assert.ok(Array.isArray(hits), `same-ns query ${i} should return array`);
   }
 
-  // Cross-namespace queries under the hard limit still return hits
   // (the raw target returns matches from namespace "other").
   for (let i = 0; i < 2; i++) {
     const hits = await mitigated.recall("alpha", { namespace: "other" });
@@ -46,7 +43,6 @@ test("createMitigatedTarget returns empty hits when budget is exceeded", async (
     assert.ok(hits.length > 0, `cross-ns query ${i} should return non-empty hits before budget exhausted`);
   }
 
-  // 3rd cross-namespace query reaches the hard limit and should be denied.
   const denied = await mitigated.recall("delta", { namespace: "other" });
   assert.equal(denied.length, 0, "should return empty after budget exhausted");
 });
@@ -64,13 +60,11 @@ test("createMitigatedTarget treats missing namespace as budget-eligible (fail-cl
     principalNamespace: "default",
   });
 
-  // Query with a token that actually exists in SYNTHETIC_MEMORIES so the
   // first recall returns non-empty hits — proving the raw target works.
   const firstHit = await mitigated.recall("Alex");
   assert.ok(Array.isArray(firstHit), "first query should return array");
   assert.ok(firstHit.length > 0, "first query should return at least one hit");
 
-  // Second query without namespace should be denied — budget exhausted.
   const denied = await mitigated.recall("Alex");
   assert.equal(denied.length, 0, "should return empty after budget exhausted with no namespace");
 });
@@ -124,7 +118,6 @@ test("mitigated T3 ASR is lower than or equal to unmitigated (no-ACL) T3 ASR", a
   const { SYNTHETIC_MEMORIES, OTHER_NAMESPACE_MEMORIES } = await import("./fixture.js");
   const { runBaseline } = await import("./baseline.js");
 
-  // Run the mitigated scenario *without* the budget wrapper to get the
   // unmitigated comparison point. ACL disabled, attacker queries namespace
   // "victim" where ground truth lives, so unmitigated ASR is non-trivial.
   const unmitigatedRows = await runBaseline([{
@@ -147,7 +140,6 @@ test("mitigated T3 ASR is lower than or equal to unmitigated (no-ACL) T3 ASR", a
   assert.ok(unmitigated, "unmitigated row should exist");
   assert.ok(mitigated, "mitigated row should exist");
 
-  // The unmitigated path should have non-trivial ASR (the attacker can
   // actually retrieve victim memories when ACL is off and namespace matches).
   assert.ok(
     unmitigated.asr > 0,
@@ -166,43 +158,36 @@ test("createMitigatedTarget rejects invalid budget parameters", () => {
     disclosesMemoryIds: true,
   });
 
-  // NaN budgetHardLimit
   assert.throws(
     () => createMitigatedTarget({ target: rawTarget, budgetHardLimit: NaN, principalNamespace: "default" }),
     /budgetHardLimit must be a positive integer/,
   );
 
-  // Negative budgetHardLimit
   assert.throws(
     () => createMitigatedTarget({ target: rawTarget, budgetHardLimit: -1, principalNamespace: "default" }),
     /budgetHardLimit must be a positive integer/,
   );
 
-  // Zero budgetHardLimit
   assert.throws(
     () => createMitigatedTarget({ target: rawTarget, budgetHardLimit: 0, principalNamespace: "default" }),
     /budgetHardLimit must be a positive integer/,
   );
 
-  // Non-integer budgetHardLimit
   assert.throws(
     () => createMitigatedTarget({ target: rawTarget, budgetHardLimit: 1.5, principalNamespace: "default" }),
     /budgetHardLimit must be a positive integer/,
   );
 
-  // Zero budgetWindowMs
   assert.throws(
     () => createMitigatedTarget({ target: rawTarget, budgetHardLimit: 5, budgetWindowMs: 0, principalNamespace: "default" }),
     /budgetWindowMs must be a positive finite number/,
   );
 
-  // Negative budgetWindowMs
   assert.throws(
     () => createMitigatedTarget({ target: rawTarget, budgetHardLimit: 5, budgetWindowMs: -100, principalNamespace: "default" }),
     /budgetWindowMs must be a positive finite number/,
   );
 
-  // Empty principalNamespace
   assert.throws(
     () => createMitigatedTarget({ target: rawTarget, budgetHardLimit: 5, principalNamespace: "" }),
     /principalNamespace must be a non-empty string/,

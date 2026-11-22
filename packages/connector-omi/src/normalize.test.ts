@@ -19,7 +19,6 @@ test("timezoneOffsetIso resolves fixed and DST offsets", () => {
   assert.equal(timezoneOffsetIso(june, "America/Chicago"), "-05:00");
   assert.equal(timezoneOffsetIso(january, "America/Chicago"), "-06:00");
   assert.equal(timezoneOffsetIso(june, "Asia/Kolkata"), "+05:30");
-  // Unknown zone falls back to UTC instead of crashing the sync.
   assert.equal(timezoneOffsetIso(june, "Not/AZone"), "+00:00");
 });
 
@@ -82,7 +81,6 @@ test("legacy day-window names warn once per process", async () => {
   try {
     zonedDayBounds("2026-06-10", "UTC");
     zonedDayStartIso("2026-06-10", "UTC");
-    // Second calls must not re-warn.
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
     });

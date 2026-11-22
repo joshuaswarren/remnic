@@ -1,19 +1,3 @@
-/**
- * Per-session buffer persistence (storage layer).
- *
- * The legacy buffer persistence rewrote the WHOLE state/buffer.json — every
- * session's turns — on every buffer save, which on long-running daemons meant
- * serializing 100+ MB per observe. These tests pin the replacement contract:
- *
- *   - one file per session under `<memoryDir>/state/buffer/`,
- *   - incremental `saveBufferSession` / `deleteBufferSession` for the hot path,
- *   - whole-state `saveBuffer` as a full reconcile (used at correctness
- *     boundaries and by legacy callers),
- *   - one-time migration from the legacy single-file format, safe when a crash
- *     lands mid-migration (per-session file wins over the legacy snapshot),
- *   - per-session writes do NOT run the heavyweight `ensureDirectories()`
- *     pass (the realpath/lstat storm) — they mkdir only what the write needs.
- */
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -90,7 +74,6 @@ test("deleteBufferSession removes the file and loadBuffer drops the session", as
     await storage.deleteBufferSession("session-a");
     const state = await storage.loadBuffer();
     assert.equal(state.entries?.["session-a"], undefined);
-    // Deleting an absent session is a no-op, not a throw (idempotent cleanup).
     await storage.deleteBufferSession("session-a");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -122,12 +105,10 @@ test("legacy state/buffer.json migrates to per-session files exactly once", asyn
     assert.equal(loaded.entries?.["session-a"]?.turns[0]?.content, "alpha fact");
     assert.equal(loaded.entries?.default?.extractionCount, 2);
 
-    // Migration is materialized: per-session files exist, the legacy file is gone.
     const names = await readdir(path.join(stateDir, "buffer"));
     assert.equal(names.filter((n) => n.endsWith(".json")).length, 2, "expected one file per legacy entry");
     await assert.rejects(stat(path.join(stateDir, "buffer.json")), { code: "ENOENT" });
 
-    // Second load reads purely from the per-session files.
     const reloaded = await storage.loadBuffer();
     assert.equal(reloaded.entries?.["session-a"]?.turns[0]?.content, "alpha fact");
   } finally {
@@ -140,8 +121,6 @@ test("crash mid-migration: existing per-session file wins over the legacy snapsh
   try {
     const stateDir = path.join(root, "state");
     await mkdir(path.join(stateDir, "buffer"), { recursive: true });
-    // Session A was already migrated (with a NEWER turn) before the crash;
-    // the legacy file still holds the older snapshot for both sessions.
     await storage_writeSession(stateDir, "session-a", makeEntry("alpha fact NEW"));
     const legacy: BufferState = {
       turns: [],
@@ -165,8 +144,6 @@ test("crash mid-migration: existing per-session file wins over the legacy snapsh
 });
 
 async function storage_writeSession(stateDir: string, key: string, entry: BufferEntryState): Promise<void> {
-  // Written directly (pre-migration crash simulation) using the same file naming
-  // the storage layer derives; the storage instance is created after setup.
   await writeFile(
     path.join(stateDir, "buffer", bufferSessionFileName(key)),
     JSON.stringify({ key, ...entry }),
@@ -192,8 +169,6 @@ test("whole-state saveBuffer reconciles per-session files (writes, deletes stale
     assert.equal(state.entries?.["session-a"]?.turns[0]?.content, "alpha fact v2");
     assert.equal(state.entries?.["session-gone"], undefined, "stale session file survived a whole-state reconcile");
     const names = await readdir(path.join(root, "state", "buffer"));
-    // Reconcile materializes the "default" entry too (legacy semantics: the
-    // top-level state IS the default session), so expect exactly those two.
     assert.deepEqual(
       names.filter((n) => n.endsWith(".json")).sort(),
       [bufferSessionFileName("session-a"), bufferSessionFileName("default")].sort(),
@@ -266,8 +241,6 @@ test("per-session save does not run the heavyweight ensureDirectories pass", asy
   try {
     const storage = new StorageManager(root);
     await storage.saveBufferSession("session-a", makeEntry("alpha fact"));
-    // ensureDirectories() materializes facts/, entities/, questions/, ... — a
-    // per-session buffer write must only need state/buffer/.
     assert.equal(await exists(path.join(root, "entities")), false, "entities dir created by a buffer session save");
     assert.equal(await exists(path.join(root, "questions")), false, "questions dir created by a buffer session save");
     const state = await storage.loadBuffer();
@@ -360,7 +333,6 @@ test("loading with the wrong secure-store key rejects instead of reading an empt
     reader.setSecureStoreKey(Buffer.alloc(32, 2), true);
 
     await assert.rejects(reader.loadBuffer(), SecureStoreDecryptError);
-    // The encrypted file must survive: a rejected load must not let later saves replace it.
     const names = await readdir(path.join(root, "state", "buffer"));
     assert.deepEqual(names, [bufferSessionFileName("session-a")]);
   } finally {

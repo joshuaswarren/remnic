@@ -1,6 +1,3 @@
-/**
- * Correction classify completion: short timeout, caller abort, gateway fallback.
- */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 

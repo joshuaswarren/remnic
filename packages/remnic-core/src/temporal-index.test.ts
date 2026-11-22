@@ -266,10 +266,6 @@ test("failed atomic commit never publishes a mutated temporal cache", async () =
     await queryByDateRangeAsync(memoryDir, "2026-03-09", "2026-03-11"),
     new Set([originalPath]),
   );
-  // The tag half is NOT committed when the temporal write fails (issue #1911,
-  // Cursor Medium): committing tags while temporal stays unchanged leaves a
-  // durable mismatch. Both halves stay at their prior state, so "rejected" has
-  // no tag membership until a later successful (both-halves) index.
   assert.deepEqual(
     await queryByTagsAsync(memoryDir, ["rejected"]),
     new Set<string>(),
@@ -437,9 +433,6 @@ test("temporal index writers fail open on symlink lock blockers", async () => {
   const dateMatches = await queryByDateRangeAsync(memoryDir, "2026-03-09", "2026-03-10");
   const tagMatches = await queryByTagsAsync(memoryDir, ["concurrency/shared"]);
   assert.equal(dateMatches, null);
-  // Both halves fail open together (issue #1911, Cursor Medium): the symlinked
-  // temporal lock blocks the temporal write, so the tag half is also skipped
-  // (no durable mismatch). The tag index is never created → query returns null.
   assert.equal(tagMatches, null);
 });
 
@@ -648,7 +641,6 @@ test("temporal timeline generic edge selection honors small and zero limits", as
   );
 });
 
-// ─── #1911B: batch de-index ─────────────────────────────────────────────────
 
 interface DeindexEntry {
   path: string;
@@ -656,8 +648,6 @@ interface DeindexEntry {
   tags: string[];
 }
 
-// A spread of memories across distinct dates with hierarchical (alias-producing)
-// and flat tags, so equivalence covers date sets, event map, tag graph, and aliases.
 function sampleMemories(prefix: string, count: number): DeindexEntry[] {
   const entries: DeindexEntry[] = [];
   for (let i = 0; i < count; i += 1) {
@@ -694,8 +684,6 @@ test("#1911B batch de-index yields the same final index as per-memory de-index",
   await seedIndex(sequentialDir, all);
   await seedIndex(batchDir, all);
 
-  // Remove a non-contiguous subset in a scrambled order; batching must not depend
-  // on removal order to reach the same final index.
   const removed = [all[10], all[1], all[7], all[4], all[0]];
 
   for (const e of removed) {
@@ -708,7 +696,6 @@ test("#1911B batch de-index yields the same final index as per-memory de-index",
   assert.deepEqual(batch.temporal, seq.temporal);
   assert.deepEqual(batch.tags, seq.tags);
 
-  // Survivors remain, removed paths are gone from both indexes.
   const survivorPaths = all.filter((e) => !removed.includes(e)).map((e) => e.path);
   const stillIndexed = await queryByTagsAsync(batchDir, ["shared"]);
   assert.deepEqual(stillIndexed, new Set(survivorPaths));
@@ -725,7 +712,6 @@ test("#1911B de-indexing N memories performs exactly one temporal + one tag writ
     let temporal = 0;
     let tags = 0;
     setIndexWriteObserverForTest((filePath) => {
-      // Scope to this directory so unrelated index writes never skew the count.
       if (!filePath.startsWith(dir)) return;
       if (filePath.endsWith("index_time.json")) temporal += 1;
       else if (filePath.endsWith("index_tags.json")) tags += 1;
@@ -736,8 +722,6 @@ test("#1911B de-indexing N memories performs exactly one temporal + one tag writ
     };
   };
 
-  // try/finally guarantees the global observer is cleared even if an awaited
-  // op throws, so it can never leak into a later test.
   let batchWrites = { temporal: 0, tags: 0 };
   const stopBatch = countWrites(batchDir);
   try {
@@ -756,7 +740,6 @@ test("#1911B de-indexing N memories performs exactly one temporal + one tag writ
   } finally {
     seqWrites = stopSeq();
   }
-  // The per-memory path is the O(N) amplification this batch API replaces.
   assert.deepEqual(seqWrites, { temporal: entries.length, tags: entries.length });
 });
 
@@ -804,17 +787,10 @@ test("#1911B a throwing write observer cannot fail a committed index write", asy
   await seedIndex(throwDir, entries);
   await seedIndex(controlDir, entries);
 
-  // Control: a clean batch de-index with no observer installed.
   await deindexMemoriesBatchAsync(controlDir, entries);
 
-  // Same batch, but the committed-write observer throws. The exception fires
-  // only after the temporal rename has committed; if it escaped, the write would
-  // retry and ultimately report failure, skipping the paired tag phase and
-  // leaving a half-applied index. Isolation must keep the outcome identical to
-  // the control on BOTH indexes.
   const observedWrites: string[] = [];
   setIndexWriteObserverForTest((filePath) => {
-    // Scope to this directory so a concurrent test's index write never counts.
     if (filePath.startsWith(throwDir)) observedWrites.push(filePath);
     throw new Error("observer boom");
   });
@@ -824,10 +800,6 @@ test("#1911B a throwing write observer cannot fail a committed index write", asy
     setIndexWriteObserverForTest(undefined);
   }
 
-  // The observer must have fired once per committed index write, in order:
-  // temporal commits first, then tags. This guards against a silent regression
-  // where observer dispatch is dropped and the isolation assertions below pass
-  // vacuously because nothing ever threw.
   assert.equal(observedWrites.length, 2);
   assert.ok(observedWrites[0]?.endsWith("index_time.json"));
   assert.ok(observedWrites[1]?.endsWith("index_tags.json"));

@@ -527,8 +527,6 @@ test("claude-cli usage-limit signal detector recognizes common phrasing", () => 
   assert.equal(isClaudeUsageLimitSignal("invalid model requested"), false);
   assert.equal(isClaudeUsageLimitSignal(""), false);
   // Real CLI-observed phrasing (verified via `strings` on the installed
-  // claude binary, v2.1.202): "You've hit your session limit" / "...weekly
-  // limit" / "...Opus limit" / "...Sonnet limit".
   assert.equal(isClaudeUsageLimitSignal("You've hit your session limit · resets in 2h"), true);
   assert.equal(isClaudeUsageLimitSignal("You've hit your weekly limit"), true);
   assert.equal(isClaudeUsageLimitSignal("You've hit your Opus limit"), true);
@@ -1090,7 +1088,6 @@ test("claude-cli provider backs off on a zero-exit empty result whose quota text
         async runClaudeCli() {
           attempts += 1;
           if (attempts === 1) {
-            // zero exit, is_error unset, empty result — quota only on stderr.
             return {
               status: 0,
               signal: null,
@@ -1158,15 +1155,12 @@ test("claude-cli provider does not throw on a non-string JSON result (coerces to
           return {
             status: 0,
             signal: null,
-            // is_error not strictly true; result is a non-string.
             stdout: JSON.stringify({ is_error: false, result: badResult }),
             stderr: "",
           };
         },
       },
     );
-    // Coerced to empty -> falls into the controlled "no result text" path,
-    // a plain Error, NOT a TypeError from calling .trim() on a non-string.
     await assert.rejects(provider.complete("hello"), (err) => {
       assert.ok(err instanceof Error);
       assert.ok(!(err instanceof TypeError), `non-string result ${JSON.stringify(badResult)} threw a TypeError`);
@@ -1193,9 +1187,6 @@ test("claude-cli provider fails fast when opts.signal is already aborted (no cla
 });
 
 test("claude-cli usage-limit retries do NOT consume the transient maxAttempts budget", async () => {
-  // maxAttempts=2 means at most ONE transient retry. But several usage-limit
-  // backoffs must NOT eat that budget: after N usage-limit cycles, a later
-  // transient failure should still get its one transient retry.
   let call = 0;
   const originalSetTimeout = global.setTimeout;
   // @ts-expect-error -- test-only: short-circuit the backoff sleep.
@@ -1207,11 +1198,9 @@ test("claude-cli usage-limit retries do NOT consume the transient maxAttempts bu
         async runClaudeCli() {
           call += 1;
           if (call <= 2) {
-            // two usage-limit failures first (budget-bounded, must not count against maxAttempts)
             return { status: 1, signal: null, stdout: "", stderr: "Claude AI usage limit reached, resets at 5pm" };
           }
           if (call === 3) {
-            // now a transient signal failure — the ONE allowed transient retry must still be available
             return { status: null, signal: "SIGTERM", stdout: "", stderr: "killed" };
           }
           return { status: 0, signal: null, stdout: JSON.stringify({ is_error: false, result: "recovered" }), stderr: "" };
@@ -1220,9 +1209,6 @@ test("claude-cli usage-limit retries do NOT consume the transient maxAttempts bu
     );
     const result = await provider.complete("hello");
     assert.equal(result.text, "recovered");
-    // 2 usage-limit + 1 transient-fail + 1 transient-retry-success = 4 calls.
-    // If the counters were shared, the transient retry at call 3 would have been
-    // denied (attempt already >= maxAttempts) and it would have thrown.
     assert.equal(call, 4);
   } finally {
     global.setTimeout = originalSetTimeout;

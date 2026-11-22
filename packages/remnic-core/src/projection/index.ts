@@ -12,26 +12,18 @@ import { getCategoryDir, ALL_CATEGORY_KEYS } from "../utils/category-dir.js";
 
 const VALID_PROJECTION_CATEGORIES = new Set(ALL_CATEGORY_KEYS);
 
-// ── Types ────────────────────────────────────────────────────────────────────
 
 export interface TreeNode {
   /** Relative path from context-tree root, e.g. "entities/claude.md" */
   path: string;
-  /** Category from canonical memory */
   category: string;
-  /** Human-readable title */
   title: string;
-  /** File content (rendered markdown) */
   content: string;
-  /** Source memory IDs that contributed to this node */
   sourceAnchors: string[];
   /** Confidence (0-1) */
   confidence: number;
-  /** Trust zone classification */
   confidenceTier: string;
-  /** When this node was generated */
   generatedAt: string;
-  /** Provenance chain */
   provenance: ProvenanceEntry[];
 }
 
@@ -48,13 +40,10 @@ export interface GenerateOptions {
   outputDir: string;
   /** Categories to include (default: all) */
   categories?: string[];
-  /** Whether to include entity graph */
   includeEntities?: boolean;
-  /** Whether to include orphaned questions */
   includeQuestions?: boolean;
   /** Max nodes per category (default: unlimited) */
   maxPerCategory?: number;
-  /** Whether to watch for changes and regenerate incrementally */
   watch?: boolean;
 }
 
@@ -66,7 +55,6 @@ export interface GenerateResult {
   outputDir: string;
 }
 
-// ── Generation ──────────────────────────────────────────────────────────────
 
 /**
  * Generate a context tree from canonical memory.
@@ -92,7 +80,6 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
   const requestedCategories = validateProjectionCategories(filterCategories);
   const realMemoryDir = assertSafeMemoryRoot(resolvedMemoryDir);
 
-  // Ensure output directory exists
   assertNotSymlink(resolvedOutputDir, "context tree outputDir");
   fs.mkdirSync(resolvedOutputDir, { recursive: true });
   const realOutputDir = fs.realpathSync(resolvedOutputDir);
@@ -129,7 +116,6 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
         continue;
       }
 
-      // Write node to output
       const outputPath = resolveContainedOutputPath(realOutputDir, node.path);
       writeProjectedContent(realOutputDir, outputPath, node.content);
 
@@ -139,7 +125,6 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
     }
   }
 
-  // Process entities
   if (includeEntities) {
     const entitiesDir = path.join(memoryDir, "entities");
     if (fs.existsSync(entitiesDir)) {
@@ -168,7 +153,6 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
     }
   }
 
-  // Process questions
   const shouldIncludeQuestions =
     includeQuestions &&
     (requestedCategories === undefined || requestedCategories.includes("question"));
@@ -209,7 +193,6 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
     }
   }
 
-  // Write index
   const index = generateIndex(categoryCounts, resolvedOutputDir);
   writeProjectedContent(realOutputDir, resolveContainedOutputPath(realOutputDir, "INDEX.md"), index);
 
@@ -222,7 +205,6 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
   };
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function isPathInside(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
@@ -436,7 +418,6 @@ function projectNode(
   const fileName = path.basename(filePath, ".md");
   const dateDir = path.basename(path.dirname(filePath));
 
-  // Build relative path: category/date/file or just category/file
   let relPath: string;
   if (/^\d{4}-\d{2}-\d{2}$/.test(dateDir)) {
     relPath = path.join(category, dateDir, `${fileName}.md`);

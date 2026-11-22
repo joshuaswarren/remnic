@@ -22,7 +22,6 @@
 
 export interface CodingRecallCaseMemory {
   id: string;
-  /** Namespace the memory was persisted under. */
   namespace: string;
   /** Optional file-path refs that `review-context` ranking consults. */
   entityRefs?: string[];
@@ -66,8 +65,6 @@ export interface CodingRecallCase {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Cross-project isolation
-// ──────────────────────────────────────────────────────────────────────────
 
 const CROSS_PROJECT_CASE: CodingRecallCase = {
   id: "cross-project-basic",
@@ -85,7 +82,6 @@ const CROSS_PROJECT_CASE: CodingRecallCase = {
 };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Branch isolation with project-level fallback
 // ──────────────────────────────────────────────────────────────────────────
 
 const BRANCH_ISOLATION_CASE: CodingRecallCase = {
@@ -98,13 +94,9 @@ const BRANCH_ISOLATION_CASE: CodingRecallCase = {
     "project-origin-cccccccc",
   ],
   candidates: [
-    // Branch A — should appear
     { id: "brA-local", namespace: "project-origin-cccccccc-branch-feat-a", score: 0.9 },
-    // Branch B — must not appear
     { id: "brB-local", namespace: "project-origin-cccccccc-branch-feat-b", score: 0.95 },
-    // Project-level — should appear via readFallback
     { id: "proj-level", namespace: "project-origin-cccccccc", score: 0.7 },
-    // Other project — must not appear
     { id: "other-proj", namespace: "project-origin-dddddddd", score: 0.85 },
   ],
   expectedIds: ["brA-local", "proj-level"],
@@ -112,7 +104,6 @@ const BRANCH_ISOLATION_CASE: CodingRecallCase = {
 };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Review-context ranking
 // ──────────────────────────────────────────────────────────────────────────
 
 const REVIEW_CONTEXT_CASE: CodingRecallCase = {
@@ -126,20 +117,13 @@ const REVIEW_CONTEXT_CASE: CodingRecallCase = {
   candidates: [
     { id: "touched", namespace: "project-origin-eeeeeeee", score: 0.3, entityRefs: ["src/auth.ts"] },
     { id: "untouched", namespace: "project-origin-eeeeeeee", score: 0.3, entityRefs: ["lib/other.ts"] },
-    // A strong unmatched memory — should still appear but not outrank
-    // touched (touched has 0.3 + 0.5 = 0.8 ≥ 0.8; stable tie-break wins
-    // by id: "strong" < "touched", so "strong" comes first).
     { id: "strong", namespace: "project-origin-eeeeeeee", score: 0.8, entityRefs: ["db.sql"] },
   ],
-  // Expected ordering: "strong" (0.8) and "touched" (0.8) tie on adjusted
-  // score; stable tie-break by id puts "strong" first. Then "untouched"
-  // (0.3) last.
   expectedIds: ["strong", "touched", "untouched"],
   forbiddenIds: [],
 };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Developer workflow memory
 // ──────────────────────────────────────────────────────────────────────────
 
 const REMNIC_PROJECT_NAMESPACE = "project-origin-1234abcd";
@@ -284,7 +268,6 @@ const DEVELOPER_WORKFLOW_REVIEW_CASE: CodingRecallCase = {
 };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Exported fixtures
 // ──────────────────────────────────────────────────────────────────────────
 
 export const CODING_RECALL_FIXTURE: CodingRecallCase[] = [
@@ -295,9 +278,6 @@ export const CODING_RECALL_FIXTURE: CodingRecallCase[] = [
   DEVELOPER_WORKFLOW_REVIEW_CASE,
 ];
 
-// Smoke fixture keeps developer-workflow cases first so CLI quick runs that
-// apply a task cap still exercise the workflow coverage metric instead of
-// reporting only the older namespace-isolation cases.
 export const CODING_RECALL_SMOKE_FIXTURE: CodingRecallCase[] = [
   DEVELOPER_WORKFLOW_PLANNING_CASE,
   DEVELOPER_WORKFLOW_REVIEW_CASE,

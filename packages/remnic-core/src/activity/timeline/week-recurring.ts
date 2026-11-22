@@ -35,10 +35,6 @@ export function findRecurringPatterns(input: {
   minDays?: number;
 }): RecurringPattern[] {
   const minDays = input.minDays ?? DEFAULT_RECURRENCE_MIN_DAYS;
-  // A floor of 2 is the module's defining invariant, not a preference: at
-  // minDays 1 every key that appeared once is "recurring", which is exactly
-  // the one-off blip this helper exists to exclude. Configuration must not be
-  // able to switch the invariant off.
   if (!Number.isInteger(minDays) || minDays < MIN_RECURRENCE_MIN_DAYS) {
     throw new RangeError(
       `Invalid minDays ${minDays}; expected an integer >= ${MIN_RECURRENCE_MIN_DAYS}.`,

@@ -8,12 +8,6 @@ import {
   type LocalLabPreflightInput,
 } from "./preflight.ts";
 
-/**
- * Stub fetch that responds with a fixed body + status. Captures the request
- * URL so tests can assert the discovery endpoint shape. Production talks to
- * the same `fetch` contract, so this stub matches the production signature
- * (rule 33 — no mock-only surface).
- */
 function stubFetch(
   body: unknown,
   status = 200,
@@ -51,7 +45,6 @@ test("discoveryEndpointFor appends /v1/models for openai-compatible baseUrl with
     discoveryEndpointFor("openai-compatible", "http://localhost:8080/v1"),
     "http://localhost:8080/v1/models",
   );
-  // Tolerates a trailing slash on either form.
   assert.equal(
     discoveryEndpointFor("openai-compatible", "http://localhost:8080/v1/"),
     "http://localhost:8080/v1/models",
@@ -99,18 +92,15 @@ test("preflight failure surfaces the endpoint's ACTUAL model list (rule 51)", as
 
   assert.equal(result.ok, false);
   if (!result.ok) {
-    // The found model list MUST be present so the operator sees the mismatch.
     assert.equal(result.foundModels.length, 3);
     assert.deepEqual(
       result.foundModels.map((m) => m.id),
       ["phi4:14b", "llama3:8b", "gemma3:27b"],
     );
-    // The reason text MUST enumerate the found models.
     assert.match(result.reason, /did not report the manifest model qwen3:14b/);
     assert.match(result.reason, /phi4:14b/);
     assert.match(result.reason, /llama3:8b/);
     assert.match(result.reason, /gemma3:27b/);
-    // The expected model is also a top-level field on the failure object.
     assert.equal(result.expectedModel, "qwen3:14b");
   }
 });
@@ -206,9 +196,6 @@ test("preflight handles Ollama /api/tags shape ({ models: [{ name }] })", async 
 });
 
 test("preflight never interpolates baseUrl/model into anything but a fetch URL (rule 10)", async () => {
-  // The stub captures the URL the preflight actually fetched; that URL must be
-  // composed via string concatenation against `baseUrl` only — there is no
-  // shell to leak into in this codepath at all.
   const { fetchImpl, requests } = stubFetch({ data: [{ id: "qwen3:14b" }] });
   await preflightLocalLabRole(responderInput, { fetchImpl });
   assert.equal(

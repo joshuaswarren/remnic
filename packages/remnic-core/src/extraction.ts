@@ -183,9 +183,6 @@ export class ExtractionEngine {
             config.gatewayAgentId ? ` (agent: ${config.gatewayAgentId})` : " (defaults)"),
       );
     } else if (config.taskModelChain) {
-      // taskModelChain resolves through gateway providers, so it only applies
-      // under modelSource: "gateway". Warn rather than silently ignore it so a
-      // misconfigured plugin-mode setup is visible. Issue #1365 / PR #1370.
       log.warn(
         `taskModelChain is set but modelSource is "${config.modelSource}"; the chain is ignored. ` +
           `Set modelSource: "gateway" to use it for extraction/consolidation/summarization.`,
@@ -205,11 +202,6 @@ export class ExtractionEngine {
     return !this.useGatewayModelSource && this.client !== null;
   }
 
-  /**
-   * Span-mode materialization (issue #2333 Phase B): sibling module, called
-   * after parse and before sanitize/grounding so downstream sees one content
-   * form. Offsets index the exact prompt turn texts and die at materialization.
-   */
   private applySpanMaterialization(
     result: ExtractionResult,
     spanTurns: readonly SpanMaterializeTurn[],
@@ -221,13 +213,8 @@ export class ExtractionEngine {
     );
   }
 
-  /**
-   * Build FallbackLlmOptions with the configured gateway agent ID injected.
-   */
   private withGatewayAgent(options: import("./fallback-llm.js").FallbackLlmOptions): import("./fallback-llm.js").FallbackLlmOptions {
     if (!this.useGatewayModelSource) return options;
-    // Shared resolution (taskModelChain > gatewayAgentId) so every background
-    // task routes identically (gotcha #22). Issue #1365.
     return { ...options, ...gatewayTaskChainOptions(this.config) };
   }
 
@@ -255,7 +242,6 @@ export class ExtractionEngine {
           log.warn(`extraction fact sanitized; violations=${sanitized.violations.join(", ")}`);
         }
         let content = sanitized.text;
-        // De-linearize: resolve coreferences + anchor temporal expressions
         if (resolvePipelineProcessingCapabilities(this.config).delinearize) {
           content = delinearize(content, result.entities, ts);
         }
@@ -808,10 +794,6 @@ export class ExtractionEngine {
       this.config.provenance?.enabled
         ? '- Source quotes: For each fact, include a "quote" field with the EXACT verbatim words from the conversation that support the fact (a contiguous span from a single turn, not a paraphrase). Cap at ~300 chars.'
         : "",
-      // #1578: emit the same event-time guidance as the primary extraction
-      // paths so proactive-recovered facts also carry an optional eventTime
-      // (chatgpt-codex thread on extraction.ts:1607). Returns "" when the
-      // bi-temporal gate is off, keeping the prompt unchanged by default.
       eventTimePromptInstruction(this.config),
       headerConnector(sourceConnector) !== undefined && resolveMemoryLifecycleCapabilities(this.config).extractionScopeClassification
         ? `Tool, command, or CLI-flag instructions tied to the ${sourceConnector} agent are "project" scope; when you recover one, begin the fact with a leading "In ${sourceConnector}, " clause naming that agent (e.g. "In ${sourceConnector}, use the search tool with a repository path.").`
@@ -1043,11 +1025,6 @@ export class ExtractionEngine {
     return null;
   }
 
-  /**
-   * The one funnel every successful extraction path returns through — local
-   * LLM, direct client, and gateway fallback alike. The ambient clamp lives
-   * here so a new path cannot bypass it (issue #2294).
-   */
   private finalizeExtractionResult(
     result: ExtractionResult,
     turns: ReadonlyArray<{
@@ -1072,7 +1049,6 @@ export class ExtractionEngine {
   ): Promise<ExtractionResult> {
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
 
-    // Guard: skip if buffer is empty or all turns are whitespace-only
     const substantiveTurns = turns.filter((t) => t.content.trim().length > 0);
     if (substantiveTurns.length === 0) {
       log.debug("extraction skipped — no substantive turns in buffer");
@@ -1087,19 +1063,10 @@ export class ExtractionEngine {
           : turn.content,
       }))
       .filter((turn) => turn.content.trim().length > 0);
-    // One derivation, over the turns the model actually sees (boundedTurns) —
-    // the same set the qualifier, grounding source, and telemetry filter
-    // operate on. result.sourceConnector carries it to persistence so the
-    // orchestrator does not recompute over a different turn set (#2183).
     const resolvedConnector = resolveSourceConnector(boundedTurns);
-    // Ambient-capture provenance (issue #2294): true when any contributing turn
-    // came from an always-on recorder, so the prompt warns about media audio
-    // and the finalize chokepoint clamps high-impact personal facts.
     const ambientCapture = boundedTurns.some(
       (turn) => turn.ambientCapture === true && turn.extractionContextOnly !== true,
     );
-    // The header and qualifier strip/restore are gated on the scope-classification
-    // capability; persistence records resolvedConnector regardless (trusted metadata).
     const sourceConnector = lifecycleCaps.extractionScopeClassification
       ? resolvedConnector
       : undefined;
@@ -1145,7 +1112,6 @@ export class ExtractionEngine {
       };
     }
 
-    // Use the last turn's timestamp for temporal anchoring (more accurate than wall-clock)
     const lastTurnTs = boundedTurns.length > 0 ? new Date(boundedTurns[boundedTurns.length - 1].timestamp) : undefined;
     const messageTimestamp = lastTurnTs && !isNaN(lastTurnTs.getTime()) ? lastTurnTs : undefined;
     const groundingContext: ExtractionGroundingContext = {
@@ -1160,8 +1126,6 @@ export class ExtractionEngine {
     };
 
     const traceId = crypto.randomUUID();
-    // Only emit llm_start for the direct path when a client or local LLM is configured.
-    // Fallback-only deployments skip this to avoid fake spans in Opik.
     const emittedDirectStart = !!(this.shouldUseDirectClient || this.shouldUseLocalLlm);
     if (emittedDirectStart) {
       this.emit({ kind: "llm_start", traceId, model: this.config.model, operation: "extraction", input: conversation });
@@ -1169,21 +1133,16 @@ export class ExtractionEngine {
     let closedDirectTrace = false;
     const startTime = Date.now();
 
-    // --- profiling instrumentation ---
     const extractionTraceId = this.profiler.startTrace("extraction", undefined, {
       model: this.config.model,
       localLlm: resolveLocalLlmCapabilities(this.config).localLlm,
     });
     this.profiler.startSpan("total", extractionTraceId);
-    // True when a local or direct extractor was attempted before the gateway
-    // fallback, so a gateway "no models" result doesn't re-classify a real
-    // primary failure as auth_config (codex review: preserve direct/local failures).
     let primaryExtractorAttempted = false;
     // Direct client refused the request as too large (#3531): report that if the gateway fails too.
     let directInputTooLarge = false;
 
     try {
-    // Try local LLM first if enabled
     if (this.shouldUseLocalLlm) {
       this.profiler.startSpan("local-llm", extractionTraceId);
       primaryExtractorAttempted = true;
@@ -1209,7 +1168,6 @@ export class ExtractionEngine {
           const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
           return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector, ambientCapture);
         }
-        // Local failed, fall back if allowed
         if (!this.config.localLlmFallback) {
           log.warn("extraction: local LLM failed and fallback disabled");
           return {
@@ -1237,12 +1195,10 @@ export class ExtractionEngine {
         }
         log.info("extraction: local LLM error, falling back to gateway default AI:", err);
       } finally {
-        // End local-llm span if it wasn't ended on the success path
         try { this.profiler.endSpan("local-llm", extractionTraceId); } catch { /* span may already be closed */ }
       }
     }
 
-    // Try direct OpenAI-compatible client (Scryr, OpenRouter, etc.)
     if (this.shouldUseDirectClient) {
       this.profiler.startSpan("direct-client", extractionTraceId);
       primaryExtractorAttempted = true;
@@ -1258,8 +1214,6 @@ export class ExtractionEngine {
           const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
           return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector, ambientCapture);
         }
-        // Emit error event so Opik sees the direct client failure before fallback.
-        // Wrapped in try/catch so a subscriber error doesn't break the fallback path.
         try {
           this.emit({
             kind: "llm_error", traceId, model: this.config.model, operation: "extraction",
@@ -1285,7 +1239,6 @@ export class ExtractionEngine {
       }
     }
 
-    // Close any orphaned direct-path llm_start (e.g., local LLM failed, no direct client)
     if (emittedDirectStart && !closedDirectTrace) {
       try {
         this.emit({
@@ -1295,10 +1248,6 @@ export class ExtractionEngine {
       } catch { /* trace emit must not block fallback */ }
     }
 
-    // In gateway mode this is the primary extraction path. In plugin mode it is the
-    // final fallback after local/direct attempts fail. Emit a fresh llm_start so the
-    // gateway-backed call gets its own trace rather than being orphaned under the
-    // direct-client traceId.
     const fallbackTraceId = crypto.randomUUID();
     const fallbackStartTime = Date.now();
     if (this.useGatewayModelSource) {
@@ -1383,7 +1332,6 @@ export class ExtractionEngine {
         detailed.result === null
           ? detailed.failureReason === "no_models" && primaryExtractorAttempted
             ? // Gateway had no models, but a local/direct extractor already failed —
-              // the root cause is the primary (transient), not gateway auth/config.
               "provider_retryable"
             : classifyFallbackParseFailure(detailed.failureReason)
           : "parse_empty";
@@ -1417,7 +1365,6 @@ export class ExtractionEngine {
     }
 
     } finally {
-      // --- profiling: close the total span and trace ---
       this.profiler.endSpan("total", extractionTraceId);
       this.profiler.endTrace(extractionTraceId); // persists to JSONL file
     }
@@ -1438,7 +1385,6 @@ export class ExtractionEngine {
       `extractWithLocalLlm: starting extraction, localLlmEnabled=${this.shouldUseLocalLlm}, model=${this.config.localLlmModel}`,
     );
 
-    // Get dynamic context sizes based on model capabilities (with optional user override)
     const contextSizes = this.modelRegistry.calculateContextSizes(
       this.config.localLlmModel,
       this.config.localLlmMaxContext
@@ -1517,7 +1463,6 @@ ${truncatedConversation}`;
     }
 
     const content = response.content.trim();
-    // Avoid logging model output content by default (may contain user data).
     log.debug(`extractWithLocalLlm: got response content, length=${content.length}`);
 
     for (const candidate of extractJsonCandidates(content)) {
@@ -1539,8 +1484,6 @@ ${truncatedConversation}`;
       }
     }
 
-    // Try to extract partial facts from truncated JSON after all complete JSON
-    // candidates fail to parse.
     log.debug("extractWithLocalLlm: JSON parse failed, attempting partial extraction...");
     const partial = this.extractPartialFacts(content);
     if (partial.facts.length > 0 || partial.entities.length > 0) {
@@ -1619,7 +1562,6 @@ ${truncatedConversation}`;
     const entities: ExtractionResult["entities"] = [];
 
     try {
-      // Find all complete fact objects (ones with all required fields)
       const factRegex = /\{\s*"category"\s*:\s*"([^"]+)"\s*,\s*"content"\s*:\s*"([^"]+)"\s*,\s*"confidence"\s*:\s*([0-9.]+)/g;
       let match;
       while ((match = factRegex.exec(jsonStr)) !== null) {
@@ -1633,7 +1575,6 @@ ${truncatedConversation}`;
         });
       }
 
-      // Find all complete entity objects
       const entityRegex = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"type"\s*:\s*"([^"]+)"/g;
       while ((match = entityRegex.exec(jsonStr)) !== null) {
         const type = extractionEntityType(match[2]);
@@ -1734,7 +1675,6 @@ Consolidate the new memories against existing ones.`,
       });
     }
 
-    // Fall back to OpenAI API
     if (!this.client) {
       log.warn("consolidation skipped — no OpenAI API key and local LLM failed/disabled");
       return { items: [], profileUpdates: [], entityUpdates: [] };
@@ -1812,15 +1752,11 @@ ${CONSOLIDATION_RESPONSE_SCHEMA}`;
     }
   }
 
-  /**
-   * Consolidate memories using local LLM.
-   */
   private async consolidateWithLocalLlm(
     newList: string,
     existingList: string,
     currentProfile: string,
   ): Promise<ConsolidationResult | null> {
-    // Get dynamic context sizes
     const contextSizes = this.modelRegistry.calculateContextSizes(
       this.config.localLlmModel,
       this.config.localLlmMaxContext
@@ -2010,9 +1946,6 @@ ${PROFILE_CONSOLIDATION_RESPONSE_SCHEMA}`;
     }
   }
 
-  /**
-   * Consolidate profile using local LLM.
-   */
   private async consolidateProfileWithLocalLlm(
     fullProfileContent: string,
     targetLines: number = 50,
@@ -2220,9 +2153,6 @@ Respond with valid JSON matching this schema:
     }
   }
 
-  /**
-   * Consolidate identity using local LLM.
-   */
   private async consolidateIdentityWithLocalLlm(
     fullIdentityContent: string,
   ): Promise<{ learnedPatterns: string[]; summary: string } | null> {
@@ -2601,7 +2531,6 @@ Respond with valid JSON matching this schema:
 
     const instructionText = await loadDaySummaryPrompt();
 
-    // Append extension footer when extensions are active (#382)
     let extensionsFooter = "";
     try {
       extensionsFooter = await buildExtensionsFooterForSummary(this.config);
@@ -2673,7 +2602,6 @@ Return valid JSON only.` },
       }
     }
 
-    // Direct Responses API fallback (AGENTS.md-compliant: never Chat Completions)
     if (this.shouldUseDirectClient) {
       try {
         const response = await (this.client as any).responses.create({
@@ -2701,9 +2629,6 @@ Return valid JSON only.` },
   }
 
 
-  /**
-   * Summarize a batch of old memories into a compact summary (Phase 4A).
-   */
   async summarizeMemories(
     memories: Array<{ id: string; content: string; category: string; created: string }>,
   ): Promise<MemorySummaryResult | null> {

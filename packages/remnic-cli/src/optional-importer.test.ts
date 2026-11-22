@@ -61,8 +61,6 @@ describe("optional-importer loader", () => {
     await assert.rejects(
       () => loadImporterModule(missing),
       (err: Error) => {
-        // Install hint must include the package name and an install
-        // command the user can actually run — not a raw MODULE_NOT_FOUND.
         assert.ok(
           err.message.includes("@remnic/import-missing-fixture"),
           `expected package name in message, got: ${err.message}`,
@@ -80,10 +78,7 @@ describe("optional-importer loader", () => {
   it("loader caches negative results so repeated calls do not re-import", async () => {
     const missing = "missing-fixture" as SupportedImporterName;
 
-    // First call populates the cache with a null.
     await assert.rejects(() => loadImporterModule(missing));
-    // Second call must still throw — but the cache hit path is covered
-    // exclusively by the branch that rejects from cached null.
     await assert.rejects(() => loadImporterModule(missing));
   });
 });

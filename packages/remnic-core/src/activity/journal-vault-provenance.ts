@@ -40,8 +40,6 @@ export function buildJournalMemoryProvenance(input: {
   const [year, month, day] = input.date
     .split("-")
     .map(Number) as [number, number, number];
-  // Round-trip through UTC rejects non-calendar days (2026-02-30) and the
-  // two-digit-year Date.UTC remap (0026 -> 1926) without reading a clock.
   const utc = new Date(Date.UTC(year, month - 1, day));
   if (
     utc.getUTCFullYear() !== year ||

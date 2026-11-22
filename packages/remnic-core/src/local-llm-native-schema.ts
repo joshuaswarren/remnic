@@ -14,7 +14,6 @@ import type { ResponseFormatJSONSchema } from "openai/resources/shared";
 import type { LocalLlmChatCompletionOptions } from "./local-llm-helpers.js";
 import type { ModelRegistry } from "./model-registry.js";
 
-/** The chat-completions wire body; optional keys are capability-gated additions. */
 export interface LocalLlmChatRequestBody {
   model: string;
   messages: Array<{ role: string; content: string }>;
@@ -26,19 +25,14 @@ export interface LocalLlmChatRequestBody {
   reasoning_effort?: string;
 }
 
-/** Learned structured-output shaping for one local endpoint. */
 export class NativeSchemaGate {
   /** Models rejected in this process — the fallback for registry-less clients. */
   private readonly rejectedByProcess = new Set<string>();
 
   constructor(private readonly registry: () => ModelRegistry | undefined) {}
 
-  /** False when the model is known to reject the native json_schema payload. */
   usable(modelId: string): boolean {
     const registry = this.registry();
-    // Registry-backed decisions honor the registry TTL: an expired entry is
-    // re-probed instead of being honored forever. The in-memory set only
-    // serves clients without a registry.
     if (registry) return registry.getStructuredOutput(modelId) !== "none";
     return !this.rejectedByProcess.has(modelId);
   }
@@ -49,7 +43,6 @@ export class NativeSchemaGate {
     else this.rejectedByProcess.add(modelId);
   }
 
-  /** Attach the schema format unless the gate suppresses it for this model. */
   attach(
     requestBody: LocalLlmChatRequestBody,
     options: Pick<LocalLlmChatCompletionOptions, "responseFormat">,
@@ -60,10 +53,6 @@ export class NativeSchemaGate {
     }
   }
 
-  /** A schema-carrying 200: persist the native capability once. A CURRENT
-   *  "none" stands — that success is stale in-flight evidence from before the
-   *  rejection, and overwriting it would make later requests re-send the
-   *  rejected schema. */
   recordSuccess(requestBody: LocalLlmChatRequestBody, modelId: string): void {
     const registry = this.registry();
     if (

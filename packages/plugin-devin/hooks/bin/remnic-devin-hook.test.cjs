@@ -384,14 +384,11 @@ test("fail-open: dead daemon still emits continue and never throws", async () =>
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-// ── stalled daemon front ────────────────────────────────────────────────
-// A daemon URL that drops packets, or a front that accepts and then never
 // finishes the response, must not hold the host past the call's budget:
 // every daemon call carries one deadline covering connect plus response.
 
 const { startBlackhole, startTricklingDaemon } = require("../../../../tests/helpers/stalled-daemon.cjs");
 
-// Spawn the hook against `daemonUrl`, killing it at `killAfterMs`. PATH points
 // at an empty dir so the "daemon not running" branch cannot spawn a real
 // `remnic daemon start` on the machine running the tests.
 function runHookWithDeadline(event, input, { home, daemonUrl, killAfterMs }) {

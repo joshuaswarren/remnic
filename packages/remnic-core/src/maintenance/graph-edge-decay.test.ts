@@ -1,6 +1,3 @@
-/**
- * Unit tests for `runGraphEdgeDecayMaintenance` (issue #681 PR 2/3).
- */
 
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -100,9 +97,7 @@ test("runs end-to-end on a fixture graph with fresh, mid-decay, stale edges", as
     });
 
     assert.equal(telemetry.edgesTotal, 3);
-    // Fresh: no decay. Mid: drops from 0.6. Stale: already at floor, no decay.
     assert.equal(telemetry.edgesDecayed, 1);
-    // visibilityThreshold default 0.2 — only the stale edge (0.1) is below.
     assert.equal(telemetry.edgesBelowVisibilityThreshold, 1);
     assert.equal(telemetry.topDecayedEntities[0]?.label, "mid-label");
     assert.ok(telemetry.topDecayedEntities[0]?.totalDrop > 0);
@@ -115,7 +110,6 @@ test("runs end-to-end on a fixture graph with fresh, mid-decay, stale edges", as
     assert.equal(fresh.confidence, 1, "fresh edge confidence preserved");
     assert.ok(mid.confidence !== undefined && mid.confidence < 0.6, "mid edge decayed");
     assert.equal(stale.confidence, 0.1, "stale edge stays at floor");
-    // Fresh edge anchor preserved (no decay path advanced it).
     assert.equal(fresh.lastReinforcedAt, "2026-04-20T00:00:00.000Z");
   });
 });
@@ -187,8 +181,6 @@ test("telemetry record has the expected shape and is persisted", async () => {
     assert.ok(Array.isArray(telemetry.perType));
     const types = telemetry.perType.map((p) => p.type).sort();
     assert.deepEqual(types, ["causal", "entity", "time"]);
-    // Top decayed entities listed in descending totalDrop order, max 5,
-    // labels deterministic.
     assert.ok(telemetry.topDecayedEntities.length <= 5);
     for (let i = 1; i < telemetry.topDecayedEntities.length; i += 1) {
       const prev = telemetry.topDecayedEntities[i - 1];
@@ -196,13 +188,11 @@ test("telemetry record has the expected shape and is persisted", async () => {
       assert.ok(prev.totalDrop >= cur.totalDrop);
     }
 
-    // Persisted to the status file.
     const status = await readGraphEdgeDecayStatus(memoryDir);
     assert.ok(status, "status file exists");
     assert.equal(status?.edgesTotal, telemetry.edgesTotal);
     assert.equal(status?.edgesDecayed, telemetry.edgesDecayed);
 
-    // Status path is under <memoryDir>/state/.
     const expectedPath = path.join(memoryDir, "state", "graph-edge-decay-status.json");
     assert.equal(graphEdgeDecayStatusPath(memoryDir), expectedPath);
   });
@@ -229,7 +219,6 @@ test("custom visibility threshold is honored", async () => {
 
 test("missing graph files are treated as empty (fail-open)", async () => {
   await withTempDir(async (memoryDir) => {
-    // Do not seed any edges — directory is empty.
     const telemetry = await runGraphEdgeDecayMaintenance(memoryDir, {
       now: "2026-04-25T00:00:00.000Z",
     });
@@ -266,7 +255,6 @@ test("concurrent appendEdge calls during a decay run preserve every appended edg
   // same write lock as `appendEdge` so an ingestion that lands between
   // the read-snapshot and the rewrite is not silently dropped.
   await withTempDir(async (memoryDir) => {
-    // Seed an existing edge that the decay run will scan.
     await seedEdges(memoryDir, [midDecayEdge()]);
 
     const concurrentAppends = 25;
@@ -306,7 +294,6 @@ test("concurrent appendEdge calls during a decay run preserve every appended edg
       concurrentAppends,
       `expected ${concurrentAppends} concurrent-append-* edges to survive, found ${appendedLabels.size}`,
     );
-    // The pre-seeded edge must still be present too.
     const preserved = final.some((e) => e.label === "mid-label");
     assert.ok(preserved, "expected pre-seeded mid-decay edge to remain after concurrent run");
   });
@@ -352,7 +339,6 @@ test("namespace discovery enumerates default + every safe subdir under namespace
     const alphaRoot = enabled.find((r) => r.namespace === "team-alpha")?.storageRoot;
     assert.equal(alphaRoot, path.join(memoryDir, "namespaces", "team-alpha"));
 
-    // namespacesEnabled=false returns only the default root.
     const disabled = await discoverGraphNamespaceRoots(memoryDir, {
       namespacesEnabled: false,
       defaultNamespace: "default",
@@ -367,9 +353,7 @@ test("multi-root decay runs against every namespace storage root", async () => {
   // Issue #729 / Codex P2: the MCP handler previously only ran decay
   // against memoryDir, leaving non-default namespace graphs un-decayed.
   await withTempDir(async (memoryDir) => {
-    // Seed default namespace at memoryDir.
     await seedEdges(memoryDir, [midDecayEdge({ label: "default-ns-edge" })]);
-    // Seed a team-alpha namespace under memoryDir/namespaces/team-alpha.
     const alphaRoot = path.join(memoryDir, "namespaces", "team-alpha");
     await mkdir(graphsDir(alphaRoot), { recursive: true });
     await writeFile(
@@ -394,7 +378,6 @@ test("multi-root decay runs against every namespace storage root", async () => {
     assert.ok(alphaResult.telemetry, "team-alpha namespace must have telemetry");
     assert.equal(defaultResult.telemetry!.edgesTotal, 1);
     assert.equal(alphaResult.telemetry!.edgesTotal, 1);
-    // Both seeded mid-decay edges should have actually been decayed.
     assert.equal(defaultResult.telemetry!.edgesDecayed, 1);
     assert.equal(alphaResult.telemetry!.edgesDecayed, 1);
   });

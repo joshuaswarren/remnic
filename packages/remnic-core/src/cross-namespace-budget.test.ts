@@ -46,7 +46,6 @@ test("enabled budget warns past soft and denies past hard", () => {
   assert.equal(limiter.record("p1", 1).reason, "allowed-under-soft");
   assert.equal(limiter.record("p1", 2).reason, "allowed-under-soft");
   assert.equal(limiter.record("p1", 3).reason, "warn-over-soft");
-  // 4th call reaches hardLimit and is denied.
   const deny = limiter.record("p1", 4);
   assert.equal(deny.allowed, false);
   assert.equal(deny.reason, "deny-over-hard");
@@ -88,11 +87,9 @@ test("sliding window drops old timestamps", () => {
     hardLimit: 2,
     windowMs: 100,
   });
-  // Fill to hard.
   limiter.record("p1", 0);
   assert.equal(limiter.record("p1", 50).reason, "deny-over-hard");
 
-  // Walk past the window so the first allowed timestamp slides out.
   const d = limiter.record("p1", 201);
   assert.equal(d.allowed, true);
   assert.equal(d.reason, "allowed-under-soft");
@@ -118,7 +115,6 @@ test("check() short-circuits on same-namespace", () => {
     hardLimit: 1,
     windowMs: 10_000,
   });
-  // Same-namespace: limiter never engages even with soft=0.
   for (let i = 0; i < 50; i++) {
     const d = limiter.check({
       principal: "p1",
@@ -163,12 +159,9 @@ test("denied calls do not push bucket forward", () => {
     windowMs: 100,
   });
   limiter.record("p1", 0);
-  // 10 denials in a row at t=10..19.
   for (let i = 10; i < 20; i++) {
     assert.equal(limiter.record("p1", i).allowed, false);
   }
-  // At t=101 the original t=0 timestamp slides out and the bucket is
-  // empty — NOT holding any of the denied-call timestamps.
   const d = limiter.record("p1", 101);
   assert.equal(d.allowed, true);
   assert.equal(d.count, 1);
@@ -181,7 +174,6 @@ test("missing principal is bucketed under __anonymous__ rather than failing open
     hardLimit: 2,
     windowMs: 10_000,
   });
-  // An empty-string principal shares the anonymous bucket.
   limiter.record("", 1);
   const d = limiter.record("", 2);
   assert.equal(d.allowed, false);
@@ -218,7 +210,6 @@ test("invalid config values are replaced by defaults", () => {
 });
 
 test("hardLimit < 1 after flooring falls back to default instead of denying all", () => {
-  // 0.5 previously passed the `> 0` gate and floored to 0, turning a
   // minor misconfiguration into a full denial of cross-namespace reads.
   const limiter = new CrossNamespaceBudget({
     enabled: true,
@@ -239,17 +230,14 @@ test("gc() evicts buckets whose window has fully expired", () => {
     hardLimit: 20,
     windowMs: 100,
   });
-  // Fill buckets for three principals at t=0.
   limiter.record("alice", 0);
   limiter.record("bob", 0);
   limiter.record("carol", 0);
   assert.equal(limiter.bucketCount(), 3);
 
-  // gc at t=50 keeps everything (within window).
   assert.equal(limiter.gc(50), 0);
   assert.equal(limiter.bucketCount(), 3);
 
-  // gc at t=200 drops all (window rolled past).
   assert.equal(limiter.gc(200), 3);
   assert.equal(limiter.bucketCount(), 0);
 });
@@ -333,7 +321,6 @@ test("check() does NOT fail-open when both namespaces are empty or undefined", (
     hardLimit: 1,
     windowMs: 10_000,
   });
-  // Two empty-string namespaces must NOT short-circuit to
   // allowed-same-namespace — that would be a fail-open path in a
   // security module.
   const d1 = limiter.check({
@@ -364,7 +351,6 @@ test("release(token) removes the EXACT reserved entry, not the newest (issue #19
     windowMs: 60_000,
   });
 
-  // A reserves first (older), B reserves later (newer).
   const a = limiter.record("p1", 0);
   const b = limiter.record("p1", 1_000);
   assert.ok(a.reservation, "an allowed record returns a reservation token");
@@ -372,12 +358,8 @@ test("release(token) removes the EXACT reserved entry, not the newest (issue #19
   assert.equal(a.count, 1);
   assert.equal(b.count, 2);
 
-  // A fails and releases ITS token. A naive pop-newest would drop B's entry.
   limiter.release(a.reservation);
 
-  // Advance so A's original timestamp (t=0) would have expired but B's (t=1000)
-  // is still live. A fresh record counts only B + itself => 2. If B had been
-  // wrongly removed, only the fresh entry would remain => 1.
   const after = limiter.record("p1", 60_500);
   assert.equal(
     after.count,
@@ -385,7 +367,6 @@ test("release(token) removes the EXACT reserved entry, not the newest (issue #19
     "B's newer reservation survives A's release (A's exact entry was removed)",
   );
 
-  // release() is idempotent and a no-op for an unknown/already-freed token.
   limiter.release(a.reservation);
   limiter.release(undefined);
   assert.equal(limiter.bucketCount(), 1);

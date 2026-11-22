@@ -197,7 +197,6 @@ export async function enrichMemoriesWithLocation(
   for (const memory of memories) {
     try {
       const plan = planForMemory(memory.frontmatter, index, options.config);
-      // Count patch outcomes (tagged/updated/removed) only after the write
       // lands — a rejected write is `failed`, never also `tagged`.
       if (plan.patch === undefined || options.dryRun === true) {
         countOutcome(counts, plan.outcome);
@@ -294,11 +293,6 @@ export async function briefingLocationSection(
   );
 }
 
-/**
- * Append the opt-in location section to a briefing. The section is read BEFORE
- * `build` runs: buildBriefing drains correction notifications at most once, so
- * a deadline during this read must not lose them.
- */
 export async function buildWithBriefingLocation<T extends Pick<BriefingResult, "markdown" | "json">>(
   includeLocation: boolean | undefined,
   memoryDir: string,

@@ -1,24 +1,3 @@
-/**
- * Coding-graph benchmark harness (issue #1557).
- *
- * Runs the full metric set against a synthetic fixture and produces a
- * {@link CodingGraphBenchReport}. The harness is the authority for
- * performance claims — no number ships in docs without a harness
- * measurement behind it (rule 55).
- *
- * Metrics measured (per the issue):
- *   - full-index wall time + LOC/s
- *   - incremental single-file update latency p50/p95
- *   - trace_path (depth ≤ 5) p95
- *   - search_graph name-pattern p95
- *   - dead-code query wall time
- *   - DB bytes per KLOC
- *   - peak RSS
- *
- * Timing uses `performance.now()` (monotonic). p95 computed over ≥20
- * iterations for micro metrics. The report includes a machine fingerprint
- * so baselines are comparable.
- */
 
 import { performance } from "node:perf_hooks";
 import { mkdtemp, rm, stat } from "node:fs/promises";
@@ -52,8 +31,6 @@ import {
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Machine fingerprint — captured once per run so baselines are comparable.
-// ---------------------------------------------------------------------------
 
 export function captureMachineFingerprint(): MachineFingerprint {
   const cpus = os.cpus();
@@ -68,7 +45,6 @@ export function captureMachineFingerprint(): MachineFingerprint {
 }
 
 // ---------------------------------------------------------------------------
-// Percentile helpers.
 // ---------------------------------------------------------------------------
 
 function percentile(sorted: readonly number[], p: number): number {
@@ -89,7 +65,6 @@ function computeMicroMetric(samplesMs: number[]): MicroMetric {
 }
 
 // ---------------------------------------------------------------------------
-// Convert GeneratedRepo → StoreFileIR[] for the GraphStore.
 // ---------------------------------------------------------------------------
 
 function toStoreFiles(repo: GeneratedRepo): StoreFileIR[] {
@@ -116,7 +91,6 @@ function toStoreFiles(repo: GeneratedRepo): StoreFileIR[] {
 }
 
 // ---------------------------------------------------------------------------
-// Timing helpers — monotonic clock.
 // ---------------------------------------------------------------------------
 
 async function timeAsync<T>(fn: () => Promise<T>): Promise<{ ms: number; result: T }> {
@@ -132,7 +106,6 @@ function timeSync<T>(fn: () => T): { ms: number; result: T } {
 }
 
 // ---------------------------------------------------------------------------
-// The harness entry point.
 // ---------------------------------------------------------------------------
 
 /**
@@ -154,31 +127,20 @@ export async function runCodingGraphBenchmark(
   const iterations = Math.max(MIN_ITERATIONS, config.iterations ?? MIN_ITERATIONS);
   const traceDepth = config.traceDepth ?? 5;
 
-  // Generate the fixture (deterministic — rule 38).
   const repo = generateSyntheticRepo(fixtureConfig);
   const storeFiles = toStoreFiles(repo);
 
-  // Track peak RSS across the entire run — a single end-of-run sample
-  // misses the peak from index/traverse/dead-code operations.
   let peakRss = 0;
   const sampleRss = () => {
     peakRss = Math.max(peakRss, process.memoryUsage().rss);
   };
 
-  // Open a temp DB.
   const dir = await mkdtemp(path.join(tmpdir(), "coding-graph-bench-"));
   const dbPath = path.join(dir, "bench.sqlite");
 
   try {
     const store = await GraphStore.open({ dbPath });
     try {
-      // ── Metric 1: full-index wall time (warmed median over fresh DBs) ──
-      // A single cold shot of a small index is dominated by JIT/SQLite
-      // warm-up and swings >50% on shared CI runners, false-positiving the
-      // regression gate (#1557). upsertFileBatch is idempotent on an
-      // already-indexed store, so warmed samples need fresh DBs. Sample
-      // FULL_INDEX_SAMPLES runs — the first absorbs cold-start overhead —
-      // and take the median so the metric reflects steady-state cost.
       const FULL_INDEX_SAMPLES = 3;
       const fullIndexSamples: number[] = [];
       for (let s = 0; s < FULL_INDEX_SAMPLES; s++) {
@@ -204,13 +166,10 @@ export async function runCodingGraphBenchmark(
 
       sampleRss();
 
-      // ── Metric 2: graph stats (node/edge counts for the report) ──
       const stats = store.schemaStats();
       const graphNodeCount = stats.ok ? stats.stats.nodes : 0;
       const graphEdgeCount = stats.ok ? stats.stats.edges : 0;
 
-      // ── Metric 3: incremental single-file update p50/p95 ──
-      // Re-ingest one file at a time (same content = idempotent upsert).
       const incrementalSamples: number[] = [];
       for (let i = 0; i < iterations; i++) {
         const fileIdx = i % storeFiles.length;
@@ -223,8 +182,6 @@ export async function runCodingGraphBenchmark(
         incrementalSamples.push(incResult.ms);
       }
 
-      // ── Metric 4: trace_path (depth ≤ 5) p50/p95 ──
-      // Pick a stable start node from the fixture.
       const startName = repo.files[0]?.symbols[0]?.qualifiedName;
       const traceSamples: number[] = [];
       if (startName) {
@@ -245,7 +202,6 @@ export async function runCodingGraphBenchmark(
         }
       }
 
-      // ── Metric 5: search_graph name-pattern p50/p95 ──
       const searchSamples: number[] = [];
       for (let i = 0; i < iterations; i++) {
         const searchRes = timeSync(() =>
@@ -262,17 +218,12 @@ export async function runCodingGraphBenchmark(
         searchSamples.push(searchRes.ms);
       }
 
-      // ── Metric 6: dead-code query wall time ──
       const deadCode = timeSync(() => store.deadCode());
       if (!deadCode.result.ok) {
         throw new Error(`dead_code failed: ${deadCode.result.code}`);
       }
 
-      // ── Metric 7: DB size ──
       await store.drain();
-      // Include WAL files in DB-size measurement — GraphStore opens in WAL
-      // mode, so the -wal file holds committed writes that haven't
-      // checkpointed yet. Measuring only the main DB file underreports.
       let dbBytes = statSync(dbPath).size;
       try {
         dbBytes += statSync(dbPath + "-wal").size;
@@ -282,29 +233,11 @@ export async function runCodingGraphBenchmark(
       const kloc = Math.max(1, repo.approximateLoc / 1000);
       const dbBytesPerKloc = dbBytes / kloc;
 
-      // ── Metric 3b: incremental MODIFIED-content re-ingest p50/p95 ──
-      // Complementary to metric 3 (idempotent no-op): measures the
-      // change-heavy path — edge deletion/creation + symbol re-resolution —
-      // by re-ingesting a file whose symbol set has changed, then restoring
-      // the original so the graph returns to baseline (#1688 item 1). Runs
-      // AFTER the steady-state DB-size measurement: each churn upsert moves
-      // pages to the SQLite free-list without shrinking the file, so a
-      // pre-DB-size churn would inflate dbBytesPerKloc with churn residue
-      // rather than reflecting the indexed fixture's steady-state footprint.
       const modifiedSamples: number[] = [];
       for (let i = 0; i < iterations; i++) {
         const fileIdx = i % storeFiles.length;
         const original = storeFiles[fileIdx];
         if (!original) continue;
-        // Modified variant: a single churn symbol with a fresh qualified
-        // name + bumped content hash forces the store to delete the file's
-        // prior symbols/edges and create new ones (the change-heavy path).
-        // Carry a couple of the original's CROSS-FILE edges (re-pointed at
-        // the churn symbol) so the timed upsert also measures edge CREATION
-        // + resolution, not just pruning + a node insert — matching the
-        // metric's "edge deletion/creation" contract (#1688 review: codex).
-        // Cross-file dsts are filtered so the edges resolve against symbols
-        // that survive the churn (the file's own symbols are pruned).
         const ownSyms = new Set(original.symbols.map((sym) => sym.qualifiedName));
         const churnName = `mod.benchChurnSymbol${i}`;
         const representativeEdges: EdgeIR[] = (original.edges ?? [])
@@ -331,17 +264,6 @@ export async function runCodingGraphBenchmark(
           throw new Error(`modified update failed: ${modResult.result.code}`);
         }
         modifiedSamples.push(modResult.ms);
-        // Restore the FULL fixture so the graph returns to baseline.
-        // Restoring only this file leaves peer files' incoming edges —
-        // cascade-deleted by the churn prune (the store's FK ON DELETE
-        // CASCADE drops every edge whose endpoint is a pruned node) —
-        // unrecreated: the graph would shed cross-file edges each pass
-        // and later samples would time a progressively smaller graph
-        // (chatgpt-codex-connector + cursor review of #1688). Inspect
-        // the result so a failed restore throws instead of leaving the
-        // graph on the churn symbol set (cursor review of #1688). The
-        // restore is NOT timed — only the churn upsert above is
-        // measured.
         const restoreResult = await store.upsertFileBatch(storeFiles);
         if (!restoreResult.ok) {
           throw new Error(`restore failed: ${restoreResult.code}`);
@@ -349,7 +271,6 @@ export async function runCodingGraphBenchmark(
         sampleRss();
       }
 
-      // ── Metric 8: peak RSS (tracked across the run) ──
       sampleRss();
       const peakRssBytes = peakRss;
 

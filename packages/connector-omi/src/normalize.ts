@@ -48,9 +48,6 @@ export function omiDayWindow(
   date: string,
   timezone: string,
 ): { startIso: string; endIso: string } {
-  // Keep this package's documented never-throw zone contract (see
-  // `timezoneOffsetIso`): an unknown zone resolves to a UTC day instead of
-  // surfacing core's fail-fast RangeError.
   let zone = timezone;
   try {
     assertValidTimezone(timezone);
@@ -146,10 +143,6 @@ export function conversationToWearable(
     const endIso = segmentTimestamp(startedAtMs, segment.end);
     segments.push({
       text,
-      // person_id is the most stable key when the user has tagged the
-      // speaker as a known person in Omi. The Developer API's
-      // speaker_id is the next best stable key, then the diarization
-      // label.
       speakerKey: isWearer ? "user" : (personId ?? speakerId ?? label ?? "unknown"),
       ...(label !== undefined ? { speakerName: label } : {}),
       ...(isWearer ? { isWearer: true } : {}),
@@ -181,7 +174,6 @@ export function conversationToWearable(
 function segmentTimestamp(startedAtMs: number, offset: number | undefined): string | undefined {
   if (typeof offset !== "number") return undefined;
   const instant = new Date(startedAtMs + offset * 1_000);
-  // Invalid/out-of-range timing must not discard the segment's usable text.
   return Number.isNaN(instant.getTime()) ? undefined : instant.toISOString();
 }
 

@@ -103,9 +103,6 @@ function makeService(): {
   return { service, storage, getStorageCalls };
 }
 
-// memory_search now threads an `execution.onDegradation` observer into
-// searchAcrossNamespaces (issue #2018 observability). Tests that assert the
-// fanout shape compare only the fields they care about, not the whole object.
 function searchParamsSubset(params: unknown): {
   query: unknown;
   namespaces: unknown;
@@ -1381,11 +1378,6 @@ test("offlineSyncSnapshot does not trust client base capture time for server fas
 });
 
 test("offlineSyncSnapshot drains pending recall-impression spills so a recorded impression reaches the snapshot (#2033)", async () => {
-  // A record() that timed out on the rotation lock spills to the offline-sync
-  // EXCLUDED recall_impressions.jsonl.pending.d/. Without a pre-snapshot drain
-  // the impression is absent from the pushed snapshot and lost if this node is
-  // discarded. offlineSyncSnapshot() must fold the spill into the synced active
-  // recall_impressions.jsonl before building.
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-impression-drain-"));
   try {
     const impressionsPath = path.join(root, "state", "recall_impressions.jsonl");
@@ -1402,9 +1394,6 @@ test("offlineSyncSnapshot drains pending recall-impression spills so a recorded 
         drainPendingRecallImpressions(): Promise<DrainPendingImpressionsResult>;
       };
     }).orchestrator;
-    // The writer store roots at config.memoryDir — the SAME instance the drain
-    // must fold from. Here memoryDir === storage.dir (the offline-synced root),
-    // so the folded active file lands in the snapshot.
     orchestrator.config.memoryDir = root;
     const writerStore = new LastRecallStore(root, {
       impressionsRotateBytes: 0,
@@ -1447,12 +1436,10 @@ test("offlineSyncSnapshot drains pending recall-impression spills so a recorded 
       row,
       "the recorded impression was folded into the synced active file",
     );
-    // The node-local pending spill dir stays excluded from the snapshot...
     assert.ok(
       !snapshot.files.some((f) => f.path.startsWith("state/recall_impressions.jsonl.pending.d")),
       "pending spill dir remains offline-sync excluded",
     );
-    // ...because the drain already emptied it.
     assert.deepEqual(await readdir(pendingDir), [], "pending spill drained before the snapshot");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1460,15 +1447,6 @@ test("offlineSyncSnapshot drains pending recall-impression spills so a recorded 
 });
 
 test("offlineSyncSnapshot does NOT drain the global impression queue during a namespace snapshot (#2033)", async () => {
-  // Recall impressions are global: the orchestrator's single LastRecallStore roots
-  // at config.memoryDir, so the active recall_impressions.jsonl lives at
-  // <memoryDir>/state/ and a namespace-rooted snapshot (storage.dir under
-  // namespaces/<token>/) can never carry it. Draining the global pending queue
-  // during such a snapshot would empty the durable queue into a file this
-  // snapshot omits - stranding the row until a root sync - so the drain is scoped
-  // to the snapshot whose root actually contains the file. Here it must be a
-  // no-op, leaving the writer-root spill pending for the root sync, while the
-  // per-namespace lifecycle drain still runs.
   const writerRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-writer-"));
   const nsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-ns-"));
   try {
@@ -1486,8 +1464,6 @@ test("offlineSyncSnapshot does NOT drain the global impression queue during a na
         drainPendingRecallImpressions(): Promise<DrainPendingImpressionsResult>;
       };
     }).orchestrator;
-    // Writer root (config.memoryDir) is deliberately DISTINCT from the resolved
-    // namespace's storage.dir.
     orchestrator.config.memoryDir = writerRoot;
     const writerStore = new LastRecallStore(writerRoot, {
       impressionsRotateBytes: 0,
@@ -1526,9 +1502,6 @@ test("offlineSyncSnapshot does NOT drain the global impression queue during a na
       includeContent: true,
     });
 
-    // The global impression drain is scoped OUT of a namespace snapshot: it is
-    // never invoked, so the writer-root pending spill is retained for the root
-    // sync and no writer-root active file is created.
     assert.equal(impressionDrainCalls, 0, "global impression drain must be skipped for a namespace snapshot");
     assert.deepEqual(
       await readdir(pendingDir),
@@ -1540,9 +1513,7 @@ test("offlineSyncSnapshot does NOT drain the global impression queue during a na
       /ENOENT/,
       "no writer-root active impressions file is written during a namespace snapshot",
     );
-    // The per-namespace lifecycle drain still runs.
     assert.equal(lifecycleDrainCalls, 1, "per-namespace lifecycle drain still runs");
-    // The namespace-rooted snapshot never carries the writer-root impressions file.
     assert.ok(
       !snapshot.files.some((f) => f.path === "state/recall_impressions.jsonl"),
       "namespace-rooted snapshot does not carry the writer-root active file",
@@ -1554,13 +1525,6 @@ test("offlineSyncSnapshot does NOT drain the global impression queue during a na
 });
 
 test("offlineSyncSnapshot drains a pending memory-lifecycle spill so the append-only row reaches the snapshot (#2033)", async () => {
-  // An appendMemoryLifecycleEvents() that timed out on the ledger lock spills the
-  // durable row into the offline-sync-EXCLUDED memory-lifecycle-ledger.jsonl.pending.d/.
-  // Without a pre-snapshot drain the promotion/import/explicit-capture row is
-  // absent from the pushed snapshot and lost if this node is discarded before a
-  // later append or maintenance pass folds it. Unlike recall impressions (writer
-  // root), the lifecycle ledger is per-namespace, so the drain runs on the
-  // RESOLVED-namespace storage and the folded ledger lands in the snapshot.
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-lifecycle-drain-"));
   try {
     const storage = new StorageManager(root);
@@ -1604,7 +1568,6 @@ test("offlineSyncSnapshot drains a pending memory-lifecycle spill so the append-
       !snapshot.files.some((f) => f.path.startsWith("state/memory-lifecycle-ledger.jsonl.pending.d")),
       "pending spill dir remains offline-sync excluded",
     );
-    // ...because the drain already folded and emptied it.
     assert.deepEqual(await readdir(pendingDir), [], "pending spill drained before the snapshot");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1612,11 +1575,6 @@ test("offlineSyncSnapshot drains a pending memory-lifecycle spill so the append-
 });
 
 test("offlineSyncSnapshot aborts when pending lifecycle rows cannot be drained (#2033)", async () => {
-  // When the ledger lock is held by a peer the drain leaves durable rows in the
-  // EXCLUDED pending queue and reports pendingDeferred. A snapshot built then
-  // would silently omit those append-only rows, so the buffered snapshot, the
-  // streaming snapshot, AND the path-enumeration (offlineSyncFiles) entrypoints
-  // MUST abort rather than report success.
   const { service } = makeService();
   const orchestrator = (service as unknown as {
     orchestrator: { getStorage(namespace: string): Promise<StorageManager> };
@@ -1653,15 +1611,6 @@ test("offlineSyncSnapshot aborts when pending lifecycle rows cannot be drained (
   );
   assert.ok(drainAttempts >= 9, "each aborted entrypoint retried the drain before giving up");
 });
-// ─── Issue #2018: memory_search must reach the base collection ───────────────
-//
-// On a namespaces-enabled deployment with a flat-root default namespace, the
-// bulk corpus lives under the DEFAULT namespace's base QMD collection. recall
-// reaches it via the coding-overlay fallbacks, but memory_search has no
-// sessionKey (so no coding context). With scope profiles active and a
-// non-default principal, the profile read set collapsed to the derived
-// principal-self + shared namespaces and EXCLUDED the default namespace —
-// every query silently returned 0.
 
 function makeConfigWithScopeProfile(): PluginConfig {
   const base = makeConfig();
@@ -1733,9 +1682,6 @@ function captureLogs(): { backend: LoggerBackend; warn: string[]; reset: () => v
 }
 
 test("memorySearch includes the default namespace for a scope-profile principal without coding context (#2018)", async () => {
-  // Before the fix the fanout resolved to ["operator-x", "shared"] and the
-  // base collection (default namespace) was never queried — every search
-  // returned 0 on a flat-root deployment.
   const { service, captured } = makeServiceWithConfig(makeConfigWithScopeProfile());
   await service.memorySearch({ query: "exact phrase", principal: "operator-x" });
   assert.ok(
@@ -1747,18 +1693,12 @@ test("memorySearch includes the default namespace for a scope-profile principal 
 test("memorySearch preserves scope-profile project/global layers alongside the default namespace (#2018)", async () => {
   const { service, captured } = makeServiceWithConfig(makeConfigWithScopeProfile());
   await service.memorySearch({ query: "exact phrase", principal: "operator-x" });
-  // The derived self namespace ("operator-x") and shared must still be present;
-  // the fix ADDS the default, it does not replace the profile stack.
   assert.ok(captured.namespaces?.includes("operator-x"));
   assert.ok(captured.namespaces?.includes("shared"));
   assert.ok(captured.namespaces?.includes("default"));
 });
 
 test("memorySearch ACL-gates the default namespace fallback (#2018)", async () => {
-  // If the principal cannot read the default namespace, the fallback must NOT
-  // add it. Configure a protected default via a namespace policy that excludes
-  // the principal, and confirm "default" is absent while the policy name is
-  // still reachable through the profile stack only when readable.
   const config = makeConfigWithScopeProfile();
   (config as unknown as { defaultNamespace: string }).defaultNamespace = "root";
   (config as unknown as { namespacePolicies: Array<{ name: string; readPrincipals: string[]; writePrincipals: string[] }> }).namespacePolicies = [
@@ -1775,8 +1715,6 @@ test("memorySearch ACL-gates the default namespace fallback (#2018)", async () =
 test("memorySearch surfaces an empty namespace resolution as a warning, never silently empty (#2018)", async () => {
   const { reset, warn } = captureLogs();
   try {
-    // defaultRecallNamespaces: [] + no scope profile + no policies ⇒ the
-    // readable recall set is empty, exercising the silent-empty branch.
     const config = {
       ...makeConfig(),
       defaultRecallNamespaces: [],
@@ -1825,9 +1763,6 @@ test("memorySearch threads backend degradations to a warning (#2018)", async () 
 test("memorySearch does not probe default storage for an explicit namespace or before auth (#2056 r5)", async () => {
   const config = makeConfigWithScopeProfile();
   const { service, captured } = makeServiceWithConfig(config);
-  // Explicit-namespace queries ignore the default-namespace fallback, so the
-  // flat-root storage probe must not run (and must not run before the auth
-  // check rejects an unauthorized principal).
   await assert.rejects(
     () => service.memorySearch({ query: "x", namespace: "team", principal: "stranger" }),
     /namespace is not readable: team/,
@@ -1840,9 +1775,6 @@ test("memorySearch does not probe default storage for an explicit namespace or b
 });
 
 test("memorySearch authorizes the scope even when the budget is zero", async () => {
-  // A zero budget is a valid empty search, never a way to skip the namespace
-  // gate: returning [] for an unreadable namespace would turn an access error
-  // into a successful result.
   const { service } = makeService();
   let searchCalls = 0;
   (service as unknown as {
@@ -1865,8 +1797,6 @@ test("memorySearch authorizes the scope even when the budget is zero", async () 
 });
 
 test("memorySearch rejects mode+collection on a flat corpus even at a zero budget", async () => {
-  // Changing only the requested result count must never make an invalid
-  // request succeed.
   const { service } = makeServiceWithConfig({
     ...makeConfig(),
     namespacesEnabled: false,
@@ -1887,9 +1817,6 @@ test("memorySearch rejects mode+collection on a flat corpus even at a zero budge
 });
 
 test("a configured qmdMaxResults of 0 is preserved, not coerced to a default", async () => {
-  // A zero limit is a runtime compatibility guarantee (AGENTS.md guardrail 4):
-  // it means the same thing as an explicit `maxResults: 0` - an empty result
-  // with no backend call - and must never be silently raised to a default.
   const { service } = makeServiceWithConfig({
     ...makeConfig(),
     qmdMaxResults: 0,
@@ -1904,7 +1831,6 @@ test("a configured qmdMaxResults of 0 is preserved, not coerced to a default", a
   const result = await service.memorySearch({ query: "anything", principal: "operator-x" });
   assert.equal(result.count, 0, "the configured zero cap is honored");
   assert.equal(searchCalls, 0, "and the backend is never consulted");
-  // The scope is still authorized first, so a zero cap cannot bypass the gate.
   await assert.rejects(
     () => service.memorySearch({ query: "q", namespace: "team", principal: "stranger" }),
     /namespace is not readable: team/,
@@ -1912,9 +1838,6 @@ test("a configured qmdMaxResults of 0 is preserved, not coerced to a default", a
 });
 
 test("an unrecognized search mode is rejected, not silently reranked", async () => {
-  // Both namespace backends route an unknown mode through their default
-  // ordinary-search branch, so a typo from an untyped in-process caller would
-  // succeed with different ranking instead of reporting bad input.
   for (const namespacesEnabled of [true, false]) {
     const label = `namespacesEnabled=${namespacesEnabled}`;
     const { service } = makeService();
@@ -1935,7 +1858,6 @@ test("an unrecognized search mode is rejected, not silently reranked", async () 
       /mode must be one of search, hybrid, bm25, vector/,
       label,
     );
-    // A zero budget must not be a way to slip an invalid mode past the check.
     await assert.rejects(
       () =>
         service.memorySearch({
@@ -1949,7 +1871,6 @@ test("an unrecognized search mode is rejected, not silently reranked", async () 
     );
     assert.equal(searchCalls, 0, `no backend call on an invalid mode, ${label}`);
 
-    // Every accepted mode still reaches the backend (AGENTS.md §40).
     for (const mode of ["search", "hybrid", "bm25", "vector"] as const) {
       await service.memorySearch({ query: "q", mode, principal: "reader" });
     }
@@ -1958,9 +1879,6 @@ test("an unrecognized search mode is rejected, not silently reranked", async () 
 });
 
 test("an out-of-range search limit is rejected, not turned into an empty page", async () => {
-  // A negative would hit the `budget <= 0` short-circuit and answer with a
-  // successful EMPTY page; a fraction or non-finite value would flow into the
-  // backend limit and top-up arithmetic.
   const { service } = makeService();
   let searchCalls = 0;
   (service as unknown as {
@@ -1977,7 +1895,6 @@ test("an out-of-range search limit is rejected, not turned into an empty page", 
     );
   }
   assert.equal(searchCalls, 0, "no backend call on an invalid budget");
-  // Zero keeps its documented meaning: an empty result, no backend call.
   const zero = await service.memorySearch({ query: "q", maxResults: 0, principal: "reader" });
   assert.equal(zero.count, 0);
   assert.equal(searchCalls, 0, "a zero budget still short-circuits");

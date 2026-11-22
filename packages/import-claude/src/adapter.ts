@@ -1,5 +1,3 @@
-// Claude importer adapter (issue #568 slice 3). The parse/transform/writeTo
-// shell comes from `defineFileImporterAdapter` in @remnic/core (issue #2794).
 import type { ImporterAdapter } from "@remnic/core";
 import { defineFileImporterAdapter } from "@remnic/core";
 

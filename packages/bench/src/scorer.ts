@@ -1,6 +1,3 @@
-/**
- * Shared scoring utilities for bench runners.
- */
 
 import type { AggregateMetrics } from "./types.js";
 import type { BenchJudgeResult } from "./adapters/types.js";

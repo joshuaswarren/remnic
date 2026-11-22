@@ -1,14 +1,3 @@
-/**
- * Tests for the real-fixture procedural-recall scenarios (issue #567 PR 2/5).
- *
- * The scenarios themselves are static data, but we verify:
- *
- *   - structural invariants (>= 20 rows, category coverage, ids unique)
- *   - running the ablation on them yields lift >= 3 points, per the PR 2
- *     acceptance criterion, reproducibly (fixed seed)
- *   - the published baseline artifact on disk is consistent with a fresh run
- *     (no drift between the committed JSON and the deterministic harness)
- */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -50,7 +39,6 @@ test("PROCEDURAL_REAL_SCENARIOS: fixture shape and coverage", () => {
       `unknown category: ${s.category}`,
     );
   }
-  // Every required category must appear at least once.
   for (const cat of REQUIRED_CATEGORIES) {
     assert.ok(
       PROCEDURAL_REAL_SCENARIOS.some((s) => s.category === cat),
@@ -67,8 +55,6 @@ test("PROCEDURAL_REAL_SCENARIOS_SMOKE: spans all categories", () => {
 });
 
 test("PROCEDURAL_REAL_SCENARIOS: ablation lift >= 3 points (reproducible)", async () => {
-  // Strip the `category`/`notes` fields at the call site: the ablation runner
-  // only needs the scenario shape.
   const scenarios = PROCEDURAL_REAL_SCENARIOS.map((s) => ({
     id: s.id,
     prompt: s.prompt,
@@ -86,13 +72,10 @@ test("PROCEDURAL_REAL_SCENARIOS: ablation lift >= 3 points (reproducible)", asyn
 
   assert.equal(artifact.schemaVersion, 1);
   assert.equal(artifact.fixture.scenarioCount, scenarios.length);
-  // Acceptance criterion from issue #567 PR 2: lift >= 3 points.
   assert.ok(
     artifact.lift >= 0.03,
     `lift must be >= 3 points, got ${artifact.lift.toFixed(4)} (on=${artifact.onScore.toFixed(4)}, off=${artifact.offScore.toFixed(4)})`,
   );
-  // All four distractor rows should score equally on both sides (they don't
-  // match either way).
   const distractors = artifact.perCase.filter((c) => c.expectMatch === false);
   for (const c of distractors) {
     assert.equal(
@@ -109,10 +92,6 @@ test("PROCEDURAL_REAL_SCENARIOS: ablation lift >= 3 points (reproducible)", asyn
 });
 
 test("procedural-recall-baseline.json matches a fresh deterministic run", async () => {
-  // The committed baseline is the source of truth for PR 2. A fresh ablation
-  // run with the same seed must produce identical onScore / offScore / lift
-  // / CI values — otherwise the harness has drifted and the published
-  // number is stale.
   const here = path.dirname(fileURLToPath(import.meta.url));
   const baselinePath = path.resolve(
     here,

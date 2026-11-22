@@ -163,14 +163,12 @@ test("decode: sequential frames after partial — scan offset resets correctly",
   const f1 = encodeLspFrame({ id: 1 });
   const f2 = encodeLspFrame({ id: 2 });
 
-  // Feed f1 in two chunks to force a split-extract cycle.
   const mid = Math.floor(f1.length / 2);
   dec.feed(f1.slice(0, mid));
   let result = dec.feed(f1.slice(mid));
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.messages.length, 1);
 
-  // Now feed f2 — it should parse cleanly from the reset offset.
   result = dec.feed(f2);
   assert.equal(result.ok, true);
   if (result.ok) {

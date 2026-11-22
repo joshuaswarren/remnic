@@ -1,11 +1,3 @@
-/**
- * Input-validation + rendering helpers for the `remnic who-knows` CLI
- * command (issue #2057). Extracted so validation paths can be unit-tested
- * without booting an orchestrator (same pattern as `recall-xray-cli.ts`).
- *
- * Rules 14 + 51: bare `--limit`, non-integer or out-of-range values, and an
- * empty topic throw listed-options errors — never silent defaults.
- */
 
 import {
   validateWhoKnowsInput,

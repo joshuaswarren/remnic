@@ -1,14 +1,3 @@
-/**
- * Deep-recall config (issue #2332) — the `deepRecall` block.
- *
- * Parsed the same way `driftDetection` and `contradictionScan` are:
- * shape-validated, string-coercion safe (§24), and honoring documented
- * zero/no-op values (§33) rather than clamping them to something non-zero.
- * `maxSteps: 0` disables the policy loop (seed-only retrieval);
- * `maxResults: 0` returns an empty entry list; `maxExpandPerStep: 0`
- * lets the policy pick EXPAND but select nothing. Millisecond fields
- * of `0` mean "no timeout on that axis".
- */
 
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 import { EngramAccessInputError } from "./access-errors.js";
@@ -115,15 +104,6 @@ export function parseDeepRecallMaxSteps(raw: unknown): number | undefined {
   throw new Error(`maxSteps must be a non-negative integer; got ${JSON.stringify(raw)}`);
 }
 
-/**
- * Resolve the effective per-invocation config from a caller-requested
- * `maxSteps` override (§33 semantics, extracted from the access service so
- * the god file stays under its ratchet cap):
- * - undefined request keeps the parsed config untouched;
- * - `deepRecall.maxSteps: 0` is a documented disable value — any positive
- *   override is a refusal, not a ceiling comparison;
- * - otherwise the override must not exceed the configured ceiling.
- */
 export function resolveEffectiveDeepRecallConfig(
   cfg: DeepRecallConfig,
   requestedSteps: number | undefined,

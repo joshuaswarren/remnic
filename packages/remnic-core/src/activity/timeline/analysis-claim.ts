@@ -1,6 +1,3 @@
-/**
- * Parse a timeline analysis claim's observationId (issue #2050).
- */
 export type ParseClaimObservationIdResult =
   | { ok: true; observationId: string }
   | { ok: false; error: "missing_observation" };

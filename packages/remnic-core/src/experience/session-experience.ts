@@ -1,23 +1,3 @@
-/**
- * Session-end agent-experience extraction (issue #2979).
- *
- * At `session_end` the completed session's buffered turns are distilled —
- * deterministically, no LLM — into at most ONE Situation/Approach/Reflect
- * "experience episode" memory (agent-subject, category `procedure`,
- * `pending_review`), mirroring OpenViking's experience-memory schema at the
- * granularity Remnic's trust model allows: a machine-derived write that
- * stays behind the existing sealed-envelope write path and never activates
- * itself.
- *
- * Determinism: the episode is a pure function of the turn list — same
- * transcript, same episode. Refusal/failure is signal, not a skip: a
- * session whose terminal assistant turn records a failure gets a failure
- * reflection.
- *
- * v1 heuristics (same tier as procedure-miner's `pseudoStepsFromCluster`):
- * situation = first substantive user turn (task shape); approach = first
- * sentences of the assistant turns; reflection = terminal outcome evidence.
- */
 
 import { createHash } from "node:crypto";
 
@@ -30,11 +10,8 @@ export type SessionExperienceOutcomeKind = "success" | "failure" | "inconclusive
 
 /** The OpenViking Situation/Approach/Reflect classes, Remnic spelling. */
 export interface ExperienceEpisode {
-  /** Task shape: what the session was asked to do. */
   situation: string;
-  /** What the agent tried, in order. */
   approach: string;
-  /** Outcome and what to do differently. */
   reflection: string;
   outcomeKind: SessionExperienceOutcomeKind;
 }
@@ -69,8 +46,6 @@ export interface SessionExperienceRunOptions {
   deadlineMs?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Deterministic derivation
 // ---------------------------------------------------------------------------
 
 const SITUATION_MAX_CHARS = 280;
@@ -165,7 +140,6 @@ export function extractExperienceEpisode(turns: readonly BufferTurn[]): Experien
 }
 
 // ---------------------------------------------------------------------------
-// Gated write
 // ---------------------------------------------------------------------------
 
 const EXPERIENCE_SOURCE = "session-experience";
@@ -212,8 +186,6 @@ export async function runSessionExperienceExtraction(
     return { written: false, skippedReason: "insufficient_signal" };
   }
 
-  // Machine-derived from buffered turns — salvage-mode envelope, warn-logged
-  // drops (issue #1989 PR4 convention for machine-generated writes).
   const envelope = composeSalvagedEnvelope(
     EXPERIENCE_SOURCE,
     {

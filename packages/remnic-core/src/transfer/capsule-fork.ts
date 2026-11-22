@@ -21,8 +21,6 @@ import type { CapsuleParent, ExportManifestV2 } from "./types.js";
 import { CAPSULE_ID_PATTERN } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
 
 /**
  * Options accepted by {@link forkCapsule}.
@@ -86,7 +84,6 @@ export interface ForkCapsuleResult {
 }
 
 // ---------------------------------------------------------------------------
-// Main function
 // ---------------------------------------------------------------------------
 
 /**
@@ -114,27 +111,11 @@ export interface ForkCapsuleResult {
  *     success markers).
  */
 export async function forkCapsule(opts: ForkCapsuleOptions): Promise<ForkCapsuleResult> {
-  // --- 1. Validate forkId ---
   validateForkId(opts.forkId);
 
-  // --- 2. Validate targetRoot ---
-  // Use the shared assertIsDirectoryNotSymlink helper from fs-utils.ts so
-  // capsule-fork and capsule-import share the same symlink-safe validation
-  // logic (Cursor medium #751 round 2: the fork's doc comment claims it
-  // "mirrors importCapsule's root validation"; now it literally does).
   const rootAbs = path.resolve(opts.targetRoot);
   await assertIsDirectoryNotSymlink(rootAbs, "forkCapsule", "targetRoot");
 
-  // --- 3. Reject duplicate forkId ---
-  // Treat ANY existing filesystem entry at `forks/<forkId>` as occupied:
-  // directory, regular file, or symlink. A previous version of this check
-  // only rejected directories, so a stray file at the path would slip past
-  // and `importCapsule` would still write under `forks/<sourceCapsule>/...`.
-  // The later `mkdir`/`writeFile` for the breadcrumb would then fail,
-  // leaving a partial fork import after reporting an error — violating the
-  // documented "reject before any write" contract (Codex P2 #751 round 2).
-  // `lstat` (not `stat`) is intentional so a symlink at the path is detected
-  // even if its target is missing or otherwise unreadable.
   const forkDirAbs = path.join(rootAbs, "forks", opts.forkId);
   const forkEntryExists = await pathEntryExists(forkDirAbs);
   if (forkEntryExists) {
@@ -143,7 +124,6 @@ export async function forkCapsule(opts: ForkCapsuleOptions): Promise<ForkCapsule
     );
   }
 
-  // --- 4. Import in fork mode ---
   const archiveAbs = path.resolve(opts.sourceArchive);
   const importResult = await importCapsule({
     archivePath: archiveAbs,
@@ -155,13 +135,6 @@ export async function forkCapsule(opts: ForkCapsuleOptions): Promise<ForkCapsule
   const manifest = importResult.manifest;
   const sourceCapsule = manifest.capsule;
 
-  // --- 5. Build lineage and write breadcrumb ---
-  // The breadcrumb lives under the FORK's own directory, not the source
-  // capsule's fork subtree. `forkId` may differ from `sourceCapsule.id`
-  // (e.g. `forkCapsule({ forkId: "my-fork" })` with source `base-caps`
-  // imports records under `forks/base-caps/` but the lineage breadcrumb
-  // is written to `forks/my-fork/lineage.json` so a subsequent fork of
-  // this fork can locate the breadcrumb by its own id).
   const forkedAt = new Date(opts.now ?? Date.now()).toISOString();
 
   const parent: CapsuleParent = {
@@ -178,35 +151,14 @@ export async function forkCapsule(opts: ForkCapsuleOptions): Promise<ForkCapsule
     skippedRecords: importResult.skipped.length,
   };
 
-  // Ensure the fork breadcrumb directory exists (it may not exist if forkId
-  // differs from the source capsule's id, or if all records were skipped).
   const lineagePath = path.join(forkDirAbs, "lineage.json");
 
-  // Guard lineage write against a symlinked `forks/` directory (or any
-  // intermediate path component) pointing outside the memory root.  If
-  // `targetRoot/forks` is a symlink to `/tmp/evil`, a zero-record capsule
-  // passes `importCapsule` without triggering per-record path checks and this
-  // write would silently escape the root sandbox.  We resolve the nearest
-  // existing ancestor of `lineagePath` via `realpath` (same technique used by
-  // `capsule-import` and `capsule-merge`) and verify the canonical path is
-  // still inside `rootReal` before creating any directories or writing.
   //
-  // Note: `rootReal` is computed from `rootAbs` here rather than reusing
-  // `forkDirAbs` for the lexical check, because on macOS /tmp is a symlink
-  // to /private/tmp and `path.relative(rootReal, forkDirAbs)` would produce
-  // an absolute path if forkDirAbs was not also resolved. We skip the lexical
-  // pre-check and rely solely on `assertRealpathInsideRoot` which handles
-  // both the realpath walk and the containment check atomically.
   const rootReal = await realpath(rootAbs);
-  // Symlink-safe containment check: walks the nearest existing ancestor and
-  // confirms the canonical path is still inside rootReal.
   await assertRealpathInsideRoot(rootReal, lineagePath, `forks/${opts.forkId}/lineage.json`, "forkCapsule");
 
   await mkdir(path.dirname(lineagePath), { recursive: true });
 
-  // Write breadcrumb AFTER import completes successfully — consistent with
-  // gotcha #25 (don't destroy old state before new state is confirmed) and
-  // gotcha #54 (write temp before rename / write before marker).
   await writeFile(lineagePath, JSON.stringify(lineage, null, 2) + "\n", "utf-8");
 
   return {
@@ -219,7 +171,6 @@ export async function forkCapsule(opts: ForkCapsuleOptions): Promise<ForkCapsule
 }
 
 // ---------------------------------------------------------------------------
-// Lineage query helper
 // ---------------------------------------------------------------------------
 
 /**
@@ -242,11 +193,6 @@ export async function readForkLineage(
   targetRoot: string,
   forkId: string,
 ): Promise<ForkLineage | null> {
-  // Reject any forkId that does not satisfy the capsule-id pattern. We use
-  // the same constraints as `forkCapsule` so a path traversal payload like
-  // `../../etc` is rejected before any filesystem access. Returning null
-  // (rather than throwing) keeps the contract symmetric with the
-  // "breadcrumb not present" case for the common get-or-default usage.
   if (
     typeof forkId !== "string" ||
     forkId.length === 0 ||
@@ -256,29 +202,14 @@ export async function readForkLineage(
     return null;
   }
   const rootAbs = path.resolve(targetRoot);
-  // Resolve the root via realpath up-front so the symlink-safe containment
-  // check below compares against the canonical path. If realpath fails
-  // (root does not exist or is unreadable) we fall back to the lexical
-  // root; the read will then return null for a missing breadcrumb anyway.
   const rootReal = await realpath(rootAbs).catch(() => rootAbs);
 
   const lineagePath = path.join(rootReal, "forks", forkId, "lineage.json");
-  // Defensive lexical containment check: even though CAPSULE_ID_PATTERN
-  // forbids `/` and `..`, an attacker who somehow bypasses the regex would
-  // still be caught here. `path.relative` returns a `..`-prefixed string
-  // when the target escapes the root.
   const rel = path.relative(rootReal, lineagePath);
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
     return null;
   }
 
-  // Symlink-safe containment check (Codex P2 #751 round 2).
-  // The lexical check above cannot detect a symlinked `forks/<forkId>`
-  // directory whose target is outside the memory root. We resolve the
-  // nearest existing ancestor of the breadcrumb path via realpath (which
-  // follows symlinks), re-append the non-existent suffix, and verify the
-  // result still lives under the real root. Mirrors the
-  // `assertRealpathInsideRoot` pattern used by capsule-import.ts.
   if (!(await isLineagePathContained(rootReal, lineagePath))) {
     return null;
   }
@@ -286,9 +217,6 @@ export async function readForkLineage(
   if (raw === null) return null;
   try {
     const parsed = JSON.parse(raw);
-    // Basic shape check — we do not run full zod validation here so that
-    // slightly malformed breadcrumbs (e.g. missing new fields added in later
-    // PRs) can still be returned rather than silently dropped.
     if (typeof parsed !== "object" || parsed === null || typeof parsed.forkId !== "string") {
       return null;
     }
@@ -299,7 +227,6 @@ export async function readForkLineage(
 }
 
 // ---------------------------------------------------------------------------
-// Private helpers
 // ---------------------------------------------------------------------------
 
 function validateForkId(forkId: unknown): void {
@@ -360,9 +287,6 @@ async function isLineagePathContained(
     existing = path.dirname(existing);
   }
 
-  // If we walked all the way to the filesystem root without finding
-  // anything that exists, the path is harmless (no symlinks to follow).
-  // The subsequent readFile will simply fail and return null.
   const existingReal = await realpath(existing).catch(() => existing);
   const targetReal = suffix.length > 0 ? path.join(existingReal, ...suffix) : existingReal;
 

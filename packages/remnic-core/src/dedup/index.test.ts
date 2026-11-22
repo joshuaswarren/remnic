@@ -170,8 +170,6 @@ test("strip-negation pattern is derived from NEGATION_WORDS", async () => {
 
     const result = findContradictions({ memoryDir, categories: ["facts"] });
 
-    // "high" requires the stripped texts to match exactly, which only happens
-    // when the strip pattern honors the word the test added to the set.
     assert.equal(result.contradictions.length, 1);
     assert.equal(result.contradictions[0]?.severity, "high");
     assert.equal(result.contradictions[0]?.reason, "Negated version of similar content");
@@ -198,10 +196,8 @@ test("strip-negation cache rebuilds on same-size vocabulary swap", async () => {
       "utf8"
     );
 
-    // Warm the pattern cache with the current vocabulary (no "rarely" yet).
     assert.equal(findContradictions({ memoryDir, categories: ["facts"] }).contradictions.length, 0);
 
-    // Same-size swap: the size-keyed cache would keep serving the stale pattern.
     NEGATION_WORDS.delete("never");
     NEGATION_WORDS.add("rarely");
     const result = findContradictions({ memoryDir, categories: ["facts"] });

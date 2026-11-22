@@ -92,10 +92,6 @@ const TIMING_FIELD_ALLOWLIST = [
   "trustStage",
   "queueWaitMs",
 ] as const;
-// The ring buffer is process-local: a daemon restart or haproxy failover to
-// the other backend starts an empty history. processStartedAt lets consumers
-// detect that discontinuity. Derived from the process time origin, not module
-// initialization, so lazy imports cannot skew it.
 const PROCESS_STARTED_AT = new Date(Date.now() - process.uptime() * 1000).toISOString();
 const histories = new WeakMap<PluginConfig, RecallTimingRecord[]>();
 
@@ -111,24 +107,15 @@ function numericMilliseconds(value: unknown): number | undefined {
 function sanitizeRecallTiming(
   input: Record<string, unknown>,
 ): RecallTimingRecord {
-  // Serialization boundary: ONLY allowlisted numeric phases reach timingsMs,
-  // and the four dimension strings are copied field-by-field. Never spread
-  // the internal record into the public shape.
   const timingsMs: Record<string, number> = {
     total: numericMilliseconds(input.total) ?? 0,
   };
   for (const field of TIMING_FIELD_ALLOWLIST) {
     if (field === "total") continue;
     const value = numericMilliseconds(input[field]);
-    // Phases that did not run are omitted; 0 means "ran, measured zero".
     if (value !== undefined) timingsMs[field] = value;
   }
-  // Attempt-contract id decode: String(x) === x holds exactly for string
-  // primitives; every other value coalesces to "" (no runtime typeof here).
   const requestId = String(input.requestId);
-  // Phase-2 await fields ride the same boundary decode: durations parse like
-  // every other ms string, statuses must be enum literals, and anything else
-  // is omitted so legacy emitters carry no phase-2 noise.
   const phase2Fields: Record<string, number | Phase2AwaitStatus> = {};
   for (const name of PHASE2_AWAIT_NAMES) {
     const ms = numericMilliseconds(input[phase2MsField(name)]);
@@ -145,10 +132,6 @@ function sanitizeRecallTiming(
     namespace: typeof input.namespace === "string" ? input.namespace : "",
     recallPlan: typeof input.recallPlan === "string" ? input.recallPlan : "",
     queryPolicy: typeof input.queryPolicy === "string" ? input.queryPolicy : "",
-    // Attempt contract, copied field-by-field like the dimension strings:
-    // non-string requestIds drop, anything but the literal error/abort marks
-    // is "ok", and the monotonic total rides the same numeric-ms parsing as
-    // the phases (absent or negative floors to 0 for legacy emitters).
     requestId: requestId === input.requestId ? requestId : "",
     outcome: input.outcome === "error" || input.outcome === "aborted" ? input.outcome : "ok",
     httpTotalMs: numericMilliseconds(input.httpTotalMs) ?? 0,

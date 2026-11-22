@@ -1,27 +1,3 @@
-/**
- * Span-mode materialization for production extraction (issue #2333 Phase B).
- *
- * Runs immediately after the extraction result is parsed and BEFORE
- * sanitize/grounding/judge/dedup/persistence, so everything downstream sees
- * exactly one content form and the content-hash dedup invariant (checklist
- * §13) holds by construction. Offsets die here — nothing offset-based is
- * stored.
- *
- * Modes:
- * - "off":    spans are never requested; a stray span is stripped untrusted.
- * - "shadow": spans are requested alongside full content; materialization
- *             runs for comparison only, the generated content is persisted
- *             unchanged (zero behavior change), agreement telemetry logged.
- * - "on":     materialized frame+span content is persisted; per-fact fail-open
- *             to the generated content (the frame) on any validation failure.
- *
- * Validation (identical to the Phase A bench contract):
- * - `0 <= charStart < charEnd <= turn.text.length`, end-exclusive, integers;
- * - slice length <= 400 chars and non-whitespace;
- * - frame 1..15 words;
- * - the turn text's stamp (sha256 + length of the exact in-memory string the
- *   model saw) must verify — offset drift is rejected, never guessed around.
- */
 
 import { log } from "./logger.js";
 import { stampSpanSource, verifySpanSource, type SpanSourceStamp } from "./extraction-span-source-hash.js";
@@ -174,7 +150,6 @@ export function materializeFactSpan<T extends SpanMaterializeFact>(
       materialized,
     };
   }
-  // shadow: persist generated content unchanged; materialize for comparison.
   return { fact: stripSpan(fact), outcome: "span", materialized };
 }
 

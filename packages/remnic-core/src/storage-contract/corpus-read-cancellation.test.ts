@@ -1,13 +1,3 @@
-/**
- * Issue #2307 — the shared full-corpus read primitives honour cancellation.
- *
- * Scenario matrix, applied to every primitive that walks a whole memory tree:
- *   1. no signal                    → unchanged behaviour
- *   2. signal that never fires      → unchanged behaviour
- *   3. signal already aborted       → throws, nothing read
- *   4. signal fires mid-scan        → throws, and NO partial corpus is cached
- *   5. coalesced read with a joiner → the starter's abort must not cancel it
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -36,7 +26,6 @@ async function withStorage(
   }
 }
 
-/** Counts disk scans so "nothing was cached" is observable rather than assumed. */
 function installScanSpy(sm: StorageManager): { scans: () => number } {
   const spy = sm as unknown as { _readAllMemoriesFromDisk: (...args: unknown[]) => Promise<unknown> };
   const orig = spy._readAllMemoriesFromDisk.bind(sm);
@@ -48,11 +37,6 @@ function installScanSpy(sm: StorageManager): { scans: () => number } {
   return { scans: () => count };
 }
 
-/**
- * Hold the first disk scan open so a joiner provably attaches while it is in
- * flight, and guarantee teardown: a failing assertion must not leave the patched
- * method installed or a scan blocked for the rest of the run.
- */
 function holdFirstScan(sm: StorageManager): {
   reached: Promise<void>;
   release: () => void;
@@ -109,8 +93,6 @@ test("readAllMemories: a mid-scan abort caches nothing", async () => {
     await sm.writeMemory("fact", "mid-scan memory");
     sm.invalidateAllMemoriesCacheForDir();
 
-    // Abort once the walk has produced paths: the next per-batch checkpoint in the
-    // parse phase is a real boundary, not a synthetic one.
     const aborted = new AbortController();
     const inner = sm as unknown as {
       collectActiveMemoryPaths: (...args: unknown[]) => Promise<string[]>;
@@ -124,8 +106,6 @@ test("readAllMemories: a mid-scan abort caches nothing", async () => {
 
     await assert.rejects(sm.readAllMemories({ abortSignal: aborted.signal }), isAbort);
 
-    // The publish step is downstream of the checkpoint, so a truncated corpus must
-    // never have reached the cache: a fresh read has to scan again.
     inner.collectActiveMemoryPaths = origCollect;
     const spy = installScanSpy(sm);
     const after = await sm.readAllMemories();
@@ -143,9 +123,6 @@ test("readAllMemories: a second reader protects the coalesced scan from the star
     const spy = installScanSpy(sm);
     const starterAbort = new AbortController();
     const starter = sm.readAllMemories({ abortSignal: starterAbort.signal });
-    // Observe the starter now: its rejection lands the instant it aborts, and this
-    // test awaits the joiner in between, so an unobserved promise would surface as
-    // an unhandled rejection rather than the assertion below.
     const starterOutcome = starter.then(
       (value) => ({ ok: true as const, value }),
       (error: unknown) => ({ ok: false as const, error }),
@@ -162,8 +139,6 @@ test("readAllMemories: a second reader protects the coalesced scan from the star
         joined.some((m) => m.content === "joined memory"),
         "a joiner must never be handed a cancelled or truncated read",
       );
-      // The joiner keeps the scan alive, so it completes — but the starter still
-      // gets its own AbortError, because it asked to be cancelled.
       const outcome = await starterOutcome;
       assert.equal(outcome.ok, false, "the starter must not be handed data it cancelled");
       assert.ok(!outcome.ok && isAbort(outcome.error));
@@ -180,9 +155,6 @@ test("readAllMemories: a joiner arriving after the starter aborted starts a fres
     await sm.writeMemory("fact", "late joiner memory");
     sm.invalidateAllMemoriesCacheForDir();
 
-    // The starter's scan is doomed the instant its signal fires while it is the
-    // sole waiter. Withdrawing it from the registry first is what stops a late
-    // joiner inheriting that AbortError for a request it never cancelled.
     const hold = holdFirstScan(sm);
     const starterAbort = new AbortController();
     const starter = sm.readAllMemories({ abortSignal: starterAbort.signal });
@@ -190,7 +162,6 @@ test("readAllMemories: a joiner arriving after the starter aborted starts a fres
       await hold.reached;
       starterAbort.abort();
 
-      // Joins only AFTER the abort — must not attach to the doomed scan.
       const lateJoiner = sm.readAllMemories();
       hold.release();
 
@@ -220,7 +191,6 @@ test("readAllMemories: a joiner honours its own signal without cancelling the sh
       const joiner = sm.readAllMemories({ abortSignal: joinerAbort.signal });
       joinerAbort.abort();
 
-      // The joiner stops waiting immediately, before the scan is even released.
       await assert.rejects(joiner, isAbort);
 
       hold.release();
@@ -241,9 +211,6 @@ test("readAllMemories: the scan is cancelled once its LAST waiter leaves", async
     await sm.writeMemory("fact", "last waiter memory");
     sm.invalidateAllMemoriesCacheForDir();
 
-    // Two cancellable readers overlap and both give up. Neither may cancel alone,
-    // but with nobody left the scan must not run on for no one — that is the
-    // abandoned I/O this whole change removes.
     const hold = holdFirstScan(sm);
     const starterAbort = new AbortController();
     const joinerAbort = new AbortController();
@@ -252,7 +219,6 @@ test("readAllMemories: the scan is cancelled once its LAST waiter leaves", async
       await hold.reached;
       const joiner = sm.readAllMemories({ abortSignal: joinerAbort.signal });
 
-      // First to leave must NOT cancel: the other reader still wants the result.
       joinerAbort.abort();
       await assert.rejects(joiner, isAbort);
       starterAbort.abort();
@@ -260,8 +226,6 @@ test("readAllMemories: the scan is cancelled once its LAST waiter leaves", async
 
       await assert.rejects(starter, isAbort);
 
-      // With the scan cancelled rather than completed, nothing was published: a
-      // fresh read has to scan again.
       hold.restore();
       const spy = installScanSpy(sm);
       const after = await sm.readAllMemories();
@@ -313,7 +277,6 @@ test("readAllEntityFiles: an already-aborted caller reads nothing and caches not
     await assert.rejects(sm.readAllEntityFiles({ abortSignal: aborted.signal }), isAbort);
     assert.equal(entityFileReads, 0, "an abandoned caller must not read entity files");
 
-    // Nothing was published, so the corpus still reads correctly afterwards.
     const entities = await sm.readAllEntityFiles();
     assert.ok(entities.some((e) => e.name === "Cancelled Person"));
   });
@@ -324,8 +287,6 @@ test("readAllEntityFiles: a mid-scan abort publishes no partial entity cache", a
     await sm.writeEntity("First Person", "person", ["First Person owns this test."]);
     await sm.writeEntity("Second Person", "person", ["Second Person owns this test too."]);
 
-    // Abort once the first entity file has been read: the post-loop checkpoint is
-    // what stops that partial batch reaching setCachedEntities.
     const aborted = new AbortController();
     const inner = sm as unknown as {
       readStorageSecureFile: (filePath: string) => Promise<string>;
@@ -380,7 +341,6 @@ test("searchArtifacts: a mid-walk abort caches nothing", async () => {
     await sm.writeArtifact("deploy runbook rollback quote", { sourceMemoryId: "src-1" });
     await sm.writeArtifact("second deploy runbook quote", { sourceMemoryId: "src-2" });
 
-    // Abort from inside the walk, at the per-entry checkpoint.
     const aborted = new AbortController();
     const inner = sm as unknown as {
       readMemoryByPath: (filePath: string) => Promise<unknown>;
@@ -399,8 +359,6 @@ test("searchArtifacts: a mid-walk abort caches nothing", async () => {
     );
     assert.ok(reads >= 1, "the walk started before it was cancelled");
 
-    // A partial walk must not have been published as the artifact index: the next
-    // search sees every artifact.
     inner.readMemoryByPath = origRead;
     const matches = await sm.searchArtifacts("deploy runbook", 5);
     assert.equal(matches.length, 2, "the aborted walk must not have cached a partial tier");

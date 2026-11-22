@@ -55,7 +55,6 @@ describe("parseStrictCliDate", () => {
   });
 
   it("rejects month 13", () => {
-    // Month 13 produces NaN from Date constructor, caught by the first check
     assert.throws(
       () => parseStrictCliDate("2026-13-01", "--since"),
       /Invalid --since/,
@@ -94,11 +93,9 @@ describe("parseStrictCliDate", () => {
     );
   });
 
-  // --- Issue 1: Timezone-offset dates must not be falsely rejected ---
 
   it("accepts ISO datetime with positive timezone offset", () => {
     const d = parseStrictCliDate("2026-01-15T23:00:00+05:30", "--since");
-    // 2026-01-15T23:00:00+05:30 => 2026-01-15T17:30:00Z
     assert.equal(d.getUTCFullYear(), 2026);
     assert.equal(d.getUTCMonth(), 0);
     assert.equal(d.getUTCDate(), 15);
@@ -107,9 +104,7 @@ describe("parseStrictCliDate", () => {
   });
 
   it("accepts ISO datetime where offset shifts UTC date backward", () => {
-    // Input date is the 16th, but UTC date becomes the 15th
     const d = parseStrictCliDate("2026-01-16T01:00:00+05:30", "--since");
-    // 2026-01-16T01:00:00+05:30 => 2026-01-15T19:30:00Z
     assert.equal(d.getUTCFullYear(), 2026);
     assert.equal(d.getUTCMonth(), 0);
     assert.equal(d.getUTCDate(), 15);
@@ -118,9 +113,7 @@ describe("parseStrictCliDate", () => {
   });
 
   it("accepts ISO datetime where negative offset shifts UTC date forward", () => {
-    // Input date is the 15th, but UTC date becomes the 16th
     const d = parseStrictCliDate("2026-01-15T23:00:00-05:00", "--until");
-    // 2026-01-15T23:00:00-05:00 => 2026-01-16T04:00:00Z
     assert.equal(d.getUTCFullYear(), 2026);
     assert.equal(d.getUTCMonth(), 0);
     assert.equal(d.getUTCDate(), 16);
@@ -129,7 +122,6 @@ describe("parseStrictCliDate", () => {
 
   it("accepts ISO datetime with large positive offset (UTC+14)", () => {
     const d = parseStrictCliDate("2026-01-15T23:00:00+14:00", "--since");
-    // 2026-01-15T23:00:00+14:00 => 2026-01-15T09:00:00Z
     assert.equal(d.getUTCFullYear(), 2026);
     assert.equal(d.getUTCDate(), 15);
     assert.equal(d.getUTCHours(), 9);
@@ -137,7 +129,6 @@ describe("parseStrictCliDate", () => {
 
   it("accepts ISO datetime with ordinary negative timezone offset", () => {
     const d = parseStrictCliDate("2026-01-15T23:00:00-08:00", "--since");
-    // 2026-01-15T23:00:00-08:00 => 2026-01-16T07:00:00Z
     assert.equal(d.getUTCFullYear(), 2026);
     assert.equal(d.getUTCDate(), 16);
     assert.equal(d.getUTCHours(), 7);
@@ -185,7 +176,6 @@ describe("parseStrictCliDate", () => {
     );
   });
 
-  // --- Issue 2: Non-ISO strings must be rejected ---
 
   it("rejects natural-language date string", () => {
     assert.throws(
@@ -215,10 +205,8 @@ describe("parseStrictCliDate", () => {
     );
   });
 
-  // --- Issue 3: overflow must be rejected regardless of timezone ---
 
   it("rejects overflow date even with positive timezone offset", () => {
-    // Previously skipped when a timezone offset was present.
     assert.throws(
       () => parseStrictCliDate("2026-02-31T00:00:00+05:30", "--since"),
       /date components overflow/,
@@ -239,12 +227,8 @@ describe("parseStrictCliDate", () => {
     );
   });
 
-  // --- Issue 4: naive datetime must not be rejected due to local-tz drift ---
 
   it("accepts naive datetime near UTC day boundary regardless of host timezone", () => {
-    // "2026-01-15T23:30:00" (no Z, no offset) parses as local time. The
-    // overflow check must NOT compare against UTC components, which would
-    // misreport an overflow in non-UTC host timezones.
     const d = parseStrictCliDate("2026-01-15T23:30:00", "--since");
     assert.equal(Number.isFinite(d.getTime()), true);
   });
@@ -259,7 +243,6 @@ describe("parseStrictCliDate", () => {
     assert.equal(Number.isFinite(d.getTime()), true);
   });
 
-  // --- Time-component out-of-range ---
 
   it("rejects hour 24", () => {
     assert.throws(

@@ -1,14 +1,3 @@
-// Buffer-drain handover protocol: a live buffer owner (the daemon) must hand
-// a claimed session's turns INTO the drain claim instead of writing a session
-// file, so the out-of-process `remnic buffer drain` can extract them without
-// the daemon resurrecting or losing content. Covers:
-//   1. persist path: claimed key saves hand over + evict the in-memory entry,
-//      merging the owner's newest turns into the claim (identity-deduped).
-//   2. no resurrection: after handover the session file stays gone.
-//   3. extraction gate: a claimed session's queued extraction settles skipped
-//      (claimed_by_buffer_drain) without touching the LLM; turns stay in the
-//      claim for the drain worker.
-//   4. default-key mirror: handing over "default" clears the legacy mirror.
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -196,7 +185,6 @@ test("handover of the default key clears the legacy top-level mirror", async () 
  * Narrow a test double to the dependency contract. The fixture provides the
  * members the drain path reads; the rest are unused by that path.
  */
-/** The dependency members the drain path reads. */
 interface DrainDepsFixture {
   buffer: unknown;
   config: unknown;
@@ -348,7 +336,6 @@ test("the owner keeps the claim while a drain is still running on it", async () 
   }
 });
 
-// ── In-process claim drain: isolated per-task execution (no global swap) ───
 
 test("claim-backed queue tasks drain their own claims without a global buffer swap", async () => {
   const h = makeHarness();

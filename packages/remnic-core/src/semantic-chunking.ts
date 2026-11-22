@@ -51,20 +51,14 @@ export const DEFAULT_SEMANTIC_CHUNKING_CONFIG: SemanticChunkingConfig = {
 // ---------------------------------------------------------------------------
 
 export interface SemanticChunk extends Chunk {
-  /** Optional topic hint derived from position. */
   topicLabel?: string;
-  /** Cosine similarity score at the trailing boundary of this chunk. */
   boundaryScore: number;
 }
 
 export interface SemanticChunkResult {
-  /** Whether content was split into multiple chunks. */
   chunked: boolean;
-  /** The chunks produced. */
   chunks: SemanticChunk[];
-  /** Sentence indices where topic splits occurred. */
   boundaries: number[];
-  /** Which algorithm produced the result. */
   method: "semantic" | "recursive-fallback";
 }
 
@@ -72,7 +66,6 @@ export interface SemanticChunkResult {
 // Embedding function signature
 // ---------------------------------------------------------------------------
 
-/** Caller-provided function that embeds an array of texts, returning vectors. */
 export type EmbedFn = (texts: string[]) => Promise<number[][]>;
 
 // ---------------------------------------------------------------------------
@@ -108,9 +101,6 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dot / denom;
 }
 
-/**
- * Arithmetic mean of a numeric series.
- */
 export function mean(series: number[]): number {
   if (series.length === 0) return 0;
   let sum = 0;
@@ -118,9 +108,6 @@ export function mean(series: number[]): number {
   return sum / series.length;
 }
 
-/**
- * Population standard deviation of a numeric series.
- */
 export function stddev(series: number[]): number {
   if (series.length === 0) return 0;
   const m = mean(series);
@@ -143,7 +130,6 @@ export function stddev(series: number[]): number {
 export function movingAverage(series: number[], windowSize: number): number[] {
   if (series.length === 0) return [];
   if (windowSize < 1) windowSize = 1;
-  // Round even values up to the next odd so the window is symmetric.
   if (windowSize % 2 === 0) windowSize = windowSize + 1;
 
   const halfW = Math.floor(windowSize / 2);
@@ -159,11 +145,6 @@ export function movingAverage(series: number[], windowSize: number): number[] {
   return result;
 }
 
-/**
- * Find indices in the series that are local minima AND below the threshold.
- * A local minimum is a point lower than both its immediate neighbors
- * (or lower-or-equal at series boundaries).
- */
 export function findLocalMinima(
   series: number[],
   threshold: number,
@@ -240,7 +221,6 @@ function buildSegments(
   let start = 0;
 
   for (const b of sorted) {
-    // Split after sentence at index b: segment is [start .. b]
     const splitPoint = b + 1;
     if (splitPoint > start && splitPoint <= sentences.length) {
       segments.push(sentences.slice(start, splitPoint));
@@ -248,7 +228,6 @@ function buildSegments(
     }
   }
 
-  // Remaining sentences
   if (start < sentences.length) {
     segments.push(sentences.slice(start));
   }
@@ -279,7 +258,6 @@ function mergeShortSegments(
     }
   }
 
-  // If the last merge left a dangling buffer, attach it to the last segment
   if (buffer.length > 0) {
     if (merged.length > 0) {
       merged[merged.length - 1] = [...merged[merged.length - 1], ...buffer];
@@ -291,9 +269,6 @@ function mergeShortSegments(
   return merged;
 }
 
-/**
- * Split an oversized segment using recursive chunking.
- */
 function splitLongSegment(
   segment: string[],
   maxTokens: number,
@@ -335,7 +310,6 @@ export async function semanticChunkContent(
     ...config,
   };
 
-  // Guard against non-positive batch size which would cause an infinite loop
   const batchSize = Math.max(1, cfg.embeddingBatchSize);
 
   // --- Empty / trivially short input ---
@@ -367,7 +341,6 @@ export async function semanticChunkContent(
     };
   }
 
-  // If total tokens is short enough, return as single chunk
   const totalTokens = estimateTokenCount(content);
   if (totalTokens <= cfg.minTokens) {
     return {
@@ -390,7 +363,6 @@ export async function semanticChunkContent(
   try {
     embeddings = await batchEmbed(sentences, embedFn, batchSize);
   } catch {
-    // Embedding failed — fall back if configured
     if (cfg.fallbackToRecursive) {
       return buildRecursiveFallback(content, cfg);
     }
@@ -425,7 +397,6 @@ export async function semanticChunkContent(
     similarities.push(cosineSimilarity(embeddings[i], embeddings[i + 1]));
   }
 
-  // If only one pair (2 sentences), nothing to smooth or split meaningfully.
   // However, if the combined content exceeds maxTokens, apply recursive splitting.
   if (similarities.length <= 1) {
     if (totalTokens > cfg.maxTokens) {
@@ -470,7 +441,6 @@ export async function semanticChunkContent(
     const segTokens = estimateTokenCount(segText);
 
     if (segTokens > cfg.maxTokens) {
-      // Recursive split for oversized segment
       const subChunks = splitLongSegment(segment, cfg.maxTokens, cfg.targetTokens);
       for (const sc of subChunks) {
         chunks.push({
@@ -479,7 +449,6 @@ export async function semanticChunkContent(
         });
       }
     } else {
-      // Compute boundary score: the similarity at the trailing edge
       const trailingSentenceIdx = sentenceOffset + segment.length - 1;
       let bScore = 1;
       if (
@@ -497,7 +466,6 @@ export async function semanticChunkContent(
       });
     }
 
-    // Record boundaries (all but the last segment produce a boundary)
     if (segIdx < segments.length - 1) {
       finalBoundaries.push(sentenceOffset + segment.length - 1);
     }

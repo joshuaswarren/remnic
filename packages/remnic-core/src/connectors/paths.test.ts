@@ -56,7 +56,6 @@ test("REGISTRY_DIR_NAME: canonical subdir is .remnic-connectors", () => {
 
 test("getConnectorsDir: fresh install writes to remnic/.remnic-connectors/connectors", () => {
   withXdgHome((xdg) => {
-    // Neither remnic nor engram exists → canonical remnic wins.
     const dir = getConnectorsDir();
     assert.equal(
       dir,
@@ -78,7 +77,6 @@ test("getRegistryPath: fresh install writes registry.json under remnic/.remnic-c
 
 test("read-fallback: when ONLY engram/ exists, active root resolves to engram (#1518 back-compat)", () => {
   withXdgHome((xdg) => {
-    // Seed the legacy engram tree — no remnic dir.
     fs.mkdirSync(path.join(xdg, "engram", ".engram-connectors", "connectors"), {
       recursive: true,
     });
@@ -96,7 +94,6 @@ test("read-fallback: when ONLY engram/ exists, active root resolves to engram (#
 
 test("read-fallback: once remnic/ exists, it wins over engram (post-migration)", () => {
   withXdgHome((xdg) => {
-    // Seed BOTH trees — the user has started migrating.
     fs.mkdirSync(path.join(xdg, "engram", ".engram-connectors", "connectors"), {
       recursive: true,
     });
@@ -133,10 +130,8 @@ test("read-fallback: stray remnic/config.json must not hide legacy engram connec
   // loadRegistry would read an empty remnic tree and legacy installs would
   // look uninstalled.
   withXdgHome((xdg) => {
-    // Daemon setup created remnic/config.json (no .remnic-connectors).
     fs.mkdirSync(path.join(xdg, "remnic"), { recursive: true });
     fs.writeFileSync(path.join(xdg, "remnic", "config.json"), "{}\n");
-    // Real connector data still lives under the legacy engram tree.
     fs.mkdirSync(path.join(xdg, "engram", ".engram-connectors", "connectors"), {
       recursive: true,
     });

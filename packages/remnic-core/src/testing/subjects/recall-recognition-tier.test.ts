@@ -1,12 +1,3 @@
-/**
- * Recognition-tier swap subject for the scenario-matrix harness (issue #2975).
- *
- * Every canonical row runs the real fetchQmdMemoryResultsWithRecognitionSwap
- * seam twice: gate off (original fetch only, zero index I/O, zero recognizer
- * calls) and gate on with an under-threshold index (one recognizer call, the
- * namespace never reaches vector search). The scenario dimensions are
- * orthogonal to this routing decision, so the same invariant holds per row.
- */
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -86,7 +77,6 @@ const subject: LifecycleSubject<SwapState> = {
   },
 
   async invariants(state): Promise<void> {
-    // Off-path again after the on-path run: still a pure passthrough.
     const before = { fetch: state.fetchCalls, recognize: state.recognizeCalls, storage: state.storageForCalls };
     await fetchQmdMemoryResultsWithRecognitionSwap(state.deps(false), "q", 5, 7, {
       namespacesEnabled: true,

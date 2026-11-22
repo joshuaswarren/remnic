@@ -7,16 +7,6 @@ import test from "node:test";
 
 import { longMemEvalDefinition, runLongMemEvalBenchmark } from "./runner.ts";
 
-/**
- * Smoke test for the LongMemEval runner after issue #566 PR 2 migrated
- * the per-item lifecycle into the shared harness. Verifies:
- *
- *   1. Dataset → plan → harness path emits one task per item.
- *   2. `search_hits` is computed via the post-answer hook (so it uses
- *      the live system under test, not a pre-ingest state).
- *   3. Task IDs, expected answers, and extra detail fields are
- *      propagated faithfully.
- */
 test("LongMemEval runner wires the shared harness with per-item postAnswerHook", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-lme-"));
   try {
@@ -119,7 +109,6 @@ test("LongMemEval runner wires the shared harness with per-item postAnswerHook",
       1,
       "search should be invoked exactly once via postAnswerHook",
     );
-    // Verify extra details were propagated.
     assert.equal(
       (task.details as Record<string, unknown>).questionType,
       "single-session-user",
@@ -290,8 +279,6 @@ test("LongMemEval composes split session evidence and surfaces update supersessi
           question: "What is the user's current diet?",
           answer: "vegan",
           question_date: "2025-03-03",
-          // Deliberately reverse chronological ingest order. Supersession must
-          // follow source time, not array position or the gold answer session.
           haystack_sessions: [
             [{ role: "user", content: "My diet is now vegan." }],
             [{ role: "user", content: "I am vegetarian." }],
@@ -318,8 +305,6 @@ test("LongMemEval composes split session evidence and surfaces update supersessi
           );
         },
         async recall(sessionId) {
-          // Complete the second session first to prove aggregation follows the
-          // plan's deterministic session order rather than completion order.
           await new Promise((resolve) =>
             setTimeout(resolve, sessionId === "flight-session" ? 5 : 0),
           );

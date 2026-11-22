@@ -1,18 +1,6 @@
 // ---------------------------------------------------------------------------
-// Claude parsed → ImportedMemory transform (issue #568 slice 3)
-// ---------------------------------------------------------------------------
 //
-// Claude exports contain two distinct memory-worthy surfaces:
 //
-//   1. Project docs + `prompt_template` — durable personal context the user
-//      explicitly pinned to a project. These are imported 1:1 by default;
-//      each doc becomes one memory, and each project's prompt_template (if
-//      non-empty) becomes one memory.
-//   2. Conversations — per-conversation summaries, only emitted when the
-//      caller opts in via `includeConversations: true`. The summary
-//      concatenates human-side turns (user messages) so downstream
-//      extraction has coherent content to score. One memory per conversation
-//      keeps the footprint bounded.
 
 import type { ImportedMemory } from "@remnic/core";
 
@@ -147,11 +135,6 @@ function conversationToSummary(
   const body = turns.map((t) => `- ${t.content}`).join("\n");
   let content = titleLine + body;
   if (content.length > maxChars) {
-    // Reserve up to 3 chars for the "..." suffix, but truncate the suffix
-    // itself when `maxChars` is below 3 so the final content.length is
-    // strictly ≤ maxChars. Cursor reviews on PR #598 flagged both the
-    // long-title case (titleLine alone exceeds maxChars) and the
-    // pathologically small cap (maxChars < suffix.length).
     const effectiveSuffix = maxChars >= 3 ? "..." : "";
     if (titleLine.length + effectiveSuffix.length >= maxChars) {
       content =
@@ -163,11 +146,6 @@ function conversationToSummary(
       content = titleLine + bodyTruncated + effectiveSuffix;
     }
   }
-  // Codex review on PR #598 — when per-turn timestamps are absent, fall
-  // back to the conversation-level `updated_at`/`created_at`. Without
-  // this fallback, exports that omit message-level timestamps lose their
-  // original time metadata entirely, which makes old conversations look
-  // newly imported and skews recency-based retrieval.
   const sourceTimestamp =
     firstTimestamp(turns) ?? conversation.updated_at ?? conversation.created_at;
   const metadata: Record<string, unknown> = {

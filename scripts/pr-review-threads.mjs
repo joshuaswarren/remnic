@@ -1,25 +1,4 @@
 #!/usr/bin/env node
-/**
- * Batched review-thread queries and resolves (GraphQL budget survival).
- *
- * The naive loop — one GraphQL query per PR to list threads, then one
- * mutation per thread to resolve — exhausts the GraphQL point budget fast
- * when several PRs are in flight, and `unresolved-review-threads` then stays
- * red for as long as the budget takes to refill. One agent run lost roughly
- * two and a half hours to three separate rate-limit waits doing exactly that.
- *
- * This helper issues ONE query for every PR (aliased sub-selections) and ONE
- * mutation for every thread (aliased mutations), which is the same work in
- * two requests instead of 2N — plus one extra query per additional page for
- * any PR with more than 50 threads.
- *
- *   node scripts/pr-review-threads.mjs list  <owner/repo> <pr...>
- *   node scripts/pr-review-threads.mjs resolve <threadId...>
- *
- * `list` prints one `PR<number> <threadId> <author>` line per UNRESOLVED
- * thread. `resolve` takes ids on argv, or reads them from stdin, so both
- * `list | resolve` and `resolve $(list ... | awk ...)` work.
- */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
@@ -28,12 +7,6 @@ export const LIST_SENTINEL = "# pr-review-threads: end of list";
 import path from "node:path";
 import process from "node:process";
 
-/**
- * Serialize a value as a GraphQL string literal. execFileSync passes argv
- * without a shell, so the risk here is GraphQL injection, not shell
- * injection: a quote or brace in an interpolated value can change the
- * operation that runs under the configured gh credential.
- */
 export function graphqlString(value, field) {
   if (typeof value !== "string" || value === "") {
     throw new Error(`pr-review-threads: ${field} must be a non-empty string`);
@@ -63,9 +36,6 @@ export function buildListQuery(owner, repo, prNumbers, cursors = {}) {
   }
   const fields = prNumbers
     .map((pr) => {
-      // A PR with more than one page of threads (resolved ones count) would
-      // otherwise silently truncate, and the helper would report "none
-      // unresolved" while the review guard stayed red.
       const after = cursors[pr] ? `, after: ${graphqlString(cursors[pr], "cursor")}` : "";
       return (
         `  pr${pr}: pullRequest(number: ${pr}) { ` +
@@ -111,8 +81,6 @@ export function buildResolveMutation(threadIds) {
   const fields = [];
   for (const [index, id] of threadIds.entries()) {
     assertThreadId(id);
-    // A duplicate id would collide on its alias and make the whole mutation
-    // invalid, so drop repeats rather than sending a request that cannot run.
     if (seen.has(id)) continue;
     seen.add(id);
     fields.push(
@@ -151,7 +119,6 @@ export function collectUnresolved(data) {
       });
     }
   }
-  // Deterministic: PR ascending (numeric), then thread id.
   rows.sort((a, b) => (Number(a.pr) - Number(b.pr)) || (a.threadId < b.threadId ? -1 : a.threadId > b.threadId ? 1 : 0));
   return rows;
 }
@@ -279,11 +246,7 @@ function main(argv) {
   if (mode === "list") {
     const [slug, ...prs] = rest;
     if (!slug) throw new Error("pr-review-threads list <owner/repo> <pr...>");
-    // owner/repo/extra previously queried owner/repo and presented the result
-    // as the requested repository's thread state.
     const { owner, repo } = parseRepoSlug(slug);
-    // `list owner/repo` with no numbers previously exited 0 with no output,
-    // which is indistinguishable from "no unresolved threads".
     if (prs.length === 0) {
       throw new Error("pr-review-threads list <owner/repo> <pr...>: at least one PR number is required");
     }
@@ -291,14 +254,6 @@ function main(argv) {
     const rows = [];
     let cursors = {};
     let pending = numbers;
-    // Round 1 covers every PR in one request; later rounds only revisit the
-    // PRs that reported another page, so the common case stays at one request.
-    // No page cap: a valid cursor chain must be allowed to finish however long
-    // it is. A cursor that repeats for the same PR is a real loop, and that is
-    // what terminates instead.
-    // Every cursor ever seen for a PR, not just the previous one: a C1 -> C2 ->
-    // C1 cycle would otherwise pass an adjacent-duplicate check and keep
-    // issuing requests until the rate limiter stopped it.
     const seenCursors = new Map();
     while (pending.length > 0) {
       const page = gh(buildListQuery(owner, repo, pending, cursors));
@@ -311,29 +266,18 @@ function main(argv) {
     for (const row of rows) {
       console.log(`PR${row.pr} ${row.threadId} ${row.author}`);
     }
-    // Proof of completion. Without it, a `list` that died early (rate limit,
-    // inaccessible PR) hands `resolve` empty stdin, and in a pipeline without
-    // pipefail the run reports success having queried nothing.
     console.log(LIST_SENTINEL);
     return;
   }
   if (mode === "resolve") {
-    // The documented `list | resolve` pipe puts the rows on stdin, so read it
-    // when no ids are given on argv rather than telling the user it worked.
-    // Every argv token must be a valid id. Filtering invalid ones away
-    // resolved the rest and reported success while a requested thread stayed
-    // unresolved.
     const argvIds = rest.length > 0 ? rest.map((token) => assertThreadId(token)) : [];
     let ids = argvIds;
     if (ids.length === 0) {
       const piped = readPipedThreadIds();
       if (piped === null) {
-        // Nothing on argv and nothing piped: the invocation is incomplete.
         throw new Error("pr-review-threads resolve <threadId...>  (or pipe `list` output in)");
       }
       if (piped.length === 0) {
-        // Empty input is only clean when `list` says it finished. Otherwise
-        // the upstream failed and this must not report success.
         if (!pipedRanToCompletion()) {
           throw new Error(
             "pr-review-threads: empty input without the end-of-list marker — `list` did not finish, " +
@@ -345,9 +289,6 @@ function main(argv) {
       }
       ids = piped;
     }
-    // Compare against the UNIQUE ids actually sent: buildResolveMutation
-    // deduplicates, so GraphQL returns one result per unique id and using the
-    // caller's raw count would fail a run that resolved everything.
     const unique = uniqueThreadIds(ids);
     const result = gh(buildResolveMutation(ids));
     const resolved = Object.values(result?.data ?? {}).filter((entry) => entry?.thread?.isResolved === true);

@@ -30,14 +30,11 @@ export class HermesAdapter implements EngramAdapter {
   readonly id = "hermes";
 
   matches(context: AdapterContext): boolean {
-    // Confirmed header from Hermes v0.7.0 API server
     if (headerValue(context.headers, "x-hermes-session-id")) return true;
 
-    // User-configured client identifier header
     const clientId = headerValue(context.headers, "x-engram-client-id");
     if (clientId?.toLowerCase() === "hermes") return true;
 
-    // MCP clientInfo (for forward compat when Hermes documents its name)
     const clientName = context.clientInfo?.name?.toLowerCase() ?? "";
     if (clientName.includes("hermes")) return true;
 

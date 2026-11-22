@@ -1,14 +1,3 @@
-/**
- * Input-validation helpers for the `remnic xray` CLI command (issue
- * #570, PR 3).
- *
- * Pulled out of `cli.ts` so the validation paths can be unit-tested in
- * isolation — the full CLI handler is hard to exercise without booting
- * an orchestrator.  CLAUDE.md rules 14 + 51 require that `--format`,
- * `--budget`, `--namespace`, and `--out` reject missing-value /
- * unknown / non-positive arguments with a listed-options error, rather
- * than silently defaulting.
- */
 
 import {
   parseXrayFormat,
@@ -22,13 +11,9 @@ import {
 
 export interface ParsedXrayCliOptions {
   format: RecallXrayFormat;
-  /** Positive integer override, or undefined when not specified. */
   budget?: number;
-  /** Trimmed namespace, or undefined when not specified. */
   namespace?: string;
-  /** Trimmed, tilde-unexpanded output path, or undefined when stdout. */
   outPath?: string;
-  /** Disclosure depth for X-ray telemetry, or undefined when not specified. */
   disclosure?: RecallDisclosure;
 }
 

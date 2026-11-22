@@ -132,11 +132,9 @@ test("hourly ring rolls with an injected clock and keeps the last 24 hours", () 
     },
   ]);
 
-  // Same hour: counts land in the same bucket.
   counters.noteAppendedTurn(entry, turn("b"));
   assert.equal(counters.snapshot().hours.length, 1);
 
-  // Next hour: a second bucket appears, the first is preserved.
   nowMs += HOUR_MS;
   counters.refuseOne(turn("c"));
   const hours = counters.snapshot().hours;
@@ -144,7 +142,6 @@ test("hourly ring rolls with an injected clock and keeps the last 24 hours", () 
   assert.equal(hours[0].accepted.turns, 2);
   assert.equal(hours[1].refused.turns, 1);
 
-  // Fill the ring: 24 distinct hours hold exactly 24 buckets, oldest first.
   for (let i = 2; i <= 23; i += 1) {
     nowMs += HOUR_MS;
     counters.noteAppendedTurn(entry, turn(String(i)));
@@ -153,7 +150,6 @@ test("hourly ring rolls with an injected clock and keeps the last 24 hours", () 
   assert.equal(full.length, 24);
   assert.equal(new Date(full[0].hourStart).getTime(), hourZero);
 
-  // One more hour evicts the oldest bucket; the ring never exceeds 24.
   nowMs += HOUR_MS;
   counters.refuseOne(turn("d"));
   const rolled = counters.snapshot().hours;
@@ -192,7 +188,6 @@ test("exactly one aggregate info line per hour, counts only", () => {
     assert.match(lines[0], /accepted=1\//);
     assert.match(lines[0], /refused=0\//);
 
-    // No further log within the same hour, even with more records.
     counters.noteAppendedTurn(entry, turn("c"));
     assert.equal(lines.length, 1);
 
@@ -235,9 +230,6 @@ test("EMPTY_BUFFER_INGRESS_SNAPSHOT is the zero snapshot for hosts without a buf
 });
 
 test("accepted and its exact-duplicate sub-count share one bucket when the hour rolls over mid-offer", () => {
-  // Scripted clock: the first now() call (accepted) lands at the end of hour
-  // H, the second (duplicate check path) in hour H+1. Before the fix each
-  // record() read the clock itself and the two counts split across buckets.
   const h0 = 1_700_000_000_000 - (1_700_000_000_000 % HOUR_MS);
   // now() is read once per offer (the duplicate check itself never reads the
   // clock): first offer at the end of hour H, second offer in hour H+1.
@@ -269,13 +261,6 @@ test("rebuilding the memo from a restored entry respects the digest cap", () => 
   assert.equal(counters.snapshot().totals.acceptedExactDuplicate.turns, 1, "newest digest retained");
 });
 
-// NOTE (not a test): an "offered turn missing from entry.turns" case cannot be
-// constructed against the real contract — the buffer appends before counting,
-// and fakeEntry arrays are caller-owned. The earlier draft of this file had
-// such a test; it failed because the premise contradicts the layer's only
-// valid input shape, not because counting was wrong. Memo validity therefore
-// rests on entry-array identity (WeakRef-compared), covered by the
-// self-invalidating-memo and retained-deletion tests below.
 
 test("deleting retainedTurns invalidates the memo even when turns keep their identity", () => {
   // The buffer observes BEFORE pushing (recordTurnUnlocked calls
@@ -301,7 +286,6 @@ test("deleting retainedTurns invalidates the memo even when turns keep their ide
   const probe = turn("kept-elsewhere");
   counters.noteAppendedTurn(entry, probe); // matches only removed content
   entry.turns.push(probe);
-  // Same seam; identity compared, then dropped.
   const memoAfter = counters.memoForTest(entry);
   assert.notEqual(memoAfter, memoBefore, "memo rebuilt after retainedTurns deletion");
   // The re-offered probe matches only removed content, so the duplicate

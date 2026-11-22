@@ -1,24 +1,3 @@
-/**
- * correction/correction-access-wiring.ts — wires the CorrectionService to the
- * orchestrator's storage / tombstone / search surfaces (issue #1580 PR 3).
- *
- * Keeps the access-service god-file thin: the service calls `createCorrectionService`
- * with two namespace-policy callbacks and gets back a fully-wired
- * {@link CorrectionService}. All the heavy lifting (search, LLM classify,
- * tombstone emission, audit-record write, propagation) lives here, in a
- * dedicated module, so the only growth in access-service.ts is the four
- * one-line delegators.
- *
- * Design rules honored:
- *   - Caller-supplied namespaces are NEVER trusted raw — the service resolves
- *     them through the injected policy (rule 42).
- *   - Corrections flow through the existing storage chokepoints: writeMemory
- *     (catalog/dedup/reindex fire — rule 43), appendTombstone (#1579),
- *     writeMemoryFrontmatter (status flip + validUntil — #1578).
- *   - The LLM classify+draft adapter routes through the existing extraction
- *     engine (Responses API only, gotcha 1). On any LLM failure the adapter
- *     returns a deterministic fallback so the planner never throws (rule 13).
- */
 
 import path from "node:path";
 import { abortError, isAbortError, throwIfAborted } from "../abort-error.js";
@@ -53,14 +32,7 @@ import { resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
 // ---------------------------------------------------------------------------
-// Public entry: build a fully-wired CorrectionService
-// ---------------------------------------------------------------------------
 
-/**
- * The two namespace-policy callbacks the access-service supplies. These are
- * the ONLY surface-area touch-points between the correction modules and the
- * access-service god-file — everything else is wired from the orchestrator.
- */
 export interface CorrectionAccessWiring {
   orchestrator: Orchestrator;
   /** Resolve the AUTHORIZED namespace for a plan/apply request (write ACL). */
@@ -96,11 +68,6 @@ export interface CorrectionAccessWiring {
 
 export function createCorrectionService(wiring: CorrectionAccessWiring): CorrectionService {
   const cfg = wiring.orchestrator.config;
-  // parseConfig now owns these (review thread Txp): the orchestrator's config
-  // carries correctionEnabled / correctionApplyRequiresConfirm /
-  // correctionMaxAffected / correctionPlanTtlHours as parsed fields. The
-  // loose-read helpers stay as a fallback only for tests that construct a
-  // PluginConfig-shaped object without running parseConfig.
   const correctionEnabled = isCorrectionFeatureEnabled(cfg);
   const applyRequiresConfirm =
     typeof cfg.correctionApplyRequiresConfirm === "boolean"
@@ -133,7 +100,6 @@ export function createCorrectionService(wiring: CorrectionAccessWiring): Correct
 }
 
 // ---------------------------------------------------------------------------
-// Planner deps
 // ---------------------------------------------------------------------------
 
 function makePlannerDeps(
@@ -166,15 +132,6 @@ async function searchMemories(
   namespaces: readonly string[],
   limit: number,
 ): Promise<PlannerCandidate[]> {
-  // Tokenized keyword search (review thread OgIql): natural-language
-  // corrections describe the new truth, not quote the old memory verbatim
-  // ("we migrated from Postgres to MySQL" vs a memory saying "Postgres is
-  // the database"). The old 32-char exact-prefix substring missed these.
-  // We tokenize the correction into keywords, score each active memory by
-  // keyword overlap, and return memories above a minimum threshold. This is
-  // deliberately lightweight (no embedding/QMD dependency) — the planner's
-  // job is to LOCATE candidates for the LLM classify+draft, not to rank with
-  // the full recall pipeline.
   const tokens = tokenize(text);
   if (tokens.length === 0) return [];
   const scored: Array<{ m: MemoryFile; ns: string; score: number }> = [];
@@ -189,7 +146,6 @@ async function searchMemories(
         if (hay.includes(tok)) hits++;
       }
       if (hits === 0) continue;
-      // Overlap ratio: how many query tokens the memory covers.
       scored.push({ m, ns, score: hits / tokens.length });
     }
   }
@@ -197,7 +153,6 @@ async function searchMemories(
   return scored.slice(0, limit).map((s, i) => toCandidate(s.m, s.ns, s.score - i * 0.01));
 }
 
-/** Tokenize correction text into lowercase search keywords (OgIql). */
 function tokenize(text: string): string[] {
   const STOP = new Set([
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
@@ -212,7 +167,6 @@ function tokenize(text: string): string[] {
   ]);
   const raw = text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   const out = raw.filter((w) => w.length >= 3 && !STOP.has(w));
-  // De-dup while preserving order.
   return [...new Set(out)];
 }
 
@@ -248,19 +202,9 @@ async function expandEntityNeighbors(
   namespaces: readonly string[],
   limit: number,
 ): Promise<PlannerCandidate[]> {
-  // 1-hop entity-graph neighbors via entityRef-tagged siblings. We expand
-  // across the AUTHORIZED namespaces the planner supplied (review thread PG8),
-  // NOT only `config.defaultNamespace` — a correction planned in a non-default
-  // writable namespace must only ever draft siblings from that same authorized
-  // scope, or apply will fail as not-found / mutate a same-ID memory in the
-  // wrong namespace. The conservative entityRef fallback searches every
-  // readable namespace and tags each candidate with the namespace it was read
-  // from; a richer graph expansion can ride on top later (rule 57 — additive).
   if (seedIds.length === 0 || limit <= 0 || namespaces.length === 0) return [];
   const out: PlannerCandidate[] = [];
   const seen = new Set<string>(seedIds);
-  // Collect the seed entityRefs across every authorized namespace (a seed
-  // memory may live in any of them), then surface active siblings sharing one.
   const seedRefs = new Set<string>();
   for (const ns of namespaces) {
     const storage = await wiring.orchestrator.getStorage(ns);
@@ -350,9 +294,6 @@ async function renderCorrectionDiff(
   candidates: PlannerCandidate[],
   actions: CorrectionAction[],
 ): Promise<string> {
-  // Render a human-readable unified-diff-style preview. We snapshot each
-  // affected memory via page-versioning (reuse, don't fork — rule 23) when
-  // versioning is configured; otherwise fall back to a textual summary.
   const lines: string[] = [];
   for (const action of actions) {
     const id =
@@ -390,7 +331,6 @@ function describeAfterState(action: CorrectionAction): string {
 }
 
 // ---------------------------------------------------------------------------
-// Executor deps
 // ---------------------------------------------------------------------------
 
 function makeExecutorDeps(
@@ -455,16 +395,6 @@ async function writeReplacementMemory(
   throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
   throwIfAborted(abortSignal, "correction apply aborted");
-  // writeMemory is the single storage chokepoint — catalog/dedup/reindex fire
-  // here (rule 43). Tombstone blocking also fires here (#1579), so a
-  // resurrected fact lands as pending_review rather than silently overwriting.
-  // Sealed-envelope write (issue #1989 PR4): correction drafts carry
-  // plan-derived (machine) field values — salvage so one malformed optional
-  // field cannot make a correction unapplicable; drops are warn-logged.
-  // Category is IDENTITY and stays fatal (#2022 review): default to "fact"
-  // only when ABSENT (the legacy default); an explicit unrecognized value
-  // must surface as a contract error, not silently change the correction's
-  // meaning before it supersedes the target.
   if (draft.category !== undefined && !isMemoryCategory(draft.category)) {
     throw new CorrectionContractError(
       `correction draft carries unrecognized category ${JSON.stringify(draft.category)} — expected a valid memory category`,
@@ -493,11 +423,6 @@ async function writeReplacementMemory(
     ...(draft.supersedes ? { supersedes: draft.supersedes } : {}),
   });
   if (tombstoneBlocked) {
-    // #1645 (review thread): the replacement content matched a tombstone, so it
-    // landed pending_review (non-active). Returning the id would let the
-    // executor record the supersede as applied and Phase 2 retire the loser
-    // with `supersededBy` pointing at a non-active replacement — stranding
-    // the fact behind a tombstone. Fail the correction cleanly instead.
     throw new CorrectionContractError(
       `correction replacement was tombstone-blocked (pending_review ${id}) — cannot supersede with a non-active replacement`,
     );
@@ -518,16 +443,7 @@ async function applyEditMemory(
   const existing = await storage.getMemoryById(memoryId);
   throwIfAborted(abortSignal, "correction apply aborted");
   if (!existing) throw new CorrectionContractError(`memory not found for edit: ${memoryId}`);
-  // Apply the patch by overwriting content through the storage chokepoint.
-  // The StorageManager's writeMemoryFrontmatter snapshots the prior version
-  // internally when page-versioning is configured (issue #371), so every edit
-  // is revertable without the correction layer forking versioning logic.
   //
-  // #1672 item 3: recompute the contentHash from the patched body so the
-  // dedup index + tombstone exact tier match the NEW content. writeMemory
-  // computes this at write time, but writeMemoryFrontmatter preserves the
-  // prior frontmatter hash — without this the hash no longer matches the
-  // patched body and a later re-extraction of the same fact dedup-misses.
   const contentHashForPatch =
     existing.frontmatter.category === "fact"
       ? computeContentHash(sanitizeMemoryContent(patch).text)
@@ -573,8 +489,6 @@ async function rescopeMemoryFn(
   toNamespace: string,
   abortSignal?: AbortSignal,
 ): Promise<string> {
-  // The destination namespace is re-authorized by the service before the
-  // executor runs; here we perform the move atomically (write-then-unlink).
   throwIfAborted(abortSignal, "correction apply aborted");
   const sourceStorage = await wiring.orchestrator.getStorage(namespace);
   throwIfAborted(abortSignal, "correction apply aborted");
@@ -582,8 +496,6 @@ async function rescopeMemoryFn(
   throwIfAborted(abortSignal, "correction apply aborted");
   if (!memory) throw new CorrectionContractError(`memory not found for rescope: ${memoryId}`);
   if (memory.frontmatter.status && memory.frontmatter.status !== "active") {
-    // Don't copy a stale source: rescoping a superseded/retracted/archived
-    // memory duplicates outdated content into the destination (thread Ohjwb).
     throw new CorrectionContractError(
       `cannot rescope memory ${memoryId}: source is ${memory.frontmatter.status}, not active`,
     );
@@ -592,18 +504,9 @@ async function rescopeMemoryFn(
   const destStorage = await wiring.orchestrator.getStorage(toNamespace);
   throwIfAborted(abortSignal, "correction apply aborted");
   const fm = memory.frontmatter;
-  // Strip the `[Attributes: …]` suffix writeMemory appended to the source body
-  // (review thread Of0p6): we forward `structuredAttributes` separately, so
-  // writeMemory will re-append the suffix on the destination. Without this
-  // strip the destination would carry the suffix TWICE, producing duplicated
-  // attribute text and a different content hash/index entry.
   const destContent = fm.structuredAttributes
     ? stripAttributesSuffix(memory.content)
     : memory.content;
-  // Sealed-envelope write (issue #1989 PR4): a rescope REPLAYS stored
-  // frontmatter — legacy rows may predate current field limits, and a
-  // rescope must never be impossible for data already in the store, so
-  // compose in salvage mode (drops warn-logged).
   const rescopeEnvelope = composeMemoryEnvelope(
     {
       content: destContent,
@@ -630,19 +533,10 @@ async function rescopeMemoryFn(
     ...(fm.toolScoped ? { toolScoped: true as const } : {}),
   });
   if (destBlocked) {
-    // #1645: destination tombstone-blocked the rescope (pending_review). Don't
-    // archive the source — that deletes the only active copy while the
-    // replacement sits behind review. Fail the rescope; source stays active.
     throw new CorrectionContractError(
       `rescope of ${memoryId} into "${toNamespace}" was tombstone-blocked (pending_review ${destId}) — keeping source active`,
     );
   }
-  // Unlink the source by archiving (non-destructive — rule 25). If the archive
-  // fails AFTER the destination write succeeded, compensate by archiving the
-  // destination too so no duplicate ACTIVE fact remains, then re-throw so the
-  // executor records the action as failed (review: rescope-duplicates-on-fail).
-  // Once the destination write resolves, cancellation cannot interrupt the
-  // source retirement or leave both memories active.
   try {
     await sourceStorage.writeMemoryFrontmatter(memory, {
       status: "archived",
@@ -682,24 +576,10 @@ async function appendTombstoneFn(
   throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
   throwIfAborted(abortSignal, "correction apply aborted");
-  // storage.appendTombstone returns null for TWO reasons: tombstones disabled
-  // (off = pre-feature behavior) OR a swallowed store error (it catches I/O
-  // failures and returns null — review thread OgIqp). The executor writes the
-  // tombstone BEFORE retiring the source (PG9), so when tombstones are
-  // enabled a null return means persistence failed and the retire must NOT
-  // proceed (no tombstone → resurrection window). Distinguish the two cases
-  // via the public isTombstonesEnabled() accessor; when disabled, null is the
-  // expected pre-feature return and the action may still succeed.
   const enabled =
     typeof storage.isTombstonesEnabled === "function"
       ? storage.isTombstonesEnabled()
       : true;
-  // #1672 item 4: emit one tombstone per derived supersession key (mirrors
-  // temporal-supersession / forget / pattern-reinforcement) so a paraphrased
-  // re-observation placing the attribute at a different key position is still
-  // blocked at the keyed tier. When no keys are derived, emit a single
-  // content-only tombstone. Each carries the canonical contentHash so the
-  // exact tier also matches re-extraction.
   const keys =
     input.supersessionKeys && input.supersessionKeys.length > 0
       ? input.supersessionKeys
@@ -710,10 +590,6 @@ async function appendTombstoneFn(
   let firstId: string | null = null;
   let committed = false;
   for (const key of keys) {
-    // Once one tombstone is durable, finish the complete tombstone set even
-    // if the caller aborts. The executor must retire the source after the
-    // tombstone commit or compensate it; returning an abort here would leave
-    // an active source behind a committed resurrection block.
     if (!committed) throwIfAborted(abortSignal, "correction apply aborted");
     const result = await storage.appendTombstone({
       reason: input.reason,
@@ -725,10 +601,6 @@ async function appendTombstoneFn(
       ...(input.contentHash ? { contentHash: input.contentHash } : {}),
     });
     if (result === null && enabled) {
-      // Rollback already-written tombstones so a partial multi-key failure
-      // does not leave incomplete resurrection blocking for the still-active
-      // memory (review thread #1). Best-effort — a dangling tombstone is the
-      // safer failure mode (false-positive block vs. false-negative leak).
       for (const id of writtenIds) {
         try { await storage.revokeTombstone(id, "user_correction"); } catch { /* best-effort */ }
       }
@@ -752,18 +624,11 @@ async function registerRedactionRuleFn(
   abortSignal?: AbortSignal,
   writeRule: (outputPath: string, content: string) => Promise<unknown> = writeFileAtomically,
 ): Promise<void> {
-  // Persist the redaction rule under state/ so extraction consults it the
-  // same way tombstones are consulted (route through the same chokepoint).
   throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
   throwIfAborted(abortSignal, "correction apply aborted");
   const dir = path.join(storage.dir, REDACTION_RULES_SUBDIR);
   throwIfAborted(abortSignal, "correction apply aborted");
-  // Idempotent: filename is a slug + short hash of the full pattern so
-  // re-registering the same pattern overwrites rather than duplicates, while
-  // distinct patterns that slug identically (e.g. "abc+def" vs "abc.def" →
-  // "abc-def") no longer collide and silently remove each other's enforcement
-  // (review thread P1).
   const slugBase = pattern.replace(/[^a-zA-Z0-9]+/g, "-").slice(0, 48) || "rule";
   const patternHash = createHash("sha256").update(pattern).digest("hex").slice(0, 16);
   const slug = `${slugBase}-${patternHash}`;
@@ -788,11 +653,6 @@ async function appendAuditRecordFn(
   throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
   throwIfAborted(abortSignal, "correction apply aborted");
-  // Corrections are themselves memories, searchable and namespaced (issue
-  // #1580 design §4). Write a correction-category memory capturing the
-  // plan + outcome as the audit trail.
-  // Sealed-envelope write (issue #1989 PR4): system-built audit body —
-  // strict compose; an invalid audit record is a code bug.
   throwIfAborted(abortSignal, "correction apply aborted");
   const { id: id } = await storage.writeSealedMemory(
     composeMemoryEnvelope(
@@ -815,9 +675,6 @@ function buildAuditBody(record: {
   outcome: CorrectionOutcome;
   requestText: string;
 }): string {
-  // Never-store / redaction corrections carry the very secret/pattern the user
-  // asked Remnic NOT to retain — withhold the request text from the durable
-  // audit memory so we don't persist it verbatim (#1580 review, P1).
   const sensitive =
     record.classification === "never_store" ||
     record.outcome.results.some((r) => r.action.kind === "redaction_rule");
@@ -834,8 +691,6 @@ function buildAuditBody(record: {
     "Actions:",
   ];
   for (const r of record.outcome.results) {
-    // Never-store/redaction action errors can echo the secret/pattern — withhold
-    // the error text for those actions (review thread OhjwW).
     const withhold =
       r.action.kind === "redaction_rule" || record.classification === "never_store";
     const errPart = r.error ? (withhold ? " (error withheld)" : ` (${r.error})`) : "";
@@ -850,14 +705,9 @@ async function propagateFn(
   touchedMemoryIds: readonly string[],
   abortSignal?: AbortSignal,
 ): Promise<void> {
-  // Best-effort post-write propagation. The orchestrator's indexPersistedMemory
-  // fires the QMD reindex for a touched file (checklist §31). A failure here
-  // is non-fatal — the executor records it as a warning, never a failed action.
   for (const id of touchedMemoryIds) {
     throwIfAborted(abortSignal, "correction apply aborted");
     try {
-      // indexPersistedMemory is keyed by the namespace's storage, NOT the
-      // default namespace (review thread: propagation-hardcodes-default-ns).
       const storage = await wiring.orchestrator.getStorage(namespace);
       throwIfAborted(abortSignal, "correction apply aborted");
       const orchestrator = wiring.orchestrator as unknown as {
@@ -875,7 +725,6 @@ async function propagateFn(
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
 
@@ -892,16 +741,6 @@ function toCandidate(m: MemoryFile, namespace: string, score: number): PlannerCa
   } satisfies PlannerCandidate & { namespace?: string };
 }
 
-/**
- * Lifecycle-aware eligibility for a correction candidate (#1672 item 2). A
- * memory is eligible only when it is `status: "active"` AND not archived.
- * Planning a correction against a memory that was archived via the
- * `archivedAt`/archive path but still marked active would surface stale
- * content the user already set aside — and apply would reject the rescope
- * (non-active source) or supersede a fact the user intended gone. Both the
- * status flip and the archive timestamp are checked so the candidate set
- * stays consistent with the rescope/retire apply-time guards.
- */
 function isEligibleCorrectionCandidate(m: MemoryFile): boolean {
   if (isSupportPassportPrivateMemory(m)) return false;
   if (m.frontmatter.status && m.frontmatter.status !== "active") return false;
@@ -911,17 +750,7 @@ function isEligibleCorrectionCandidate(m: MemoryFile): boolean {
 
 function toExecutorMemory(m: MemoryFile): ExecutorMemory {
   const fm = m.frontmatter;
-  // The tombstone hash must use the ORIGINAL unsuffixed body: writeMemory
-  // appends an `[Attributes: …]` suffix when structuredAttributes are set, so
-  // hashing m.content would never match the pre-suffix content hash (thread
-  // OhX2N, rule 23). Strip the suffix when attributes are present.
   const rawBody = fm.structuredAttributes ? stripAttributesSuffix(m.content) : m.content;
-  // #1672 item 4: derive the full supersession-key set from the memory's
-  // structuredAttributes so the tombstone's keyed tier blocks paraphrased
-  // re-observations that place the attribute at a different key position
-  // (mirrors temporal-supersession's per-key emission). Also forward the
-  // canonical contentHash so the exact tier matches re-extraction without
-  // recomputing from a citation-annotated body.
   const supersessionKeys = supersessionKeysForFact({
     entityRef: fm.entityRef,
     structuredAttributes: fm.structuredAttributes,
@@ -950,10 +779,6 @@ function toExecutorMemory(m: MemoryFile): ExecutorMemory {
  * Nested wins when present; both default to `true` (plan is read-only, safe on).
  */
 export function isCorrectionFeatureEnabled(config: PluginConfig): boolean {
-  // parseConfig now resolves this into `resolveRecallAuxiliaryCapabilities(config).correction` (review
-  // thread Txp) — prefer the parsed boolean so operator config actually takes
-  // effect. The loose nested/flat read stays as a fallback for PluginConfig-
-  // shaped objects built without parseConfig (unit tests).
   if (typeof resolveRecallAuxiliaryCapabilities(config).correction === "boolean") return resolveRecallAuxiliaryCapabilities(config).correction;
   const nested = (config as unknown as Record<string, unknown>).correction as
     | Record<string, unknown>
@@ -963,22 +788,18 @@ export function isCorrectionFeatureEnabled(config: PluginConfig): boolean {
   return readCorrectionFlag(config, "enabled", true);
 }
 
-/** Read a boolean correction flag from the loosely-typed config (ratchet-safe). */
 function readCorrectionFlag(config: PluginConfig, key: string, fallback: boolean): boolean {
-  // Nested shape wins: config.correction.<key> (review thread: nested-correction-settings).
   const nested = (config as unknown as Record<string, unknown>).correction as
     | Record<string, unknown>
     | undefined;
   if (nested && typeof nested[key] === "boolean") return nested[key] as boolean;
   if (nested && typeof nested[key] === "string") return (nested[key] as string) === "true" || (nested[key] as string) === "1";
-  // Flat legacy shape: config.correction<Key>.
   const raw = (config as unknown as Record<string, unknown>)[`correction${capitalize(key)}`];
   if (typeof raw === "boolean") return raw;
   if (typeof raw === "string") return raw === "true" || raw === "1";
   return fallback;
 }
 
-/** Read a numeric correction value from the loosely-typed config (ratchet-safe). */
 function readCorrectionNumber(config: PluginConfig, key: string, fallback: number): number {
   // Nested shape wins: config.correction.<key> (review thread: nested-correction-settings).
   const nested = (config as unknown as Record<string, unknown>).correction as
@@ -1011,7 +832,6 @@ function errMsg(err: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// LLM classify+draft (Responses API only — gotcha 1)
 // ---------------------------------------------------------------------------
 
 const CLASSIFY_SYSTEM_PROMPT = `You classify memory corrections and draft per-memory actions.
@@ -1051,12 +871,6 @@ function parseClassifyResponse(
   raw: string,
   candidates: PlannerCandidate[],
 ): LlmClassificationResult {
-  // Correction plans can mutate memory: accept one schema-valid, verbatim
-  // response, never an arbitrary example or a fence-rewritten patch payload.
-  // The response envelope gates candidacy; actions need only ≥1 valid entry
-  // (an empty list is fine, an all-malformed list is unusable). Malformed
-  // siblings are dropped after selection, so one bad action cannot discard
-  // the whole plan; distinct eligible responses stay ambiguous (fail closed).
   const responses = new Map<string, Record<string, unknown>>();
   let sawJson = false;
   for (const candidate of new Set([raw.trim(), ...extractJsonCandidates(raw)])) {

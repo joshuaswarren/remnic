@@ -12,7 +12,6 @@ import { isPeerTransportCensusFailure } from "./converge-namespace-exclusions.js
 import { parsePeerManifestStream } from "./converge-peer-manifest.js";
 
 export const DEFAULT_PEER_REQUEST_TIMEOUT_MS = 30_000;
-// Re-exported so the CLI can resolve flag > config > env > default once.
 export { envConvergePeerRequestTimeoutMs } from "@remnic/core";
 
 function normalizePeerBaseUrl(peerUrl: string): string {
@@ -132,7 +131,6 @@ export async function fetchPeerManifestStream(
 /** Bytes read from a failed snapshot body before the rest is cancelled. */
 const SNAPSHOT_ERROR_BODY_CAP_BYTES = 512;
 
-/** Bound a failed snapshot body so the cycle log can name the refusal. */
 function collapseWhitespace(value: string, max: number): string {
   let out = "";
   let pendingSpace = false;
@@ -144,8 +142,6 @@ function collapseWhitespace(value: string, max: number): string {
       pendingSpace = out.length > 0;
       continue;
     }
-    // Peer-controlled text is logged. Drop C0/C1 controls and DEL so an
-    // error body cannot carry ESC, BEL, or other terminal sequences.
     if (code < 32 || code === 127 || (code >= 128 && code <= 159)) continue;
     if (pendingSpace) {
       if (out.length + 1 >= max) break;
@@ -178,8 +174,6 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
       received += value.byteLength;
     }
   } catch (error) {
-    // A timeout or disconnect while reading the refusal body is not an HTTP
-    // refusal. Swallowing it makes every later namespace wait out the same stall.
     if (isPeerTransportCensusFailure(error)) throw error;
     return "";
   } finally {
@@ -221,26 +215,16 @@ export async function fetchPeerSnapshot(
 }> {
   const base = normalizePeerBaseUrl(peerUrl);
   const routes = [
-    // The snapshot validates the cached peer manifest, whose file set
-    // excludes transcripts (the manifest-stream and transfer routes pin
-    // include_transcripts=false). Requesting the server's default
-    // transcript-inclusive set would make the watermark/fileCount cache
-    // check compare different sets and never hit (#2927).
     `/remnic/v1/offline-sync/snapshot?namespace=${encodeURIComponent(namespace)}&include_transcripts=false&content=false`,
     `/engram/v1/offline-sync/snapshot?namespace=${encodeURIComponent(namespace)}&include_transcripts=false&content=false`,
   ];
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
   let lastFailure = "no snapshot route responded";
-  // A timeout on the live route must survive a fallback HTTP 404. Otherwise
-  // every namespace waits out that timeout and is then treated as a refusal.
   let transportFailure: unknown;
   const noteTransportFailure = (error: unknown): void => {
     if (transportFailure === undefined && isPeerTransportCensusFailure(error)) transportFailure = error;
     lastFailure = error instanceof Error && error.message.length > 0 ? error.message : String(error);
   };
-  // A malformed fallback must not hide an earlier timeout. Only a valid
-  // snapshot clears it, by returning before this runs. The caller throws
-  // the returned error so the snapshot shape still narrows.
   const invalidSnapshot = (detail: string): Error => {
     if (transportFailure) throw transportFailure;
     return new Error(`invalid peer snapshot for namespace ${namespace}: ${detail}`);
@@ -256,8 +240,6 @@ export async function fetchPeerSnapshot(
         timeoutMs
       );
     } catch (error) {
-      // An aborted request is not a route failure: retrying the fallback
-      // route after Ctrl+C would race the operator's shutdown.
       if (signal?.aborted) throw error;
       noteTransportFailure(error);
       continue;
@@ -280,8 +262,6 @@ export async function fetchPeerSnapshot(
       data = await response.json();
     } catch (error) {
       if (signal?.aborted) throw error;
-      // A body timeout is not invalid JSON. Try the other alias, and if
-      // neither succeeds, fail the cycle with the transport error.
       if (isPeerTransportCensusFailure(error)) {
         noteTransportFailure(error);
         continue;
@@ -473,9 +453,6 @@ export async function streamPeerFileContent(
   ) {
     return { sha256: expectedSha256, bytes: expectedBytes, mtimeMs };
   }
-  // A later alias can still succeed after an earlier route times out.
-  // Neither alias produced the file, so the planning cycle must stop
-  // instead of treating the miss as an ordinary unread manifest.
   if (transportFailure) throw transportFailure;
   return null;
 }

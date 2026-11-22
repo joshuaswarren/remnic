@@ -1,16 +1,3 @@
-/**
- * Serialized-write-chain lifecycle subject for the scenario-matrix harness
- * (issue #1993, PR2). The session-toggle store (session-toggles.ts) is §28's
- * origin — a session-scoped, restart-recoverable subsystem whose durability
- * hinges on a serialized write chain (`queueWrite`) that must not lose an
- * update under concurrent read-modify-write. Retrofitted as the second
- * reference `LifecycleSubject` so the matrix's concurrency/restart rows guard
- * that chain directly.
- *
- * The nine rows are realized honestly against the store's real behavior — no
- * mocks: identity binding, remembered vs sparse bindings, rebinding, restart
- * reload, burst compaction, concurrent flush ordering, and idempotent replay.
- */
 
 import assert from "node:assert/strict";
 import { readFile, rm, writeFile } from "node:fs/promises";
@@ -51,7 +38,6 @@ const subject: LifecycleSubject<SerializedWriteState> = {
       const filePath = path.join(dir, "session-toggles.json");
       return { dir, filePath, store: createFileToggleStore(filePath) };
     } catch (err) {
-      // Transactional setup: a partial build must not leak the temp dir.
       await rm(dir, { recursive: true, force: true });
       throw err;
     }
@@ -86,7 +72,6 @@ const subject: LifecycleSubject<SerializedWriteState> = {
         return;
       }
       case "sparse-metadata-without-binding": {
-        // No write, no seed — nothing to resolve.
         return;
       }
       case "provider-rebinding": {
@@ -96,7 +81,6 @@ const subject: LifecycleSubject<SerializedWriteState> = {
       }
       case "restart-reload-recovery": {
         await state.store.setDisabled("session-restart", AGENT, true);
-        // Simulate a restart: a brand-new store over the same file.
         state.store = createFileToggleStore(state.filePath);
         return;
       }
@@ -193,7 +177,6 @@ const subject: LifecycleSubject<SerializedWriteState> = {
         return;
       }
       case "session-end": {
-        // The chain drains deterministically; the file is valid and the key's
         // final state is the last-queued write (setDisabled true).
         const entries = await readToggleFileEntries(state.filePath);
         const resolved = await state.store.resolve("session-final", AGENT);

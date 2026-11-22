@@ -21,10 +21,6 @@ type PendingRequest = {
 
 let nextJsonRpcId = 1;
 
-/**
- * Drop C0 controls and one ANSI CSI sequence. Char scan on purpose:
- * the regex-safety ratchet flags new regular expressions on changed lines.
- */
 function sanitizeForLog(value: string, max = 200): string {
   let out = "";
   const cap = Math.min(value.length, max);
@@ -51,19 +47,6 @@ function isTimeoutMessage(message: string): boolean {
   return message.toLowerCase().includes("timed out");
 }
 
-/**
- * One `qmd mcp` child and its JSON-RPC session.
- *
- * Aborting or timing out a `tools/call` writes MCP `notifications/cancelled`
- * and rejects the caller immediately. The SDK drops the tool result once the
- * server's request controller is aborted, so this session does not wait for
- * a response after cancel. The initialize handshake is not cancelled: a slow
- * model load is supposed to stay alive for the next probe.
- *
- * The child is not killed on cancel. Reloading the rerank model costs longer
- * than the recall budget, and a slow query would then take the warm process
- * down on every timeout.
- */
 export class QmdDaemonSession {
   private child: CommandChildProcess | null = null;
   private initialized = false;
@@ -87,7 +70,6 @@ export class QmdDaemonSession {
     this.spawn = spawn;
   }
 
-  /** Spawn the qmd mcp child process and perform MCP handshake. */
   async start(): Promise<boolean> {
     if (this.child && !this.child.killed && this.initialized) {
       return true;
@@ -176,7 +158,6 @@ export class QmdDaemonSession {
     return this.startPromise;
   }
 
-  /** Call an MCP tool and return the parsed result. */
   async callTool(
     name: string,
     args: Record<string, unknown>,
@@ -189,12 +170,10 @@ export class QmdDaemonSession {
     return this.sendRequest("tools/call", { name, arguments: args }, timeoutMs, signal);
   }
 
-  /** Kill stdio process and clear state so the next probe can restart. */
   invalidate(): void {
     this.cleanup({ killChild: true });
   }
 
-  /** Kill stdio process and wait briefly for the child handle to close. */
   async close(timeoutMs = 1_000): Promise<void> {
     const target = this.child;
     if (!target) {
@@ -226,7 +205,6 @@ export class QmdDaemonSession {
     return this.child !== null && !this.child.killed && this.initialized;
   }
 
-  /** True while the process is spawned but the MCP handshake has not yet completed. */
   isLoading(): boolean {
     return this.child !== null && !this.child.killed && !this.initialized;
   }
@@ -247,8 +225,6 @@ export class QmdDaemonSession {
       const id = nextJsonRpcId++;
       let written = false;
       const abandon = (reason: string) => {
-        // Only a tool call that actually went out can be holding the worker.
-        // initialize stays running across a slow model load.
         if (!written || method !== "tools/call") return;
         this.sendNotification("notifications/cancelled", { requestId: id, reason });
       };
@@ -309,7 +285,6 @@ export class QmdDaemonSession {
   private handleStdoutData(data: Buffer | string): void {
     this.buffer += data.toString();
     let newlineIdx: number;
-    // Re-evaluated on every pass so a blank line cannot leave a stale index.
     while ((newlineIdx = this.buffer.indexOf("\n")) !== -1) {
       const line = this.buffer.slice(0, newlineIdx).trim();
       this.buffer = this.buffer.slice(newlineIdx + 1);

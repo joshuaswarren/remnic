@@ -125,9 +125,6 @@ describe("bulk-import registry", () => {
   });
 
   it("retrieves adapter when lookup name has leading/trailing whitespace", () => {
-    // Registration trims the name on write; lookup must trim as well,
-    // otherwise `get('  weclone  ')` would miss the adapter stored
-    // under the trimmed key `weclone`.
     const adapter = makeAdapter("weclone");
     registerBulkImportSource(adapter);
     assert.equal(getBulkImportSource("weclone"), adapter);

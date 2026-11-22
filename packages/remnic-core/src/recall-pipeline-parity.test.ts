@@ -1,20 +1,4 @@
-// Issue #1539 PRs 3–6 — migration parity guards.
 //
-// Each recall pipeline (targeted-fact, response-guidance, explicit-cue,
-// event-order) was migrated from an inline dedup/score/threshold/sort block to
-// a thin config object handed to `unifiedDedupeAndRank` (the spine). The
-// per-tier test files (targeted-fact-recall.test.ts etc.) are the end-to-end
-// characterization — they exercise buildXxxRecallSection on full fixtures. This
-// file is the SEAM guard: it pins, per pipeline, that the declared config shape
-// routes through the spine with the correct divergence (sort direction,
-// content-dedup on/off, rank threshold, transform-applied-to-output-but-not-
-// score). If a future refactor flips one of these silently, the matching test
-// here fails BEFORE the end-to-end suites have a chance to mask it.
-//
-// These tests do NOT re-implement the per-tier scorers — those are genuinely
-// per-tier policy and stay in the per-tier test files. Here we use small
-// representative scorers that exercise the divergence dimension each pipeline
-// declares on the spine.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -38,8 +22,6 @@ function item(
 }
 
 // ---------------------------------------------------------------------------
-// PR3 — targeted-fact shape: DESC, content-dedup, transform-applied-to-output,
-// score-on-original. No rank threshold.
 // ---------------------------------------------------------------------------
 
 test("parity targeted-fact: DESC ordering on score ties (latest turnIndex first)", () => {
@@ -48,7 +30,6 @@ test("parity targeted-fact: DESC ordering on score ties (latest turnIndex first)
     item(5, "late turn"),
     item(3, "middle turn"),
   ];
-  // Constant scorer forces score ties so turnIndex DESC is the deciding key.
   const ranked = unifiedDedupeAndRank(items, {
     query: "",
     intents: [],
@@ -61,7 +42,6 @@ test("parity targeted-fact: DESC ordering on score ties (latest turnIndex first)
 
 test("parity targeted-fact: content transform applied to output, NOT to scorer input", () => {
   const items = [item(2, "Revenue was $500")];
-  // A scorer that reads ORIGINAL content must NOT see the appended cue suffix.
   let scorerObserved = "";
   unifiedDedupeAndRank(items, {
     query: "",
@@ -73,7 +53,6 @@ test("parity targeted-fact: content transform applied to output, NOT to scorer i
     transformContent: (content) => `${content} [CUE]`,
   });
   assert.equal(scorerObserved, "Revenue was $500");
-  // ...and the output content carries the transform:
   const ranked = unifiedDedupeAndRank(items, {
     query: "",
     intents: [],
@@ -95,8 +74,6 @@ test("parity targeted-fact: duplicate normalized content collapses (default dedu
     scoreEvidence: () => 10,
   });
   assert.equal(ranked.length, 2);
-  // First-seen wins: turnIndex 1 is kept, turnIndex 2 (same normalized content)
-  // is dropped. Output is then sorted DESC by turnIndex on the score tie.
   assert.deepEqual(
     ranked.map((r) => r.turnIndex),
     [3, 1],
@@ -104,10 +81,6 @@ test("parity targeted-fact: duplicate normalized content collapses (default dedu
 });
 
 // ---------------------------------------------------------------------------
-// PR4 — response-guidance shape: same as targeted-fact (DESC + content-dedup +
-// transform + score-on-original) but with guidance-cue transform. Pin the shape
-// matches; the guidance-specific transform is exercised end-to-end in
-// response-guidance-recall.test.ts.
 // ---------------------------------------------------------------------------
 
 test("parity response-guidance: DESC ordering on score ties", () => {
@@ -139,17 +112,9 @@ test("parity response-guidance: rank primary key always DESC regardless of turnI
 });
 
 // ---------------------------------------------------------------------------
-// PR5 — explicit-cue shape: the pipeline that OPTS OUT of scoring AND sorting.
-// Its deliberate value ordering (turn references -> content cues -> lexical
-// cues, by evidence type then read-key priority) is the highest-value design
-// choice — preserved verbatim via preserveInsertionOrder + constant scorer +
-// id-only dedup (the spine call is behavior-idempotent; items are already
-// deduped by seenTurns during collection).
 // ---------------------------------------------------------------------------
 
 test("parity explicit-cue: preserveInsertionOrder keeps collection order intact", () => {
-  // Insertion order is 2, 4, 1. A default sort would reorder to 4, 2, 1.
-  // explicit-cue must NOT reorder — the collection order IS the value order.
   const items = [
     item(2, "explicit cue b", { id: "s:2" }),
     item(4, "explicit cue a", { id: "s:4" }),
@@ -184,9 +149,6 @@ test("parity explicit-cue: id-only dedup (dedupByContent false) keeps distinct t
 });
 
 // ---------------------------------------------------------------------------
-// PR6 — event-order shape: ASC ordering, NO content-dedup (dedupByContent:false
-// keeps distinct turns even when cue-appended bodies match), declared
-// rankThreshold of 6, transform applied to output.
 // ---------------------------------------------------------------------------
 
 test("parity event-order: ASC ordering on rank ties (earliest turnIndex first)", () => {
@@ -208,9 +170,6 @@ test("parity event-order: ASC ordering on rank ties (earliest turnIndex first)",
 });
 
 test("parity event-order: dedupByContent false keeps distinct turns with identical bodies", () => {
-  // Two distinct turns (different ids/turnIndex) but identical cue-appended body.
-  // Event-order MUST keep both — they are legitimate repeated turns in a
-  // chronological transcript. This is the cursor-bugbot a4299851 regression guard.
   const items = [
     item(1, "the user asked again"),
     item(4, "the user asked again"),
@@ -246,8 +205,6 @@ test("parity event-order: declared rankThreshold (6) drops below-threshold items
     rankThreshold: 6,
     turnIndexSortDirection: "asc",
   });
-  // rank is ALWAYS DESC primary: strong (10) outranks borderline (6).
-  // turnIndex ASC only breaks ties within the same rank.
   assert.deepEqual(
     ranked.map((r) => r.content),
     ["strong", "borderline"],
@@ -255,9 +212,6 @@ test("parity event-order: declared rankThreshold (6) drops below-threshold items
 });
 
 // ---------------------------------------------------------------------------
-// Cross-pipeline divergence guard: the SAME corpus produces DIFFERENT orderings
-// under DESC vs ASC config. This is the core #1539 defect class — copy-pasting
-// the comparator into a chronological pipeline silently inverts ordering.
 // ---------------------------------------------------------------------------
 
 test("parity divergence: DESC vs ASC configs on the same corpus invert turnIndex ordering", () => {

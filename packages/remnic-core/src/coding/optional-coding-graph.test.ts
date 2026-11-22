@@ -89,8 +89,6 @@ test("loadCodingGraphEngineFactory returns a factory when @remnic/coding-graph i
       "placeholder engine must throw CodingGraphError('not_implemented'), not return a fake engine",
     );
   } catch (err) {
-    // If the loader throws (e.g. base install without the package), the
-    // message must be the install hint.
     if (err instanceof Error) {
       assert.match(err.message, /@remnic\/coding-graph/);
       assert.match(err.message, /npm install @remnic\/coding-graph/);
@@ -112,6 +110,5 @@ test("tryLoadCodingGraphModule and isCodingGraphInstalled never throw and return
 
   const installed = await isCodingGraphInstalled();
   assert.equal(typeof installed, "boolean");
-  // Tautology with the call above — installed must match presence in mod.
   assert.equal(installed, mod !== null);
 });

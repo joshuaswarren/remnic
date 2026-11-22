@@ -1,20 +1,6 @@
-// ---------------------------------------------------------------------------
-// Lossless-claw source database access.
 //
-// Reads the schema produced by github.com/martian-engineering/lossless-claw
-// (default location ~/.openclaw/lcm.db). Only the subset of tables that has
-// a clean Remnic-LCM analog is surfaced:
 //
-//   conversations  → session_id resolution
-//   messages       → lcm_messages
-//   message_parts  → lcm_message_parts (when present)
-//   summaries      → lcm_summary_nodes
-//   summary_messages, summary_parents → derived msg_start/msg_end + parent_id
 //
-// Tables intentionally NOT read: large_files,
-// conversation_compaction_telemetry, conversation_compaction_maintenance,
-// lcm_migration_state. None have a Remnic LCM analog and importing them
-// would create dead data.
 // ---------------------------------------------------------------------------
 
 import { createRequire } from "node:module";

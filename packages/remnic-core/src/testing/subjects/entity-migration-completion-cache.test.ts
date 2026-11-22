@@ -38,7 +38,6 @@ const subject: LifecycleSubject<CompletionCacheState> = {
   },
 
   async exercise(state: CompletionCacheState, row: MatrixRow): Promise<void> {
-    // Warm the amortized completion verdict on a miss (key + fingerprint path).
     state.warmMiss = await state.reader.readEntity("project-missing");
 
     await mkdir(path.join(state.dir, "config"), { recursive: true });
@@ -57,7 +56,6 @@ const subject: LifecycleSubject<CompletionCacheState> = {
     }
 
     if (row.dimensions.dedupeOrReplay) {
-      // Second miss with stable inputs must stay a cheap empty miss (no throw).
       assert.equal(await state.reader.readEntity("project-missing-again"), "");
     }
   },

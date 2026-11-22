@@ -1,33 +1,3 @@
-/**
- * check-config-contract v2 — parser-walking key extractor (issue #1990 PR1).
- *
- * Derives the AUTHORITATIVE set of accepted config key paths from the
- * PARSERS themselves (`parseConfig` in packages/remnic-core/src/config.ts and
- * every module parser it delegates to), so a key that exists only in parser
- * code — the exact class reviewers caught on PR #1923 (`codingKnowledge.lsp`
- * parsed but absent from the manifests) — becomes CI-visible.
- *
- * Strategy (issue #1990, hybrid):
- *  - Hand-rolled parsers (all current production parsers): TypeScript
- *    compiler API. Within each parser we track the raw-input parameter and
- *    its ALIASES (`const raw = requireObject(value, …)`,
- *    `value as Record<string, unknown>`, `const sub = raw.fusion`, …) and
- *    collect property accesses on them. An alias minted from `raw.fusion`
- *    carries the `fusion.` path prefix, so nested blocks flatten to
- *    `wearables.fusion.enabled`-style paths.
- *  - Zod-based parsers: static walk of `z.object({ … })` literals in the
- *    parser body (deterministic; no runtime import side effects).
- *  - Anything the walker genuinely cannot see (computed keys, dynamic
- *    `Object.keys` loops) is reported LOUDLY as an unparseable construct
- *    with file:line — never silently skipped. The contract check (PR2)
- *    surfaces these; the grandfather manifest tracks accepted ones.
- *
- * Output is sorted (§12 determinism) — the committed snapshot doubles as a
- * config-surface change detector in review.
- *
- * v1 checks key PRESENCE only. Type/enum parity is a follow-up (issue
- * #1990 non-goal).
- */
 import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
@@ -38,29 +8,13 @@ export interface UnparseableConstruct {
   file: string;
   line: number;
   reason: string;
-  /**
-   * Stable identity keyed by construct text + reason, NOT file:line — so an
-   * unrelated edit above the construct does not restyle its grandfather key
-   * (issue #1990 review). `line` remains for human-readable reporting only.
-   */
   id: string;
 }
 
 export interface ExtractedConfigKeys {
-  /** Sorted, flattened key paths accepted by the parsers. */
   keys: string[];
-  /** Constructs the walker could not derive keys from — loud, not silent. */
   unparseable: UnparseableConstruct[];
-  /**
-   * Confirmed JavaScript value-member calls excluded from accepted parser keys.
-   * Kept for review visibility rather than silently discarded.
-   */
   ambiguousValueMembers: string[];
-  /**
-   * Distinct parse*Config call sites per key (issue #2949). Omitted when 1.
-   * A second construction site for the same prefix is visible here even
-   * though `keys` stays a unique list.
-   */
   keyMultiplicity: Record<string, number>;
 }
 
@@ -95,7 +49,6 @@ function keyMultiplicityFromSites(
   return out;
 }
 
-/** Helper names that wrap the raw input without changing its shape. */
 const SHAPE_PRESERVING_WRAPPERS = new Set([
   "requireObject",
   "asRecord",
@@ -107,42 +60,19 @@ const JS_VALUE_MEMBERS = new Set([
   "toString", "startsWith", "endsWith", "replace", "concat",
   "keys", "values", "entries", "hasOwnProperty",
 ]);
-/**
- * Array methods that take a per-item callback. When the receiver is a config
- * input array, the callback reads item fields, so the extractor follows it to
- * surface `<arrayKey>.<itemField>` keys (issue #1990 review).
- */
 const ARRAY_CALLBACK_METHODS = new Set(["map", "flatMap", "forEach", "filter"]);
-/**
- * Array-returning transforms that preserve item shape. Unwrapped to find the
- * underlying array when following a callback after a chain like
- * `arr.filter(...).map(fn)` (issue #1990 review).
- */
 const ARRAY_CHAIN_METHODS = new Set(["map", "flatMap", "filter", "slice", "concat"]);
-/**
- * Object.* methods that enumerate the parser input's key set. #2964 added
- * getOwnPropertyNames after local-llm-config.ts used it to copy header
- * values past the keys/entries/values rule, leaving the construct unflagged.
- */
 const DYNAMIC_KEY_ITERATION_METHODS: Record<string, true> = {
   keys: true,
   entries: true,
   values: true,
   getOwnPropertyNames: true,
 };
-/**
- * Schema-opaque free-form blocks (additionalProperties) where dynamic key
- * iteration is a whole-block passthrough: the block key itself is the
- * contract, so the iteration is statically known-safe rather than an
- * unparseable dynamic key set (#2964). Keys are full dotted paths from
- * the parser input.
- */
 const OPAQUE_BLOCK_PASSTHROUGH: Record<string, true> = {
   localLlmHeaders: true, // #2964 - additionalProperties: {type: string} in every manifest
 };
 
 interface AliasInfo {
-  /** Path prefix segments from the parser input to this alias ("" = root). */
   prefix: string[];
 }
 
@@ -150,22 +80,10 @@ function relPath(repoRoot: string, fileName: string): string {
   return path.relative(repoRoot, fileName).split(path.sep).join("/");
 }
 
-/**
- * Name of a parser function node, for scope-qualifying unparseable ids. Uses the
- * declaration name (program source files have no parent pointers, so an upward
- * walk is unavailable); anonymous functions yield "".
- */
 function functionName(fn: ts.Node): string {
   if ((ts.isFunctionDeclaration(fn) || ts.isFunctionExpression(fn)) && fn.name) return fn.name.text;
   return "";
 }
-/**
- * Record a loud unparseable construct with a stable, line-independent id
- * (`<relFile>#<hash(scope + reason + normalized construct text)>`). Keying by
- * scope-qualified construct identity means a grandfather entry survives edits
- * that merely shift line numbers, and two identical constructs in different
- * parser functions do not collide (issue #1990 review).
- */
 function pushUnparseable(
   out: { unparseable: UnparseableConstruct[] },
   repoRoot: string,
@@ -258,10 +176,6 @@ function findEnclosingForOf(sourceFile: ts.SourceFile, target: ts.Node): ts.ForO
   return best;
 }
 
-/**
- * Extract the keys a single parser function reads from its raw input.
- * Returns path segments relative to the parser's input object.
- */
 function extractParserKeys(
   fn: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction,
   sourceFile: ts.SourceFile,
@@ -269,8 +183,6 @@ function extractParserKeys(
   out: ParseSink,
   prefix: string[] = [],
   recursion: { program: ts.Program; depth: number; seen: Set<string> } | null = null,
-  // param name -> literal string value, for helpers that receive key names as
-  // string-literal arguments and read `cfg[keyParam]` (issue #1990 review).
   literalBindings: Map<string, string> = new Map(),
 ): void {
   if (!fn.body) return;
@@ -278,10 +190,7 @@ function extractParserKeys(
   if (!param || !ts.isIdentifier(param.name)) return;
   const scopeName = functionName(fn);
 
-  // alias name -> path prefix relative to the parser input
   const aliases = new Map<string, AliasInfo>();
-  // Local helpers can close over an aliased config block while receiving a
-  // literal key name at each call site (for example, parseCap("maxCandidates")).
   const localFunctions = new Map<
     string,
     {
@@ -327,11 +236,9 @@ function extractParserKeys(
     out.keys.add([...prefix, ...aliasPrefix, key].join("."));
   };
 
-  /** Try to resolve an expression to an alias + extra path segments. */
   const resolveAliasChain = (
     expr: ts.Expression,
   ): { info: AliasInfo; segments: string[] } | null => {
-    // Unwrap parens, as-casts, non-null assertions, and shape-preserving calls.
     let current: ts.Expression = expr;
     const segments: string[] = [];
     for (;;) {
@@ -339,7 +246,6 @@ function extractParserKeys(
         current = current.expression;
         continue;
       }
-      // `cond ? (raw as Record<…>) : {}` — the truthy arm carries the input.
       if (ts.isConditionalExpression(current)) {
         const viaTrue = resolveAliasChain(current.whenTrue);
         if (viaTrue) return { info: viaTrue.info, segments: [...viaTrue.segments, ...segments] };
@@ -347,7 +253,6 @@ function extractParserKeys(
         if (viaFalse) return { info: viaFalse.info, segments: [...viaFalse.segments, ...segments] };
         return null;
       }
-      // `raw ?? {}` / `raw || {}` — the left side carries the input.
       if (
         ts.isBinaryExpression(current) &&
         (current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
@@ -356,7 +261,6 @@ function extractParserKeys(
         current = current.left;
         continue;
       }
-      // `{ ...baseCfg, x: 1 }` — a spread of an alias keeps the alias root.
       if (ts.isObjectLiteralExpression(current)) {
         for (const prop of current.properties) {
           if (ts.isSpreadAssignment(prop)) {
@@ -389,8 +293,6 @@ function extractParserKeys(
         current = current.expression;
         continue;
       }
-      // `cfg[keyParam]` where keyParam is bound to a string literal at the call
-      // site (issue #1990 review): resolve it to that literal key segment.
       if (
         ts.isElementAccessExpression(current) &&
         current.argumentExpression &&
@@ -410,8 +312,6 @@ function extractParserKeys(
     return null;
   };
 
-  // Follow a per-item array callback (named helper or inline function) with the
-  // array-key prefix so `<arrayKey>.<itemField>` keys surface (issue #1990).
   const followArrayItemCallback = (itemPrefix: string[], callback: ts.Node): void => {
     if (!recursion || recursion.depth >= 6) return;
     if (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) {
@@ -437,9 +337,6 @@ function extractParserKeys(
     }
   };
 
-  // Resolve the underlying array alias through a shape-preserving transform
-  // chain (`arr.filter(...).map(fn)`). Returns null when `expr` is not itself a
-  // chain, so the direct-array path keeps its existing handling.
   const resolveArrayChainReceiver = (
     expr: ts.Expression,
   ): { info: AliasInfo; segments: string[] } | null => {
@@ -472,9 +369,6 @@ function extractParserKeys(
           if (resolved.segments.length > 0) {
             out.keys.add([...prefix, ...resolved.info.prefix, ...resolved.segments].join("."));
           }
-          // Array item-field traversal: `alias.arrayKey.map(parseItemFn)` — the
-          // callback reads each item's fields, so recurse into it with the
-          // array-key prefix so item-field drift surfaces (issue #1990 review).
           if (
             recursion &&
             recursion.depth < 6 &&
@@ -492,12 +386,6 @@ function extractParserKeys(
         }
       }
     }
-    // Array callback after a shape-preserving transform chain:
-    // `arr.filter(...).map(fn)` — the outer receiver is a transform call that the
-    // direct resolveAliasChain leaves null, so resolve the underlying array
-    // through the chain and follow the callback with its prefix. No early return:
-    // forEachChild still visits the inner transform's own callback so no existing
-    // `arr.map(fn).filter(...)` traversal is lost (issue #1990 review).
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
@@ -513,8 +401,6 @@ function extractParserKeys(
         );
       }
     }
-    // Register parameterized local function expressions before their bodies are
-    // visited. Their bodies are revisited at each distinct literal call site.
     if (
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
@@ -531,11 +417,9 @@ function extractParserKeys(
         return;
       }
     }
-    // Alias creation: const X = <expr resolving to alias(+segments)>
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const resolved = resolveAliasChain(node.initializer);
       if (resolved) {
-        // The segments read to mint the alias are themselves key reads.
         if (resolved.segments.length > 0) {
           out.keys.add([...prefix, ...resolved.info.prefix, ...resolved.segments].join("."));
         }
@@ -546,7 +430,6 @@ function extractParserKeys(
         return;
       }
     }
-    // Object-rest bindings are neither config keys nor aliases to the parser input.
     if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer) {
       const resolved = resolveAliasChain(node.initializer);
       if (resolved) {
@@ -566,7 +449,6 @@ function extractParserKeys(
       }
     }
 
-    // Assignment minting: `cfg = baseCfg` / `cfg = { ...baseCfg, … }`
     if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -577,14 +459,11 @@ function extractParserKeys(
         aliases.set(node.left.text, {
           prefix: [...resolved.info.prefix, ...resolved.segments],
         });
-        // Still record any key reads inside the right side (spread donors
-        // were handled by resolveAliasChain; explicit props may read keys).
         ts.forEachChild(node.right, visit);
         return;
       }
     }
 
-    // Property access on an alias: raw.key / raw?.key / raw["key"]
     if (ts.isPropertyAccessExpression(node)) {
       const isMethodCallee =
         node.parent !== undefined &&
@@ -698,12 +577,6 @@ function extractParserKeys(
       }
     }
 
-    // Helper delegation: `helperFn(alias.sub, …)` — the helper reads keys
-    // of the sub-block, so recurse into its body with the sub-path prefix
-    // (depth- and cycle-guarded). This covers nested block helpers
-    // (`parseFusionSettings(raw.fusion)`), non-parse-named readers
-    // (`buildRecallPipelineConfig(cfg)`), and helper chains
-    // (`readLspField` → `parseLspConfig`) — review findings on #1990.
     if (
       !handledLocalFunctionCall &&
       recursion &&
@@ -712,11 +585,6 @@ function extractParserKeys(
       ts.isIdentifier(node.expression)
     ) {
       const helperName = node.expression.text;
-      // Key-name arguments passed as string literals bind to the helper's
-      // params so `cfg[keyParam]` resolves (issue #1990 review). The literal
-      // signature also keys the dedup so distinct-literal calls to the same
-      // reader (readFlatOrNestedConfig(cfg, "a", …) vs (cfg, "b", …)) are all
-      // followed instead of collapsing to one.
       const literalArgs = node.arguments
         .map((arg) => (ts.isStringLiteral(arg) ? arg.text : ""))
         .join(",");
@@ -734,10 +602,6 @@ function extractParserKeys(
         }
         if (recursion.seen.has(recursionKey)) continue;
         recursion.seen.add(recursionKey);
-        // Prefer the calling file when resolving the helper: a same-named
-        // module-local helper in another module (parseBoundedInt exists in
-        // both meetings/config.ts and recall-navigation-config.ts) must not
-        // win and mint phantom doubled key paths (issue #1956 CI).
         const helper = findFunctionForCall(recursion.program, helperName, argIndex, sourceFile);
         if (helper) {
           const bindings = new Map<string, string>(literalBindings);
@@ -748,8 +612,6 @@ function extractParserKeys(
             if (ts.isStringLiteral(arg)) {
               bindings.set(helperParam.name.text, arg.text);
             } else if (ts.isIdentifier(arg) && literalBindings.has(arg.text)) {
-              // Propagate a binding one hop further (readFlatOrNestedConfig →
-              // readNestedConfig passes its own key params on).
               bindings.set(helperParam.name.text, literalBindings.get(arg.text) as string);
             }
           }
@@ -763,7 +625,6 @@ function extractParserKeys(
             bindings,
           );
         }
-        // Reading the sub-block to hand it over is itself a key read.
         if (resolved.segments.length > 0) {
           out.keys.add([...prefix, ...resolved.info.prefix, ...resolved.segments].join("."));
         }
@@ -772,8 +633,6 @@ function extractParserKeys(
       // other arguments (handled by the property-access branch).
     }
 
-    // Dynamic iteration over the raw input: Object.keys/entries/values/
-    // getOwnPropertyNames(raw) — dynamic key set.
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
@@ -786,9 +645,6 @@ function extractParserKeys(
       if (resolved) {
         const iteratedPath = [...prefix, ...resolved.info.prefix, ...resolved.segments].join(".");
         if (OPAQUE_BLOCK_PASSTHROUGH[iteratedPath] === true) {
-          // Explicit opaque-block allowance (#2964): free-form user keys are
-          // the documented contract for this block, so iteration over it is a
-          // whole-block passthrough. Record the block key, not an unparseable.
           out.keys.add(iteratedPath);
           return;
         }
@@ -807,10 +663,6 @@ function extractParserKeys(
     ts.forEachChild(node, visit);
   };
 
-  // visit(fn.body) — not forEachChild — so an expression-bodied arrow
-  // (`(item) => item.trim()`) is handled at the top expression, routing
-  // value-member calls to ambiguousValueMembers instead of recording a false
-  // `item.trim` key. Block bodies fall through to forEachChild unchanged.
   visit(fn.body);
   for (const localFunction of localFunctions.values()) {
     const keyParameter = localFunction.fn.parameters[0]?.name;
@@ -826,11 +678,9 @@ function extractParserKeys(
     visitLocalFunctionBody(localFunction);
   }
 
-  // Zod arm: static walk of z.object({ … }) literals in the body.
   extractZodObjectKeys(fn.body, prefix, out);
 }
 
-/** Collect keys from `z.object({ key: … })` literals (static, no runtime). */
 function extractZodObjectKeys(
   body: ts.Node,
   prefix: string[],
@@ -843,8 +693,6 @@ function extractZodObjectKeys(
       if (!ts.isIdentifier(name) && !ts.isStringLiteral(name)) continue;
       const keyPath = [...pathPrefix, name.text];
       out.keys.add(keyPath.join("."));
-      // Nested z.object({...}) — descend through any call chain
-      // (z.object(...).optional() etc.) looking for object literals.
       const findNested = (expr: ts.Node): void => {
         if (ts.isCallExpression(expr)) {
           const callee = expr.expression;
@@ -872,9 +720,6 @@ function extractZodObjectKeys(
       ts.isObjectLiteralExpression(node.arguments[0])
     ) {
       walkSchemaObject(node.arguments[0], prefix);
-      // walkSchemaObject handled every NESTED z.object at its correct
-      // depth — do not descend, or nested keys would re-record at the
-      // outer prefix (review finding).
       return;
     }
     ts.forEachChild(node, visit);
@@ -882,11 +727,6 @@ function extractZodObjectKeys(
   visit(body);
 }
 
-/**
- * Locate a callable for helper recursion. Only functions whose parameter at
- * the argument position exists participate — a call forwarding an alias to
- * a validation helper's MESSAGE argument must not recurse.
- */
 function findFunctionForCall(
   program: ts.Program,
   name: string,
@@ -918,30 +758,11 @@ function findFunction(
   return null;
 }
 
-/**
- * Extract flattened config key paths from an entry parser (`parseConfig`).
- *
- * Walks the entry parser's return object literal:
- *  - `key: parse…(cfg.key)`  → delegated block: the helper's keys land
- *    under the `key.` prefix.
- *  - `...parse…(cfg)`        → root-level helper: its raw reads land at
- *    the root.
- *  - `key: <expr reading cfg.…>` → the read paths land at the root.
- * Then walks the entry parser's own body for direct reads.
- */
 export function extractParsedKeyPaths(options: {
   repoRoot: string;
-  /** Entry file containing the root parser (config.ts). */
   entryFile: string;
-  /** Root parser function name. */
   entryFunction: string;
-  /** Extra files to include in the program (module parsers). */
   includeFiles?: string[];
-  /**
-   * Local names the entry parser re-binds its input to (`cfg`, `baseCfg`).
-   * Explicit and documented: if these drift, extraction shrinks and the
-   * committed snapshot fails LOUDLY in review — preferred over guessing.
-   */
   entryAliases?: string[];
 }): ExtractedConfigKeys {
   const { repoRoot, entryFile, entryFunction } = options;
@@ -971,14 +792,10 @@ export function extractParsedKeyPaths(options: {
   };
   const recursion = { program, depth: 0, seen: new Set<string>() };
 
-  // 1) Walk the entry parser body itself (direct cfg.* reads land at root).
   extractParserKeys(entry.fn, entry.sourceFile, repoRoot, out, [], recursion);
 
-  // 2) Delegations from the return object literal.
   const returns: ts.ReturnStatement[] = [];
   const collectReturns = (node: ts.Node): void => {
-    // Do not descend into nested function bodies — their returns are not
-    // parseConfig's.
     if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) return;
     if (ts.isReturnStatement(node)) returns.push(node);
     ts.forEachChild(node, collectReturns);
@@ -1014,8 +831,6 @@ export function extractParsedKeyPaths(options: {
           if (helper) {
             extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, delegated.argSegments, recursion);
           } else {
-            // Same loudness as the property-assignment branch (review
-            // finding: spread-only delegations failed quietly).
             pushUnparseable(
               out,
               repoRoot,
@@ -1030,12 +845,6 @@ export function extractParsedKeyPaths(options: {
     }
   }
 
-  // 3) Also walk parse* helpers invoked with input-derived arguments
-  //    anywhere in the entry body (e.g. a const assigned before the return:
-  //    `const wearables = parseWearablesConfig(cfg.wearables)`). The entry
-  //    input may travel through local aliases (`baseCfg`, `cfg`), so resolve
-  //    arguments against the same alias names extractParserKeys discovered —
-  //    approximated here by the well-known entry alias names plus the param.
   const entryParam = entry.fn.parameters[0];
   const entryParamName = entryParam && ts.isIdentifier(entryParam.name) ? entryParam.name.text : null;
   if (entryParamName && entry.fn.body) {
@@ -1058,7 +867,6 @@ export function extractParsedKeyPaths(options: {
     ts.forEachChild(entry.fn.body, visitCalls);
   }
 
-  // De-duplicate unparseable entries (same file:line:reason) and sort both.
   const seen = new Set<string>();
   const unparseable = out.unparseable
     .filter((u) => {
@@ -1078,7 +886,6 @@ export function extractParsedKeyPaths(options: {
   };
 }
 
-/** Match `parseXxx(cfg.block…)` / `parseXxx(cfg)` initializers. */
 function delegatedParserCall(
   expr: ts.Expression,
 ): { helperName: string; argSegments: string[] } | null {
@@ -1091,9 +898,6 @@ function delegatedParserCall(
   if (!/^parse[A-Z]/.test(current.expression.text)) return null;
   const arg = current.arguments[0];
   if (!arg) return null;
-  // cfg → root; cfg.block → ["block"]; cfg.block.sub → ["block","sub"];
-  // casts and ?? {} / || {} fallbacks unwrap via unwrapArgument; ELEMENT
-  // ACCESS (cfg["block"]) is accepted too (review finding).
   const segments: string[] = [];
   let a: ts.Expression = unwrapArgument(arg);
   for (;;) {
@@ -1113,7 +917,6 @@ function delegatedParserCall(
   return { helperName: current.expression.text, argSegments: segments };
 }
 
-/** Unwrap parens, casts, non-null, and `?? {}`/`|| {}` fallbacks. */
 function unwrapArgument(arg: ts.Expression): ts.Expression {
   let current: ts.Expression = arg;
   for (;;) {
@@ -1133,7 +936,6 @@ function unwrapArgument(arg: ts.Expression): ts.Expression {
   }
 }
 
-/** Segments of an argument rooted at one of the entry input names. */
 function rootedArgumentSegments(arg: ts.Expression, rootNames: Set<string>): string[] | null {
   const segments: string[] = [];
   let a: ts.Expression = unwrapArgument(arg);
@@ -1181,9 +983,6 @@ export function extractRealConfigKeys(repoRoot: string): ExtractedConfigKeys {
   };
 }
 
-// CLI: print JSON, or `npx tsx scripts/config-contract/extract-parsed-keys.ts --write`
-// to replace the snapshot atomically. Never redirect stdout onto the snapshot —
-// a failed extract would empty the file (this run, 8d64a716a).
 const invokedDirectly =
   process.argv[1] !== undefined &&
   pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
@@ -1211,7 +1010,6 @@ if (invokedDirectly) {
 }
 
 
-/** All module-parser files the real extraction should include. */
 export function collectModuleParserFiles(repoRoot: string): string[] {
   const src = path.join(repoRoot, "packages", "remnic-core", "src");
   const out: string[] = [];
@@ -1227,12 +1025,6 @@ export function collectModuleParserFiles(repoRoot: string): string[] {
       if (!entry.isFile() || !entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts") || entry.name.endsWith(".d.ts")) {
         continue;
       }
-      // Files that export a parse*Config function participate; so do *config.ts
-      // module files that export any parse* helper (e.g. scope-profile-config.ts
-      // exports parseScopeProfiles/parseScopeTeams, not parse*Config) — otherwise
-      // parseConfig's delegated calls to them go unresolved (issue #1990 review).
-      // Scoping the broader match to *config.ts keeps the program within the CI
-      // <60s budget.
       const text = fs.readFileSync(full, "utf8");
       const exportsConfigParser =
         /export function parse[A-Z]\w*Config?\s*\(/.test(text) || /function parse[A-Z]\w*Config\s*\(/.test(text);

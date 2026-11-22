@@ -131,10 +131,6 @@ function parseBoundedIntegerMs(
   return Math.min(max, Math.max(min, Math.floor(coerced)));
 }
 
-// A gateway model string must be "provider/model" — at least one "/" with a
-// non-empty provider segment and a non-empty model segment. This mirrors
-// FallbackLlmClient.parseModelString (which requires >= 2 slash-parts), so a
-// model the runtime would silently drop is rejected at config time instead.
 function isQualifiedModelString(value: string): boolean {
   const slash = value.indexOf("/");
   return slash > 0 && slash < value.length - 1;
@@ -144,21 +140,14 @@ function parseModelChainConfig(
   value: unknown,
   keyName: string,
 ): AgentPersonaModelConfig | undefined {
-  // Absent → not configured (no error).
   if (value === undefined || value === null) return undefined;
 
-  // Present but malformed → reject loudly rather than silently dropping it,
-  // so a typo'd chain surfaces instead of quietly reverting to defaults
-  // (gotcha #51). Issue #1365 / PR #1370.
   if (typeof value !== "object" || Array.isArray(value)) {
     throw new Error(
       `${keyName} must be an object like { "primary": "provider/model", "fallbacks": ["provider/model", ...] }; got ${JSON.stringify(value)}`,
     );
   }
   const raw = value as Record<string, unknown>;
-  // Reject unknown keys (matches the manifest's additionalProperties:false) so a
-  // misspelled "fallback"/"fallbackModels" doesn't silently drop the fallback
-  // chain (gotcha #51, codex review #1425).
   const unknownKeys = Object.keys(raw).filter((k) => k !== "primary" && k !== "fallbacks");
   if (unknownKeys.length > 0) {
     throw new Error(
@@ -246,8 +235,6 @@ function parseIntegerInClosedRange(
   fallback: number,
   keyName: string,
 ): number {
-  // Only an absent key (undefined) falls back to the default; an explicit `null`
-  // is invalid input and proceeds to validation → throw (round 9 finding 1).
   if (value === undefined) return fallback;
   const coerced = coerceNumber(value);
   if (
@@ -524,7 +511,6 @@ function normalizeOpenaiBaseUrl(value: string | undefined, source: "config" | "e
     log.warn(`openaiBaseUrl from ${source} is using insecure http; prefer https`);
   }
 
-  // Avoid duplicate slash behavior in downstream baseURL path joins.
   let url = parsed.toString();
   while (url.endsWith("/")) url = url.slice(0, -1);
   return url;
@@ -562,14 +548,6 @@ function parseSemanticChunkingConfig(
   return out;
 }
 
-// Cursor review on PR #736: the default reasoning model used by the
-// extraction pipeline (`config.model`) and the new peer profile
-// reasoner (`peerProfileReasonerModel`) was hardcoded as `"gpt-5.5"`
-// in two places. Centralize the default so both surfaces — and any
-// future LLM-backed surface — always agree on the same model id.
-// Sibling packages may keep their own constants only when they are scoped to
-// their own subsystem and intentionally diverge. Shared reasoning-model
-// defaults should use this constant.
 export const DEFAULT_REASONING_MODEL = "gpt-5.5";
 
 const VALID_EFFORTS: ReasoningEffort[] = ["none", "low", "medium", "high"];
@@ -633,12 +611,6 @@ const MEMORY_OS_PRESETS: Record<MemoryOsPresetName, Record<string, unknown>> = {
     maxProactiveQuestionsPerExtraction: 0,
     maxCompressionTokensPerHour: 0,
     behaviorLoopAutoTuneEnabled: false,
-    // Issue #567 PR 4/5 flipped `procedural.enabled` default to `true`.
-    // The conservative preset intentionally keeps the feature OFF to
-    // match its restrictive intent (no proactive extraction, no
-    // compression guideline learning, etc.). Users who want procedural
-    // memory on a conservative preset must set `procedural.enabled: true`
-    // explicitly.
     procedural: { enabled: false },
     sessionExperience: { enabled: false },
     seedGraduation: { enabled: false },
@@ -738,11 +710,6 @@ export function parseConfig(
   let cfg: Record<string, unknown>;
   if (memoryOsPreset) {
     const preset = MEMORY_OS_PRESETS[memoryOsPreset];
-    // Deep-merge the `procedural` block specifically: the preset may pin a
-    // subset of keys (e.g. `conservative` pins `procedural: { enabled: false }`),
-    // and a user-provided `procedural` block with just `minOccurrences` or
-    // `lookbackDays` must NOT silently discard the preset's `enabled: false`.
-    // CLAUDE.md rule 22 (dedup config resolution) + Codex P1 on #609.
     const presetProcedural =
       preset.procedural &&
       typeof preset.procedural === "object" &&
@@ -779,17 +746,10 @@ export function parseConfig(
 
   let apiKey: string | undefined;
   if (openaiApiKeyDisabled) {
-    // Explicit opt-out for local/gateway-only deployments. Without this,
-    // a stale process-level OPENAI_API_KEY can be captured even when the
-    // operator wants Remnic to use local LLMs and never try direct OpenAI.
     apiKey = undefined;
   } else if (typeof cfg.openaiApiKey === "string" && cfg.openaiApiKey.length > 0) {
     apiKey = resolveEnvVars(cfg.openaiApiKey);
   } else if (modelSource === "gateway") {
-    // Gateway mode deliberately delegates LLM calls to OpenClaw's model chain.
-    // Do not implicitly capture OPENAI_API_KEY from the Remnic process env here:
-    // doing so makes diagnostics look OpenAI-dependent and can accidentally
-    // route extraction through a stale direct key before gateway fallback.
     apiKey = undefined;
   } else {
     apiKey = readEnvVar("OPENAI_API_KEY");
@@ -799,28 +759,13 @@ export function parseConfig(
   // Extraction will log a warning if called without a key.
 
   const taskModelChain = parseModelChainConfig(cfg.taskModelChain, "taskModelChain");
-  // Gateway-routed background tasks (flush plan, hourly summary cron, recall
-  // planner) default to the configured task-model primary, or empty so the
-  // Gateway default wins — never a bare reasoning id that resolves to an
-  // unroutable `<provider>/gpt-5.5` (issue #1469).
   const taskModelFallback =
     modelSource === "gateway"
       ? (taskModelChain?.primary ?? "")
       : DEFAULT_REASONING_MODEL;
   const explicitModel =
     typeof cfg.model === "string" && cfg.model.length > 0 ? cfg.model : "";
-  // Base reasoning/extraction model. Kept DIRECT-compatible: direct-key call
-  // sites (e.g. briefing follow-ups when `openaiApiKey` is set) pass this
-  // straight to the OpenAI Responses API, so it must stay a bare/direct model
-  // id and never a provider-qualified gateway route string. The gateway task
-  // chain is applied at gateway-routed call sites (summaryModel, recall planner)
-  // instead, not here (issue #1469 / codex review on PR #1470).
   const model = explicitModel || DEFAULT_REASONING_MODEL;
-  // In gateway mode a usable task route must be provider-qualified (`provider/model`).
-  // A bare id — including the `"gpt-5.5"` schema default OpenClaw injects when the
-  // operator only configured `modelSource` + `taskModelChain` — resolves to an
-  // unroutable `<provider>/gpt-5.5`, so it is treated as ABSENT and the configured
-  // task chain wins. Direct (non-gateway) mode keeps bare ids as-is (#1469).
   const gatewayTaskModel = (value: string): string =>
     modelSource === "gateway" && !value.includes("/") ? "" : value;
   const captureMode =
@@ -894,20 +839,7 @@ export function parseConfig(
     watchFile: rawDreaming.watchFile !== false,
   };
 
-  // ── Dreams phases config (issue #678 PR 2/4) ─────────────────────────────
-  // The `dreams.phases.*` block groups existing top-level lifecycle / REM /
-  // deep-sleep gates under a unified namespace.  When a value is explicitly
-  // set under `dreams.phases.*`, it WINS over the corresponding legacy
-  // top-level key.  Legacy top-level keys continue to be parsed so existing
-  // configs work without modification.
   //
-  // Precedence summary (highest → lowest):
-  //   dreams.phases.lightSleep.enabled  > lifecyclePolicyEnabled
-  //   dreams.phases.rem.enabled         > semanticConsolidationEnabled
-  //   dreams.phases.deepSleep.enabled   > (no legacy top-level equivalent)
-  //
-  // This block is intentionally a DIFFERENT namespace from `dreaming`
-  // (the diary surface — `surfaces/dreams.ts`). See docs/dreams.md.
   const rawDreamsBlock =
     cfg.dreams && typeof cfg.dreams === "object" && !Array.isArray(cfg.dreams)
       ? (cfg.dreams as Record<string, unknown>)
@@ -929,9 +861,6 @@ export function parseConfig(
       ? (rawDreamsPhases.deepSleep as Record<string, unknown>)
       : {};
 
-  // Resolve legacy top-level defaults that the phases mirror. We compute them
-  // here (before the return statement) so the phase parser can apply precedence
-  // without duplicating the clamping logic.
   const legacyLifecyclePolicyEnabled = coerceBooleanLike(cfg.lifecyclePolicyEnabled) ?? true;
   const legacyLifecyclePromoteHeatThreshold =
     typeof cfg.lifecyclePromoteHeatThreshold === "number"
@@ -972,10 +901,8 @@ export function parseConfig(
     cfg.qmdTierMigrationEnabled === true ||
     legacyVersioningEnabled;
 
-  // Light sleep phase — dreams.phases.lightSleep.* wins when present.
   const dreamsLightSleepEnabledRaw = coerceBooleanLike(rawDreamsLightSleep.enabled);
   const dreamsLightSleep: DreamsLightSleepConfig = {
-    // new key wins; fall back to resolved legacy default
     enabled: dreamsLightSleepEnabledRaw !== undefined ? dreamsLightSleepEnabledRaw : legacyLifecyclePolicyEnabled,
     cadenceMs:
       typeof rawDreamsLightSleep.cadenceMs === "number"
@@ -999,7 +926,6 @@ export function parseConfig(
         : cfg.lifecycleFilterStaleEnabled === true,
   };
 
-  // REM phase — dreams.phases.rem.* wins when present.
   const dreamsRemEnabledRaw = coerceBooleanLike(rawDreamsRem.enabled);
   const dreamsRem: DreamsRemConfig = {
     enabled: dreamsRemEnabledRaw !== undefined ? dreamsRemEnabledRaw : legacySemanticConsolidationEnabled,
@@ -1025,7 +951,6 @@ export function parseConfig(
         : legacyConsolidationMinIntervalMs,
   };
 
-  // Deep sleep phase — dreams.phases.deepSleep.* wins when present.
   const dreamsDeepSleepEnabledRaw = coerceBooleanLike(rawDreamsDeepSleep.enabled);
   const dreamsDeepSleep: DreamsDeepSleepConfig = {
     enabled:
@@ -1052,7 +977,6 @@ export function parseConfig(
     rem: dreamsRem,
     deepSleep: dreamsDeepSleep,
   };
-  // ── End dreams phases ─────────────────────────────────────────────────────
 
   const rawHeartbeat =
     cfg.heartbeat && typeof cfg.heartbeat === "object" && !Array.isArray(cfg.heartbeat)
@@ -1094,12 +1018,6 @@ export function parseConfig(
     fingerprintDedup: rawCodexCompat.fingerprintDedup !== false,
   };
 
-  // Validate the shape of the `procedural` config block BEFORE applying the
-  // default-on behavior. Codex P2 on #609: a shorthand opt-out like
-  // `procedural: false` or `procedural: null` would previously normalize
-  // silently to `{}`, and the omitted-key branch would then enable the
-  // feature — the opposite of what the user asked for. Reject
-  // non-object shapes loudly per CLAUDE.md rule 51.
   if (
     cfg.procedural !== undefined &&
     (cfg.procedural === null ||
@@ -1120,10 +1038,6 @@ export function parseConfig(
       ? Math.floor(proceduralMinCoerced)
       : 3;
   const successFloorRaw = coerceNumber(rawProcedural.successFloor);
-  // Safer-by-default floor (issue #567 PR 3/5): raise from 0.7 to 0.75.
-  // Miner promotion now requires a stricter trajectory success rate before
-  // procedures become candidates, reducing false positives when procedural
-  // recall is enabled by default in slice 4.
   const successFloor =
     successFloorRaw !== undefined &&
     successFloorRaw >= 0 &&
@@ -1138,17 +1052,11 @@ export function parseConfig(
         : Math.min(10_000, Math.max(1, Math.floor(autoPromoteOccRaw)))
       : 8;
   const lookbackCoerced = coerceNumber(rawProcedural.lookbackDays);
-  // Safer-by-default lookback (issue #567 PR 3/5): lower from 30 to 14 days.
-  // Shorter window keeps mined procedures more recent, which improves
-  // relevance once recall is on by default.
   const lookbackDays =
     lookbackCoerced !== undefined && Number.isFinite(lookbackCoerced)
       ? Math.min(3650, Math.max(1, Math.floor(lookbackCoerced)))
       : 14;
   const recallMaxCoerced = coerceNumber(rawProcedural.recallMaxProcedures);
-  // Safer-by-default recall cap (issue #567 PR 3/5): lower from 3 to 2.
-  // Cap the injected procedure block so enabling procedural recall by
-  // default does not crowd out other recall sections.
   const recallMaxProcedures =
     recallMaxCoerced !== undefined && Number.isFinite(recallMaxCoerced)
       ? Math.min(10, Math.max(1, Math.floor(recallMaxCoerced)))
@@ -1185,7 +1093,6 @@ export function parseConfig(
   const wearables = parseWearablesConfig(cfg.wearables);
   const { activity, meetings, provenance } = parseCaptureCompanionConfigs(cfg);
   const location = parseLocationConfig(cfg.location);
-  // Coding-agent project/branch scoping (issue #569)
   const rawCodingMode =
     cfg.codingMode && typeof cfg.codingMode === "object" && !Array.isArray(cfg.codingMode)
       ? (cfg.codingMode as Record<string, unknown>)
@@ -1197,8 +1104,6 @@ export function parseConfig(
   const codingMode: CodingModeConfig = {
     projectScope: codingProjectScopeRaw === undefined ? true : codingProjectScopeRaw,
     branchScope: codingBranchScopeRaw === true,
-    // Default true — project-scoped sessions include the root namespace in
-    // read fallbacks so globally useful memories remain visible. CLAUDE.md #30.
     globalFallback: codingGlobalFallbackRaw === undefined ? true : codingGlobalFallbackRaw,
   };
 
@@ -1256,7 +1161,6 @@ export function parseConfig(
     : [];
   const entitySchemas = normalizeEntitySchemas(cfg.entitySchemas);
 
-  // Optional file hygiene (memory file limits / truncation risk mitigation)
   const rawHygiene =
     cfg.fileHygiene && typeof cfg.fileHygiene === "object" && !Array.isArray(cfg.fileHygiene)
       ? (cfg.fileHygiene as Record<string, unknown>)
@@ -1508,9 +1412,6 @@ export function parseConfig(
       : typeof cfg.crossSignalsSemanticTimeoutMs === "number"
         ? Math.max(1, Math.floor(cfg.crossSignalsSemanticTimeoutMs))
         : 4000;
-  // Coerce once. The default recall-pipeline shared-context gate reads
-  // `cfg.sharedContextEnabled === true`, so it must see this boolean —
-  // not the raw CLI/config string. Custom `recallPipeline` is unchanged.
   const sharedContextEnabled =
     coerceBool(cfg.sharedContextEnabled, "sharedContextEnabled") ?? false;
   const recallPipelineConfig = buildRecallPipelineConfig({
@@ -1593,29 +1494,14 @@ export function parseConfig(
     bufferMaxTurns:
       typeof cfg.bufferMaxTurns === "number" ? cfg.bufferMaxTurns : 5,
     bufferMaxSessions: parsePositiveInteger(cfg.bufferMaxSessions, "bufferMaxSessions") ?? 1000,
-    // Per-session retained-turn cap (#3415 bound). Far above the extraction
-    // trigger, so healthy sessions never touch it; a full session refuses live
-    // capture (retryable) instead of growing without bound during an outage.
     bufferMaxTurnsPerSession: parsePositiveInteger(cfg.bufferMaxTurnsPerSession, "bufferMaxTurnsPerSession") ?? 200,
     extractionQueueConcurrency:
       parsePositiveInteger(cfg.extractionQueueConcurrency, "extractionQueueConcurrency") ?? 2,
     bufferMaxMinutes:
       typeof cfg.bufferMaxMinutes === "number" ? cfg.bufferMaxMinutes : 15,
-    // Surprise-gated buffer flush (issue #563, D-MEM). See types.ts for
-    // semantics. Default off so PR 2 ships as a pure no-op until an operator
-    // opts in. PR 4 benchmarks the flag and may flip the default.
     //
-    // Use `coerceBool` rather than a strict `=== true` check: CLI operators
-    // set booleans via `--config bufferSurpriseTriggerEnabled=true` which
-    // arrives as the string `"true"` — the strict form would silently
-    // leave the flag off. Matches the coercion contract established for
-    // other boolean config keys (CLAUDE.md rule #36).
     bufferSurpriseTriggerEnabled:
       coerceBool(cfg.bufferSurpriseTriggerEnabled) === true,
-    // Numeric surprise knobs go through `coerceNumber` so CLI operators
-    // can pass `--config bufferSurpriseThreshold=0.5` without the string
-    // silently dropping to the default. Matches the coercion contract
-    // applied to other numeric config keys (CLAUDE.md rule #28).
     bufferSurpriseThreshold: clampSurpriseThreshold(
       coerceNumber(cfg.bufferSurpriseThreshold),
       0.35,
@@ -1658,9 +1544,6 @@ export function parseConfig(
     qmdColdCollection,
     qmdColdMaxResults:
       typeof cfg.qmdColdMaxResults === "number" ? cfg.qmdColdMaxResults : 8,
-    // Issue #678 PR 2/4: gate hot/cold tier migration (a deep-sleep activity)
-    // on dreams.phases.deepSleep.enabled. When deep sleep is disabled,
-    // tier migration is forced off regardless of legacy flag.
     qmdTierMigrationEnabled: dreamsDeepSleep.enabled && cfg.qmdTierMigrationEnabled === true,
     qmdTierDemotionMinAgeDays:
       typeof cfg.qmdTierDemotionMinAgeDays === "number"
@@ -1748,9 +1631,6 @@ export function parseConfig(
       typeof cfg.sessionObserverDebounceMs === "number"
         ? Math.max(0, Math.floor(cfg.sessionObserverDebounceMs))
         : 120_000,
-    // Explicit validation (issue #1909 review round 8): reject invalid input
-    // rather than flooring/clamping. Must be an integer in [0, 2^31-1] (Node's
-    // setTimeout ceiling); 0 = save every turn; undefined → 3000.
     bufferSaveDebounceMs: parseIntegerInClosedRange(
       cfg.bufferSaveDebounceMs,
       0,
@@ -1774,18 +1654,15 @@ export function parseConfig(
     fileHygiene,
     nativeKnowledge,
     agentAccessHttp,
-    // Access tracking (Phase 1A)
     accessTrackingEnabled: cfg.accessTrackingEnabled !== false,
     accessTrackingBufferMaxSize:
       typeof cfg.accessTrackingBufferMaxSize === "number"
         ? cfg.accessTrackingBufferMaxSize
         : 100,
-    // Retrieval options
     recencyWeight:
       typeof cfg.recencyWeight === "number" ? cfg.recencyWeight : 0.2,
     boostAccessCount: cfg.boostAccessCount !== false,
     recordEmptyRecallImpressions: cfg.recordEmptyRecallImpressions === true,
-    // v2.2 Advanced Retrieval (safe defaults: off unless enabled)
     queryExpansionEnabled: cfg.queryExpansionEnabled === true,
     queryExpansionMaxQueries:
       typeof cfg.queryExpansionMaxQueries === "number"
@@ -1806,7 +1683,6 @@ export function parseConfig(
     rerankCacheTtlMs:
       typeof cfg.rerankCacheTtlMs === "number" ? cfg.rerankCacheTtlMs : 60 * 60 * 1000,
     feedbackEnabled: cfg.feedbackEnabled === true,
-    // v2.2 Negative Examples (safe defaults: off unless enabled)
     negativeExamplesEnabled: cfg.negativeExamplesEnabled === true,
     negativeExamplesPenaltyPerHit:
       typeof cfg.negativeExamplesPenaltyPerHit === "number"
@@ -1816,7 +1692,6 @@ export function parseConfig(
       typeof cfg.negativeExamplesPenaltyCap === "number"
         ? cfg.negativeExamplesPenaltyCap
         : 0.25,
-    // Chunking (Phase 2A)
     chunkingEnabled: cfg.chunkingEnabled === true, // Off by default initially
     chunkingTargetTokens:
       typeof cfg.chunkingTargetTokens === "number" ? cfg.chunkingTargetTokens : 200,
@@ -1824,10 +1699,8 @@ export function parseConfig(
       typeof cfg.chunkingMinTokens === "number" ? cfg.chunkingMinTokens : 150,
     chunkingOverlapSentences:
       typeof cfg.chunkingOverlapSentences === "number" ? cfg.chunkingOverlapSentences : 2,
-    // Semantic Chunking (Issue #368)
     semanticChunkingEnabled: cfg.semanticChunkingEnabled === true,
     semanticChunkingConfig: parseSemanticChunkingConfig(cfg.semanticChunkingConfig),
-    // Contradiction Detection (Phase 2B)
     contradictionDetectionEnabled: cfg.contradictionDetectionEnabled === true, // Off by default initially
     contradictionSimilarityThreshold:
       typeof cfg.contradictionSimilarityThreshold === "number" ? cfg.contradictionSimilarityThreshold : 0.7,
@@ -1835,41 +1708,20 @@ export function parseConfig(
       typeof cfg.contradictionMinConfidence === "number" ? cfg.contradictionMinConfidence : 0.9,
     contradictionLocalization: parseContradictionLocalizationConfig(cfg.contradictionLocalization),
     contradictionAutoResolve: cfg.contradictionAutoResolve !== false,
-    // Contradiction Scan cron (issue #520)
     contradictionScan: parseContradictionScanConfig(cfg.contradictionScan),
-    // Preference drift detection (issue #2371)
     driftDetection: parseDriftDetectionConfig(cfg.driftDetection),
-    // Budgeted deep-recall surface (issue #2332)
     deepRecall: parseDeepRecallConfig(cfg.deepRecall),
-    // Session-scoped recall navigation (issue #1956)
     recallNavigation: parseRecallNavigationConfig(cfg.recallNavigation),
-    // Session-end experience extraction (issue #2979) — default off.
     sessionExperience: parseSessionExperienceConfig(cfg.sessionExperience),
     seedGraduation: parseSeedGraduationConfig(cfg.seedGraduation),
     dependencyPropagation: parseDependencyPropagationConfig(cfg),
-    // Temporal Supersession (issue #375)
     temporalSupersessionEnabled: cfg.temporalSupersessionEnabled !== false, // On by default
     temporalSupersessionIncludeInRecall:
       cfg.temporalSupersessionIncludeInRecall === true, // Off by default
-    // Bi-temporal validity (issue #1578). Default `false` so recall behaves
-    // byte-identically to pre-#1578 until an operator opts in. Uses coerceBool
-    // (same as recallDirectAnswerEnabled below) so CLI string "true" works.
     //
-    // CURRENT scope (this PR): the recall injection filter (expired-validity
-    // facts leave default injection but stay findable by explicit search and
-    // as_of queries) + the observedAt/eventTimeSource storage fields. The
-    // extraction prompt → resolveEventTime write-time wiring lands in a
-    // follow-on PR; until then, enabling the gate exercises the filter and
-    // storage round-trip but new extractions are not yet event-time-resolved
-    // (docs kept honest — review: wire resolver before exposing the gate).
     temporalBiTemporal: coerceBool(cfg.temporalBiTemporal) ?? false,
     temporalExpiredInInjection: coerceBool(cfg.temporalExpiredInInjection) ?? false,
-    // Correction Contract (#1580). Nested `correction.<key>` wins over flat
-    // `correction<Key>`. Parser lives in correction/correction-config.ts.
     ...parseCorrectionConfig(cfg),
-    // Passive correction capture (issue #1581). Parsed from
-    // `correctionCapture.<key>` (nested) or flat legacy keys. Default "off" —
-    // operators opt in (rule 48). Invalid mode → rejected listing options (rule 51).
     correctionCaptureMode: (() => {
       const nested = (cfg.correctionCapture as Record<string, unknown> | undefined)?.mode;
       const raw = nested !== undefined ? nested : cfg.correctionCaptureMode;
@@ -1899,36 +1751,21 @@ export function parseConfig(
       }
       return Math.floor(n);
     })(),
-    // Tombstones — non-resurrection invariant (issue #1579). The invariant is
-    // the point, so it ships ON by default; `false` restores pre-feature
-    // behavior for rollback safety (rule 30). Uses coerceBool so CLI string
-    // "false" / "0" disable it (CLAUDE.md §24).
     tombstonesEnabled: coerceBool(cfg.tombstonesEnabled) ?? true,
     tombstonesSemanticMatch: coerceBool(cfg.tombstonesSemanticMatch) ?? false,
     tombstonesSemanticThreshold: (() => {
       const n = coerceNumber(cfg.tombstonesSemanticThreshold);
       return n !== undefined && n >= 0 && n <= 1 ? n : 0.9;
     })(),
-    // Direct-answer retrieval tier (issue #518).  Default off so the
-    // recall path keeps least-privileged behavior unless operators
-    // explicitly opt in.
     recallDirectAnswerEnabled:
       coerceBool(cfg.recallDirectAnswerEnabled) ?? false,
-    // Recall state views (issue #1952). Default false; exact false/0/"false"
-    // disable (parseRecallStateViews → coerceBooleanLike).
     recallStateViews: parseRecallStateViews(cfg.recallStateViews),
     recallStandingBlock: parseRecallStandingBlock(cfg.recallStandingBlock),
     standingBlockFreshDays: parseStandingBlockFreshDays(cfg.standingBlockFreshDays),
     standingBlockMaxChars: parseStandingBlockMaxChars(cfg.standingBlockMaxChars),
     directorySidecarsEnabled: parseDirectorySidecarsEnabled(cfg.directorySidecarsEnabled),
-    // Full-index recognition tier (issue #2975). Default false; nothing on the
-    // recall path reads these keys until the wiring slice lands.
     recallRecognitionTier: parseRecallRecognitionTier(cfg.recallRecognitionTier),
     recognitionIndexMaxEntries: parseRecognitionIndexMaxEntries(cfg.recognitionIndexMaxEntries),
-    // Disclosure auto-escalation (issue #677 PR 4/4).  Default `manual`
-    // so pre-#677 callers see unchanged behavior.  Reject anything
-    // outside the allow-list rather than silently defaulting (CLAUDE.md
-    // rule 51).
     recallDisclosureEscalation: (() => {
       const raw = cfg.recallDisclosureEscalation;
       if (raw === undefined || raw === null) return "manual" as const;
@@ -1941,20 +1778,12 @@ export function parseConfig(
       const n = coerceNumber(cfg.recallDisclosureEscalationThreshold);
       return n !== undefined && n >= 0 && n <= 1 ? n : 0.5;
     })(),
-    // Graph-based retrieval tier (issue #559 PR 4).  Default `false` —
-    // the tier ships off pending the `retrieval-graph` bench in PR 5.
     recallGraphEnabled:
       coerceBool(cfg.recallGraphEnabled) ?? false,
     recallGraphDamping: (() => {
       const n = coerceNumber(cfg.recallGraphDamping);
       return n !== undefined && n >= 0 && n < 1 ? n : 0.85;
     })(),
-    // Fractional integer values (e.g. `0.5`) are REJECTED rather than
-    // silently floored to zero — CLAUDE.md rule 51 ("Reject invalid
-    // user input instead of silently defaulting"). Users who set a
-    // fractional iteration cap almost certainly meant an integer and
-    // quietly flooring their value to 0 turns off the tier without
-    // warning.
     recallGraphIterations: (() => {
       if (cfg.recallGraphIterations === undefined) return 20;
       const n = coerceNumber(cfg.recallGraphIterations);
@@ -2004,8 +1833,6 @@ export function parseConfig(
           (v): v is string => typeof v === "string" && v.length > 0,
         )
       : ["decisions", "principles", "conventions", "runbooks", "entities"],
-    // Cross-namespace query-budget limiter (issue #565 PR 4/5). Defaults to
-    // false — ships disabled; when enabled, throttles cross-namespace recall bursts.
     recallCrossNamespaceBudgetEnabled:
       coerceBool(cfg.recallCrossNamespaceBudgetEnabled) ?? false,
     recallCrossNamespaceBudgetWindowMs: (() => {
@@ -2021,13 +1848,6 @@ export function parseConfig(
       return n !== undefined && n > 0 ? Math.floor(n) : 30;
     })(),
     ...parseRecallConcurrencyConfig(cfg),
-    // Recall-audit anomaly detector (issue #565 PR 5/5). Defaults off so
-    // existing deployments are unaffected; enable explicitly to let the
-    // access surfaces flag suspicious query patterns derived from the
-    // audit trail. Thresholds floor AFTER validating the floored value
-    // is still >= 1 — a `0.5` input that floors to 0 would turn every
-    // detector into a flood-on-anything, flipping the default to
-    // max-noise instead of max-silence.
     recallAuditAnomalyDetectionEnabled:
       coerceBool(cfg.recallAuditAnomalyDetectionEnabled) ?? false,
     recallAuditAnomalyWindowMs: (() => {
@@ -2061,36 +1881,12 @@ export function parseConfig(
       return floored >= 1 ? floored : 30;
     })(),
 
-    // Memory Worth recall filter (issue #560 PR 4, default flipped in PR 5).
-    // Bench result on the seeded fixture: precision@5 lifts from 0.00 to
-    // 0.60 across all 50 cases with zero regressions. See
-    // `runMemoryWorthBench` in memory-worth-bench.ts. Operators can still
-    // opt out with recallMemoryWorthFilterEnabled=false.
     recallMemoryWorthFilterEnabled:
       coerceBool(cfg.recallMemoryWorthFilterEnabled) ?? true,
-    // Trust/Memory-Worth recall stage corpus-level fallback (issue #1905).
-    // Default true: when a candidate is missing from the frontmatter already
-    // loaded on the hot recall path, the stage may fall back to a per-namespace
-    // corpus counter/signal map (version-keyed, so it hits in steady state).
-    // Set false to disable that O(corpus) fallback entirely — the stage then
-    // uses only the preloaded frontmatter plus a bounded-parallel per-candidate
-    // direct read (fully O(candidates)). coerceBool handles "false"/"0" forms.
     recallTrustStageCorpusFallbackEnabled:
       coerceBool(cfg.recallTrustStageCorpusFallbackEnabled) ?? true,
-    // Hot-memories result cache (issue #1902). Default on: readAllMemories()
-    // serves from the version-keyed in-process corpus cache. coerceBool
-    // handles "false"/"0" string forms; set false to force disk scans.
     hotMemoriesCacheEnabled: coerceBool(cfg.hotMemoriesCacheEnabled) ?? true,
-    // Scope-aware cache invalidation (issue #1904). Default on: a plain fact
-    // create no longer nukes the QMD/entity caches it can't affect. coerceBool
-    // handles "false"/"0" string forms; set false to restore full-clear-per-write.
     scopedCacheInvalidationEnabled: coerceBool(cfg.scopedCacheInvalidationEnabled) ?? true,
-    // External-edit safety net (issue #1902): the version sentinel gives
-    // immediate coherence for cooperating writers, but direct user/git/editor
-    // writes to memory files (which the project supports) don't bump it. Bound
-    // the hot cache's staleness with a TTL so such edits self-heal. Default 60s;
-    // 0 disables the TTL (version invalidation only — max perf for pure-daemon
-    // deployments with no external edits). coerceNumber handles string forms.
     hotMemoriesCacheTtlMs: (() => {
       const n = coerceNumber(cfg.hotMemoriesCacheTtlMs);
       return n !== undefined && n >= 0 ? n : 60_000;
@@ -2099,14 +1895,8 @@ export function parseConfig(
       const n = coerceNumber(cfg.recallMemoryWorthHalfLifeMs);
       return n !== undefined && n >= 0 ? n : 0;
     })(),
-    // Unified TrustScore recall stage (issue #1577). Default off: the stage
-    // is absent and ranking is byte-identical to the pre-feature pipeline
-    // (rule 39). Flip the master gate via #1574 ablation evidence only.
     trustScoreEnabled: coerceBool(cfg.trustScoreEnabled) ?? false,
-    // Epistemic rendering ships behind its own gate so scoring can land first.
     trustScoreEpistemicRendering: coerceBool(cfg.trustScoreEpistemicRendering) ?? false,
-    // Quarantine defaults on (only effective under the master gate); keeps
-    // hard negatives out of injection but visible in X-ray (rule 34).
     trustScoreQuarantine: coerceBool(cfg.trustScoreQuarantine) ?? true,
     trustScoreMinMultiplier: (() => {
       const n = coerceNumber(cfg.trustScoreMinMultiplier);
@@ -2116,17 +1906,11 @@ export function parseConfig(
       const n = coerceNumber(cfg.trustScoreMaxMultiplier);
       return n !== undefined && n >= 1 && n <= 4 ? n : 1.25;
     })(),
-    // Per-component weights. Accept a nested object from config; invalid
-    // entries (non-finite, outside [0,1]) are dropped by resolveTrustWeights,
-    // which falls back to the documented defaults (rule 51).
     trustScoreWeights: parseTrustScoreWeights(cfg.trustScoreWeights),
-    // Memory Linking (Phase 3A)
     memoryLinkingEnabled: cfg.memoryLinkingEnabled === true, // Off by default initially
-    // Conversation Threading (Phase 3B)
     threadingEnabled: cfg.threadingEnabled === true, // Off by default initially
     threadingGapMinutes:
       typeof cfg.threadingGapMinutes === "number" ? cfg.threadingGapMinutes : 30,
-    // Memory Summarization (Phase 4A)
     summarizationEnabled: cfg.summarizationEnabled === true, // Off by default
     summarizationTriggerCount:
       typeof cfg.summarizationTriggerCount === "number" ? cfg.summarizationTriggerCount : 1000,
@@ -2137,30 +1921,24 @@ export function parseConfig(
     summarizationProtectedTags: Array.isArray(cfg.summarizationProtectedTags)
       ? (cfg.summarizationProtectedTags as string[])
       : ["commitment", "preference", "decision", "principle"],
-    // Topic Extraction (Phase 4B)
     topicExtractionEnabled: cfg.topicExtractionEnabled !== false, // On by default
     topicExtractionTopN:
       typeof cfg.topicExtractionTopN === "number" ? cfg.topicExtractionTopN : 50,
-    // Transcript & Context Preservation (v2.0)
-    // Transcript archive
     transcriptEnabled: cfg.transcriptEnabled !== false, // default: true
     transcriptRetentionDays:
       typeof cfg.transcriptRetentionDays === "number" ? cfg.transcriptRetentionDays : 7,
     transcriptSkipChannelTypes: Array.isArray(cfg.transcriptSkipChannelTypes)
       ? (cfg.transcriptSkipChannelTypes as string[])
       : ["cron"], // default: skip cron transcripts
-    // Transcript injection
     transcriptRecallHours:
       typeof cfg.transcriptRecallHours === "number" ? cfg.transcriptRecallHours : 12,
     maxTranscriptTurns:
       typeof cfg.maxTranscriptTurns === "number" ? cfg.maxTranscriptTurns : 50,
     maxTranscriptTokens:
       typeof cfg.maxTranscriptTokens === "number" ? cfg.maxTranscriptTokens : 1000,
-    // Checkpoint
     checkpointEnabled: cfg.checkpointEnabled !== false, // default: true
     checkpointTurns:
       typeof cfg.checkpointTurns === "number" ? cfg.checkpointTurns : 15,
-    // Compaction reset (opt-in, default: false)
     compactionResetEnabled: cfg.compactionResetEnabled === true,
     beforeResetTimeoutMs:
       typeof cfg.beforeResetTimeoutMs === "number"
@@ -2331,7 +2109,6 @@ export function parseConfig(
     activity,
     location,
     provenance,
-    // At-rest encryption (#690): coerceBool handles CLI string "true" (#36).
     secureStoreEnabled: coerceBool(cfg.secureStoreEnabled) === true,
     secureStoreEncryptOnWrite: coerceBool(cfg.secureStoreEncryptOnWrite) !== false, // default: true
     codingMode,
@@ -2360,22 +2137,12 @@ export function parseConfig(
             }
           })()
         : undefined,
-    // Codex P1 on PR 763 round 2: gate the nightly-governance cron
-    // (deep-sleep's primary scheduled execution path) on
-    // dreams.phases.deepSleep.enabled. When the phase is disabled the
-    // cron must NOT auto-register, otherwise `deepSleep.enabled=false`
-    // is a contract lie — deep-sleep keeps running.
     nightlyGovernanceCronAutoRegister:
       dreamsDeepSleep.enabled && cfg.nightlyGovernanceCronAutoRegister === true,
     summaryRecallHours:
       typeof cfg.summaryRecallHours === "number" ? cfg.summaryRecallHours : 24,
     maxSummaryCount:
       typeof cfg.maxSummaryCount === "number" ? cfg.maxSummaryCount : 6,
-    // Gateway-routed (memory flush plan + hourly summary cron). Precedence:
-    // explicit summaryModel → explicit base model → gateway task-chain primary →
-    // "" (omit, so the Gateway default wins). In gateway mode bare ids (incl. the
-    // injected `model` schema default) are dropped via `gatewayTaskModel`, so the
-    // Gateway is never sent an unroutable `<provider>/gpt-5.5` (issue #1469).
     summaryModel:
       gatewayTaskModel(
         typeof cfg.summaryModel === "string" && cfg.summaryModel.length > 0
@@ -2384,19 +2151,16 @@ export function parseConfig(
       ) ||
       gatewayTaskModel(explicitModel) ||
       taskModelFallback,
-    // v2.4 Extended hourly summaries (default off)
     hourlySummariesExtendedEnabled: cfg.hourlySummariesExtendedEnabled === true,
     hourlySummariesIncludeToolStats: cfg.hourlySummariesIncludeToolStats === true,
     hourlySummariesIncludeSystemMessages: cfg.hourlySummariesIncludeSystemMessages === true,
     hourlySummariesMaxTurnsPerRun:
       typeof cfg.hourlySummariesMaxTurnsPerRun === "number" ? cfg.hourlySummariesMaxTurnsPerRun : 200,
-    // v2.4 Conversation index (default off)
     conversationIndexEnabled: cfg.conversationIndexEnabled === true,
     conversationIndexBackend: cfg.conversationIndexBackend === "faiss" ? "faiss" : "qmd",
     conversationIndexQmdCollection:
       typeof cfg.conversationIndexQmdCollection === "string" && cfg.conversationIndexQmdCollection.length > 0
         ? cfg.conversationIndexQmdCollection
-        // TODO(#403): Keep legacy collection name for backwards compat.
         : "openclaw-engram-conversations",
     conversationIndexRetentionDays:
       typeof cfg.conversationIndexRetentionDays === "number" ? cfg.conversationIndexRetentionDays : 30,
@@ -2485,11 +2249,6 @@ export function parseConfig(
     verifiedRecallEnabled: cfg.verifiedRecallEnabled === true,
     semanticRulePromotionEnabled: cfg.semanticRulePromotionEnabled === true,
     semanticRuleVerificationEnabled: cfg.semanticRuleVerificationEnabled === true,
-    // Issue #678 PR 2/4: when `dreams.phases.rem.*` is set, the resolved
-    // dreamsPhases value WINS over the legacy top-level key. The runtime
-    // gates (orchestrator's `runSemanticConsolidation`) read these legacy
-    // fields, so we must propagate the precedence here, not just in the
-    // `dreamsPhases` object.
     semanticConsolidationEnabled: dreamsRem.enabled && dreamsRem.cadenceMs > 0,
     semanticConsolidationModel:
       typeof cfg.semanticConsolidationModel === "string" && cfg.semanticConsolidationModel.length > 0
@@ -2502,33 +2261,13 @@ export function parseConfig(
           (c): c is string => typeof c === "string" && c.length > 0,
         )
       : ["correction", "commitment", "procedure"],
-    // semanticConsolidationIntervalHours is derived from dreamsRem.cadenceMs
-    // when an override is set (rounded up to the nearest hour). Preserve
-    // explicit zero so legacy schedulers see the same disable-by-zero signal
-    // as the dreams.phases.rem config; the runtime enabled flag is also
-    // disabled above so zero does not mean "run every maintenance cycle".
     semanticConsolidationIntervalHours:
       rawDreamsRem.cadenceMs !== undefined
         ? Math.max(0, Math.ceil(dreamsRem.cadenceMs / 3_600_000))
         : legacySemanticConsolidationIntervalHours,
     semanticConsolidationMaxPerRun: dreamsRem.maxPerRun,
-    // Operator-aware consolidation prompt (issue #561 PR 3).  Defaults
-    // to `false` to match sibling `*Enabled` flags' least-privileged
-    // convention.  Operators opt in by setting `true` (or truthy
-    // coercions like "true", "1", "yes", "on") when they want the
-    // consolidation LLM to emit SPLIT/MERGE/UPDATE operator selection
-    // on the `derived_via` frontmatter field.  Uses `coerceBool` per
-    // Gotcha #36 so CLI / env-string inputs coerce correctly.  When
-    // disabled, `derived_via` is still populated via the cluster-shape
-    // heuristic (chooseConsolidationOperator) so PR 2's provenance
-    // wiring keeps working without operator-aware prompts.
     operatorAwareConsolidationEnabled:
       coerceBool(cfg.operatorAwareConsolidationEnabled) ?? false,
-    // Pattern reinforcement (issue #687 PR 2/4).  Defaults: off, weekly
-    // cadence, min cluster size 3, target categories preference / fact
-    // / decision.  All bounds clamped at parse time so invalid inputs
-    // (negative numbers, non-arrays, non-strings) fail safe to defaults
-    // rather than crash the job.
     patternReinforcementEnabled:
       coerceBool(cfg.patternReinforcementEnabled) ?? false,
     patternReinforcementCadenceMs: (() => {
@@ -2542,9 +2281,6 @@ export function parseConfig(
     patternReinforcementMinCount: (() => {
       const raw = coerceNumber(cfg.patternReinforcementMinCount);
       if (raw === undefined || !Number.isFinite(raw)) return 3;
-      // Clusters of 1 are degenerate; clusters of 2 are the minimum
-      // meaningful pattern.  Cap at a sane upper bound to prevent
-      // accidentally locking out the job entirely.
       return Math.min(1000, Math.max(2, Math.floor(raw)));
     })(),
     patternReinforcementCategories: Array.isArray(cfg.patternReinforcementCategories)
@@ -2553,7 +2289,6 @@ export function parseConfig(
           .map((v) => v.trim())
           .filter((v) => v.length > 0)
       : ["preference", "fact", "decision"],
-    // issue #687 PR 3/4: reinforcement recall boost config.
     reinforcementRecallBoostEnabled:
       coerceBool(cfg.reinforcementRecallBoostEnabled) ?? false,
     reinforcementRecallBoostWeight: (() => {
@@ -2578,32 +2313,13 @@ export function parseConfig(
     })(),
     outcomeBoostEnabled: coerceBool(cfg.outcomeBoostEnabled) ?? false,
     outcomeBoostWeight: parseOutcomeBoostWeight(cfg.outcomeBoostWeight),
-    // Async peer profile reasoner (issue #679 PR 2/5). Defaults to
-    // `false` (opt-in) per Gotchas #30/#48 — least-privileged default.
-    // `coerceBool` handles "true"/"1"/"yes"/"on" CLI strings (Gotcha
-    // #36). Numeric thresholds clamp at zero (Gotcha #28 + #45 — 0
-    // is a documented disable value for both, so the schema minimum
-    // matches and we do NOT silently bump to 1).
     peerProfileReasonerEnabled:
       coerceBool(cfg.peerProfileReasonerEnabled) ?? false,
-    // Cursor M on PR #736: use the routing alias `"auto"` rather than
-    // a hardcoded model identifier. Matches the convention established
-    // by sibling `semanticConsolidationModel`. Operators can still
-    // override via config; the value is logged for telemetry only.
     peerProfileReasonerModel:
       typeof cfg.peerProfileReasonerModel === "string" &&
       cfg.peerProfileReasonerModel.trim().length > 0
         ? cfg.peerProfileReasonerModel.trim()
         : "auto",
-    // Cursor L on PR #736: numeric config keys must coerce string CLI
-    // values (Gotcha #28 — `--config peerProfileReasonerMaxFieldsPerRun=2`
-    // arrives as the string "2"). Pre-fix `typeof === "number"`
-    // rejected string inputs and silently fell back to defaults. The
-    // shared `coerceNonNegativeInt` helper accepts both forms, throws
-    // on invalid input (Gotcha #51 — reject rather than silently
-    // default), and falls back to the documented default when the
-    // key is absent. 0 is a valid documented disable value here, so
-    // the helper does NOT bump to 1.
     peerProfileReasonerMinInteractions: coerceNonNegativeInt(
       cfg.peerProfileReasonerMinInteractions,
       5,
@@ -2614,12 +2330,6 @@ export function parseConfig(
       8,
       "peerProfileReasonerMaxFieldsPerRun",
     ),
-    // Peer profile recall injection (issue #679 PR 3/5). Default-off
-    // per Gotcha #30/#48 (least-privileged default, new feature gate).
-    // `coerceBool` handles CLI string forms "true"/"1"/"yes"/"on"
-    // (Gotcha #36). `coerceNonNegativeInt` handles string CLI values
-    // (Gotcha #28) and documents 0 as the disable value (Gotcha #45 —
-    // schema minimum must also be 0 so they stay consistent).
     peerProfileRecallEnabled:
       coerceBool(cfg.peerProfileRecallEnabled) ?? false,
     peerProfileRecallMaxFields: coerceNonNegativeInt(
@@ -2673,13 +2383,10 @@ export function parseConfig(
         ? cfg.abstractionNodeStoreDir.trim()
         : path.join(memoryDir, "state", "abstraction-nodes"),
     ...parseLocalLlmConfig(cfg, localLlmApiKeyEnv, resolveEnvVars),
-    // Observability (disabled by default to avoid log spam)
     slowLogEnabled: cfg.slowLogEnabled === true,
     slowLogThresholdMs:
       typeof cfg.slowLogThresholdMs === "number" ? cfg.slowLogThresholdMs : 30_000,
-    // Trace recall content — disabled by default; enable to send recalled memory text to trace subscribers
     traceRecallContent: cfg.traceRecallContent === true,
-    // Performance profiling (opt-in, disabled by default)
     profilingEnabled: cfg.profilingEnabled === true,
     profilingStorageDir:
       typeof cfg.profilingStorageDir === "string" && cfg.profilingStorageDir.length > 0
@@ -2689,7 +2396,6 @@ export function parseConfig(
       typeof cfg.profilingMaxTraces === "number" && Number.isFinite(cfg.profilingMaxTraces)
         ? Math.max(0, cfg.profilingMaxTraces)
         : 100,
-    // Extraction stability guards (P0/P1)
     extractionDedupeEnabled: cfg.extractionDedupeEnabled !== false,
     extractionSourceGroundingEnabled: coerceBool(cfg.extractionSourceGroundingEnabled) !== false,
     extractionDedupeWindowMs:
@@ -2710,9 +2416,6 @@ export function parseConfig(
       typeof cfg.extractionMaxQuestionsPerRun === "number" ? cfg.extractionMaxQuestionsPerRun : 3,
     extractionMaxProfileUpdatesPerRun:
       typeof cfg.extractionMaxProfileUpdatesPerRun === "number" ? cfg.extractionMaxProfileUpdatesPerRun : 4,
-    // Importance write-gate for trivial extracted content (issue #372).
-    // Default "low" drops only "trivial" facts (greetings, single-word replies,
-    // heartbeat pings); set to "normal" or higher to make the gate stricter.
     extractionMinImportanceLevel: ((): PluginConfig["extractionMinImportanceLevel"] => {
       const raw = cfg.extractionMinImportanceLevel;
       if (
@@ -2726,12 +2429,9 @@ export function parseConfig(
       }
       return "low";
     })(),
-    // Extraction scope classification (rule 30 gate): "global" facts promote
-    // to the shared namespace. Default true.
     extractionScopeClassificationEnabled:
       coerceBool(cfg.extractionScopeClassificationEnabled) !== false,
     ...parseSubjectRuntimeConfig(cfg),
-    // Extraction judge (issue #376). Opt-in LLM-as-judge fact-worthiness gate.
     extractionJudgeEnabled: cfg.extractionJudgeEnabled === true,
     extractionJudgeModel:
       typeof cfg.extractionJudgeModel === "string" ? cfg.extractionJudgeModel : "",
@@ -2739,50 +2439,25 @@ export function parseConfig(
       typeof cfg.extractionJudgeBatchSize === "number" && Number.isFinite(cfg.extractionJudgeBatchSize)
         ? Math.max(1, Math.round(cfg.extractionJudgeBatchSize))
         : 20,
-    // Judge LLM timeout (issue #376 follow-up, Studio 2026-10-29; tightened in
-    // PR 3264): the judge requests a compact verdict with a batch-scaled
-    // completion budget (24 tokens per candidate, up to 2048). Measured
-    // 2.1-2.5 s per call on a small fast judge
-    // model; the big shared core model measured 13-22 s per compact call,
-    // 41 s verbose. The 20s default assumes the fast model, stays fail-open
-    // on timeout, and needs a raise if extractionJudgeModel points at the
-    // slow core model. Non-positive / unusable values fall back to the
-    // default rather than a 1ms timeout that would silently disable judging.
     extractionJudgeTimeoutMs: ((): number => {
       const coerced = coerceNumber(cfg.extractionJudgeTimeoutMs);
       if (coerced === undefined || coerced < 1) return 20_000;
       return Math.min(3_600_000, Math.floor(coerced));
     })(),
     extractionJudgeShadow: cfg.extractionJudgeShadow === true,
-    // Defer cap (issue #562 PR 2): max re-deferrals for the same candidate
-    // text before the verdict is forcibly converted to reject.
     extractionJudgeMaxDeferrals:
       typeof cfg.extractionJudgeMaxDeferrals === "number" &&
       Number.isFinite(cfg.extractionJudgeMaxDeferrals) &&
       cfg.extractionJudgeMaxDeferrals >= 1
         ? Math.floor(cfg.extractionJudgeMaxDeferrals)
         : 2,
-    // Judge telemetry (issue #562 PR 3): opt-in structured emit to the
-    // observation ledger; `coerceBool` accepts CLI-style strings (gotcha 36).
     extractionJudgeTelemetryEnabled:
       coerceBool(cfg.extractionJudgeTelemetryEnabled) === true,
-    // Judge training-pair collection (issue #562 PR 4): opt-in shim for a
-    // future GRPO training pipeline. Rows land under ~/.remnic/judge-
-    // training/<date>.jsonl — NOT in the shared memory directory.
-    // Uses `coerceBool` per CLAUDE.md gotcha 36 for CLI-string parity.
     collectJudgeTrainingPairs: coerceBool(cfg.collectJudgeTrainingPairs) === true,
     judgeTrainingDir:
       typeof cfg.judgeTrainingDir === "string" ? cfg.judgeTrainingDir : "",
-    // Extraction faithfulness gate (issue #1576) + model-lab pointer
-    // `extractionFaithfulnessBaseUrl` (issue #1585), and the correction-intent
-    // model-lab pointer (issue #1581 / #1585). Parsed in faithfulness-config.ts
-    // (extracted from this god file so the block can grow without tripping the
-    // ratchet). Defaults preserve the byte-identical pre-feature pipeline
-    // (rule 39); invalid values reject (rule 51 / #1634).
     ...parseFaithfulnessGateConfig(cfg),
     ...parseCorrectionIntentConfig(cfg),
-    // Inline source attribution (issue #369). Opt-in to preserve
-    // backwards compatibility with existing downstream consumers.
     inlineSourceAttributionEnabled: cfg.inlineSourceAttributionEnabled === true,
     inlineSourceAttributionFormat:
       typeof cfg.inlineSourceAttributionFormat === "string" &&
@@ -2795,9 +2470,7 @@ export function parseConfig(
           .map((value) => value.trim())
       : [],
     consolidationRequireNonZeroExtraction: cfg.consolidationRequireNonZeroExtraction !== false,
-    // Issue #678 PR 2/4: dreams.phases.rem.minIntervalMs WINS when set.
     consolidationMinIntervalMs: dreamsRem.minIntervalMs,
-    // QMD maintenance (debounced singleflight)
     qmdMaintenanceEnabled: cfg.qmdMaintenanceEnabled !== false,
     qmdMaintenanceDebounceMs:
       typeof cfg.qmdMaintenanceDebounceMs === "number" ? cfg.qmdMaintenanceDebounceMs : 30_000,
@@ -2814,7 +2487,6 @@ export function parseConfig(
       typeof cfg.qmdUpdateTimeoutMs === "number" ? cfg.qmdUpdateTimeoutMs : 90_000,
     qmdUpdateMinIntervalMs:
       typeof cfg.qmdUpdateMinIntervalMs === "number" ? cfg.qmdUpdateMinIntervalMs : 15 * 60_000,
-    // Local LLM resilience
     localLlmRetry5xxCount:
       typeof cfg.localLlmRetry5xxCount === "number" ? cfg.localLlmRetry5xxCount : 1,
     localLlmRetryBackoffMs:
@@ -2823,7 +2495,6 @@ export function parseConfig(
       typeof cfg.localLlm400TripThreshold === "number" ? cfg.localLlm400TripThreshold : 5,
     localLlm400CooldownMs:
       typeof cfg.localLlm400CooldownMs === "number" ? cfg.localLlm400CooldownMs : 120_000,
-    // COS-447: rate-limit backoff + process-wide concurrency cap.
     localLlmRateLimitRetryCount: resolveNonNegativeIntegerConfig(
       cfg.localLlmRateLimitRetryCount, 3, "localLlmRateLimitRetryCount"),
     localLlmRateLimitBackoffBaseMs: resolvePositiveIntegerConfig(
@@ -2832,10 +2503,6 @@ export function parseConfig(
       cfg.localLlmRateLimitBackoffMaxMs, 60_000, "localLlmRateLimitBackoffMaxMs"),
     localLlmMaxConcurrency: resolveNonNegativeIntegerConfig(
       cfg.localLlmMaxConcurrency, 4, "localLlmMaxConcurrency"),
-    // Ollama thinking suppression dialect (issue #1996): reasoning_effort value
-    // for THINKING_SUPPRESSED_OPERATIONS on the ollama backend. Default "none"
-    // (think off). "" disables injection. Invalid values fall back to "none"
-    // rather than reaching Ollama, which 400s on unknown efforts.
     localLlmReasoningEffort:
       typeof cfg.localLlmReasoningEffort === "string" &&
       ["", "none", "low", "medium", "high", "max"].includes(cfg.localLlmReasoningEffort)
@@ -2847,7 +2514,6 @@ export function parseConfig(
         ? threshold
         : 3_000;
     })(),
-    // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
     extractionRetryEnabled: coerceBooleanLike(cfg.extractionRetryEnabled) ?? true,
     extractionRetryScheduleMs:
       Array.isArray(cfg.extractionRetryScheduleMs) &&
@@ -2876,8 +2542,6 @@ export function parseConfig(
     extractionBreakerAuthCooldownMs:
       typeof cfg.extractionBreakerAuthCooldownMs === "number" && cfg.extractionBreakerAuthCooldownMs >= 0
         ? cfg.extractionBreakerAuthCooldownMs : 1_800_000,
-    // Trigger-drain drop threshold: consecutive failed extraction attempts
-    // before the failing buffer chunk is dropped (side-file copied first).
     extractionCallMaxChars:
       parsePositiveInteger(cfg.extractionCallMaxChars, "extractionCallMaxChars") ?? 12_000,
     extractionChunkDropAfterFailures: parseIntegerAtLeast(
@@ -2886,7 +2550,6 @@ export function parseConfig(
       1,
       "extractionChunkDropAfterFailures",
     ),
-    // Local LLM fast tier (v9.1)
     localLlmFastEnabled: cfg.localLlmFastEnabled === true,
     localLlmFastModel:
       typeof cfg.localLlmFastModel === "string" && cfg.localLlmFastModel.length > 0
@@ -2900,26 +2563,10 @@ export function parseConfig(
           : "http://localhost:1234/v1",
     localLlmFastTimeoutMs:
       typeof cfg.localLlmFastTimeoutMs === "number" ? cfg.localLlmFastTimeoutMs : 15_000,
-    // Thinking-mode suppression on the main local LLM (issue #548).
-    // Default true — extraction / consolidation produce structured
-    // JSON and gain nothing from chain-of-thought; thinking-capable
-    // models burn their token budget on reasoning and blow the
-    // default 60s timeout.  Operators who need thinking on the main
-    // client (e.g. for narrative tasks) can set this to false via
-    // config or --config CLI flag.  The fast-tier `fastLlm` always
-    // disables thinking and is unaffected by this flag.
     //
-    // Injection is backend-gated inside LocalLlmClient: the
-    // `chat_template_kwargs` field is only sent when the detected
-    // backend is in `THINKING_COMPATIBLE_BACKENDS` (LM Studio, vLLM).
-    // Strict OpenAI-compatible backends reject unknown request
-    // fields with 400, so the client fails open on unknown backends
-    // rather than tripping the 400 cooldown (Codex P1 on PR #550).
     localLlmDisableThinking:
       coerceBool(cfg.localLlmDisableThinking) ?? true,
-    // Gateway config (passed from index.ts for fallback AI)
     gatewayConfig: cfg.gatewayConfig as PluginConfig["gatewayConfig"],
-    // Gateway model source (v9.2) — route LLM calls through gateway agent model chain
     modelSource,
     gatewayAgentId:
       typeof cfg.gatewayAgentId === "string" && cfg.gatewayAgentId.length > 0
@@ -2931,19 +2578,8 @@ export function parseConfig(
         : "",
     taskModelChain,
 
-    // v3.0 namespaces (default off)
     namespacesEnabled: cfg.namespacesEnabled === true,
-    // Namespace catalog (issue #1499): default ON, but only does anything when
-    // namespacesEnabled is also true (the catalog is inert otherwise). Operators
-    // opt out with namespaceCatalogEnabled: false. Boolean-like opt-outs from
-    // CLI/env/JSON ("false", "0", "no", "off") are honored (CLAUDE.md rule #36);
-    // a PRESENT but unrecognized value ("flase", 2) is REJECTED rather than
-    // silently defaulting to enabled (CLAUDE.md rule #51); default to enabled
-    // only when the value is absent.
     namespaceCatalogEnabled: resolveNamespaceCatalogEnabled(cfg.namespaceCatalogEnabled, rawOperatorConfig, runtimeSet),
-    // Namespace catalog touch-path performance knobs (issue #1903). Numerics use
-    // resolveNonNegativeIntegerConfig so 0 is an accepted disable switch; a
-    // present-but-invalid value (negative/non-integer) is REJECTED (rule #51).
     namespacesCatalogCompactBytes: resolveNonNegativeIntegerConfig(
       cfg.namespacesCatalogCompactBytes,
       16 * 1024 * 1024,
@@ -2964,11 +2600,6 @@ export function parseConfig(
       false,
       "namespacesCatalogTouchStateWrites",
     ),
-    // NOTE: namespace identifiers are intentionally NOT sanitized here — the
-    // codebase rejects unsafe namespaces at the point of use (see
-    // codex-materialize-runner and NamespaceStorageRouter / resolveNamespaceDir),
-    // so a "../x" value is surfaced as an explicit error rather than silently
-    // rewritten. Containment is enforced at the filesystem sinks.
     defaultNamespace:
       typeof cfg.defaultNamespace === "string" && cfg.defaultNamespace.length > 0 ? cfg.defaultNamespace : "default",
     sharedNamespace:
@@ -3032,9 +2663,7 @@ export function parseConfig(
         ? cfg.routingRulesStateFile.trim()
         : "state/routing-rules.json",
 
-    // Reuse the hoisted coerce above (default pipeline already saw it).
     sharedContextEnabled,
-    // Same coercion contract for the binding-authority sibling (#2918 parity).
     sharedContextAllowBindingAuthority:
       coerceBool(cfg.sharedContextAllowBindingAuthority, "sharedContextAllowBindingAuthority") ?? false,
     sharedContextDir:
@@ -3047,11 +2676,9 @@ export function parseConfig(
       typeof cfg.sharedCrossSignalSemanticMaxCandidates === "number"
         ? Math.max(0, Math.floor(cfg.sharedCrossSignalSemanticMaxCandidates))
         : 120,
-    // Backward-compatible aliases.
     crossSignalsSemanticEnabled: sharedCrossSignalSemanticEnabled,
     crossSignalsSemanticTimeoutMs: sharedCrossSignalSemanticTimeoutMs,
 
-    // v5.0 compounding (default off)
     compoundingEnabled: cfg.compoundingEnabled === true,
     compoundingWeeklyCronEnabled: cfg.compoundingWeeklyCronEnabled === true,
     compoundingSemanticEnabled: cfg.compoundingSemanticEnabled === true,
@@ -3059,13 +2686,11 @@ export function parseConfig(
       typeof cfg.compoundingSynthesisTimeoutMs === "number" ? cfg.compoundingSynthesisTimeoutMs : 15_000,
     compoundingInjectEnabled: cfg.compoundingInjectEnabled !== false,
 
-    // IRC (Inductive Rule Consolidation) — preference synthesis
     ircEnabled: cfg.ircEnabled !== false,
     ircMaxPreferences: typeof cfg.ircMaxPreferences === "number" ? cfg.ircMaxPreferences : 20,
     ircIncludeCorrections: cfg.ircIncludeCorrections !== false,
     ircMinConfidence: typeof cfg.ircMinConfidence === "number" ? cfg.ircMinConfidence : 0.3,
 
-    // CMC (Causal Memory Consolidation) — cross-session causal reasoning
     cmcEnabled: cfg.cmcEnabled === true,
     cmcStitchLookbackDays: typeof cfg.cmcStitchLookbackDays === "number" ? cfg.cmcStitchLookbackDays : 7,
     cmcStitchMinScore: typeof cfg.cmcStitchMinScore === "number" ? cfg.cmcStitchMinScore : 2.5,
@@ -3084,12 +2709,10 @@ export function parseConfig(
     cmcBehaviorConfidenceThreshold: typeof cfg.cmcBehaviorConfidenceThreshold === "number" ? cfg.cmcBehaviorConfidenceThreshold : 0.6,
     cmcLifecycleCausalImpactWeight: warnDeprecatedCausalImpactWeight(coerceNumber(cfg.cmcLifecycleCausalImpactWeight)),
 
-    // PEDC (Prediction-Error-Driven Calibration) — model-user alignment
     calibrationEnabled: cfg.calibrationEnabled === true,
     calibrationMaxRulesPerRecall: typeof cfg.calibrationMaxRulesPerRecall === "number" ? cfg.calibrationMaxRulesPerRecall : 10,
     calibrationMaxChars: typeof cfg.calibrationMaxChars === "number" ? cfg.calibrationMaxChars : 1200,
 
-    // v7.0 Knowledge Graph Enhancement
     knowledgeIndexEnabled: cfg.knowledgeIndexEnabled !== false,
     knowledgeIndexMaxEntities:
       typeof cfg.knowledgeIndexMaxEntities === "number" ? cfg.knowledgeIndexMaxEntities : 40,
@@ -3127,10 +2750,8 @@ export function parseConfig(
       typeof cfg.recallMmrTopN === "number" && Number.isFinite(cfg.recallMmrTopN)
         ? Math.max(0, Math.floor(cfg.recallMmrTopN))
         : 40,
-    // Issue #564 PR 3: off by default; enable explicitly after bench validation.
     recallReasoningTraceBoostEnabled:
       coerceBool(cfg.recallReasoningTraceBoostEnabled) ?? false,
-    // Issue #1582: off by default — handles are byte-additive at injection time.
     recallMemoryHandles: coerceBool(cfg.recallMemoryHandles) ?? false,
     recallHandleSnapshotDepth:
       typeof cfg.recallHandleSnapshotDepth === "number" &&
@@ -3161,33 +2782,26 @@ export function parseConfig(
           })()
         : 500,
 
-    // Search backend abstraction
     searchBackend: parseSearchBackend(cfg.searchBackend),
     remoteSearchBaseUrl: typeof cfg.remoteSearchBaseUrl === "string" ? cfg.remoteSearchBaseUrl : undefined,
     remoteSearchApiKey: typeof cfg.remoteSearchApiKey === "string" ? cfg.remoteSearchApiKey : undefined,
     remoteSearchTimeoutMs: typeof cfg.remoteSearchTimeoutMs === "number" ? cfg.remoteSearchTimeoutMs : 30_000,
 
-    // LanceDB backend
     lancedbEnabled: cfg.lancedbEnabled === true,
     lanceDbPath: typeof cfg.lanceDbPath === "string" ? cfg.lanceDbPath : path.join(memoryDir, "lancedb"),
     lanceEmbeddingDimension: typeof cfg.lanceEmbeddingDimension === "number" ? cfg.lanceEmbeddingDimension : 1536,
 
-    // Meilisearch backend
     meilisearchEnabled: cfg.meilisearchEnabled === true,
     meilisearchHost: typeof cfg.meilisearchHost === "string" ? cfg.meilisearchHost : "http://localhost:7700",
     meilisearchApiKey: typeof cfg.meilisearchApiKey === "string" ? cfg.meilisearchApiKey : undefined,
     meilisearchTimeoutMs: typeof cfg.meilisearchTimeoutMs === "number" ? cfg.meilisearchTimeoutMs : 30_000,
     meilisearchAutoIndex: cfg.meilisearchAutoIndex === true,
 
-    // Orama backend
     oramaEnabled: cfg.oramaEnabled === true,
     oramaDbPath: typeof cfg.oramaDbPath === "string" ? cfg.oramaDbPath : path.join(memoryDir, "orama"),
     oramaEmbeddingDimension: typeof cfg.oramaEmbeddingDimension === "number" ? cfg.oramaEmbeddingDimension : 1536,
-    // CJK/Thai lexical segmentation (issue #2187) — default on; string forms
-    // from CLI `--config` are coerced like neighboring boolean flags.
     oramaCjkSegmentation: coerceBooleanLike(cfg.oramaCjkSegmentation) ?? true,
 
-    // QMD daemon mode
     qmdDaemonEnabled: cfg.qmdDaemonEnabled !== false,
     qmdDaemonUrl:
       typeof cfg.qmdDaemonUrl === "string" && cfg.qmdDaemonUrl.length > 0
@@ -3198,7 +2812,6 @@ export function parseConfig(
     qmdIntentHintsEnabled: cfg.qmdIntentHintsEnabled === true,
     qmdExplainEnabled: cfg.qmdExplainEnabled === true,
 
-    // v6.0 Fact deduplication & archival
     factDeduplicationEnabled: cfg.factDeduplicationEnabled !== false,
     ...parseWritePathDedupConfig(cfg),
     ...parseSemanticMergeConfig(cfg),
@@ -3212,21 +2825,6 @@ export function parseConfig(
     factArchivalProtectedCategories: Array.isArray(cfg.factArchivalProtectedCategories)
       ? (cfg.factArchivalProtectedCategories as any[]).filter((c) => typeof c === "string")
       : ["commitment", "preference", "decision", "principle", "procedure"],
-    // Lifecycle policy engine (issue #686 PR 3/6 — flipped default to
-    // `true`).  Tier infrastructure (`tier-routing.ts`,
-    // `tier-migration.ts`, separate cold QMD collection) has shipped
-    // for several releases.  Default-on lets the year-2 retention
-    // story land for every install instead of staying gated behind
-    // an opt-in flag the typical operator never reaches.  Operators
-    // who need pre-#686 behavior (no automatic hot↔cold migration,
-    // no recall-time stale filtering) can set
-    // `lifecyclePolicyEnabled: false` explicitly. Coerce string/number
-    // boolean-likes (e.g. CLI `--config lifecyclePolicyEnabled=false`)
-    // before applying the default — otherwise an explicit false-ish
-    // input falls through and silently re-enables the policy.
-    // Issue #678 PR 2/4: dreams.phases.lightSleep.* WINS over legacy keys.
-    // The runtime gate (orchestrator's `runLifecyclePolicyPass`) reads
-    // these legacy fields, so propagate the precedence here.
     lifecyclePolicyEnabled: dreamsLightSleep.enabled,
     lifecycleFilterStaleEnabled: dreamsLightSleep.filterStaleEnabled,
     lifecyclePromoteHeatThreshold: dreamsLightSleep.promoteHeatThreshold,
@@ -3238,12 +2836,6 @@ export function parseConfig(
             typeof c === "string" && VALID_MEMORY_CATEGORIES.has(c),
         )
       : ["decision", "principle", "commitment", "preference", "procedure"],
-    // Mirror the *resolved* lifecyclePolicyEnabled default (not the
-    // raw input) — otherwise omitting both flags returns `false` for
-    // metrics even though the policy is enabled by default since
-    // #686 PR 3/6.
-    // Issue #678 PR 2/4: mirror the resolved dreams light-sleep enabled flag
-    // (which already incorporates dreams.phases precedence + legacy fallback).
     lifecycleMetricsEnabled:
       coerceBooleanLike(cfg.lifecycleMetricsEnabled) ?? dreamsLightSleep.enabled,
     // v8.3 proactive + policy learning (default off)
@@ -3312,20 +2904,8 @@ export function parseConfig(
           .filter((param): param is string => typeof param === "string" && param.trim().length > 0)
       : [...DEFAULT_BEHAVIOR_LOOP_PROTECTED_PARAMS],
     // v8.0 phase 1
-    // All recallPlanner boolean gates coerce boolean-like strings so CLI/env
-    // surfaces (`--config recallPlanner*=true|false`) behave correctly — the
-    // shadow-mode/telemetry/enable flags are documented rollout switches and
-    // must not silently ignore string values (gotcha #36, #1428 review).
     recallPlannerEnabled: coerceBooleanLike(cfg.recallPlannerEnabled) ?? true,
-    // Issue #1367 / Option C: LLM-based recall planning is opt-in so the
-    // default recall path stays heuristic (no added latency / LLM call unless
-    // the operator asks for it — gotcha #30). Coerce boolean-like strings so
-    // CLI/env surfaces (`--config recallPlannerLlmEnabled=true`) actually
-    // enable it (gotcha #36); defaults off.
     recallPlannerLlmEnabled: coerceBooleanLike(cfg.recallPlannerLlmEnabled) ?? false,
-    // Gateway-routed via FallbackLlmClient (qualifiedPlannerModel drops bare ids).
-    // Drop the bare schema-default model in gateway mode too so the resolved value
-    // reflects the actual gateway route (task-chain primary) instead of "gpt-5.5".
     recallPlannerModel:
       gatewayTaskModel(
         typeof cfg.recallPlannerModel === "string" && cfg.recallPlannerModel.trim().length > 0
@@ -3509,10 +3089,6 @@ export function parseConfig(
     memoryReconstructionMaxExpansions:
       typeof cfg.memoryReconstructionMaxExpansions === "number" ? Math.max(0, Math.round(cfg.memoryReconstructionMaxExpansions)) : 3,
     graphLateralInhibitionEnabled: cfg.graphLateralInhibitionEnabled !== false,
-    // Incremental GraphIndex edge cache (issue #1904). Default on: single-writer
-    // edge appends are pushed into the warm cache in place (size-revalidated for
-    // cross-process coherence) instead of nulling + re-reading the 6 MB edge
-    // file. coerceBool handles string forms; set false to null the cache per write.
     graphEdgeCacheIncrementalEnabled: coerceBool(cfg.graphEdgeCacheIncrementalEnabled) ?? true,
     graphLateralInhibitionBeta:
       typeof cfg.graphLateralInhibitionBeta === "number"
@@ -3522,8 +3098,6 @@ export function parseConfig(
       typeof cfg.graphLateralInhibitionTopM === "number"
         ? Math.max(0, Math.round(cfg.graphLateralInhibitionTopM))
         : 7,
-    // Issue #681 PR 2/3 — graph-edge confidence decay maintenance.
-    // Boolean coerced via shared helper (gotcha #36: string "false" is truthy).
     graphEdgeDecayEnabled: coerceBooleanLike(cfg.graphEdgeDecayEnabled) ?? false,
     graphEdgeDecayCadenceMs:
       typeof cfg.graphEdgeDecayCadenceMs === "number" && Number.isFinite(cfg.graphEdgeDecayCadenceMs)
@@ -3548,8 +3122,6 @@ export function parseConfig(
         : 0.2,
     ...parseProjectionRebuildScheduleConfig(cfg, parseIntegerAtLeast),
     ...parseBoundedJsonlStateConfig(cfg, parseIntegerAtLeast),
-    // Issue #681 PR 3/3 — confidence-aware traversal. Floor clamps to [0,1]; a
-    // documented 0 iterations disables PageRank refinement (BFS scores pass through).
     graphTraversalConfidenceFloor:
       typeof cfg.graphTraversalConfidenceFloor === "number" &&
       Number.isFinite(cfg.graphTraversalConfidenceFloor)
@@ -3613,7 +3185,6 @@ export function parseConfig(
       parseIntegerAtLeast(cfg.eventOrderRecallScanWindowTurns, 12, 1, "eventOrderRecallScanWindowTurns"),
     eventOrderRecallScanWindowTokens:
       parseIntegerAtLeast(cfg.eventOrderRecallScanWindowTokens, 24_000, 1, "eventOrderRecallScanWindowTokens"),
-    // Lossless Context Management (LCM)
     lcmEnabled: cfg.lcmEnabled === true,
     lcmLeafBatchSize:
       typeof cfg.lcmLeafBatchSize === "number" ? Math.max(2, Math.floor(cfg.lcmLeafBatchSize)) : 8,
@@ -3645,7 +3216,6 @@ export function parseConfig(
         ? Math.max(0, Math.floor(cfg.messagePartsRecallMaxResults))
         : 6,
 
-    // v9.1 Parallel Specialized Retrieval
     parallelRetrievalEnabled: cfg.parallelRetrievalEnabled === true,
     parallelAgentWeights: (() => {
       const w = cfg.parallelAgentWeights as Record<string, unknown> | undefined;
@@ -3662,16 +3232,11 @@ export function parseConfig(
 
     briefing: parseBriefingConfig(cfg.briefing),
 
-    // Codex CLI connector settings (install-time)
     codex: (() => {
       const raw =
         cfg.codex && typeof cfg.codex === "object" && !Array.isArray(cfg.codex)
           ? (cfg.codex as Record<string, unknown>)
           : {};
-      // Coerce string "false"/"0"/"no" → false and "true"/"1"/"yes" → true so
-      // that CLI inputs like --config installExtension=false are handled correctly.
-      // Missing / undefined defaults to true (coerceInstallExtension returns
-      // undefined for unknown values, so ?? true applies the default).
       const installExtension = coerceInstallExtension(raw.installExtension) ?? true;
       const codexHome =
         typeof raw.codexHome === "string" && raw.codexHome.trim().length > 0
@@ -3680,18 +3245,8 @@ export function parseConfig(
       return { installExtension, codexHome };
     })(),
 
-    // Live connectors (issue #683 PR 2/N).
     //
-    // Per CLAUDE.md gotcha #30 and #48, every concrete connector ships
-    // disabled-by-default and the parser MUST reject malformed top-level
-    // shapes loudly (gotcha #51) rather than silently producing an empty
-    // object.
     //
-    // We do NOT validate credential strings here — the connector module
-    // re-validates on every sync pass via `validateGoogleDriveConfig`.
-    // That keeps secret-store-driven values (which may legitimately be
-    // empty until the operator runs setup) round-trippable through the
-    // config layer without crashing the orchestrator at boot.
     connectors: (() => {
       if (
         cfg.connectors !== undefined &&
@@ -3708,7 +3263,6 @@ export function parseConfig(
         cfg.connectors && typeof cfg.connectors === "object" && !Array.isArray(cfg.connectors)
           ? (cfg.connectors as Record<string, unknown>)
           : {};
-      // googleDrive (#683 PR 2/N)
       if (
         rawConnectors.googleDrive !== undefined &&
         (rawConnectors.googleDrive === null ||
@@ -3789,7 +3343,6 @@ export function parseConfig(
           driveFolderIds.push(trimmed);
         }
       }
-      // notion (#683 PR 3/N)
       if (
         rawConnectors.notion !== undefined &&
         (rawConnectors.notion === null ||
@@ -3845,7 +3398,6 @@ export function parseConfig(
           notionDatabaseIds.push(trimmed);
         }
       }
-      // gmail (#683 PR 4/6)
       if (
         rawConnectors.gmail !== undefined &&
         (rawConnectors.gmail === null ||
@@ -3882,10 +3434,6 @@ export function parseConfig(
       const gmailPollCoerced = coerceNumber(rawGmail.pollIntervalMs);
       let gmailPollIntervalMs = 300_000;
       if (rawGmail.pollIntervalMs !== undefined) {
-        // CLAUDE.md gotcha #51: reject invalid values explicitly rather than
-        // silently coercing to a default. Non-numeric strings, NaN, and
-        // ±Infinity all cause coerceNumber to return undefined — treat that as
-        // a configuration error rather than a quiet fallback.
         if (gmailPollCoerced === undefined) {
           throw new Error(
             `connectors.gmail.pollIntervalMs must be a finite number; got ${JSON.stringify(rawGmail.pollIntervalMs)}`,
@@ -3908,7 +3456,6 @@ export function parseConfig(
         gmailPollIntervalMs = gmailPollCoerced;
       }
 
-      // github (#683 PR 5/6)
       if (
         rawConnectors.github !== undefined &&
         (rawConnectors.github === null ||
@@ -4002,12 +3549,9 @@ export function parseConfig(
       };
     })(),
 
-    // MECE Taxonomy (#366)
-    // Coerce string booleans from CLI (e.g. --config taxonomyEnabled=true) — gotcha #36
     taxonomyEnabled: coerceBool(cfg.taxonomyEnabled) ?? false,
     taxonomyAutoGenResolver: coerceBool(cfg.taxonomyAutoGenResolver) ?? true,
 
-    // Codex CLI — native memory materialization (#378)
     codexMaterializeMemories: coerceBool(cfg.codexMaterializeMemories) ?? true,
     codexMaterializeNamespace:
       typeof cfg.codexMaterializeNamespace === "string" && cfg.codexMaterializeNamespace.trim().length > 0
@@ -4027,11 +3571,8 @@ export function parseConfig(
     ),
     codexMaterializeOnConsolidation: coerceBool(cfg.codexMaterializeOnConsolidation) ?? true,
     codexMaterializeOnSessionEnd: coerceBool(cfg.codexMaterializeOnSessionEnd) ?? true,
-    // Codex CLI — marketplace integration (#418)
     codexMarketplaceEnabled: cfg.codexMarketplaceEnabled !== false, // default: true
 
-    // Page-level versioning (issue #371). Issue #678 PR 2/4:
-    // dreams.phases.deepSleep.* WINS over legacy keys.
     versioningEnabled: dreamsDeepSleep.enabled && dreamsDeepSleep.versioningEnabled,
     versioningMaxPerPage: dreamsDeepSleep.versioningMaxPerPage,
     versioningSidecarDir:
@@ -4039,7 +3580,6 @@ export function parseConfig(
         ? cfg.versioningSidecarDir.trim()
         : ".versions",
 
-    // Binary file lifecycle management (#367)
     binaryLifecycleEnabled: cfg.binaryLifecycleEnabled === true,
     binaryLifecycleGracePeriodDays:
       typeof cfg.binaryLifecycleGracePeriodDays === "number"
@@ -4058,15 +3598,10 @@ export function parseConfig(
         ? cfg.binaryLifecycleBackendPath.trim()
         : "",
 
-    // Legacy MCP tool aliases opt-out (issue #1427). Config field wins; then
-    // the REMNIC_/ENGRAM_ env var (gotcha #9); default true for back-compat.
-    // Malformed values fail fast rather than silently defaulting (gotcha #51).
     emitLegacyTools: resolveEmitLegacyTools(cfg.emitLegacyTools, rawOperatorConfig, runtimeSet),
-    // Codex citation parity (issue #379)
     citationsEnabled: cfg.citationsEnabled === true,
     citationsAutoDetect: cfg.citationsAutoDetect !== false,
 
-    // External enrichment pipeline (issue #365)
     enrichmentEnabled: cfg.enrichmentEnabled === true,
     enrichmentAutoOnCreate: cfg.enrichmentAutoOnCreate === true,
     enrichmentMaxCandidatesPerEntity:
@@ -4074,7 +3609,6 @@ export function parseConfig(
         ? Math.max(0, Math.floor(cfg.enrichmentMaxCandidatesPerEntity))
         : 20,
 
-    // Memory extensions discovery (#382)
     memoryExtensionsEnabled: cfg.memoryExtensionsEnabled !== false,
     memoryExtensionsRoot:
       typeof cfg.memoryExtensionsRoot === "string" && cfg.memoryExtensionsRoot.trim().length > 0
@@ -4173,13 +3707,8 @@ function coerceNonNegativeInt(
 }
 
 // -----------------------------------------------------------------------------
-// Issue #563 buffer-surprise knobs — shared clamp helpers
 // -----------------------------------------------------------------------------
 //
-// Each helper takes a post-`coerceNumber` value (number | undefined) and a
-// fallback. This keeps the coercion layer (coerce CLI strings → number) and
-// the range layer (clamp to valid domain) cleanly separated — a common
-// source of post-merge fixes when these were inlined (CLAUDE.md rule #28).
 
 function clampSurpriseThreshold(
   value: number | undefined,
@@ -4256,7 +3785,6 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
   return [
     {
       id: "shared-context",
-      // Already coerced in parseConfig; do not coerce again.
       enabled: cfg.sharedContextEnabled === true,
       maxChars:
         typeof cfg.sharedContextMaxInjectChars === "number"
@@ -4356,17 +3884,7 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
     { id: "verbatim-artifacts", enabled: cfg.verbatimArtifactsEnabled === true },
     {
       id: "procedure-recall",
-      // Default-on since issue #567 PR 4/5: the master `procedural.enabled`
-      // gate now defaults to `true` when the key is omitted, so the recall
-      // pipeline must stay in sync. Explicit `false` (or any coerceBool
-      // falsy variant) still disables recall injection.
       //
-      // CLAUDE.md rule 48 (least-privileged defaults) + Cursor review on #609:
-      // never fail open on unrecognized values. Only `coerced === true` or
-      // the "key omitted" path enables the section. `parseConfig` throws
-      // on invalid values upstream, so this branch only ever sees boolean
-      // results — `coerced === undefined` should never happen in practice,
-      // but defense-in-depth keeps the section disabled if it ever does.
       enabled: (() => {
         const proceduralRaw =
           typeof cfg.procedural === "object" &&
@@ -4522,7 +4040,6 @@ function buildRecallPipelineConfig(cfg: Record<string, unknown>): RecallPipeline
       : 2000;
   const recallBudgetCharsRaw = clampNonNegativeNumber(cfg.recallBudgetChars);
   // Keep four characters per token as Latin-script headroom. Assemblers enforce
-  // maxMemoryTokens with the shared script-aware estimator.
   const recallBudgetChars = recallBudgetCharsRaw ?? maxMemoryTokens * 4;
 
   const rawPipeline = cfg.recallPipeline;

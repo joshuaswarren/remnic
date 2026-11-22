@@ -1,10 +1,3 @@
-// Issue #1539 PR2 — unit tests for the recall pipeline spine module.
-//
-// These tests verify `unifiedDedupeAndRank` produces the correct results for
-// each declared divergence dimension, WITHOUT changing any existing pipeline.
-// PRs 3–6 will migrate each pipeline to call this function; at that point the
-// characterization snapshots (tests/recall-pipeline-unified.test.ts) verify
-// end-to-end byte-for-byte parity.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -103,7 +96,6 @@ test("unifiedDedupeAndRank: rank primary key is always DESC regardless of turnIn
     scoreEvidence: (i) => (i.turnIndex === 2 ? 100 : 1),
     turnIndexSortDirection: "asc",
   });
-  // rank DESC wins over turnIndex ASC: turn 2 (rank 100) comes first despite ASC.
   assert.equal(result[0]?.turnIndex, 2);
   assert.equal(result[1]?.turnIndex, 1);
 });
@@ -173,12 +165,10 @@ test("unifiedDedupeAndRank: undefined turnIndex sorts to the bottom of ASC (MAX 
 });
 
 test("unifiedDedupeAndRank: DESC tertiary tiebreaker is score DESC", () => {
-  // Same rank (all tied via constantScorer) AND same turnIndex → score breaks the tie.
   const items = [
     item(5, "Low score", { score: 10 }),
     item(5, "High score", { score: 90 }), // same turn, deduped by content? No — different content
   ];
-  // Wait — both have turn 5 so same id "s1:5" → second is deduped. Use different sessions.
   const itemsDistinct: EvidencePackItem[] = [
     { id: "s1:5", sessionId: "s1", turnIndex: 5, role: "user", content: "A", score: 10 },
     { id: "s2:5", sessionId: "s2", turnIndex: 5, role: "user", content: "B", score: 90 },
@@ -231,10 +221,6 @@ test("unifiedDedupeAndRank: fallback id uses sessionId:turnIndex when id is abse
 });
 
 test("unifiedDedupeAndRank: dedupByContent false keeps distinct ids with identical content (event-order shape)", () => {
-  // Event-order's rankAndSelectEventOrderItems deduplicates by turn id only and
-  // keeps distinct turns even when two turns share the same cue-appended body.
-  // The spine must express that as a declared config field so PR 6's migration
-  // does not silently drop valid turns (cursor bugbot a4299851).
   const items: EvidencePackItem[] = [
     item(1, "What time is it?", { id: "s1:1" }),
     item(5, "What time is it?", { id: "s1:5" }),
@@ -269,8 +255,6 @@ test("unifiedDedupeAndRank: dedupByContent true (default) still collapses identi
 });
 
 test("unifiedDedupeAndRank: preserveInsertionOrder skips the sort stage (explicit-cue shape)", () => {
-  // Insertion order is turn-index 3, 1, 2. A DESC sort would reorder to 3, 2, 1.
-  // preserveInsertionOrder must keep the original (post-dedup) order: 3, 1, 2.
   const items: EvidencePackItem[] = [
     item(3, "turn ref", { id: "s:3" }),
     item(1, "content cue", { id: "s:1" }),
@@ -304,7 +288,6 @@ test("unifiedDedupeAndRank: preserveInsertionOrder still applies threshold filte
     dedupByContent: false,
     preserveInsertionOrder: true,
   });
-  // threshold drops "weak" (rank 1); insertion order of survivors preserved.
   assert.deepEqual(
     result.map((r) => r.id),
     ["s:1", "s:3"],

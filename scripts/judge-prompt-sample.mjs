@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Prints one realistic extraction-judge request body (messages + max_tokens)
 // for 8 sample candidates, for timing the judge against the router. No network.
-//
 // Run from the repo root:
 //   npx tsx scripts/judge-prompt-sample.mjs
 import { buildJudgeRequest } from "../packages/remnic-core/src/extraction-judge.ts";

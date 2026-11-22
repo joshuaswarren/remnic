@@ -1,6 +1,3 @@
-/**
- * memory-extension-host/index.ts — Public API for memory extension discovery.
- */
 
 export type { DiscoveredExtension, ExtensionSchema } from "./types.js";
 export {

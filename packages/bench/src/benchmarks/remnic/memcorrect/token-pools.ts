@@ -1,11 +1,3 @@
-/**
- * Synthetic token pools for the MemCorrect corpus generator (issue #1584).
- *
- * Shared between `generator.ts` (draws from the pools) and `schema.ts`
- * (asserts every fact token originates from a pool — the no-PII-by-
- * construction guarantee). None of these are real people, products, or
- * places; they are deliberately generic tokens.
- */
 
 export const PERSONAS = [
   "Avery",

@@ -36,7 +36,6 @@ test("runRetrievalGraphBenchmark produces a task per fixture case", async () => 
 test("runRetrievalGraphBenchmark aggregates report graph-on vs graph-off", async () => {
   const result = await runRetrievalGraphBenchmark(buildOptions({ mode: "full" }));
   const agg = result.results.aggregates;
-  // Each metric is a MetricAggregate { mean, median, stdDev, min, max }.
   assert.ok(agg.p_at_3_on && typeof agg.p_at_3_on.mean === "number");
   assert.ok(agg.p_at_3_off && typeof agg.p_at_3_off.mean === "number");
   assert.ok(agg.delta_p_at_3 && typeof agg.delta_p_at_3.mean === "number");
@@ -46,7 +45,6 @@ test("runRetrievalGraphBenchmark aggregates report graph-on vs graph-off", async
 test("runRetrievalGraphBenchmark graph-on beats or ties graph-off on the fixture", async () => {
   const result = await runRetrievalGraphBenchmark(buildOptions({ mode: "full" }));
   const agg = result.results.aggregates;
-  // Primary ship criterion: mean of delta_p_at_3 >= 0.
   assert.ok(
     agg.p_at_3_on.mean >= agg.p_at_3_off.mean,
     `graph-on precision (${agg.p_at_3_on.mean}) regressed below graph-off (${agg.p_at_3_off.mean})`,

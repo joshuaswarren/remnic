@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-// The shim is the legacy alias — identify ourselves as "openclaw-engram" so
-// runCli's resolveRemnicPluginEntry targets plugins.entries["openclaw-engram"]
 // before falling through to the canonical "openclaw-remnic" entry.  This
 // prevents `engram-access` from silently reading/writing the wrong memory
 // store during migration when both blocks exist with no plugins.slots.memory

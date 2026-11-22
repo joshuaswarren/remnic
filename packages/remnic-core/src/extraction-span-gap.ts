@@ -1,8 +1,3 @@
-/**
- * Isolated span-gap helper (issue #2333 leftover).
- *
- * Pure. Extraction wiring waits on the Phase A bench gate.
- */
 
 export function spanGap(
   a: { start: number; end: number },

@@ -1,6 +1,3 @@
-/**
- * PersonaMem-v2 runner migrated into @remnic/bench for phase 1.
- */
 
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";

@@ -1,40 +1,7 @@
-/**
- * CapabilitySet — recall-operation feature gates resolved once, then threaded.
- *
- * Issue #1523 (Phase 1 of epic #1520). Root cause this addresses: 161+
- * scattered `config.<flag>Enabled` reads mean each gate is re-derived at every
- * call site, and reviews keep finding parallel code paths where one branch
- * checks a gate the other forgot (CLAUDE.md rule 39 — the "gate divergence"
- * defect class). The fix is to resolve a frozen capability projection ONCE at
- * the top of the recall operation and pass it down explicitly.
- *
- * Scope of THIS module (first migration PR): only the recall-operation-scoped
- * flags below. Flags that are also read in graph construction, writes, CLI, or
- * the summarizer are deliberately deferred to a follow-up so we never leave a
- * single flag half-migrated (some sites on `caps.`, some on `config.`).
- *
- * Field naming: each field is the config flag name with the trailing `Enabled`
- * removed (`recallMmrEnabled` → `recallMmr`).
- *
- * This is plumbing, not a feature — there is deliberately NO `enabled` gate for
- * the CapabilitySet itself (rule 30 governs behavior changes; resolving and
- * threading a capability projection must stay behavior-preserving).
- *
- * Flag-retirement audit (#1780, 2026-07-08): all projected fields verified for
- * live consumers; dead projections removed.
- */
 
 import type { PluginConfig } from "./types.js";
 import type { InjectionScreenProfile } from "./security/injection-screen.js";
 
-/**
- * Frozen projection of recall-operation feature gates.
- *
- * Every field is `readonly boolean`. The composition that maps a config flag to
- * a capability (including default-when-undefined semantics for optional flags)
- * lives ONLY in {@link resolveCapabilities} — call sites must read the
- * capability, never re-derive it from raw config.
- */
 export interface CapabilitySet {
   /** `rerankCacheEnabled` — cache reranker scores across recall passes. */
   readonly rerankCache: boolean;
@@ -60,7 +27,6 @@ export interface CapabilitySet {
   readonly graphAssistInFullMode: boolean;
   /** `graphExpandedIntentEnabled` — promote broad-intent asks to graph mode. */
   readonly graphExpandedIntent: boolean;
-  // --- Issue #1566 Cluster C: mixed-operation flags (recall + summarizer/CLI/writes) ---
   /** `rerankEnabled` — optional LLM reranking of recall candidates. */
   readonly rerank: boolean;
   /** `harmonicRetrievalEnabled` — abstraction-node harmonic retrieval tier. */
@@ -85,7 +51,6 @@ export function resolveCapabilities(config: PluginConfig): CapabilitySet {
     rerankCache: config.rerankCacheEnabled,
     recallDirectAnswer: config.recallDirectAnswerEnabled,
     recallMemoryWorthFilter: config.recallMemoryWorthFilterEnabled,
-    // Issue #1577: TrustScore subsumes the Memory Worth multiplier when on;
     // the orchestrator runs exactly one of the two (mutual exclusion, rule 39).
     recallTrustScore: config.trustScoreEnabled === true,
     recallMmr: config.recallMmrEnabled,
@@ -94,18 +59,15 @@ export function resolveCapabilities(config: PluginConfig): CapabilitySet {
     recallPlanner: config.recallPlannerEnabled,
     recallConfidenceGate: config.recallConfidenceGateEnabled,
     graphRecall: config.graphRecallEnabled,
-    // Optional flags: preserve the exact default-when-undefined semantics the
     // migrated call sites used (`!== false` = default-on, `=== true` = default-off).
     graphAssistInFullMode: config.graphAssistInFullModeEnabled !== false,
     graphExpandedIntent: config.graphExpandedIntentEnabled === true,
-    // Issue #1566 Cluster C: mixed-operation flags resolved once per recall op.
     rerank: config.rerankEnabled,
     harmonicRetrieval: config.harmonicRetrievalEnabled,
     parallelRetrieval: config.parallelRetrievalEnabled,
   });
 }
 
-// ---------------------------------------------------------------------------
 // Graph-construction capability set (issue #1566 Cluster A).
 //
 // The recall CapabilitySet above covers flags whose EVERY read site lives on
@@ -116,13 +78,6 @@ export function resolveCapabilities(config: PluginConfig): CapabilitySet {
 // build/write entry (and alongside `caps` when recall reads them).
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of graph-construction feature gates.
- *
- * Every field is `readonly boolean`. Composition (including default-when-
- * undefined semantics for the optional `graphWriteSessionAdjacencyEnabled`)
- * lives ONLY in {@link resolveGraphConstructionCapabilities}.
- */
 export interface GraphConstructionCapabilitySet {
   /** `entityGraphEnabled` — maintain entity co-reference graph edges. */
   readonly entityGraph: boolean;
@@ -160,7 +115,6 @@ export function resolveGraphConstructionCapabilities(
     timeGraph: config.timeGraphEnabled,
     causalGraph: config.causalGraphEnabled,
     multiGraphMemory: config.multiGraphMemoryEnabled,
-    // Optional flag: preserve the exact default-when-undefined semantics the
     // migrated call site used (`!== false` = default-on).
     graphWriteSessionAdjacency: config.graphWriteSessionAdjacencyEnabled !== false,
   });
@@ -174,13 +128,6 @@ export function resolveGraphConstructionCapabilities(
 // doctor check) rather than re-derived from raw config at each site.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of access-setup feature gates (issue #1566 Cluster B).
- *
- * Every field is `readonly boolean`. Composition (including the default-off
- * semantics for the optional `recallAuditAnomalyDetectionEnabled`) lives ONLY
- * in {@link resolveAccessSetupCapabilities}.
- */
 export interface AccessSetupCapabilitySet {
   /** `recallCrossNamespaceBudgetEnabled` — rolling cross-namespace recall budget. */
   readonly recallCrossNamespaceBudget: boolean;
@@ -201,7 +148,6 @@ export function resolveAccessSetupCapabilities(
 ): AccessSetupCapabilitySet {
   return Object.freeze({
     recallCrossNamespaceBudget: config.recallCrossNamespaceBudgetEnabled,
-    // Optional/default-off flag: preserve `=== true` semantics.
     recallAuditAnomalyDetection: config.recallAuditAnomalyDetectionEnabled === true,
     recallSingleFlight: config.recallSingleFlightEnabled === true,
   });
@@ -224,12 +170,6 @@ export function resolveAccessSetupCapabilities(
 // pure projection — no `!== false` / `=== true` re-coercion here.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of memory-lifecycle feature gates (issue #1523 batch 3).
- *
- * Resolved once per write / recall-filter / maintenance operation and threaded
- * down. Composition lives ONLY in {@link resolveMemoryLifecycleCapabilities}.
- */
 export interface MemoryLifecycleCapabilitySet {
   /** `temporalSupersessionEnabled` — supersede stale structured facts on write, filter on recall. */
   readonly temporalSupersession: boolean;
@@ -258,9 +198,6 @@ export interface MemoryLifecycleCapabilitySet {
   readonly projectionRebuild: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveMemoryLifecycleCapabilities}.
- */
 export type MemoryLifecycleConfigProjection = Pick<
   PluginConfig,
   | "temporalSupersessionEnabled"
@@ -318,12 +255,6 @@ export function resolveMemoryLifecycleCapabilities(
 // applied at the parse boundary), so the resolver is a pure projection.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of indexing feature gates (issue #1523 batch 4).
- *
- * Resolved once per recall / extraction / maintenance operation and threaded
- * down. Composition lives ONLY in {@link resolveIndexingCapabilities}.
- */
 export interface IndexingCapabilitySet {
   /** `queryAwareIndexingEnabled` — build + use temporal/tag index for recall prefilter. */
   readonly queryAwareIndexing: boolean;
@@ -331,9 +262,6 @@ export interface IndexingCapabilitySet {
   readonly conversationIndex: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveIndexingCapabilities}.
- */
 export type IndexingConfigProjection = Pick<
   PluginConfig,
   "queryAwareIndexingEnabled" | "conversationIndexEnabled"
@@ -368,13 +296,6 @@ export function resolveIndexingCapabilities(
 // applied at the parse boundary), so the resolver is a pure projection.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of creation-memory feature gates (issue #1523 batch 4).
- *
- * Resolved once per creation-memory operation (CLI command, extraction,
- * recall enrichment) and threaded down. Composition lives ONLY in
- * {@link resolveCreationMemoryCapabilities}.
- */
 export interface CreationMemoryCapabilitySet {
   /** `creationMemoryEnabled` — master switch for creation-memory subsystem. */
   readonly creationMemory: boolean;
@@ -386,9 +307,6 @@ export interface CreationMemoryCapabilitySet {
   readonly commitmentLifecycle: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveCreationMemoryCapabilities}.
- */
 export type CreationMemoryConfigProjection = Pick<
   PluginConfig,
   | "creationMemoryEnabled"
@@ -428,20 +346,11 @@ export function resolveCreationMemoryCapabilities(
 // The field is a non-optional boolean in PluginConfig, so no coercion is needed.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of namespace feature gates (issue #1523 batch 5).
- *
- * Every field is `readonly boolean`. Composition lives ONLY in
- * {@link resolveNamespaceCapabilities}.
- */
 export interface NamespaceCapabilitySet {
   /** `namespacesEnabled` — multi-namespace system master switch. */
   readonly namespaces: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveNamespaceCapabilities}.
- */
 export type NamespaceConfigProjection = Pick<PluginConfig, "namespacesEnabled">;
 
 /**
@@ -470,12 +379,6 @@ export function resolveNamespaceCapabilities(
 // resolved at the parse boundary), so the projection is pure pass-through.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of QMD feature gates (issue #1523 batch 6).
- *
- * Every field is `readonly boolean`. Composition lives ONLY in
- * {@link resolveQmdCapabilities}.
- */
 export interface QmdCapabilitySet {
   /** `qmdEnabled` — QMD tiered-memory master switch. */
   readonly qmd: boolean;
@@ -503,9 +406,6 @@ export interface QmdCapabilitySet {
   readonly qmdAutoUpgrade: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveQmdCapabilities}.
- */
 export type QmdConfigProjection = Pick<
   PluginConfig,
   | "qmdEnabled"
@@ -555,17 +455,11 @@ export function resolveQmdCapabilities(config: QmdConfigProjection): QmdCapabili
 // on PluginConfig, so the projection is a pure pass-through.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of identity-continuity feature gates (issue #1523 batch 6).
- */
 export interface IdentityContinuityCapabilitySet {
   /** `identityContinuityEnabled` — identity-continuity master switch. */
   readonly identityContinuity: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveIdentityContinuityCapabilities}.
- */
 export type IdentityContinuityConfigProjection = Pick<PluginConfig, "identityContinuityEnabled">;
 
 /**
@@ -588,17 +482,11 @@ export function resolveIdentityContinuityCapabilities(
 // search/embed-helper, and summarizer. The flag is a non-optional boolean.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of local-LLM feature gates (issue #1523 batch 6).
- */
 export interface LocalLlmCapabilitySet {
   /** `localLlmEnabled` — local (on-device) LLM master switch. */
   readonly localLlm: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveLocalLlmCapabilities}.
- */
 export type LocalLlmConfigProjection = Pick<PluginConfig, "localLlmEnabled">;
 
 /**
@@ -621,9 +509,6 @@ export function resolveLocalLlmCapabilities(
 // boundary), so the projection is a pure pass-through.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of security/trust-zone feature gates (issue #1523 batch 7).
- */
 export interface SecurityCapabilitySet {
   /** `trustZonesEnabled` — master switch for trust-zone enforcement. */
   readonly trustZones: boolean;
@@ -641,7 +526,6 @@ export interface SecurityCapabilitySet {
   readonly trustZoneRecall: boolean;
 }
 
-/** Config projection consumed by {@link resolveSecurityCapabilities}. */
 export type SecurityConfigProjection = Pick<PluginConfig,
   | "trustZonesEnabled" | "quarantinePromotionEnabled" | "memoryPoisoningDefenseEnabled"
   | "originAuthorityEnabled" | "injectionScreenEnabled" | "injectionScreenProfile" | "trustZoneRecallEnabled">;
@@ -668,9 +552,6 @@ export function resolveSecurityCapabilities(config: SecurityConfigProjection): S
 // non-optional booleans on PluginConfig.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of eval/benchmark feature gates (issue #1523 batch 7).
- */
 export interface EvalCapabilitySet {
   /** `evalHarnessEnabled` — master switch for the eval harness. */
   readonly evalHarness: boolean;
@@ -684,9 +565,6 @@ export interface EvalCapabilitySet {
   readonly memoryRedTeamBench: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveEvalCapabilities}.
- */
 export type EvalConfigProjection = Pick<
   PluginConfig,
   "evalHarnessEnabled" | "evalShadowModeEnabled" | "benchmarkBaselineSnapshotsEnabled" | "benchmarkDeltaReporterEnabled" | "memoryRedTeamBenchEnabled"
@@ -713,9 +591,6 @@ export function resolveEvalCapabilities(config: EvalConfigProjection): EvalCapab
 // commands, and maintenance files. Both flags are non-optional booleans.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of utility-learning feature gates (issue #1523 batch 7).
- */
 export interface UtilityLearningCapabilitySet {
   /** `memoryUtilityLearningEnabled` — learn memory utility weights from outcomes. */
   readonly memoryUtilityLearning: boolean;
@@ -723,9 +598,6 @@ export interface UtilityLearningCapabilitySet {
   readonly promotionByOutcome: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveUtilityLearningCapabilities}.
- */
 export type UtilityLearningConfigProjection = Pick<
   PluginConfig,
   "memoryUtilityLearningEnabled" | "promotionByOutcomeEnabled"
@@ -750,9 +622,6 @@ export function resolveUtilityLearningCapabilities(config: UtilityLearningConfig
 // non-optional booleans.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of objective-state feature gates (issue #1523 batch 7).
- */
 export interface ObjectiveStateCapabilitySet {
   /** `objectiveStateMemoryEnabled` — store objective-state memories. */
   readonly objectiveStateMemory: boolean;
@@ -762,9 +631,6 @@ export interface ObjectiveStateCapabilitySet {
   readonly objectiveStateRecall: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveObjectiveStateCapabilities}.
- */
 export type ObjectiveStateConfigProjection = Pick<
   PluginConfig,
   "objectiveStateMemoryEnabled" | "objectiveStateSnapshotWritesEnabled" | "objectiveStateRecallEnabled"
@@ -790,9 +656,6 @@ export function resolveObjectiveStateCapabilities(config: ObjectiveStateConfigPr
 // non-optional booleans.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of compression feature gates (issue #1523 batch 7).
- */
 export interface CompressionCapabilitySet {
   /** `compressionGuidelineLearningEnabled` — learn compression guidelines. */
   readonly compressionGuidelineLearning: boolean;
@@ -802,9 +665,6 @@ export interface CompressionCapabilitySet {
   readonly contextCompressionActions: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveCompressionCapabilities}.
- */
 export type CompressionConfigProjection = Pick<
   PluginConfig,
   "compressionGuidelineLearningEnabled" | "compressionGuidelineSemanticRefinementEnabled" | "contextCompressionActionsEnabled"
@@ -831,9 +691,6 @@ export function resolveCompressionCapabilities(config: CompressionConfigProjecti
 // the parse boundary), so the projection is a pure pass-through.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of output formatting and presentation feature gates (issue #1523 batch 8).
- */
 export interface PresentationCapabilitySet {
   /** `verbatimArtifactsEnabled` — verbatim-artifact rendering in recall output. */
   readonly verbatimArtifacts: boolean;
@@ -851,9 +708,6 @@ export interface PresentationCapabilitySet {
   readonly entitySummary: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolvePresentationCapabilities}.
- */
 export type PresentationConfigProjection = Pick<
   PluginConfig,
   "verbatimArtifactsEnabled" |
@@ -890,9 +744,6 @@ export function resolvePresentationCapabilities(config: PresentationConfigProjec
 // the parse boundary), so the projection is a pure pass-through.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of memory consolidation, compounding, and abstraction feature gates (issue #1523 batch 8).
- */
 export interface ConsolidationCapabilitySet {
   /** `compoundingSemanticEnabled` — semantic compounding of memories. */
   readonly compoundingSemantic: boolean;
@@ -912,9 +763,6 @@ export interface ConsolidationCapabilitySet {
   readonly graphEdgeDecay: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveConsolidationCapabilities}.
- */
 export type ConsolidationConfigProjection = Pick<
   PluginConfig,
   "compoundingSemanticEnabled" |
@@ -953,9 +801,6 @@ export function resolveConsolidationCapabilities(config: ConsolidationConfigProj
 // the parse boundary), so the projection is a pure pass-through.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of extraction pipeline details and auxiliary recall enrichment feature gates (issue #1523 batch 8).
- */
 export interface RecallAuxiliaryCapabilitySet {
   /** `causalRuleExtractionEnabled` — causal-rule extraction in pipeline. */
   readonly causalRuleExtraction: boolean;
@@ -987,9 +832,6 @@ export interface RecallAuxiliaryCapabilitySet {
   readonly cronRecallPolicy: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveRecallAuxiliaryCapabilities}.
- */
 export type RecallAuxiliaryConfigProjection = Pick<
   PluginConfig,
   "causalRuleExtractionEnabled" |
@@ -1036,9 +878,6 @@ export function resolveRecallAuxiliaryCapabilities(config: RecallAuxiliaryConfig
 // (defaults resolved at parse), so the projection is a pure pass-through.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of recall-enhancement feature gates (issue #1523 batch 9).
- */
 export interface RecallEnhancementCapabilitySet {
   readonly explicitCueRecall: boolean;
   readonly targetedFactRecall: boolean;
@@ -1066,9 +905,6 @@ export interface RecallEnhancementCapabilitySet {
   readonly identity: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveRecallEnhancementCapabilities}.
- */
 export type RecallEnhancementConfigProjection = Pick<
   PluginConfig,
   | "explicitCueRecallEnabled"
@@ -1136,9 +972,6 @@ export function resolveRecallEnhancementCapabilities(config: RecallEnhancementCo
 // semantic-consolidation. Defaults resolve at parse boundary, so pure pass-through.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of pipeline-processing feature gates (issue #1523 batch 9).
- */
 export interface PipelineProcessingCapabilitySet {
   readonly chunking: boolean;
   readonly semanticChunking: boolean;
@@ -1164,9 +997,6 @@ export interface PipelineProcessingCapabilitySet {
   readonly hourlySummariesExtended: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolvePipelineProcessingCapabilities}.
- */
 export type PipelineProcessingConfigProjection = Pick<
   PluginConfig,
   | "chunkingEnabled"
@@ -1235,9 +1065,6 @@ export function resolvePipelineProcessingCapabilities(config: PipelineProcessing
 // boundary), so the projection is a pure pass-through.
 // ---------------------------------------------------------------------------
 
-/**
- * Frozen projection of conversation/context feature gates (issue #1523 batch 9).
- */
 export interface ConversationContextCapabilitySet {
   readonly sharedContext: boolean;
   readonly intentRouting: boolean;
@@ -1252,9 +1079,6 @@ export interface ConversationContextCapabilitySet {
   readonly codexMarketplace: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveConversationContextCapabilities}.
- */
 export type ConversationContextConfigProjection = Pick<
   PluginConfig,
   | "sharedContextEnabled"

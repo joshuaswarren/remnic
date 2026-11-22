@@ -1,16 +1,3 @@
-/**
- * Issue #1575 PR 3 — Claim-level provenance surfaces: X-ray rendering +
- * `remnic doctor` coverage distribution.
- *
- * PR 1 (types + storage round-trip) and PR 2 (extraction validator) are
- * covered by provenance-frontmatter.test.ts and provenance-extraction.test.ts.
- * This file pins the READ surfaces that operators and downstream features
- * (#1576 faithfulness, #1577 TrustScore, #1580 correction) consume:
- *
- *   - X-ray text/markdown rows render the first quote + observedAt.
- *   - cloneResult deep-copies sourceSpan so getLastXraySnapshot is independent.
- *   - `remnic doctor` reports the verified/unverified/none distribution.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -19,7 +6,6 @@ import type { RecallXraySnapshot, RecallXrayResult } from "./recall-xray.js";
 import { buildXraySnapshot } from "./recall-xray.js";
 import { renderXrayText, renderXrayMarkdown } from "./recall-xray-renderer.js";
 
-// ─── X-ray rendering fixtures ────────────────────────────────────────────
 
 function resultWithSourceSpan(): RecallXrayResult {
   return {
@@ -52,7 +38,6 @@ function snapshotWithSourceSpan(): RecallXraySnapshot {
   };
 }
 
-// ─── X-ray text rendering ─────────────────────────────────────────────────
 
 test("renderXrayText: sourceSpan renders quote + observedAt + provenance tag", () => {
   const text = renderXrayText(snapshotWithSourceSpan());
@@ -106,11 +91,9 @@ test("renderXrayText: long quote is truncated to ~120 chars with ellipsis", () =
     budget: { chars: 4096, used: 0 },
   });
   const text = renderXrayText(snap);
-  // The truncated quote should end with an ellipsis and be well under 300 chars
   const sourceLine = text.split("\n").find((l) => l.includes("source:"));
   assert.ok(sourceLine, "source line present");
   assert.match(sourceLine!, /\u2026|…/, "truncated with ellipsis marker");
-  // The quote between the first and second double-quotes
   const match = sourceLine!.match(/source: "(.*)" \(observed/);
   assert.ok(match);
   assert.ok(
@@ -119,7 +102,6 @@ test("renderXrayText: long quote is truncated to ~120 chars with ellipsis", () =
   );
 });
 
-// ─── X-ray markdown rendering ─────────────────────────────────────────────
 
 test("renderXrayText: quote with newlines is collapsed to a single line", () => {
   const snap = buildXraySnapshot({
@@ -145,7 +127,6 @@ test("renderXrayText: quote with newlines is collapsed to a single line", () => 
   const text = renderXrayText(snap);
   const sourceLine = text.split("\n").find((l) => l.includes("source:"));
   assert.ok(sourceLine);
-  // Newlines must be collapsed to spaces — the source line must be a single line
   assert.match(sourceLine!, /line one line two line three/);
   assert.doesNotMatch(sourceLine!, /\n|\r/);
 });
@@ -179,7 +160,6 @@ test("renderXrayMarkdown: absent sourceSpan produces no Source line", () => {
   assert.doesNotMatch(md, /\*\*Source:\*\*/, "no Source line for legacy memory");
 });
 
-// ─── cloneResult preserves sourceSpan ─────────────────────────────────────
 
 test("buildXraySnapshot deep-copies sourceSpan (independent of caller object)", () => {
   const original = resultWithSourceSpan();
@@ -190,7 +170,6 @@ test("buildXraySnapshot deep-copies sourceSpan (independent of caller object)", 
     filters: [],
     budget: { chars: 4096, used: 0 },
   });
-  // Mutate the original — the snapshot must be unaffected
   original.sourceSpan!.quote = "MUTATED";
   assert.equal(
     snap.results[0]!.sourceSpan!.quote,
@@ -199,12 +178,7 @@ test("buildXraySnapshot deep-copies sourceSpan (independent of caller object)", 
   );
 });
 
-// ─── `remnic doctor` provenance coverage (pure helper) ────────────────────
 //
-// `runOperatorDoctor` calls `summarizeProvenanceCoverage` (a pure function)
-// to build the verified/unverified/none distribution. Testing the helper
-// directly avoids coupling to the full orchestrator mock while still pinning
-// the counting contract the doctor check relies on.
 
 import { summarizeProvenanceCoverage } from "./operator-toolkit.js";
 

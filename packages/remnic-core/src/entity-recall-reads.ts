@@ -32,7 +32,6 @@ export async function readNativeChunks(
     defaultNamespace: config.defaultNamespace,
     abortSignal,
   }).catch((err) => {
-    // Cancellation is the caller giving up (issue #2291); degrade only genuine
     // read/sync failures, never a cancellation.
     if (isAbortError(err)) throw err;
     return [];

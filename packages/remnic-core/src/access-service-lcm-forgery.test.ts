@@ -189,7 +189,6 @@ test("#1495 P1 FORGERY BLOCKED: a default-only caller cannot read another tenant
   const probe = makeForgeryProbe(twoTenantConfig());
   const service = new EngramAccessService(probe.orch);
 
-  // VICTIM (alice) archives a project-scoped turn under her overlay namespace.
   const victimRes = await service.observe(
     observeRequest({
       sessionKey: "alice:s1",
@@ -202,16 +201,11 @@ test("#1495 P1 FORGERY BLOCKED: a default-only caller cannot read another tenant
     victimOverlayNs && victimOverlayNs.startsWith("alice-"),
     `victim must archive under her overlay namespace, got ${String(victimOverlayNs)}`,
   );
-  // Sanity: the victim's own rows are reachable by an exact match on her write key.
   assert.ok(
     probe.rows.some((r) => r.session_id === victimWriteKey),
     "victim rows must be present in the shared archive",
   );
 
-  // ATTACKER (mallory, default-only) forges a raw sessionKey EQUAL to the victim's
-  // overlay write key string. Under the OLD encoding the default-store read path
-  // returned this raw key unchanged, producing an exact session_id match on the
-  // victim's rows.
   const forgedSessionKey = victimWriteKey; // e.g. "alice-project-...:alice:s1"
   const res = await service.lcmSearch({
     query: "secret deploy key",
@@ -240,12 +234,6 @@ test("#1495 P1 FORGERY BLOCKED: a default-only caller cannot read another tenant
   const victimOverlayNs = victimRes.effectiveNamespace!;
   assert.ok(victimOverlayNs.startsWith("alice-"));
 
-  // ATTACKER forges a sessionPrefix that, under the old encoding, LIKE-matched all
-  // of the victim's overlay rows: "<victim-overlay-ns>:". With NO sessionKey the
-  // exact `session_id` filter is absent and the `sessionPrefix` LIKE applies; the
-  // default-store read path passed the prefix through unchanged. (Supplying a
-  // sessionKey would make the archive use the exact `session_id` filter instead,
-  // so the prefix-only form is the true LIKE vector.)
   const res = await service.lcmSearch({
     query: "secret deploy key",
     sessionPrefix: `${victimOverlayNs}:`,
@@ -266,13 +254,10 @@ test("#1495 P1 LEGITIMATE ACCESS PRESERVED: the victim still reads its OWN overl
   const probe = makeForgeryProbe(twoTenantConfig());
   const service = new EngramAccessService(probe.orch);
 
-  // alice archives under her overlay AND binds the coding context to her session.
   await service.observe(
     observeRequest({ sessionKey: "alice:s1", projectTag: "Acme/Webshop" }),
   );
 
-  // A same-session lcmSearch by alice (no explicit namespace) must reach her rows:
-  // the read resolves the SAME overlay key the write used.
   const res = await service.lcmSearch({
     query: "secret deploy key",
     sessionKey: "alice:s1",
@@ -288,8 +273,6 @@ test("#1495 P1 LEGITIMATE ACCESS PRESERVED: the victim still reads its OWN overl
 });
 
 test("#1495 P1 LEGITIMATE ACCESS PRESERVED: a session key that legitimately contains ':' still reads its own rows (single store, no overlay)", async () => {
-  // Single-user / no-overlay deployment: the raw sessionKey is used verbatim as
-  // the LCM key, including embedded ':'. The owner must still read its own rows.
   const probe = makeForgeryProbe({
     namespacesEnabled: false,
   } as Partial<PluginConfig>);
@@ -298,7 +281,6 @@ test("#1495 P1 LEGITIMATE ACCESS PRESERVED: a session key that legitimately cont
   await service.observe(
     observeRequest({ sessionKey: "agent:proj:sess-1", skipExtraction: true }),
   );
-  // No overlay ⇒ raw key archived verbatim.
   assert.equal(probe.rows[0]!.session_id, "agent:proj:sess-1");
 
   const res = await service.lcmSearch({
@@ -314,29 +296,16 @@ test("#1495 P1 LEGITIMATE ACCESS PRESERVED: a session key that legitimately cont
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// #1505 codex P1 (round 2): a SESSIONLESS + prefixless `lcmSearch` issues
-// `searchContextFull(query, limit, undefined, undefined)` — an archive-wide FTS
-// scan over EVERY `session_id`, including sentinel-framed overlay rows. The
-// archive is keyed by `session_id`, NOT partitioned by namespace, so an
-// unscoped scan cannot be constrained to the caller's authorized namespace.
-// When namespaces are ENABLED it must therefore be SUPPRESSED regardless of an
-// explicit `namespace` or default-readability; only single-store (namespaces
-// disabled) keeps the legitimate archive-wide scan.
-// ──────────────────────────────────────────────────────────────────────────
 
 test("#1505 codex P1 r2 FORGERY BLOCKED: explicit-namespace + sessionless lcmSearch does NOT archive-scan another tenant's overlay rows", async () => {
   const probe = makeForgeryProbe(twoTenantConfig());
   const service = new EngramAccessService(probe.orch);
 
-  // VICTIM archives overlay rows.
   const victimRes = await service.observe(
     observeRequest({ sessionKey: "alice:s1", projectTag: "Acme/Webshop" }),
   );
   assert.ok(victimRes.effectiveNamespace!.startsWith("alice-"));
 
-  // ATTACKER reads an explicit namespace they ARE authorized for (`default`),
-  // with NO sessionKey/sessionPrefix. The underlying search would be an
-  // archive-wide scan (no session_id filter), exposing alice's overlay rows.
   const res = await service.lcmSearch({
     query: "secret deploy key",
     namespace: "default",
@@ -365,8 +334,6 @@ test("#1505 codex P1 r2 FORGERY BLOCKED: default-readable implicit + sessionless
   );
   assert.ok(victimRes.effectiveNamespace!.startsWith("alice-"));
 
-  // ATTACKER (default-readable) with NO sessionKey/namespace/sessionPrefix. The
-  // pre-fix guard allowed this through to an archive-wide scan.
   const res = await service.lcmSearch({
     query: "secret deploy key",
     authenticatedPrincipal: "default",
@@ -390,8 +357,6 @@ test("#1505 codex P1 r2 regression: single-store (namespaces disabled) + session
   } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
 
-  // Single-store: one shared archive owned by the caller. Seed a row, then a
-  // sessionless search must still scan it.
   await service.observe(
     observeRequest({ sessionKey: "owner-sess", skipExtraction: true }),
   );

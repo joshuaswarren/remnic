@@ -97,7 +97,6 @@ test("expired token refreshes under the lock and rotates the file", async () => 
   assert.equal(persisted.access_token, "rotated");
   assert.equal(persisted.refresh_token, "rotated-refresh");
   assert.equal(persisted.note_from_other_tool, "keep me");
-  // Lock released after refresh.
   await assert.rejects(readFile(`${file}.lock`));
 });
 
@@ -108,7 +107,6 @@ test("concurrent owner: waits and adopts the rotated pair instead of double-refr
     file,
     JSON.stringify({ access_token: "expired", refresh_token: "chain", expires_at: Date.now() - 1 })
   );
-  // Simulate the other owner's lock: fresh mtime, removed after a few polls.
   const lockPath = `${file}.lock`;
   await writeFile(lockPath, "other-pid\n");
   let polls = 0;
@@ -164,7 +162,6 @@ test("a stale lock is stolen and the refresh proceeds", async () => {
   await writeFile(file, JSON.stringify({ access_token: "x", refresh_token: "r", expires_at: Date.now() - 1 }));
   const lockPath = `${file}.lock`;
   await writeFile(lockPath, "dead-pid\n");
-  // Age the lock past the stale threshold.
   const stale = new Date(Date.now() - 120_000);
   await utimes(lockPath, stale, stale);
   const { store } = makeStore(file);

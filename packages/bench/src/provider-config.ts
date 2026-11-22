@@ -1,31 +1,3 @@
-/**
- * Canonical runtime validation for persisted `ProviderConfig` values
- * (issue #2895).
- *
- * Both artifact surfaces share this one validator instead of each keeping a
- * partial clone: the legacy compatibility adapter
- * (`legacy-artifact.ts:optionalProviderConfig`) rejects malformed optional
- * fields with the exact field path before casting, and the canonical
- * re-validation (`results-store.ts:isProviderConfigLike`) accepts only
- * complete, well-typed provider configs.
- *
- * Semantics are pinned to the canonical producers/consumers of each field,
- * not invented here:
- * - `provider`/`reasoningEffort`: the unions in `types.ts`.
- * - `retryOptions`: `normalizeRetryFetchOptions` in
- *   `providers/retry-fetch.ts` (positive-integer attempts, finite
- *   non-negative durations, boolean retryOnTimeout).
- * - `providerRequestTimeoutMs`: the `--request-timeout` parse and
- *   `assertPositiveTimeout` (positive integer).
- * - `responderContextBudgetChars`/`responderPromptBudgetChars`: the
- *   `--system-responder-*-budget-chars` parse (positive integer).
- * - `temperature`: finite non-negative sampling temperature.
- * - `seed`: the `--seed` parse (non-negative integer).
- *
- * Truly absent optional fields stay absent; only present-but-malformed
- * values reject. Unknown keys pass through unvalidated, matching the JSON
- * schema contract (`schema.ts` sets no `additionalProperties: false`).
- */
 import type { ProviderConfig } from "./types.js";
 
 const BUILT_IN_PROVIDERS = [
@@ -40,7 +12,6 @@ const BUILT_IN_PROVIDERS = [
 
 const BENCH_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 
-/** `"a", "b", or "c"` list for enum requirement messages. */
 function quotedList(values: readonly string[]): string {
   const quoted = values.map((value) => `"${value}"`);
   return quoted.length <= 1
@@ -51,12 +22,6 @@ function quotedList(values: readonly string[]): string {
 const PROVIDER_ENUM_LIST = quotedList(BUILT_IN_PROVIDERS);
 const REASONING_EFFORT_LIST = quotedList(BENCH_REASONING_EFFORTS);
 
-/**
- * Every `ProviderConfig` key this validator checks, derived from this
- * marker object. `satisfies Record<keyof ProviderConfig, true>` makes the
- * list exhaustive at compile time: adding a field to `ProviderConfig`
- * without adding it here (and a validation branch for it) fails the build.
- */
 const PROVIDER_CONFIG_FIELD_MARKERS = {
   provider: true,
   model: true,
@@ -99,7 +64,6 @@ function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
-/** Present key passes `accept`, absent key is fine; present-but-invalid is the issue. */
 function checkOptional(
   container: JsonRecord,
   key: string,

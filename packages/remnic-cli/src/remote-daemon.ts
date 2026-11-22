@@ -505,7 +505,6 @@ export async function remoteRecallWhy(
   if (request.namespace !== undefined && request.namespace.length > 0) {
     params.set("namespace", request.namespace);
   }
-  // `--session` must reach the daemon: dropping it here would diagnose a
   // different session scope than the caller asked about, silently.
   if (request.sessionKey !== undefined && request.sessionKey.length > 0) {
     params.set("session", request.sessionKey);

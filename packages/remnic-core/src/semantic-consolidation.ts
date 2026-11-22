@@ -57,9 +57,6 @@ export interface SemanticConsolidationResult {
   clusters: ConsolidationCluster[];
 }
 
-/**
- * Find clusters of semantically similar memories using token overlap.
- */
 export function findSimilarClusters(
   memories: MemoryFile[],
   config: {
@@ -71,7 +68,6 @@ export function findSimilarClusters(
 ): ConsolidationCluster[] {
   const excluded = new Set(config.excludeCategories);
 
-  // Group by category first
   const byCategory = new Map<string, MemoryFile[]>();
   for (const m of memories) {
     const cat = m.frontmatter.category;
@@ -88,13 +84,11 @@ export function findSimilarClusters(
   for (const [category, mems] of byCategory) {
     if (totalCandidates >= config.maxPerRun) break;
 
-    // Token-normalize all memories in this category
     const tokenized = mems.map((m) => ({
       memory: m,
       tokens: new Set(normalizeRecallTokens(m.content, [])),
     }));
 
-    // Track which memories are already clustered
     const clustered = new Set<string>();
 
     for (let i = 0; i < tokenized.length && totalCandidates < config.maxPerRun; i++) {
@@ -113,7 +107,6 @@ export function findSimilarClusters(
         const bTokens = tokenized[j].tokens;
         if (aTokens.size === 0 || bTokens.size === 0) continue;
 
-        // Bidirectional overlap: what fraction of tokens are shared
         const overlap = countRecallTokenOverlap(aTokens, [...bTokens].join(" "));
         const maxTokens = Math.max(aTokens.size, bTokens.size);
         const score = maxTokens > 0 ? overlap / maxTokens : 0;
@@ -140,9 +133,6 @@ export function findSimilarClusters(
   return clusters;
 }
 
-/**
- * Build the LLM prompt for synthesizing a canonical memory from a cluster.
- */
 export function buildConsolidationPrompt(cluster: ConsolidationCluster): string {
   const memoryTexts = cluster.memories
     .map(
@@ -165,9 +155,6 @@ ${memoryTexts}
 Write ONLY the consolidated memory content (no metadata, no explanation, no preamble):`;
 }
 
-/**
- * Parse the LLM response to extract the canonical content.
- */
 export function parseConsolidationResponse(response: string): string {
   return response.trim();
 }
@@ -291,7 +278,6 @@ export function parseOperatorAwareConsolidationResponse(
   const trimmed = response.trim();
   if (trimmed.length === 0) return fallback;
 
-  // Strip a fenced code block if present.
   // Dropped the \s* groups around the lazy body (they overlapped it and
   // backtracked polynomially — CodeQL js/polynomial-redos). Input is already
   // trimmed and fenced[1] is trimmed below, so matches are identical.
@@ -406,10 +392,6 @@ function findLastJsonObjectWithOperator(text: string): unknown {
 // above in chooseConsolidationOperator + parse helpers.
 void _CONSOLIDATION_OPERATORS;
 
-/**
- * Discover extensions and build the block to append to a consolidation prompt.
- * Returns "" when extensions are disabled or none are found.
- */
 export async function buildExtensionsBlockForConsolidation(
   config: PluginConfig,
 ): Promise<string> {
@@ -438,7 +420,6 @@ export async function materializeAfterSemanticConsolidation(options: {
   rolloutSummaries?: RolloutSummaryInput[];
   now?: Date;
 }): Promise<MaterializeResult | null> {
-  // Delegates to the shared post-consolidation helper so semantic and causal
   // flows stay in lock-step — any guard/logging change happens in one place.
   return runPostConsolidationMaterialize("[semantic-consolidation]", options);
 }

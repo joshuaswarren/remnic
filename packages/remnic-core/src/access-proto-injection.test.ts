@@ -1,16 +1,3 @@
-/**
- * Request-local prototype injection and post-parse namespace authorization
- * (issue #3225 B1).
- *
- * A JSON body can carry an own `__proto__` member (JSON.parse defines it as a
- * real own property). The null-strip preprocessors used to copy that member
- * into a plain `{}` accumulator, whose setter switched the accumulator's
- * prototype, so an inherited `namespace` became an ordinary parsed field
- * AFTER the transports had authorized the raw arguments. These tests drive
- * the real registered boundary operations with JSON-decoded input and assert
- * that reserved keys are rejected and that a parsed explicit namespace still
- * passes the token namespace allow-list before the handler runs.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -32,7 +19,6 @@ import "./access-operations-batch.js";
 import "./recall-navigation-operations.js";
 
 function makeService(handlers: Partial<EngramAccessService>): EngramAccessService {
-  // SAFETY: the operations under test dispatch only through the handlers supplied here.
   return handlers as EngramAccessService;
 }
 
@@ -286,9 +272,6 @@ test("an allowed explicit namespace reaches the memory_expand handler", async ()
 });
 
 test("own __proto__ member cannot smuggle a namespace through the wire request parse", () => {
-  // validateRequest is the shared entry the HTTP REST body reader
-  // (readValidatedBody) and the MCP wire-schema parse (parseMcpRequest) run.
-  // A reserved key returns the documented validation failure, not a throw.
   const recallExploit = JSON.parse('{"__proto__":{"namespace":"other"},"query":"hello"}');
   const recallResult = validateRequest<RecallRequest>("recall", recallExploit);
   assert.equal(recallResult.success, false);

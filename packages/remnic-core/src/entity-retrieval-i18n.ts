@@ -18,17 +18,11 @@ import { normalizeEntityText } from "./entity-schema.js";
 
 export type EntityQueryMode = "direct" | "timeline" | "follow_up";
 
-/** Shared short-question bound. Whitespace tokens are a poor length proxy
- * for unspaced scripts, so bound graphemes too (48 graphemes ≈ 8 words). */
 const FOLLOW_UP_MAX_TOKENS = 8;
 const FOLLOW_UP_MAX_GRAPHEMES = 48;
 
-/** Latin letters mark a script with explicit pronouns; structural fallback
- * never applies there (English "what does this error mean?" and its
- * relatives keep the technical-question guard in detectEntityQueryMode). */
 const LATIN_LETTER_RE = /\p{Script=Latin}/u;
 
- /** Latin / question marks: ASCII `?`, fullwidth `？` (CJK), Arabic `؟`. */
  const QUESTION_MARK_RE = /[?？؟]/;
 
 /**
@@ -37,28 +31,18 @@ const LATIN_LETTER_RE = /\p{Script=Latin}/u;
  * so `él` never matches `el` and `il` never matches `famille`.
  */
 const FOLLOW_UP_CONTAINS_CUES = [
-  // ja
   "彼", "彼女", "あの人", "その人", "それで", "ちなみに",
-  // zh (simplified + traditional)
   "他", "她", "它", "他们", "她们", "他們", "她們", "然后呢", "然後呢",
-  // ko
   "그녀", "그 사람", "걔",
 ] as const;
 
 const FOLLOW_UP_WORD_CUES = [
-  // es
   "él", "ella", "ellos", "ellas",
-  // fr
   "elle", "eux",
-  // de
   "sie",
-  // pt
   "ele", "ela",
-  // it
   "lui", "lei",
-  // ru
   "он", "она", "они",
-  // ar
   "هو", "هي", "هم",
 ] as const;
 

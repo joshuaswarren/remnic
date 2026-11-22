@@ -556,7 +556,6 @@ export async function applySessionRepair(
         continue;
       }
       if (action.kind === "repair_session_files") {
-        // intentionally no-op; pointer/session rewiring is explicitly forbidden here.
         actionsApplied += 1;
       }
     } catch (err) {

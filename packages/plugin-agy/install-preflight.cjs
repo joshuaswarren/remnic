@@ -1,28 +1,13 @@
 #!/usr/bin/env node
 "use strict";
 
-// Install preflight for @remnic/plugin-agy (#3451): the plugin install must
-// never complete green while the bundled mcp-server-stdio will refuse to
-// start. Run before `agy plugin install` (README, install step):
 //
-//   node install-preflight.cjs
 //
-// Exit 0: the MCP proxy will start (silent for loopback/https, one warning
-//         line when the cleartext opt-in is engaged).
-// Exit 2: the MCP proxy would exit 2 on startup. The message names the
-//         daemon URL, the refusal, and the opt-in, mirroring server.js.
-//
-// The env resolution order and the loopback/http gate duplicate
-// mcp-server-stdio/server.js deliberately — the proxy cannot be imported
-// (it starts a server at module load), and the two checks must agree or
-// this preflight would lie about the install outcome.
 
 const URL_DEFAULT = "http://localhost:4318/mcp";
 
 function envOrEmpty(name) {
   const v = process.env[name];
-  // Unexpanded "${...}" placeholders are treated as unset, same as the
-  // proxy — an install-time template must not pass as a real URL.
   if (v === undefined || v === "" || v.includes("${")) return "";
   return v;
 }
@@ -63,11 +48,6 @@ if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
   );
 }
 
-// The same cleartext gate mcp-server-stdio applies at startup. Without the
-// opt-in the proxy exits 2 and the remember/recall tools never register —
-// so this is a hard install failure, not a warning. With the opt-in the
-// proxy starts but still sends the token cleartext, so the preflight warns
-// and proceeds.
 const allowCleartextHttp = envOrEmpty("REMNIC_MCP_ALLOW_CLEARTEXT_HTTP") === "1";
 if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
   if (!allowCleartextHttp) {

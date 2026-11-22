@@ -177,7 +177,6 @@ function isProviderConfigLike(value: unknown): boolean {
   if (value === null) {
     return true;
   }
-  // Complete canonical shape (issue #2895): the loader shares the provider
   // validator with the legacy adapter instead of a two-string clone.
   return validateProviderConfigShape(value) === null;
 }
@@ -505,7 +504,6 @@ export async function loadBenchmarkResult(filePath: string): Promise<BenchmarkRe
     return parsed;
   }
 
-  // Canonical-first, then legacy upgrade (issue #2850): artifacts from
   // before the canonical schema get one chance to upgrade with
   // documented defaults. Present-but-invalid values never coerce; the
   // re-validation below is the belt that keeps the return type honest.
@@ -612,7 +610,6 @@ export async function resolveBenchmarkResultReference(
   outputDir: string,
   reference: string,
 ): Promise<StoredBenchmarkResultSummary | undefined> {
-  // Store-first resolution keeps `runs show <id>` deterministic: a
   // bare identifier always maps to the stored run rather than an
   // unrelated file in the current working directory that happens to
   // share the same name. Only fall back to the filesystem when the
@@ -642,7 +639,6 @@ export async function resolveBenchmarkResultReference(
   return undefined;
 }
 
-// A reference is treated as a filesystem path only when it looks like
 // one — absolute, contains a path separator, or points to a .json file.
 // Bare identifiers (e.g. run IDs) stay scoped to the store.
 function looksLikeFilesystemPath(reference: string): boolean {
@@ -667,7 +663,6 @@ export async function deleteBenchmarkResults(
   const seenPaths = new Set<string>();
 
   for (const reference of references) {
-    // Resolve stored-run references first (by id or basename) so
     // `remnic bench runs delete <id>` never unlinks an unrelated file
     // that happens to share the same name in the current working
     // directory. Only fall back to treating the reference as a direct
@@ -678,7 +673,6 @@ export async function deleteBenchmarkResults(
       summaries.find((entry) => path.basename(entry.path) === reference);
 
     if (!summary && looksLikeFilesystemPath(reference)) {
-      // If we've already deleted the file this path points at earlier
       // in the same batch, treat a repeat reference as a duplicate —
       // not a missing run — so multi-ref automation that mixes id and
       // path aliases for the same run still exits cleanly.
@@ -699,7 +693,6 @@ export async function deleteBenchmarkResults(
       missing.push(reference);
       continue;
     }
-    // Canonicalize before dedupe so a relative path and an absolute
     // path that point at the same file collapse to a single key.
     const canonicalPath = path.resolve(summary.path);
     if (seenPaths.has(canonicalPath)) {
@@ -879,7 +872,6 @@ export async function buildBenchmarkPublishFeed(
       continue;
     }
 
-    // Classify rather than throw so a newer public-split / missing-integrity
     // result does NOT block older, valid holdout runs for the same benchmark
     // from reaching the leaderboard.
     const skip = classifyPublishCandidate(result, target, contaminationManifest);

@@ -12,10 +12,6 @@ import {
 } from "./sequential-phases.ts";
 import type { LocalLabPreflightOptions } from "./preflight.ts";
 
-/**
- * Build a manifest where responder and judge can share or differ on baseUrl.
- * Tests mutate `sameEndpoint` to exercise the hand-off branch.
- */
 function manifest(opts: { sameEndpoint?: boolean } = {}): LocalLabManifest {
   const responderUrl = "http://127.0.0.1:8080/v1";
   const judgeUrl = opts.sameEndpoint ? responderUrl : "http://127.0.0.1:11434";
@@ -45,18 +41,6 @@ function manifest(opts: { sameEndpoint?: boolean } = {}): LocalLabManifest {
   });
 }
 
-/**
- * Test stub for the preflight pathway. The scheduler forwards
- * `preflightOptions` to the real `preflightLocalLabRole`, which calls the
- * injected `fetchImpl`. The stub responds to every discovery request with the
- * SAME list of model ids — production preflight then matches the manifest's
- * role.model against that list. To force a failure for a specific model,
- * omit it from `modelsOnEndpoint` (the manifest model id won't be found).
- *
- * The stub returns BOTH the OpenAI-compatible shape (`{ data: [...] }`) and
- * the Ollama shape (`{ models: [{ name }] }`) so any provider kind works
- * against the same stub.
- */
 interface StubPreflight {
   preflightOptions: LocalLabPreflightOptions;
   seen: Array<{ url: string }>;
@@ -177,8 +161,6 @@ test("runSequentialPhases emits a hand-off between phases on different endpoints
 });
 
 test("runSequentialPhases synthesizes a default hand-off note when the manifest omits it (cursor review: #1573 PR2)", async () => {
-  // Build a manifest with NO notes — the hook must still receive a non-undefined
-  // synthesized instruction (formatHandoffNote), not undefined.
   const m = parseLocalLabManifest({
     profile: "local-lab",
     responder: {
@@ -272,14 +254,7 @@ test("runSequentialPhases does NOT emit a hand-off before the first phase", asyn
 });
 
 test("runSequentialPhases emits the hand-off BEFORE the next phase's preflight (cursor review: #1573 PR2)", async () => {
-  // Regression: the hand-off must fire before the judge preflight so the
-  // operator sees the swap guidance even when the judge endpoint is not yet
-  // serving the manifest model. Previously preflight ran first and threw
-  // LocalLabPreflightError before the hand-off callback ever fired — so
-  // handoffs.length would be 0. Asserting handoffs.length === 1 here proves
-  // the hand-off preceded the (failing) judge preflight.
   const m = manifest({ sameEndpoint: false });
-  // Judge model deliberately absent from the endpoint → judge preflight fails.
   const stub = makeStubPreflight([m.responder.model]);
   const handoffs: Array<{ from: string; to: string }> = [];
 
@@ -300,20 +275,14 @@ test("runSequentialPhases emits the hand-off BEFORE the next phase's preflight (
     (e: unknown) => e instanceof LocalLabPreflightError,
   );
 
-  // The hand-off fired before the judge preflight attempted + threw. Before
-  // the fix this would be 0 (preflight threw first, hand-off never reached).
   assert.equal(handoffs.length, 1, "hand-off must fire before the failing judge preflight");
   assert.equal(handoffs[0].from, "responder");
   assert.equal(handoffs[0].to, "judge");
-  // Only the responder endpoint was probed (1 fetch); the judge preflight
-  // ran second and failed, but the hand-off preceded it.
   assert.equal(stub.seen.length, 2, "both endpoints probed (responder pass, judge fail)");
 });
 
 test("runSequentialPhases hard-rejects when a phase preflight fails (no silent fallback)", async () => {
   const m = manifest();
-  // Respondent's model is missing from the endpoint → its preflight fails.
-  // Judge's model is present, but the scheduler must abort at responder first.
   const stub = makeStubPreflight([m.judge.model]);
   const executed: string[] = [];
 
@@ -334,9 +303,6 @@ test("runSequentialPhases hard-rejects when a phase preflight fails (no silent f
     },
   ];
 
-  // assert.rejects returns void — capture the rejection inside the matcher
-  // so the assertions there can use the typed error directly. If the matcher
-  // throws, assert.rejects surfaces the assertion failure to the test.
   await assert.rejects(
     runSequentialPhases(m, phases, {
       preflight: stub.preflightOptions,
@@ -346,9 +312,6 @@ test("runSequentialPhases hard-rejects when a phase preflight fails (no silent f
       assert.equal(e.phase.name, "responder");
       assert.equal(e.phaseIndex, 0);
       assert.equal(e.preflight.ok, false);
-      // The failing result carries the foundModels so the operator sees
-      // what the endpoint reported (rule 51). The judge model is present
-      // but the responder model is not.
       assert.equal(e.preflight.foundModels.length, 1);
       assert.equal(e.preflight.foundModels[0].id, m.judge.model);
       assert.match(e.preflight.reason, /did not report the manifest model/);
@@ -357,7 +320,6 @@ test("runSequentialPhases hard-rejects when a phase preflight fails (no silent f
     },
   );
 
-  // Subsequent phase must not have executed — preflight is a hard gate.
   assert.deepEqual(executed, [], "failing preflight must abort before execute");
 });
 
@@ -387,7 +349,6 @@ test("runSequentialPhases invokes preflight for each phase in order before any e
     preflight: stub.preflightOptions,
   });
 
-  // Each phase's role produced exactly one preflight call.
   assert.equal(stub.seen.length, 2);
   assert.match(stub.seen[0].url, /\/v1\/models$/, "responder uses openai-compatible /v1/models");
   assert.match(stub.seen[1].url, /\/api\/tags$/, "judge uses ollama /api/tags");
@@ -455,7 +416,6 @@ test("formatHandoffNote prefers the manifest note when authored", () => {
     formatHandoffNote(from, to, "operator-authored note"),
     "operator-authored note",
   );
-  // Whitespace-only note falls through to the synthesized default.
   assert.match(
     formatHandoffNote(from, to, "   "),
     /^stop responder endpoint, start judge endpoint at http:\/\/b serving model j/,
@@ -467,10 +427,6 @@ test("formatHandoffNote prefers the manifest note when authored", () => {
 });
 
 test("runSequentialPhases treats trailing-slash URL variants as the same endpoint (cursor review: #1573 PR2)", async () => {
-  // Regression: endpoint sameness used raw baseUrl string equality, so
-  // http://host/v1 and http://host/v1/ were treated as different endpoints
-  // and triggered a spurious hand-off. Preflight's discoveryEndpointFor
-  // already normalizes a trailing slash; sameness must match that tolerance.
   const m = parseLocalLabManifest({
     profile: "local-lab",
     responder: {

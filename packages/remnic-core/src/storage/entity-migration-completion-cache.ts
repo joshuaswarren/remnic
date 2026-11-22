@@ -1,13 +1,3 @@
-/**
- * Amortized entity canonical-id migration completion verdict for entity reads.
- *
- * Key covers every getFingerprint input that is cheap to lstat: entity mutation
- * version, entities/ dir, config/aliases.json, the journal, and reconcile
- * markers. Full fingerprint (including entity entry enumeration) runs only on
- * key miss.
- *
- * ponytail: in-place entity *content* edits still skip revalidation.
- */
 
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
@@ -29,10 +19,6 @@ export type EntityMigrationCompletionCacheDeps = {
   getEntityMutationVersion(): number;
 };
 
-/**
- * True when `entitiesDir` is a real directory inside `baseDir`.
- * lstat first so a symlinked root is never realpath'd into trust.
- */
 export async function isTrustedEntitiesRoot(
   baseDir: string,
   entitiesDir: string,
@@ -70,10 +56,6 @@ export class EntityMigrationCompletionCache {
     }
   }
 
-  /**
-   * Cheap coherence key. entities/ absence is uncacheable (random suffix) so
-   * we never pin a false complete.
-   */
   private async inputSig(deps: EntityMigrationCompletionCacheDeps): Promise<string> {
     const stateDir = path.join(deps.baseDir, "state");
     const entitiesSig = await this.inputPathSig(deps.entitiesDir);
@@ -123,7 +105,6 @@ export async function readEntityFileResolvingRename(
     return { id: entityId, content: await deps.readStorageSecureFile(firstPath) };
   } catch (err) {
     if (err instanceof SecureStoreLockedError) throw err;
-    // ENOENT: renamed away (retry below). ELOOP: planted symlink — skip.
     if (isErrnoCode(err, "ELOOP")) return null;
     if (!isErrnoCode(err, "ENOENT")) throw err;
   }
@@ -144,7 +125,6 @@ export async function readEntityFileResolvingRename(
       };
     } catch (err) {
       if (err instanceof SecureStoreLockedError) throw err;
-      // ENOENT/ELOOP: gone or a planted symlink — try the next candidate.
       if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) continue;
       throw err;
     }

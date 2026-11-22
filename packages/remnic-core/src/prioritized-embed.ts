@@ -34,8 +34,6 @@ export function installPrioritizedEmbedding(
   const scheduleFlush = (): void => {
     if (disposed || embedFlushTimer !== null) return;
     embedFlushTimer = setTimeout(flushEmbedBatch, EMBED_FLUSH_MS);
-    // Do not keep the process alive for the flush delay — short-lived CLI
-    // and import commands must exit promptly (review thread: timer unref).
     embedFlushTimer.unref?.();
   };
 
@@ -64,9 +62,6 @@ export function installPrioritizedEmbedding(
         requeue(namespace, paths, batch);
         return;
       }
-      // Collection-level embed drains the entire backlog. If new writes
-      // were appended to the tail while the embed was in flight, reschedule
-      // so they get picked up; otherwise clear the queue.
       if (pendingByNamespace.get(namespace) === paths) {
         if (paths.length > 0) {
           scheduleFlush();

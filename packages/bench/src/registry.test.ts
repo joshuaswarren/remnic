@@ -4,10 +4,6 @@ import test from "node:test";
 import { PUBLISHED_BENCHMARK_ARTIFACT_IDS } from "./published-artifact.js";
 import { getBenchmark, getRegisteredBenchmark, listBenchmarks } from "./registry.js";
 
-// The five published benchmarks the legacy top-level evals tree
-// duplicated before it was deleted (issue #2798). @remnic/bench is the
-// only runtime for them; this test fails if any of the five ever drops
-// out of the registry or the published-artifact manifest.
 const LEGACY_EVAL_BENCHMARK_IDS = [
   "ama-bench",
   "amemgym",

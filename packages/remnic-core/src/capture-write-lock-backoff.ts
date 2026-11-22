@@ -1,12 +1,3 @@
-/**
- * Backoff for the tombstone-blocked capture write lock (COS-392).
- *
- * A converge cycle used to give up after three probes about 25ms apart while
- * the daemon still held the lock for an ordinary write. Waiters now sleep
- * outside every lock: equal-jitter exponential backoff, capped per wait, with
- * one overall deadline. The numbers are the production defaults; converge
- * config and env can override them.
- */
 
 export const CAPTURE_WRITE_LOCK_BUSY_MESSAGE = "tombstone-blocked capture write lock remained busy";
 
@@ -17,7 +8,6 @@ export function isTombstoneBlockedCaptureWriteLockBusy(error: unknown): boolean 
 export const DEFAULT_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS = 50;
 export const DEFAULT_CAPTURE_WRITE_LOCK_MAX_DELAY_MS = 2_000;
 export const DEFAULT_CAPTURE_WRITE_LOCK_DEADLINE_MS = 60_000;
-/** Same hour ceiling as the converge peer HTTP timeout. */
 export const MAX_CAPTURE_WRITE_LOCK_WAIT_MS = 3_600_000;
 
 const MAX_BACKOFF_EXPONENT = 16;
@@ -32,10 +22,6 @@ export type CaptureWriteLockLimitSource = {
   readonly captureWriteLockInitialDelayMs?: number;
   readonly captureWriteLockMaxDelayMs?: number;
   readonly captureWriteLockDeadlineMs?: number;
-  /**
-   * Read when an acquire starts. Converge installs the apply abort signal
-   * here so a SIGINT during backoff never reaches the guarded write.
-   */
   readonly captureWriteLockSignal?: AbortSignal;
 };
 
@@ -86,21 +72,13 @@ function pickWaitMs(value: number | undefined, fallback: number, label: string):
   return normalizeCaptureWriteLockWaitMs(value, label);
 }
 
-/**
- * Limits for a capture with no lock-options source — the plain daemon or an
- * inline capture. The deadline matches the pre-backoff tolerance of about 3s
- * (three probe waits of up to 1s each plus short retry sleeps), so ordinary
- * capture contention keeps that wait and still fails in bounded time.
- */
 export const LEGACY_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS = 25;
 export const LEGACY_CAPTURE_WRITE_LOCK_MAX_DELAY_MS = 50;
 export const LEGACY_CAPTURE_WRITE_LOCK_DEADLINE_MS = 3_000;
 
-/** Fill omitted knobs from the defaults and reject an inverted schedule. */
 export function resolveCaptureWriteLockBackoffLimits(
   source: CaptureWriteLockLimitSource | undefined
 ): CaptureWriteLockBackoffLimits {
-  // No source means a non-converge capture: keep the short legacy bounds.
   const defaults =
     source === undefined
       ? {

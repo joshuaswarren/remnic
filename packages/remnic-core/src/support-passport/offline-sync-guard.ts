@@ -72,11 +72,6 @@ function assertFrontmatterAllowed(frontmatter: string, relativePath: string): vo
   if (frontmatter.includes(SUPPORT_PASSPORT_MARKER)) {
     throw new Error(`offline sync cannot modify private support-passport record: ${relativePath}`);
   }
-  // Canonical classification (#2387): YAML/JSON escapes — e.g. a
-  // structured-attribute key written as `support\u002dpassport-owner` — hide
-  // the marker from the raw scan above, while the storage reader's
-  // JSON.parse reconstructs it after the write. Validate the parsed
-  // frontmatter with the same predicate the read path classifies by.
   const parsed = parseFrontmatter(frontmatter);
   if (parsed && isSupportPassportPrivateMemory({ frontmatter: parsed.frontmatter })) {
     throw new Error(`offline sync cannot modify private support-passport record: ${relativePath}`);
@@ -223,8 +218,6 @@ export async function applySupportPassportOfflineSyncChangeset(
       guard.assertContentAllowed(target.path, target.content);
       await storage.writeOfflineSyncFile(target.filePath, target.content);
     },
-    // Secure staging for embedding-generation replacement (#3150): staged
-    // ciphertext binds the FINAL published path, matching the snapshot apply.
     writeStagingFile: async ({ filePath, content, finalAadFilePath }) =>
       storage.writeOfflineSyncStagingFile(
         filePath,

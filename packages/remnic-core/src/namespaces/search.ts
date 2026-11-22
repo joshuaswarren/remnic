@@ -15,11 +15,8 @@ import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 const NESTED_NAMESPACE_FILTER_OVERFETCH_FACTOR = 4;
 const NESTED_NAMESPACE_FILTER_OVERFETCH_MIN = 50;
 
-// Short TTL so repeated health polls skip a full QMD re-probe (~1.5s).
 const HEALTH_RESULT_CACHE_TTL_MS = 10_000;
 
-// Each cross-namespace search leg gets this budget; a stalled backend leg
-// degrades its own namespace instead of holding the whole search (#3139).
 export const NAMESPACE_SEARCH_LEG_TIMEOUT_MS = 25_000;
 
 export function namespaceCollectionName(
@@ -80,7 +77,6 @@ export interface NamespaceSearchHealth {
   embeddingBacklogThreshold: number;
 }
 
-/** True when the pending-embedding count is above a positive backlog threshold. */
 export function embeddingBacklogExceeds(pending: number | null, threshold: number): boolean {
   return threshold > 0 && pending !== null && pending > threshold;
 }
@@ -163,10 +159,6 @@ export class NamespaceSearchRouter {
       namespaces.map(async (namespace) => {
         const record = await this.backendRecordFor(namespace);
         if (!record.available || record.collectionState === "missing") {
-          // A per-namespace backend that is unavailable (or missing its
-          // collection) must report like any other QMD skip (#1536): its
-          // empty contribution is otherwise indistinguishable from a true
-          // no-matches for that namespace (codex round-5 review on #1544).
           try {
             options.execution?.onDegradation?.({
               backend: "qmd",
@@ -182,11 +174,6 @@ export class NamespaceSearchRouter {
           return { namespace, results: [] as QmdSearchResult[] };
         }
         const backendLimit = backendSearchLimit(record, maxResults);
-        // One stalled backend leg must not hold the whole cross-namespace
-        // search (#3139). The backend gets the deadline signal so it cancels
-        // its own work, and the await is raced against the same budget. A leg
-        // that outlives its budget degrades only its own namespace; real
-        // backend errors and caller aborts propagate as before.
         const legAbort = new AbortController();
         const legTimer = setTimeout(() => legAbort.abort(), NAMESPACE_SEARCH_LEG_TIMEOUT_MS);
         const legSignal = options.execution?.signal
@@ -247,10 +234,6 @@ export class NamespaceSearchRouter {
           .map((result) => ({
             ...result,
             namespace,
-            // Resolve to an absolute path so the (namespace, path) identity is
-            // globally unique — same-relative-path hits from different namespaces
-            // stay distinct across every downstream consumer with no special
-            // handling. Display/citation surfaces relativize for portability (#2020).
             path: resolveNamespaceResultPath(record.memoryDir, record.collection, result.path),
           }))
           // Reject hits whose resolved path escapes the queried namespace's
@@ -391,9 +374,6 @@ export class NamespaceSearchRouter {
         embeddingBacklogThreshold: this.config.qmdEmbeddingBacklogThreshold,
       };
 
-      // Cache only a healthy answer that carries backlog data when the backend
-      // reports status. A degraded or incomplete answer must re-probe so a
-      // readiness poll sees recovery on the next call, not one TTL late.
       const statusMissing = backendStatus === null && "status" in diagnosticBackend;
       if (
         execution?.signal?.aborted !== true &&
@@ -436,7 +416,6 @@ export class NamespaceSearchRouter {
     await Promise.allSettled(this.pendingDisposals);
   }
 
-  /** Clear cached backend records so the next access re-probes availability. */
   clearCache(): void {
     this.healthResultCache.clear();
     const pendingRecords = Array.from(this.cache.values());
@@ -457,7 +436,6 @@ export class NamespaceSearchRouter {
     await dispose?.call(record.backend);
   }
 
-  /** Release any per-namespace backend handles held by cached records. */
   async dispose(): Promise<void> {
     await this.drainPendingDisposals();
     this.healthResultCache.clear();
@@ -549,16 +527,6 @@ export class NamespaceSearchRouter {
       });
       const collectionState = available
         ? await awaitWithAbort(
-          // The legacy default namespace at the flat root (`filtersNestedNamespaces`)
-          // shares its `memoryDir` with the `namespaces/` container, so its base
-          // collection is a "broad root" that also indexes nested-namespace files.
-          // We STILL auto-create it (issue #1929): the search side already targets
-          // this exact base collection and `filterNamespaceSubtreeResults` strips
-          // the nested `namespaces/` subtree out of its results, so index and
-          // search stay symmetric. Skipping creation left a configured default
-          // namespace (e.g. `geek`) with maintenance "ran" but no collection and 0
-          // recall results. `ensureCollection` is a no-op when the collection is
-          // already present, so legacy installs that pre-created the broad root are
           // unaffected.
           this.collectionStateForBackend(backend, storage.dir, scopedConfig.qmdCollection, {
             autoCreate: options.autoCreateCollection,
@@ -623,9 +591,6 @@ class NamespaceSearchAbortError extends Error {
 function awaitWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return operation;
   if (signal.aborted) {
-    // The operation was started with this same aborted signal and will reject
-    // on its own. Without a handler that second rejection is unhandled and
-    // ends the process.
     operation.catch(() => {});
     return Promise.reject(new NamespaceSearchAbortError());
   }
@@ -671,9 +636,6 @@ async function updateBackendRecord(
 ): Promise<void> {
   if (options?.strict === true) {
     if (
-      // Forced refreshes must skip the throttled all-collections update: its
-      // success has to prove the current writes are indexed, which a throttle
-      // skip cannot.
       options.force !== true &&
       record.backend.updatesAllCollections?.() === true &&
       typeof record.backend.updateStrict === "function"
@@ -685,9 +647,6 @@ async function updateBackendRecord(
       await record.backend.updateCollectionStrict(record.collection, execution);
       return;
     }
-    // Backends with no strict variant (Orama, LanceDB, Meilisearch, remote) have a fail-open
-    // update(): it resolves when it returned early or failed. Their updateCompleted() says
-    // whether the refresh ran, so strict callers get a failure instead of a fake success.
     const completed = await record.backend.updateCompleted?.(execution);
     if (completed !== undefined) {
       if (!completed) throw new Error("search backend update did not complete");
@@ -747,21 +706,6 @@ function pathIsInsideNamespaceSubtree(
   return isContainedPath(namespacesRoot, candidate);
 }
 
-/**
- * Reject a QMD hit whose resolved path escapes the queried namespace's storage
- * root (#2077). `resolvedPath` is the already-resolved value produced by
- * `resolveNamespaceResultPath`; a stale/corrupt per-namespace collection can
- * yield an absolute path owned by another namespace, and stamping it with the
- * queried namespace would surface a foreign-namespace memory downstream.
- *
- * Lexical containment runs first — it is cheap and the only check possible when
- * the file is not yet on disk (a stale collection may cite a since-deleted
- * path). When both root and candidate exist, their filesystem realpaths are
- * canonicalized and re-checked so a symlink planted inside the namespace root
- * cannot resolve into another namespace or outside storage. An unresolved path
- * (ENOENT) keeps the lexical result rather than rejecting the stale-collection
- * case this guard targets.
- */
 function resolvedPathIsInsideNamespaceRoot(memoryDir: string, resolvedPath: string): boolean {
   const root = path.resolve(memoryDir);
   const candidate = path.isAbsolute(resolvedPath)
@@ -791,10 +735,6 @@ export function normalizeQmdResultPath(resultPath: string, collection: string): 
     }
   }
 
-  // Only strip a genuine QMD collection prefix — never when the collection name
-  // collides with a memory category dir (e.g. qmdCollection == "facts"), or a
-  // bare "facts/<id>.md" hit would be corrupted to "<id>.md" and fail namespace
-  // reads/access tracking (#2020).
   const collectionPrefix = `${collection}/`;
   if (value.startsWith(collectionPrefix) && !ALL_CATEGORY_DIRS.includes(collection)) {
     value = value.slice(collectionPrefix.length);

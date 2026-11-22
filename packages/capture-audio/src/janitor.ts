@@ -33,9 +33,6 @@ export async function pruneExpiredRawAudio(rawDirectory: string, retentionMs: nu
         removed.push(location);
       }
     } catch (error) {
-      // A concurrent capture/cleanup can delete a chunk between readdir and
-      // lstat/rm; a vanished file is already pruned, so skip it and continue
-      // instead of aborting the whole janitor run with a generic FS error.
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw error;
     }

@@ -1,22 +1,9 @@
-/**
- * Pure helpers for the root test runner (issue #1538, epic #1520).
- *
- * Kept free of process/spawn side effects so tests/root-test-runner-lib.test.mjs
- * can exercise every branch. Node stdlib only, cross-platform (no shell-outs,
- * forward-slash-normalized results).
- */
 
 import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-/**
- * The root suite's coverage, as structured entries rather than opaque glob
- * strings. Each entry must match at least one file at run time — a pattern
- * that matches nothing is an error (a rename or layout change silently
- * removing coverage), not a pass.
- */
 export const TEST_PATTERNS = [
   { id: "tests/**/*.test.ts", base: "tests", recursive: true, suffix: ".test.ts" },
   { id: "tests/**/*.test.mjs", base: "tests", recursive: true, suffix: ".test.mjs" },
@@ -24,17 +11,9 @@ export const TEST_PATTERNS = [
   { id: "packages/*/src/**/*.test.tsx", base: "packages", packageSrc: true, recursive: true, suffix: ".test.tsx" },
   { id: "dashboard/lib/*.test.ts", base: "dashboard/lib", recursive: false, suffix: ".test.ts" },
   { id: "integrations/amb/*.test.mjs", base: "integrations/amb", recursive: false, suffix: ".test.mjs" },
-  // Hook runners ship as standalone CommonJS (no build step, spawned by the
-  // host), so their tests live beside them rather than under `<pkg>/src`.
-  // Without this entry they were never executed by any CI job.
   { id: "packages/**/*.test.cjs", base: "packages", recursive: true, suffix: ".test.cjs" },
 ];
 
-/**
- * Named pattern groups for CI test sharding (issue: CI wall-clock). Every
- * TEST_PATTERNS id must belong to exactly one group — the companion test
- * enforces the partition so a new pattern cannot silently escape sharded CI.
- */
 export const TEST_PATTERN_GROUPS = Object.freeze({
   root: ["tests/**/*.test.ts", "tests/**/*.test.mjs"],
   packages: [
@@ -91,10 +70,6 @@ export function selectTestShard(files, shard) {
 }
 
 
-/**
- * Parse root-test-runner CLI arguments. `--group <name>` is repeatable;
- * `--shard <index>/<total>` is optional and may appear once.
- */
 export function parseRunnerArgs(argv) {
   const groups = [];
   let shard = null;
@@ -212,7 +187,6 @@ export function expandTestPatterns(repoRoot, patterns = TEST_PATTERNS) {
   return { files: [...files].sort(), emptyPatterns };
 }
 
-/** Load and validate the native-dependent test manifest. Throws on malformed input. */
 export function loadNativeManifest(manifestPath) {
   const parsed = JSON.parse(readFileSync(manifestPath, "utf-8"));
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
@@ -244,13 +218,6 @@ export function partitionNativeDependent(files, manifestFiles) {
   return { run, excluded, stale };
 }
 
-/**
- * Greedily chunk argument lists so each spawn's combined argv stays under a
- * conservative character budget — Windows builds one command line with a low
- * length limit, so hundreds of explicit file paths cannot go into a single
- * spawn (cursor review on #1542). A single oversized argument still gets its
- * own chunk rather than being dropped.
- */
 export function chunkArgsByLength(args, budgetChars) {
   if (!Number.isInteger(budgetChars) || budgetChars <= 0) {
     throw new Error(`chunkArgsByLength: budgetChars must be a positive integer, got ${budgetChars}`);

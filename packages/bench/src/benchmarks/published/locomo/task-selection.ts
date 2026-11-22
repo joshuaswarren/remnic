@@ -123,14 +123,6 @@ export function parseLoCoMoTaskSelectionManifest(
   };
 }
 
-/**
- * Resolve a LoCoMo task selector into canonical dataset order.
- *
- * Explicit selector order never controls execution order. This keeps paired
- * runs byte-stable even when two equivalent selector files list ids in a
- * different order. Seeded sampling chooses membership by hash and then also
- * restores dataset order before producing the manifest.
- */
 export function selectLoCoMoTasks(
   tasks: readonly { taskId: string }[],
   selector: LoCoMoTaskSelector,

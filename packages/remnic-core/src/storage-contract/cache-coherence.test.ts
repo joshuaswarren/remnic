@@ -1,12 +1,3 @@
-/**
- * Issue #1533 — Phase A contract test: cache coherence across instances.
- *
- * Rule 37 (memory-cache): write via instance A, read via a FRESH instance B
- * over the same dir → B sees the write. The module-level caches
- * (readAllMemories in-flight, version sentinels) are keyed by baseDir and
- * shared/static — this test pins that a write invalidates correctly so a
- * second instance never serves stale data.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -29,7 +20,6 @@ test("cache-coherence: write via instance A, read via fresh instance B → B see
 
     const { id: id } = await smA.writeMemory("fact", "written by A");
 
-    // Fresh instance over the same dir
     const smB = new StorageManager(dir);
     await smB.ensureDirectories();
     const found = await smB.getMemoryById(id);
@@ -52,15 +42,12 @@ test("cache-coherence: delete via instance A is reflected in fresh instance B", 
     await smA.ensureDirectories();
     const { id: id } = await smA.writeMemory("fact", "to be deleted");
 
-    // Confirm B sees it
     const smB = new StorageManager(dir);
     await smB.ensureDirectories();
     assert.ok(await smB.getMemoryById(id));
 
-    // A deletes
     await smA.invalidateMemory(id);
 
-    // Fresh instance C must NOT see it
     const smC = new StorageManager(dir);
     await smC.ensureDirectories();
     const found = await smC.getMemoryById(id);
@@ -88,7 +75,6 @@ test("cache-coherence: readAllMemories reflects writes across instances after in
     const all = await smB.readAllMemories();
     assert.ok(all.length >= 2, "fresh instance must list all written memories");
 
-    // Write more via A
     await smA.writeMemory("principle", "third");
 
     const smC = new StorageManager(dir);
@@ -162,8 +148,6 @@ test("hot cache (#1902): a peer corpus-version bump forces exactly one rescan (c
     await sm.writeMemory("fact", "A");
     await sm.readAllMemories(); // warm
     const spy = installScanSpy(sm);
-    // Simulate a peer process advancing the on-disk corpus sentinel (its byte
-    // size IS the version). This instance's warm entry is now stale-versioned.
     await appendFile(path.join(dir, "state", ".memory-corpus-version.log"), "x");
     const afterPeer = await sm.readAllMemories();
     assert.equal(spy.scans(), 1, "a peer sentinel bump must force exactly one rescan");
@@ -235,12 +219,8 @@ test("hot cache (#1902): the gate default is isolated per memory dir (Codex P2)"
   const dirOn = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-perdir-on-"));
   try {
     resetStaticCaches();
-    // Register divergent per-dir settings; a later registration must NOT flip
-    // an earlier dir's behavior (the "last orchestrator wins" bug).
     StorageManager.setHotMemoriesCacheDefault(dirOff, false);
     StorageManager.setHotMemoriesCacheDefault(dirOn, true);
-    // Constructed WITHOUT a per-instance override, so each resolves its own
-    // dir's registered default.
     const smOff = new StorageManager(dirOff);
     const smOn = new StorageManager(dirOn);
     await smOff.ensureDirectories();
@@ -269,7 +249,6 @@ test("hot cache (#1902): flushAccessTracking patches locally + bumps for cross-p
     const sm = new StorageManager(dir);
     await sm.ensureDirectories();
     const { id } = await sm.writeMemory("fact", "trackable");
-    // Warm the cache.
     const warm = await sm.readAllMemories();
     assert.equal(warm.length, 1);
     const versionBefore = sm.getMemoryCorpusVersion();
@@ -278,13 +257,10 @@ test("hot cache (#1902): flushAccessTracking patches locally + bumps for cross-p
       { memoryId: id, newCount: 7, lastAccessed: "2026-07-16T00:00:00.000Z" },
     ]);
     const after = await sm.readAllMemories();
-    // Local process: patched in place + re-keyed, so no rescan and fresh counts.
     assert.equal(spy.scans(), 0, "access-tracking flush must not rescan the corpus locally");
     const m = after.find((x) => x.frontmatter.id === id);
     assert.equal(m?.frontmatter.accessCount, 7, "hot cache reflects the flushed access count");
     assert.equal(m?.frontmatter.lastAccessed, "2026-07-16T00:00:00.000Z");
-    // Cross-process: the shared sentinel advanced so peer processes rescan and
-    // never overwrite this process's increment (Codex P2).
     assert.ok(
       sm.getMemoryCorpusVersion() > versionBefore,
       "access-tracking flush advances the corpus sentinel for peer coherence",
@@ -299,14 +275,10 @@ test("hot cache (#1902): ensureDirectories activates a version-0 corpus so reads
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-zero-"));
   try {
     resetStaticCaches();
-    // Simulate an existing corpus with NO sentinel yet: write a fact file
-    // directly to disk (bypassing StorageManager, so nothing bumps the sentinel).
     await mkdir(path.join(dir, "facts"), { recursive: true });
     await writeFile(path.join(dir, "facts", "a.md"), "---\nid: fact-a\n---\nA");
     const sm = new StorageManager(dir);
     assert.equal(sm.getMemoryCorpusVersion(), 0, "precondition: sentinel starts at 0");
-    // The daemon calls ensureDirectories() at startup (before serving reads); it
-    // seeds a nonzero sentinel so the hot path engages on a read-heavy workload.
     await sm.ensureDirectories();
     assert.ok(sm.getMemoryCorpusVersion() > 0, "ensureDirectories activates the sentinel");
     const spy = installScanSpy(sm);
@@ -325,15 +297,12 @@ test("hot cache (#1902): an empty corpus is served from cache, not rescanned (ki
   try {
     resetStaticCaches();
     const sm = new StorageManager(dir);
-    // ensureDirectories activates the sentinel (version > 0); the corpus is empty.
     await sm.ensureDirectories();
     const first = await sm.readAllMemories();
     assert.equal(first.length, 0, "corpus is empty");
     const spy = installScanSpy(sm);
     await sm.readAllMemories();
     await sm.readAllMemories();
-    // getCachedMemories returns [] (falsy) for an empty corpus; the read guard
-    // must null-check, not truthiness-check, or every read rescans.
     assert.equal(spy.scans(), 0, "empty corpus is served from cache on repeat reads");
   } finally {
     resetStaticCaches();

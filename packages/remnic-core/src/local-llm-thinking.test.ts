@@ -235,11 +235,6 @@ test("disableThinking leaves untagged operations thinking-enabled (#979)", async
 });
 
 test("disableThinking fails open for generic backend — no kwarg sent (#548 Codex P1)", async () => {
-  // Regression for Codex P1 on PR #550: `chat_template_kwargs` is a
-  // llama.cpp / LM-Studio / vLLM extension.  Strict OpenAI-compat
-  // backends reject unknown fields with 400, which trips the
-  // localLlm400Trip cooldown.  `generic` means "backend didn't
-  // positively identify as thinking-capable" — do not send.
   const client = new LocalLlmClient(createConfig());
   primeClient(client, { thinking: true, detected: "generic" });
   const { restore, bodies } = captureFetchBodies();

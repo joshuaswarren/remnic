@@ -74,7 +74,6 @@ test("maxEntriesPerPrincipal caps a principal bucket", async () => {
       await store.quarantine({ operation: "memory_store", principal: "bob", attemptedNamespace: "ns", payload: i });
     }
     const records = await store.list();
-    // The cap is per principal, not global: two survive for each.
     assert.equal(records.length, 4);
     assert.equal(records.filter((r) => r.principal === "alice").length, 2);
     assert.equal(records.filter((r) => r.principal === "bob").length, 2);
@@ -90,11 +89,9 @@ test("age cap drops records older than maxAgeMs", async () => {
       attemptedNamespace: "ns",
       payload: "old",
     });
-    // Backdate the first record an hour into the past.
     const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
     await utimes(oldPath, hourAgo, hourAgo);
 
-    // A fresh write into the same bucket triggers the prune.
     await store.quarantine({
       operation: "memory_store",
       principal: "alice",
@@ -147,7 +144,6 @@ test("expired records are dropped on read even without a follow-up write", async
     const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
     await utimes(only, hourAgo, hourAgo);
 
-    // No further write; list()/count() must expire it and delete the file.
     assert.equal(await store.count(), 0);
     assert.deepEqual(await store.list(), []);
   });
@@ -157,14 +153,12 @@ test("a symlinked state directory is not followed outside the memory dir", async
   await withTempDir(async (dir) => {
     const external = await mkdtemp(path.join(tmpdir(), "remnic-quarantine-ext-"));
     try {
-      // Replace <memoryDir>/state with a symlink to an external directory.
       await symlink(external, path.join(dir, "state"), "dir");
       const store = new WriteQuarantineStore(dir);
 
       await assert.rejects(
         store.quarantine({ operation: "memory_store", principal: "alice", attemptedNamespace: "ns", payload: "x" })
       );
-      // Nothing was written into the external directory.
       assert.deepEqual(await readdir(external), []);
     } finally {
       await rm(external, { recursive: true, force: true });
@@ -176,7 +170,6 @@ test("list() surfaces a symlink-escaping root instead of reporting empty", async
   await withTempDir(async (dir) => {
     const external = await mkdtemp(path.join(tmpdir(), "remnic-quarantine-ext-"));
     try {
-      // A symlinked `state` that escapes the memory dir must not read back as
       // an empty (all-clear) store — the inspection failure has to surface.
       await symlink(external, path.join(dir, "state"), "dir");
       const store = new WriteQuarantineStore(dir);
@@ -218,7 +211,6 @@ test("removeEntry deletes an entry by its path and is idempotent", async () => {
     assert.ok(entry);
     assert.equal(await store.removeEntry(entry.path), true);
     assert.equal(await store.count(), 0);
-    // An already-absent path removes nothing.
     assert.equal(await store.removeEntry(entry.path), false);
   });
 });

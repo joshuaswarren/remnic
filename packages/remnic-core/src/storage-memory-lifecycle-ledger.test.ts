@@ -133,7 +133,6 @@ test("readMemoryLifecycleEvents returns the canonical last-N tail, not the appen
     JSON.stringify(first),
     JSON.stringify(second),
   ], async (storage) => {
-    // The bounded read ranks by the canonical comparator (memoryId, timestamp,
     // eventType), then keeps the last 2 — identical to the pre-#1910 readAll →
     // sort → slice(-limit). Canonical order is [first, second, third], so the
     // last two are [second, third] regardless of append order (#1910,
@@ -160,7 +159,6 @@ test("readMemoryLifecycleEvents(MAX_SAFE_INTEGER) equals readAllMemoryLifecycleE
 
 test("readMemoryLifecycleEvents(MAX_SAFE_INTEGER) admits unknown eventTypes exactly like readAll", async () => {
   const known = lifecycleEvent("event-1", "memory-a", "2026-01-01T00:00:00.000Z");
-  // Structurally valid row whose eventType is NOT in the handled sort table.
   // readAll admits any string eventType, so the bounded governance read must
   // too — dropping it would silently diverge the projection-rebuild scan.
   const unknown = {
@@ -242,7 +240,6 @@ test("getMemoryTimeline fallback keeps the newest-by-timestamp events when an ol
     JSON.stringify(lifecycleEvent("other-b", "memory-other-b", "2026-01-01T00:06:00.000Z")),
     JSON.stringify(lifecycleEvent("t3", target, "2026-01-01T00:03:00.000Z")),
     JSON.stringify(lifecycleEvent("t4", target, "2026-01-01T00:04:00.000Z")),
-    // Late-appended backfill with an older timestamp than t2/t3/t4.
     JSON.stringify(lifecycleEvent("t5", target, "2026-01-01T00:00:00.000Z")),
   ];
   await withLifecycleLedger(rows, async (storage) => {
@@ -368,7 +365,6 @@ test("appendLifecycleEventsSerialized waits out a held ledger lock instead of dr
     await writeFile(ledgerPath, "", "utf8");
     const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
 
-    // Simulate a compaction rewrite holding the shared lock while the append
     // contends for it. The append must WAIT for the holder to release rather
     // than give up and drop the event fail-open (the pre-#2033 behavior at 5s).
     // Ordering is driven by gate promises — never wall-clock sleeps — so the
@@ -387,7 +383,6 @@ test("appendLifecycleEventsSerialized waits out a held ledger lock instead of dr
         order.push("holder-released");
       },
     );
-    // The lock is provably held from here until we open the release gate.
     await acquiredGate.promise;
 
     const appendPromise = appendLifecycleEventsSerialized(
@@ -401,7 +396,6 @@ test("appendLifecycleEventsSerialized waits out a held ledger lock instead of dr
       { maxWaitMs: 2_000, pollMs: 20 },
     );
 
-    // Release the holder; the append can only acquire after this.
     releaseGate.resolve();
     await appendPromise;
     await holder;
@@ -453,7 +447,6 @@ test("appendLifecycleEventsSerialized refuses to append unlocked when the lock c
 });
 
 test("lifecycle append lock budget outlasts a compaction that holds the lock past 5s (#2033)", () => {
-  // withHeldFileLock's default acquisition budget is 5s; a compaction rewrite of
   // a large ledger can legitimately hold the lock longer. The append budget must
   // cover the full stale-break window so such a hold is waited out (or a crashed
   // holder stale-broken) rather than dropping the event at 5s.
@@ -467,12 +460,6 @@ test("lifecycle append lock budget outlasts a compaction that holds the lock pas
   );
 });
 
-/** Plaintext pending IO for the access-layer tests (the StorageManager
- *  integration test below exercises the encrypted-at-rest path). Faithful to the
- *  `LifecyclePendingIo` contract: `writeSecure` is ATOMIC — it writes to a temp
- *  file (a non-`*.jsonl` name the drain's lister skips) in the same dir, then
- *  renames it onto the final path, so a concurrent drain never sees a partial
- *  spill (#2033). */
 function plaintextPendingIo(): LifecyclePendingIo {
   return {
     writeSecure: async (p, c) => {
@@ -498,7 +485,6 @@ test("appendLifecycleEventsSerialized spills to the durable pending queue instea
 
     const pending = plaintextPendingIo();
     let ledgerAppended = false;
-    // MUST NOT throw: the event is durably queued, not dropped fail-open.
     await appendLifecycleEventsSerialized(
       ledgerPath,
       async () => { ledgerAppended = true; },
@@ -534,7 +520,6 @@ test("a concurrent drain never folds a partial spill; the finished spill is vali
     await writeFile(lockPath, `${process.pid} held-by-test ${new Date().toISOString()}\n`, "utf8");
     const row = `${JSON.stringify(lifecycleEvent("evt-atomic", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`;
 
-    // Capture exactly what a concurrent fold-under-lock would enumerate + read
     // (the fold uses listContainedSpillFiles + a lazy readSecure) WHILE the
     // spill write is still in progress. An atomic writeSecure stages the full
     // payload under a temp name the `*.jsonl` lister skips, so the drain sees
@@ -567,14 +552,12 @@ test("a concurrent drain never folds a partial spill; the finished spill is vali
       "a concurrent drain lists no in-progress spill, so it can never fold partial bytes",
     );
 
-    // The finished spill is a single complete, valid row (never truncated).
     const spillFiles = await listContainedSpillFiles(spillDir);
     assert.equal(spillFiles.length, 1, "exactly one complete spill after the write");
     const spillContent = await readFile(spillFiles[0]!, "utf8");
     assert.equal(spillContent, row, "spill content is the whole payload, never a partial write");
     assert.doesNotThrow(() => JSON.parse(spillContent.trim()), "final spill is valid JSON");
 
-    // Release the lock; a real drain folds exactly the one valid row.
     await rm(lockPath, { force: true });
     const drained = await drainPendingLifecycleAppendsSerialized(
       ledgerPath,
@@ -598,7 +581,6 @@ test("a later append drains queued pending spills into the ledger (#2033)", asyn
     await mkdir(path.dirname(ledgerPath), { recursive: true });
     await writeFile(ledgerPath, "", "utf8");
     const pending = plaintextPendingIo();
-    // Pre-seed two spilled events (as prior lock-timed-out appends would leave).
     await pending.writeSecure(
       path.join(pendingLifecycleLedgerDir(ledgerPath), "a.jsonl"),
       `${JSON.stringify(lifecycleEvent("evt-old-1", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
@@ -654,7 +636,6 @@ test("drainPendingLifecycleAppendsSerialized folds queued events into the ledger
       "drained spill files removed",
     );
 
-    // Nothing pending → no-op that reports false.
     const again = await drainPendingLifecycleAppendsSerialized(
       ledgerPath,
       async (payload) => { await appendFile(ledgerPath, payload, "utf8"); },
@@ -738,13 +719,11 @@ test("StorageManager drains an encrypted pending spill into the encrypted-at-res
     storage.setSecureStoreKey(key);
     const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
     await mkdir(path.dirname(ledgerPath), { recursive: true });
-    // Seed an encrypted-at-rest ledger with a base event through the storage API.
     await storage.appendMemoryLifecycleEvents([
       lifecycleEvent("evt-base", "memory-a", "2026-03-08T00:00:00.000Z"),
     ]);
     assert.ok(isEncryptedFile(await readFile(ledgerPath)), "precondition: ledger encrypted");
 
-    // Pre-seed an encrypted spill file exactly as a lock-timed-out append leaves
     // it: encrypted at its own path-bound AAD.
     const spillDir = pendingLifecycleLedgerDir(ledgerPath);
     const spillPath = path.join(spillDir, "spill.jsonl");
@@ -759,7 +738,6 @@ test("StorageManager drains an encrypted pending spill into the encrypted-at-res
     assert.ok(isEncryptedFile(await readFile(ledgerPath)), "ledger stays encrypted at rest after drain");
     await assert.rejects(() => stat(spillPath), /ENOENT/, "spill file removed after drain");
 
-    // No pending → fast no-op.
     assert.equal(await storage.drainPendingMemoryLifecycleEvents(), false, "no pending → no drain");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -776,12 +754,10 @@ test("pending drain rejects a symlinked spill entry pointing outside the pending
     const pending = plaintextPendingIo();
     const spillDir = pendingLifecycleLedgerDir(ledgerPath);
 
-    // A legitimate plaintext spill that MUST drain.
     await pending.writeSecure(
       path.join(spillDir, "legit.jsonl"),
       `${JSON.stringify(lifecycleEvent("evt-legit", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
     );
-    // A hostile secret OUTSIDE the pending dir, reached via a symlink whose name
     // ends in .jsonl so a naive drain would readSecure (and later unlink) it.
     const outsideSecret = path.join(outsideDir, "secret.txt");
     const outsideContent = "top-secret-outside-the-store\n";
@@ -849,7 +825,6 @@ test("pending drain skips an unclaimable spill and later drains it exactly once 
     );
     assert.equal((await readdir(spillDir)).length, 1, "unclaimed spill remains for a later pass");
 
-    // Restore write permission; the spill drains exactly once.
     await chmod(spillDir, 0o755);
     const second = await drainPendingLifecycleAppendsSerialized(
       ledgerPath,
@@ -939,7 +914,6 @@ test("appendLifecycleEventsSerialized refuses to write a spill into a symlinked 
     const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
     await mkdir(path.dirname(ledgerPath), { recursive: true });
     await writeFile(ledgerPath, "", "utf8");
-    // Plant a symlink AT the spill-directory path pointing at a real directory
     // outside the memory store. The write path must refuse it before any file
     // lands in the target.
     const spillDir = pendingLifecycleLedgerDir(ledgerPath);
@@ -980,7 +954,6 @@ test("appendLifecycleEventsSerialized refuses to write a spill into a symlinked 
 });
 
 test("rebuild aborts the compaction rewrite when a peer stale-breaks the ledger lock mid-section (#1910/#2033)", async () => {
-  // The preserve+merge+serialize inside the lock is CPU-bound and blocks the
   // timer heartbeat, so within the 30s stale window a peer can judge the lock
   // stale, break it, and hold its own. The rewrite MUST re-assert ownership
   // right before its destructive write and ABORT — not rename its compacted
@@ -1078,7 +1051,6 @@ test("encrypted rebuild backup retains raw malformed/truncated/future rows verba
       preserveExistingEvents: true,
     });
 
-    // A timestamped encrypted backup was written.
     assert.ok(result.backupPath, "a backup path was produced");
     assert.match(result.backupPath!, /archive[/\\]memory-lifecycle-ledger[/\\]/);
     assert.ok(isEncryptedFile(await readFile(result.backupPath!)), "backup encrypted at rest");
@@ -1118,7 +1090,6 @@ test("encrypted rebuild forces encryption for backup + active ledger even when e
     const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
     await mkdir(path.dirname(ledgerPath), { recursive: true });
 
-    // Seed an encrypted-at-rest ledger with two valid rows plus a garbage row so
     // the compaction produces a DIFFERENT active ledger (no no-op skip) and a
     // timestamped backup.
     const validA = JSON.stringify(lifecycleEvent("evt-a", "memory-a", "2026-01-01T00:00:00.000Z"));
@@ -1141,7 +1112,6 @@ test("encrypted rebuild forces encryption for backup + active ledger even when e
     const activeDecrypted = await readMaybeEncryptedFile(ledgerPath, key, memoryDir);
     assert.ok(!activeDecrypted.includes("not-json-garbage"), "active ledger compacted the garbage row");
 
-    // The backup is encrypted at rest too and decrypts to the raw pre-compaction
     // bytes under its own path AAD.
     assert.ok(result.backupPath, "a backup path was produced");
     assert.ok(isEncryptedFile(await readFile(result.backupPath!)), "backup stays encrypted at rest");
@@ -1153,7 +1123,6 @@ test("encrypted rebuild forces encryption for backup + active ledger even when e
 });
 
 test("encrypted rebuild backup never materializes the raw ledger as one giant string and stays byte-identical (#2033)", async () => {
-  // Regression for the P2 raw-backup thread: the secure-store backup path once
   // read the decrypted ledger via `Buffer.toString("utf8")`. For a ledger that
   // already grew past V8's ~512MB string ceiling — the exact corruption this PR
   // recovers from — that throw aborted BOTH auto-compaction and
@@ -1232,7 +1201,6 @@ test("encrypted rebuild backup never materializes the raw ledger as one giant st
     const backupBytes = await readMaybeEncryptedFileBuffer(result.backupPath!, key, memoryDir);
     assert.equal(Buffer.compare(backupBytes, rawBytes), 0, "backup preserves raw decrypted bytes verbatim");
 
-    // The active ledger normalized down to the two valid rows.
     const activeIds = (await storage.readAllMemoryLifecycleEvents()).map((e) => e.eventId);
     assert.deepEqual(activeIds.sort(), ["evt-a", "evt-b"], "active ledger keeps only the valid rows");
   } finally {
@@ -1290,7 +1258,6 @@ test("pending drain reads spills lazily per batch, not all up front — memory-b
 test("compaction buffer reader skips an oversized unterminated row instead of throwing (#2033)", async () => {
   const validA = lifecycleEvent("evt-a", "memory-a", "2026-01-01T00:00:00.000Z");
   const validB = lifecycleEvent("evt-b", "memory-b", "2026-01-02T00:00:00.000Z");
-  // A single malformed row far larger than the per-row decode cap (64MB) with no
   // newline: decoding it whole as one string could exceed V8's string limit and
   // THROW before the fail-open parser can drop it, aborting a compaction that
   // could otherwise rewrite the ledger from its good rows. It MUST be skipped
@@ -1329,9 +1296,7 @@ test("getMemoryTimeline fallback WARN is loud with lag and rate-limited when the
       assert.equal(second.length, 2);
 
       const timelineWarns = warns.filter((w) => w.includes("storage.getMemoryTimeline"));
-      // Rate-limited: two fallbacks, but only ONE WARN in the interval (no spam).
       assert.equal(timelineWarns.length, 1, "fallback WARN must fire once, not per call");
-      // Loud: the single WARN names the fallback AND the projection lag.
       assert.match(timelineWarns[0]!, /falling back to full corpus/);
       assert.match(timelineWarns[0]!, /projection never rebuilt/);
     });

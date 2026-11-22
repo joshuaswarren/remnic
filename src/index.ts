@@ -132,55 +132,13 @@ import type { ConsolidationObservation } from "@remnic/core/types";
 import { ensureLiveConnectorCron } from "./openclaw-live-connector-cron.js";
 import { hasEnabledLiveConnectorConfig } from "./openclaw-live-connector-config.js";
 
-/**
- * Per-plugin runtime state is scoped by `serviceId` so a single process can host
- * both the canonical `openclaw-remnic` plugin and the legacy `openclaw-engram`
- * shim plugin without them trampling each other's orchestrator/config (#403 P2).
- *
- * Each slot base name is suffixed with `::${serviceId}` — e.g.
- * `__openclawEngramRegistered::openclaw-remnic` and
- * `__openclawEngramRegistered::openclaw-engram` are independent slots. Without
- * this, whichever plugin registered first would force the second one to reuse
- * the first plugin's orchestrator and `memoryDir`/policy despite having a
- * different id — silently operating on the wrong memory store during migration.
- *
- * `ENGRAM_MIGRATION_PROMISE` is intentionally **not** keyed: migrating
- * `~/.engram` → `~/.remnic` is a one-time process-wide operation, not a
- * per-plugin concern, and both plugin ids should observe the same migration.
- */
 const ENGRAM_MIGRATION_PROMISE = "__openclawEngramMigrationPromise";
 
-/**
- * CLI dedupe guard — intentionally **unkeyed** (not per-serviceId).
- *
- * CLI commands live in the gateway's central plugin registry, not in per-api
- * state.  In migration installs where both `openclaw-remnic` and
- * `openclaw-engram` plugin ids coexist in one process, the per-serviceId
- * `REGISTERED_GUARD` would give each plugin its own "first registration" and
- * both would call `registerCli()`, creating duplicate command trees.  This
- * global guard ensures CLI registration happens exactly once per process.
- */
 const CLI_REGISTERED_GUARD = "__openclawEngramCliRegistered";
 const SESSION_COMMANDS_REGISTERED_GUARD =
   "__openclawEngramSessionCommandsRegistered";
-// Issue #1550 round 3 (Cursor Bugbot Low): the activeRecall + memory-slot
-// prompt-injection overlap warning must fire ONCE per process, not once
-// per agent registry. Multi-agent gateways call `register()` per agent,
-// so without this guard the same warning was logged N times.
 const ACTIVE_RECALL_OVERLAP_WARNED = "__openclawEngramActiveRecallOverlapWarned";
 
-/**
- * Process-global count of Remnic plugin services whose `start()` has
- * successfully run (i.e., `didCountStart === true`).  Incremented in
- * `start()`, decremented in `stop()`.  When the count drops to zero, the
- * global `CLI_REGISTERED_GUARD` is cleared so a subsequent `register()`
- * in a fresh reload cycle can re-register CLI commands.
- *
- * This prevents the bug where one of two coexisting plugin ids stops and
- * clears the CLI guard while the other is still running (Codex P2
- * PRRT_kwDORJXyws56WHTe), while still allowing CLI re-registration after
- * a true full stop where the gateway rebuilds its command registry.
- */
 const CLI_ACTIVE_SERVICE_COUNT = "__openclawEngramCliActiveServiceCount";
 const SECRET_REF_RESOLVER_TEST_KEY = "__openclawEngramSecretRefResolverForTest";
 const NODE_FS_MODULE_ID = ["node", "fs"].join(":");
@@ -275,53 +233,16 @@ export async function loadHourlySummaryCronJobsData(
   }
 }
 
-/**
- * Build the auto-registered hourly summary cron job definition.
- *
- * Exported for testing. Model selection follows the same precedence as the
- * memory flush plan: explicit `summaryModel`, then `model`, then the configured
- * `taskModelChain.primary`. When none is configured the model is omitted
- * entirely so the Gateway falls back to its own default + provider (avoiding an
- * unroutable bare `gpt-5.5`). Issue #1469.
- *
- * The resolved model is written to BOTH the job root (`model`) and the isolated
- * `agentTurn` payload (`payload.model`). For `sessionTarget: "isolated"` jobs
- * OpenClaw honors the per-job `payload.model` as the primary selection; the root
- * field is kept only for backward compatibility with older host builds. Writing
- * payload.model is what makes the configured task model actually route instead
- * of silently falling through to the agent default (codex review on PR #1470).
- */
 type HourlySummaryCronConfig = Pick<
   ReturnType<typeof parseConfig>,
   "summaryModel" | "taskModelChain" | "gatewayConfig"
 >;
 
-/**
- * Resolve the gateway-routed model + fallbacks for the hourly summary cron.
- *
- * Single source of truth shared by the job builder and the in-place
- * reconciler (gotcha #22). `summaryModel` is already resolved by parseConfig
- * (explicit summary/base model → gateway task-chain primary → ""), so a bare id
- * is never produced in gateway mode. We do NOT fall back to `cfg.model` here: it
- * is direct-compatible and may be a bare id the Gateway can't route (#1469).
- *
- * When the model is the configured task-chain primary, the fallback list carries
- * the chain's own fallbacks AND then the gateway default chain
- * (`agents.defaults.model`) as an implicit last resort — matching `fallback-llm`
- * and the documented invariant that an exhausted task chain never blocks a flush
- * (docs/config-reference.md). OpenClaw treats payload-level fallbacks as a
- * REPLACEMENT for the host chain, so the gateway default must be appended here
- * explicitly or the hourly job would stop once the task chain is exhausted.
- * Entries are de-duplicated and never include the primary model itself.
- */
 function resolveHourlySummaryCronRouting(cfg: HourlySummaryCronConfig): {
   model: string | undefined;
   fallbacks: string[];
 } {
   const model = cfg.summaryModel || cfg.taskModelChain?.primary || undefined;
-  // Only the task-chain primary carries fallbacks. An omitted model (Gateway
-  // default wins) or an explicit summaryModel override (a deliberate single-model
-  // choice) gets none.
   if (!model || model !== cfg.taskModelChain?.primary) {
     return { model, fallbacks: [] };
   }
@@ -351,12 +272,8 @@ export function buildHourlySummaryCronJob(
 ): HourlySummaryCronJob {
   const { model, fallbacks } = resolveHourlySummaryCronRouting(cfg);
 
-  // Create the hourly summary job.
-  //
-  // NOTE:
   // - `sessionTarget: "main"` only supports `payload.kind: "systemEvent"` in this install.
   // - For agent-driven automation, use `sessionTarget: "isolated"` + `payload.kind: "agentTurn"`.
-  // - We intentionally avoid sending messages anywhere; success is silent.
   return {
     id: opts.jobId,
     agentId: "generalist",
@@ -394,27 +311,11 @@ export function buildHourlySummaryCronJob(
   };
 }
 
-/**
- * Reconcile an EXISTING auto-registered hourly summary cron job's model routing
- * with the current config, preserving everything else (schedule, delivery,
- * payload message, timestamps).
- *
- * Existing installs are exactly the population affected by the #1469 routing
- * bug: the job is registered once and the `exists` guard skips re-creation, so
- * an operator who upgrades and configures `taskModelChain` would otherwise keep
- * a job that still pins a bare/stale model (or none) and never honors the route.
- * Only the routing fields (`model`, `payload.model`, `payload.fallbacks`) are
- * touched, and only when they actually differ — so it is idempotent across
- * restarts and never clobbers a user's schedule/delivery customizations.
- * Exported for testing.
- */
 export function reconcileHourlySummaryCronRouting(
   existing: HourlySummaryCronJob,
   cfg: HourlySummaryCronConfig,
   opts: { nowMs: number },
 ): { changed: boolean; job: HourlySummaryCronJob } {
-  // Only reconcile a well-formed Remnic agentTurn payload; never rebuild a
-  // malformed payload from scratch (that would drop the message/kind).
   if (!isRecordLike(existing.payload)) {
     return { changed: false, job: existing };
   }
@@ -614,25 +515,12 @@ type ServiceKeys = {
   REGISTERED_GUARD: string;
   HOST_EMBEDDING_UNREGISTER: string;
   HOST_EMBEDDING_SIGNATURE: string;
-  /** Tracks which api objects have already had hooks bound to prevent duplicate handlers. */
   HOOK_APIS: string;
   ACCESS_SERVICE: string;
   ACCESS_HTTP_SERVER: string;
   ACCESS_HTTP_AUTH_STATE: string;
   FLUSH_PLAN_PROCESSING_CHAINS: string;
-  /**
-   * Guards service.start() against duplicate invocation when multiple api instances
-   * each register the service (all registries get registerService, but initialize
-   * must only run once per process lifetime). Cleared by stop() so restart cycles
-   * re-initialize correctly.
-   */
   SERVICE_STARTED: string;
-  /**
-   * Holds the in-flight initialization Promise while the first registry's start()
-   * is running. Concurrent start() calls from other registries await this promise
-   * so they do not resolve before the orchestrator and HTTP server are fully ready.
-   * Set to null after init completes (success or failure) and cleared on stop().
-   */
   INIT_PROMISE: string;
   ORCHESTRATOR: string;
 };
@@ -673,18 +561,11 @@ function coerceRawConfigBoolean(value: unknown): boolean | undefined {
   return undefined;
 }
 
-// Workaround: Read config directly from openclaw.json since gateway may not pass it.
-// IMPORTANT: Do not log raw config contents (may include secrets).
-// Shared helper: read and parse the full plugin entry from openclaw.json.
 function loadPluginEntryFromFile(pluginId?: string): Record<string, unknown> | undefined {
   try {
     const configPath = resolveOpenClawConfigFilePath();
     const content = readTextFileNow(configPath);
     const config = JSON.parse(content);
-    // Delegate slot → preferredId → canonical → legacy resolution to
-    // the shared helper so all config loaders stay in sync (#403).
-    // Pass the active plugin id so shim installs (id="openclaw-engram") prefer
-    // their own entry when no slots.memory override is present.
     return resolveRemnicOpenClawPluginEntry(config, pluginId);
   } catch (err) {
     log.warn(`Failed to load config from file: ${err}`);
@@ -693,10 +574,6 @@ function loadPluginEntryFromFile(pluginId?: string): Record<string, unknown> | u
 }
 
 function loadPluginConfigFromFile(pluginId?: string): Record<string, unknown> | undefined {
-  // Normalize JSON null to undefined so the resolver's \`"key" in raw\` check
-  // never throws (Cursor Bugbot PR #1593 round 3). The loader's return type
-  // was previously unsafely cast — JSON \`"config": null\` parsed as null
-  // and the \`as Record<...> | undefined\` cast lied about it.
   const entry = loadPluginEntryFromFile(pluginId);
   const cfg = entry?.config;
   if (cfg === null || cfg === undefined) return undefined;
@@ -718,20 +595,13 @@ function loadRawConfigFromFile(): Record<string, unknown> | undefined {
   }
 }
 
-/**
- * Read the plugin hooks policy from both the API config and the file-backed
- * config, since the gateway may not pass the full config to the plugin.
- */
 function readPluginHooksPolicy(
   apiConfig: unknown,
   pluginId?: string,
 ): Record<string, unknown> | undefined {
-  // Try api.config first — delegate slot → preferredId → canonical → legacy
-  // resolution to the shared helper so all config loaders stay in sync (#403).
   const apiEntry = resolveRemnicOpenClawPluginEntry(apiConfig, pluginId);
   const fromApi = apiEntry?.["hooks"] as Record<string, unknown> | undefined;
   if (fromApi && typeof fromApi === "object") return fromApi;
-  // Fall back to file-backed config
   return loadPluginEntryFromFile(pluginId)?.["hooks"] as
     | Record<string, unknown>
     | undefined;
@@ -966,7 +836,6 @@ function tryDefinePluginEntry(def: {
     };
     return definePluginEntry(def);
   } catch {
-    // SDK module not available — legacy runtime; return bare object.
     return def;
   }
 }
@@ -1107,11 +976,6 @@ function registerOpenClawHostEmbeddingProvider(params: {
   return unregister;
 }
 
-/**
- * The registration-time runtime agent, narrowed from the host api without an
- * `any` escape: older SDK shapes omit `runtime`, and every field below is
- * `unknown` until its own check passes.
- */
 function getOpenClawRuntimeAgent(api: OpenClawPluginApi): Record<string, unknown> | undefined {
   if (!("runtime" in api)) return undefined;
   const runtime: unknown = api.runtime;
@@ -1127,11 +991,6 @@ function getOpenClawRuntimeWorkspaceDir(api: OpenClawPluginApi): string | undefi
   return typeof workspaceDir === "string" && workspaceDir.length > 0 ? workspaceDir : undefined;
 }
 
-/**
- * Agent id owning this registration. Each register() call is scoped to one
- * agent, so the runtime's agent id is authoritative for this registry; older
- * SDK shapes that expose none yield undefined and callers fall back.
- */
 function getOpenClawRuntimeAgentId(api: OpenClawPluginApi): string | undefined {
   const agentId = getOpenClawRuntimeAgent(api)?.id;
   return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
@@ -1300,25 +1159,14 @@ async function embedBatchWithOpenClawProvider(
   );
 }
 
-/** SDK capabilities detected at register() time — available to later tasks. */
 let sdkCaps: SdkCapabilities | undefined;
 
-/**
- * Modes whose register() inspects static surfaces only. OpenClaw's loader
- * (`resolvePluginRegistrationCapabilities`) accepts capability handlers —
- * tools, hooks, the memory capability — in `full`, `discovery`, AND
- * `tool-discovery`, and the agent runtime that serves `openclaw agent` turns
- * registers in the discovery modes. Treating them as non-runtime skipped
- * register() there, so that runtime had no tools, no before_prompt_build,
- * and no agent_end.
- */
 const NON_RUNTIME_REGISTRATION_MODES = new Set<OpenClawRegistrationMode>([
   "setup-only",
   "setup-runtime",
   "cli-metadata",
 ]);
 
-/** Read-only discovery passes: capability handlers register, filesystem writes stay off. */
 const DISCOVERY_REGISTRATION_MODES = new Set<OpenClawRegistrationMode>([
   "discovery",
   "tool-discovery",
@@ -1338,9 +1186,6 @@ const pluginDefinition = {
   kind: "memory" as const,
 
   register(api: OpenClawPluginApi) {
-    // Capture the id from the definition object so shim re-exports with
-    // overridden ids (e.g. "openclaw-engram" in the backward-compat shim)
-    // still register the service under the correct id (#403).
     // OpenClaw's cli-metadata loader currently invokes register(api) as an
     // unbound function, so `this` can legitimately be undefined there.
     // Guard that path and fall back to the canonical id when no bound entry
@@ -1353,23 +1198,15 @@ const pluginDefinition = {
       typeof registerThis?.id === "string" && registerThis.id.trim().length > 0
         ? registerThis.id
         : REMNIC_OPENCLAW_PLUGIN_ID;
-    // Scope all per-plugin runtime singletons (orchestrator, start guards,
-    // access service, HTTP server, etc.) by serviceId so a migration install
-    // can host both `openclaw-remnic` and `openclaw-engram` without the second
-    // plugin silently reusing the first plugin's orchestrator/config (#403 P2).
     const keys = buildServiceKeys(serviceId);
 
-    // Initialize logger early (debug off until config is parsed).
     initLogger(api.logger, false);
 
-    // Detect SDK capabilities for dual-path hook registration.
     sdkCaps = detectSdkCapabilities(api as unknown as Record<string, unknown>);
     log.info(
       `SDK detection: version=${sdkCaps.sdkVersion}, beforePromptBuild=${sdkCaps.hasBeforePromptBuild}, memoryPromptSection=${sdkCaps.hasRegisterMemoryPromptSection}, memoryCapability=${sdkCaps.hasRegisterMemoryCapability}, typedHooks=${sdkCaps.hasTypedHooks}`,
     );
 
-    // Metadata/setup loaders invoke register() to inspect static surfaces. Keep
-    // those paths inert: no migrations, config reads, hooks, services, or tools.
     if (isNonRuntimeRegistrationMode(sdkCaps.registrationMode)) {
       log.info(
         `registrationMode=${sdkCaps.registrationMode} — skipping runtime initialization`,
@@ -1377,8 +1214,6 @@ const pluginDefinition = {
       return;
     }
 
-    // Discovery passes inspect the plugin's surfaces: capability handlers
-    // register, filesystem maintenance stays off.
     const discoveryPass =
       typeof sdkCaps.registrationMode === "string" &&
       DISCOVERY_REGISTRATION_MODES.has(sdkCaps.registrationMode);
@@ -1396,26 +1231,8 @@ const pluginDefinition = {
         }));
       void migrationPromise;
     }
-    // Workaround: Load config from file since gateway may not pass it.
-    // Pass serviceId so shim installs prefer their own entry (#403).
     const fileConfig = loadPluginConfigFromFile(serviceId);
     const openclawFlushPlanProcessingEnabled = resolveOpenClawFlushPlanProcessingEnabledFromConfig(fileConfig, api.pluginConfig);
-    // Capture which keys the runtime layer (api.pluginConfig) explicitly
-    // set so the emit-legacy-tools resolvers can distinguish a deliberate
-    // runtime opt-out (e.g. api.pluginConfig.emitLegacyTools = false)
-    // from schema-default materialization, even when the runtime value
-    // matches the schema default (chatgpt-codex-connector P2, PR #1593
-    // round 7 on src/index.ts:1353).
-    // Round 8 (PR #1593): the `runtimeSet` argument is now always empty.
-    // The round-7 attempt to pass every key present in `api.pluginConfig`
-    // (chatgpt-codex-connector P2, round 7) was undone in round 8 because
-    // OpenClaw's loader runs `applyDefaults: true` before exposing
-    // `api.pluginConfig`, so the set of keys present there cannot reliably
-    // distinguish operator-authored values from schema-default materialization
-    // (chatgpt-codex-connector P1, round 8 on src/index.ts:1348). The
-    // resolver now relies solely on the `configValue !== SCHEMA_DEFAULT`
-    // comparison (round-4 contract). We keep the third arg in the
-    // `parseConfig` signature for API stability but it carries no signal.
     const runtimeSet = new Set<string>();
     const rawPluginConfig = {
       ...fileConfig,
@@ -1426,23 +1243,12 @@ const pluginDefinition = {
         ...rawPluginConfig,
         gatewayConfig: api.config, // Pass gateway config for fallback AI
       },
-      // `rawOperatorConfig` distinguishes "operator wrote this key in
-      // openclaw.json" from "OpenClaw materialized a schema default into
-      // api.pluginConfig" — the resolvers use it to keep the sticky-legacy
-      // `emitLegacyTools` default reachable on upgraded installs where no
-      // operator override exists (#1550, Cursor Bugbot PR #1593).
       //
-      // When `fileConfig` is missing entirely (no openclaw.json on disk),
-      // pass \`{}\` rather than undefined so the resolver treats the
-      // absence the same as "file layer present but authored nothing" —
-      // i.e. fall through to env / sticky-legacy instead of trusting a
-      // materialized schema default (Cursor Bugbot PR #1593 round 3).
       fileConfig ?? {},
       runtimeSet,
     );
     cfg.providerApiKeyResolver = resolveOpenClawProviderApiKey;
     cfg.runtimeAuthForModelResolver = getOpenClawRuntimeAuthForModel;
-    // Re-initialize with correct debug setting
     initLogger(api.logger, cfg.debug);
     log.info(
       `initialized (debug=${cfg.debug}, qmdEnabled=${cfg.qmdEnabled}, transcriptEnabled=${cfg.transcriptEnabled}, hourlySummariesEnabled=${cfg.hourlySummariesEnabled})`,
@@ -1477,8 +1283,6 @@ const pluginDefinition = {
       },
     );
 
-    // Bridge mode (issue #2120): delegate skips the embedded orchestrator;
-    // the plugin package owns resolution/preflight/fallback (cast widens the SDK union).
     const delegateApi = api as unknown as DelegateHookApi;
     const delegateSupportPassportGatewayRoute =
       createConfiguredSupportPassportGatewayRoute(cfg);
@@ -1505,9 +1309,6 @@ const pluginDefinition = {
       openclawToolsEnabled: cfg.openclawToolsEnabled,
       openclawToolSnippetMaxChars: cfg.openclawToolSnippetMaxChars,
       supportPassportModelRoute: delegateSupportPassportGatewayRoute ?? undefined,
-      // Memory-slot capability inputs. Mirrors the embedded derivation: the
-      // registration-time runtime agent owns this memory, and QMD is the
-      // backend only when it is both selected and enabled.
       capability: {
         memoryDir: cfg.memoryDir,
         workspaceDir:
@@ -1530,10 +1331,6 @@ const pluginDefinition = {
     });
     if (delegateHandled) return;
 
-    // Singleton guard: register() fires once per agent registry. Reuse the
-    // orchestrator (heavy) but always re-register hooks — each api.on() binds to
-    // the caller's registry. Keyed by serviceId so a migration install with both
-    // plugin ids gives each its own orchestrator/memoryDir (#403 P2).
     const existing = (globalThis as any)[keys.ORCHESTRATOR] as
       | Orchestrator
       | undefined;
@@ -1580,9 +1377,6 @@ const pluginDefinition = {
       }
     }
 
-    // Per-api hook deduplication: if the same api object calls register() twice
-    // (e.g., during reload edge cases), skip re-binding hooks to avoid double-
-    // fired handlers (double recall, double extraction, double reset).
     const hookApis: WeakSet<object> = ((globalThis as any)[keys.HOOK_APIS] ??=
       new WeakSet());
     if (hookApis.has(api)) {
@@ -1599,16 +1393,8 @@ const pluginDefinition = {
       );
     }
 
-    // Expose for inter-plugin discovery (e.g., langsmith tracing).
-    // Store under the keyed slot (per-serviceId, authoritative) AND under the
-    // unkeyed slot as a "last registered Remnic orchestrator" pointer for
-    // cross-plugin observers (langsmith etc.) that don't know the serviceId.
-    // Observers use this only for tracing — never for memory reads/writes —
-    // so the ambiguity of which plugin it points at is acceptable there.
     (globalThis as any)[keys.ORCHESTRATOR] = orchestrator;
     (globalThis as any).__openclawEngramOrchestrator = orchestrator;
-    // Trace callback slot — langsmith (or any observer) will overwrite this.
-    // Intentionally unkeyed: tracing is cross-plugin.
     if ((globalThis as any).__openclawEngramTrace === undefined) {
       (globalThis as any).__openclawEngramTrace = undefined;
     }
@@ -1625,19 +1411,6 @@ const pluginDefinition = {
           });
     (globalThis as any)[keys.ACCESS_SERVICE] = accessService;
 
-    // ── agentAccessHttp.authToken SecretRef wiring (issue #757) ──────────
-    // `parseConfig` preserves SecretRef objects verbatim; resolution must
-    // happen before any request validation runs. Two construction paths:
-    //   1. String authToken (the pre-#757 shape): pass through unchanged.
-    //   2. SecretRef authToken: construct the server with `authToken:
-    //      undefined` and route the resolved value through
-    //      `authTokensGetter`, which is already the mechanism used for
-    //      dynamic tokens. The closure starts empty (rejects all requests)
-    //      and is populated by `registerService.start()` *before* the HTTP
-    //      listener is opened — so there is no window in which the bridge
-    //      accepts connections without an auth token. Resolution failure
-    //      (missing OpenClaw resolver, empty value) throws inside start()
-    //      and aborts the listener entirely.
     const rawAuthToken = cfg.agentAccessHttp.authToken;
     const authTokenIsSecretRef =
       rawAuthToken !== undefined && typeof rawAuthToken !== "string";
@@ -1939,9 +1712,6 @@ const pluginDefinition = {
       observation: ConsolidationObservation,
     ): Promise<void> {
       if (!cfg.dreaming.enabled) return;
-      // Route the same way every other background LLM task does: gateway mode
-      // goes through FallbackLlmClient (so dreams work without a direct OpenAI
-      // key, issue #1366), otherwise use the direct OpenAI Responses client.
       const route = resolveDreamNarrativeRoute(cfg, !!dreamNarrativeClient);
       if (route.kind === "skip") {
         log.debug(
@@ -1979,8 +1749,6 @@ const pluginDefinition = {
             cfg.gatewayConfig,
             fallbackLlmRuntimeContextFromConfig(cfg),
           );
-          // isAvailable() ignores the per-call model override, so an explicit
-          // dreaming.narrativeModel counts as availability on its own.
           if (!route.hasExplicitModel && !llm.isAvailable(route.options)) {
             log.debug(
               "dreaming narrative skipped: no gateway model configured (set dreaming.narrativeModel or taskModelChain)",
@@ -2026,8 +1794,6 @@ const pluginDefinition = {
       await queueDreamSurfaceSync();
     }
 
-    // Retention maintenance deletes audit directories: a runtime concern, not
-    // something a read-only discovery pass may do to the memory dir.
     if (!discoveryPass) {
       void pruneRecallAuditEntries(recallAuditDir, cfg.recallTranscriptRetentionDays).catch((error) => {
         log.debug(`recall audit prune failed: ${String(error)}`);
@@ -2088,33 +1854,17 @@ const pluginDefinition = {
 
     if (!passiveMode) {
     // ========================================================================
-    // HOOK: before_prompt_build — Inject memory context
     // ========================================================================
-    // When registerMemoryPromptSection is available (preferred path), skip the
-    // recall hook entirely to avoid dual memory injection.
-    // Uses literal hook names so src/compat/checks.ts parseHookRegistrations()
-    // can statically detect them.
-    // Respect allowPromptInjection=false: the gateway only gates typed hooks,
-    // NOT section builders, so we must check the policy ourselves.
-    // Read from both api.config and file-backed config for installs where
-    // the gateway doesn't pass the full config object.
     const hooksPolicy = readPluginHooksPolicy(api.config, serviceId);
     const promptInjectionAllowed =
       coerceRawConfigBoolean(hooksPolicy?.allowPromptInjection) !== false;
 
-    // True when the section builder will be registered (capability + policy).
-    // Must be determined before the hook registration block below.
     const useMemoryPromptSection =
       sdkCaps.hasRegisterMemoryPromptSection &&
       typeof api.registerMemoryPromptSection === "function" &&
       promptInjectionAllowed;
     const warnedBundledActiveMemoryCollisionAgents = new Set<string>();
 
-    // Per-session cache: shared by the hook fallback path (populated when only
-    // registerMemoryCapability is available) and the registerMemoryPromptSection
-    // path (populated by the async pre-compute hook). Declared early so both
-    // paths and the closure-captured handlers below can reference it without
-    // TDZ surprises.
     const cachedMemoryBySession = new Map<string, string[] | null>();
     const cachedMemoryByCodexCacheKey = new Map<string, string[] | null>();
     const codexThreadBySession = new Map<string, string>();
@@ -2928,14 +2678,11 @@ const pluginDefinition = {
       ctx: Record<string, unknown>,
     ) {
       const hookLabel = "before_prompt_build";
-      // Prefer event.prompt; fall back to extracting the last user message
-      // from event.messages (before_prompt_build may only provide messages).
       let prompt = event.prompt as string | undefined;
       if ((!prompt || prompt.length < 5) && Array.isArray(event.messages)) {
         const msgs = event.messages as Array<Record<string, unknown>>;
         for (let i = msgs.length - 1; i >= 0; i--) {
           if (msgs[i]?.role === "user") {
-            // Handle both string and block-based content shapes
             const text = extractTextContent(msgs[i] as Record<string, unknown>);
             if (text.length >= 5) {
               prompt = text;
@@ -3031,11 +2778,6 @@ const pluginDefinition = {
         );
       }
 
-      // Sessions keyed as spawned subagents skip unsolicited recall: the
-      // hook exposes no deeper isolation discriminator, and injecting
-      // memory behind the host's back defeats fresh-eyes isolation
-      // (issue #3142). Upstream classifies these keys as background
-      // sessions.
       if (await isSubagentSessionKeyDetected(sessionKey)) {
         log.debug(
           `${hookLabel}: skip recall for spawned-subagent session ${sessionKey}`,
@@ -3280,12 +3022,6 @@ const pluginDefinition = {
           });
         }
 
-        // Build the structured line array for the capability cache fallback,
-        // then derive the flat `prependSystemContext` string from the same
-        // source so the hook-based and capability-based memory-injection
-        // paths can never drift. `memoryLines` is an internal return field
-        // consumed by the wrapping closure and MUST be stripped before the
-        // hook result is passed back to the gateway.
         const verboseLines = verboseRequested
           ? buildVerboseRecallHeader({
               sessionKey,
@@ -3335,20 +3071,8 @@ const pluginDefinition = {
       }
     }
 
-    // Memory recall injection through hook handlers is only legal when the
-    // operator policy allows prompt injection. When
-    // `hooks.allowPromptInjection=false`, the capability registration below
-    // already omits `promptBuilder`, so we also MUST NOT register the recall
-    // hook here: otherwise `recallHookHandler` would still return
-    // `prependSystemContext`, silently bypassing the policy on
-    // capability-only SDKs.
     if (!useMemoryPromptSection && promptInjectionAllowed) {
-      // Capability-only SDKs need the hook path to populate
-      // cachedMemoryBySession for the capability promptBuilder.
       //
-      // NOTE: needsCacheFallback only applies to the before_prompt_build path.
-      // Capability-only SDKs still use before_prompt_build to populate the
-      // promptBuilder cache when the section-builder surface is absent.
       const needsCacheFallback =
         sdkCaps.hasRegisterMemoryCapability &&
         typeof (api as any).registerMemoryCapability === "function";
@@ -3365,7 +3089,6 @@ const pluginDefinition = {
           ) => void;
         };
 
-        // New SDK path — literal string for compat checker detection
         ((api: HookApiWithOptions) => {
           api.on(
             "before_prompt_build",
@@ -3375,9 +3098,6 @@ const pluginDefinition = {
             ) => {
               const sessionKey = (ctx?.sessionKey as string) ?? "default";
               const sessionIdentity = resolveSessionIdentity(sessionKey, event, ctx);
-              // Reset the cache at the start of every turn so a recall miss
-              // can never serve stale memory from a prior turn through the
-              // capability promptBuilder fallback.
               if (needsCacheFallback) {
                 cachePromptMemoryLines(
                   sessionKey,
@@ -3386,8 +3106,6 @@ const pluginDefinition = {
                 );
               }
               const result = await recallHookHandler(event, ctx);
-              // Populate cache for capability promptBuilder fallback using the
-              // same structured line format as the registerMemoryPromptSection path.
               if (needsCacheFallback && result?.memoryLines) {
                 cachePromptMemoryLines(
                   sessionKey,
@@ -3395,9 +3113,6 @@ const pluginDefinition = {
                   result.memoryLines,
                 );
               }
-              // Strip the internal `memoryLines` field before returning to the
-              // gateway — it's a closure-private carrier for cache population
-              // and is not part of the hook contract.
               if (result && "memoryLines" in result) {
                 const { memoryLines: _ml, ...gatewayResult } = result;
                 return Object.keys(gatewayResult).length > 0 ? gatewayResult : undefined;
@@ -3411,7 +3126,6 @@ const pluginDefinition = {
     }
 
     // ========================================================================
-    // registerMemoryPromptSection — structured memory injection (new SDK)
     // ========================================================================
     //
     // The gateway calls the builder **synchronously** during system-prompt
@@ -3423,20 +3137,10 @@ const pluginDefinition = {
     // before_prompt_build hook (which IS async-capable) and cache the result
     // for the synchronous builder to return.
     // ========================================================================
-    // Note: `cachedMemoryBySession` is declared earlier in this function so
-    // both this section path and the hook fallback path can populate it.
 
-    // Hoisted reference to the prompt builder so registerMemoryCapability
-    // can include it alongside publicArtifacts (prevents SDK >=2026.4.5
-    // from treating the capability as authoritative without a promptBuilder).
     let memoryPromptBuilder: ((params: { sessionKey?: string }) => string[] | null) | undefined;
 
     if (useMemoryPromptSection && api.registerMemoryPromptSection) {
-      // Issue #1550: memory-slot prompt injection is the primary recall path.
-      // activeRecall is a compat-only secondary pre-reply worker — running
-      // both means two blocking retrievals per turn, so make the overlap
-      // visible once at startup instead of letting operators assume
-      // activeRecall is required for injection.
       if (cfg.activeRecallEnabled && !(globalThis as any)[ACTIVE_RECALL_OVERLAP_WARNED]) {
         (globalThis as any)[ACTIVE_RECALL_OVERLAP_WARNED] = true;
         log.warn(
@@ -3447,8 +3151,6 @@ const pluginDefinition = {
             "block is intentional (issue #1550).",
         );
       }
-      // Async pre-compute: run recall in before_prompt_build and cache result.
-      // The hook receives both event and ctx — session identity is in ctx.
       (api.on as (
         event: string,
         handler: (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<unknown>,
@@ -3479,10 +3181,6 @@ const pluginDefinition = {
         { timeoutMs: cfg.initGateTimeoutMs },
       );
 
-      // Synchronous builder: returns the pre-computed lines for the
-      // requesting session.  The gateway passes { prompt, sessionKey }
-      // but we only need sessionKey to look up our cache.
-      // Evict the entry after reading to avoid unbounded growth.
       const memoryBuildFn = (params: {
         sessionKey?: string;
       }): string[] | null => {
@@ -3498,50 +3196,28 @@ const pluginDefinition = {
       const registerSection = api.registerMemoryPromptSection;
       registerSection.call(api, memoryBuildFn as Parameters<typeof registerSection>[0]);
 
-      // Hoist for registerMemoryCapability below
       memoryPromptBuilder = memoryBuildFn;
     }
 
     // ========================================================================
-    // Native memory surfaces — unified capability plus split legacy surfaces
     // ========================================================================
-    // When registerMemoryCapability is available (>=2026.4.5), register the
-    // full capability object including publicArtifacts so memory-wiki bridge
-    // mode can discover and ingest Remnic artifacts.
     //
-    // This does NOT replace the existing registerMemoryPromptSection / hook
-    // paths above — those handle recall injection. Split-only SDKs can still
-    // consume the same runtime and flush-plan objects through their direct
-    // registration functions.
     if (
       (sdkCaps.hasRegisterMemoryCapability &&
         typeof (api as any).registerMemoryCapability === "function") ||
       typeof (api as any).registerMemoryRuntime === "function" ||
       typeof (api as any).registerMemoryFlushPlan === "function"
     ) {
-      // Build a promptBuilder for the capability. When registerMemoryPromptSection
-      // was also registered, the section builder already does a destructive read
-      // (get + delete). To avoid double-consumption if the runtime calls both,
-      // the capability builder uses a non-destructive peek (get without delete).
-      // In capability-only SDK shapes, the capability builder IS the sole
-      // consumer so it performs the destructive read.
       const capabilityPromptBuilder = memoryPromptBuilder
         ? (params: { sessionKey?: string }): string[] | null => {
-            // Non-destructive peek — the section builder will handle cleanup
             const key = params?.sessionKey ?? "default";
             return consumePromptMemoryLines(key, { destructive: false });
           }
         : (params: { sessionKey?: string }): string[] | null => {
-            // Capability-only: destructive read since we are the sole consumer
             const key = params?.sessionKey ?? "default";
             return consumePromptMemoryLines(key);
           };
 
-      // Derive the agent id owning this memory from the registration-time
-      // runtime context. Each plugin register() call is scoped to one agent
-      // (see singleton guard comment above), so the runtime agent id is
-      // authoritative for this registry. Fall back to "generalist" only when
-      // the runtime does not expose an agent id (older new-SDK shapes).
       const capabilityAgentIds = [getOpenClawRuntimeAgentId(api) ?? "generalist"];
       const capabilityWorkspaceDir =
         getOpenClawRuntimeWorkspaceDir(api) ??
@@ -3554,10 +3230,6 @@ const pluginDefinition = {
         typeof orchestrator.config.qmdPath === "string" && orchestrator.config.qmdPath.trim().length > 0
           ? orchestrator.config.qmdPath.trim()
           : "qmd";
-      // Reads are restricted to memory files only — memory-read-scope.ts owns
-      // the allowlist, strict canonicalization, containment, and the markdown
-      // narrowing. Both bridge modes share it so neither can drift into a
-      // traversal hole the other already closed.
       const readScope = createMemoryReadScope({
         memoryDir: orchestrator.config.memoryDir,
         workspaceDir: capabilityWorkspaceDir,
@@ -3605,12 +3277,6 @@ const pluginDefinition = {
                   ),
                   isExcluded: (resultPath) => isMemoryArtifactPath(resultPath),
                 });
-                // minScore is a ranking preference, not a privacy/artifact
-                // exclusion: results arrive score-descending, so rows behind
-                // the returned page cannot clear a threshold the page failed.
-                // Filtering after the refill keeps a strict threshold from
-                // walking the backend candidate cap one page-doubling at a
-                // time (#2387).
                 const scoredResults = minScore === undefined
                   ? visibleResults
                   : visibleResults.filter((result) => result.score >= minScore);
@@ -3631,11 +3297,6 @@ const pluginDefinition = {
                       : typeof candidate.id === "string"
                         ? candidate.id
                         : `memory-${index + 1}`;
-                  // Emit the absolute path as the primary `path` field so
-                  // follow-up readFile() calls are unambiguous (relative
-                  // paths that exist under both memoryDir and
-                  // <workspace>/memory would otherwise pick whichever
-                  // root realpath succeeded against first).
                   const absolutePath = readScope.absolutize(rawPath);
                   const normalizedPath = readScope.relativizeToMemoryRoot(rawPath);
                   const startLine =
@@ -3774,8 +3435,6 @@ const pluginDefinition = {
         buildMemoryFlushPlan({
           serviceId,
           extractionMaxTurnChars: cfg.extractionMaxTurnChars,
-          // `summaryModel` already resolves explicit summary/base model →
-          // gateway task-chain primary → "" (gateway mode).
           flushModel:
             typeof cfg.summaryModel === "string" && cfg.summaryModel.length > 0
               ? cfg.summaryModel
@@ -3783,11 +3442,6 @@ const pluginDefinition = {
         });
 
       const memoryCapability: import("openclaw/plugin-sdk").MemoryPluginCapability = {
-        // Include the promptBuilder so runtimes that treat unified capability
-        // registration as authoritative (SDK >=2026.4.5) continue to inject
-        // recall context via the prompt builder.
-        // Respect promptInjectionAllowed policy — omit promptBuilder if injection
-        // is disabled, so the capability only provides publicArtifacts.
         ...(promptInjectionAllowed ? { promptBuilder: capabilityPromptBuilder } : {}),
         flushPlanResolver: remnicMemoryFlushPlanResolver,
         runtime: remnicMemoryRuntime,
@@ -3971,7 +3625,6 @@ const pluginDefinition = {
     }
 
     // ========================================================================
-    // HOOK: agent_end — Buffer turns and trigger extraction
     // ========================================================================
     api.on(
       "agent_end",
@@ -4005,15 +3658,10 @@ const pluginDefinition = {
         rememberCodexThread(sessionKey, sessionIdentity.providerThreadId);
 
         try {
-          // Extract the last user-assistant exchange
           const messages = event.messages as Array<Record<string, unknown>>;
           const lastTurn = extractLastTurn(messages);
           const eventTimestamp = new Date().toISOString();
 
-          // Best-effort tool usage stats for extended hourly summaries.
-          // Always scan messages here (gated on success=true by the early return above).
-          // after_tool_call only logs for debug — stats are recorded here to avoid
-          // counting tools from failed/aborted turns.
           if (orchestrator.config.hourlySummariesIncludeToolStats) {
             const toolNames: string[] = [];
             for (const msg of messages) {
@@ -4085,7 +3733,6 @@ const pluginDefinition = {
           for (const msg of lastTurn) {
             const rawRole = typeof msg.role === "string" ? msg.role : "";
             if (rawRole !== "user" && rawRole !== "assistant") {
-              // Ignore tool/system blocks for extraction to avoid noisy memory churn.
               continue;
             }
             const role = rawRole;
@@ -4153,7 +3800,6 @@ const pluginDefinition = {
                 (messageContentFingerprint !== null &&
                   observedInboundContentFingerprints.has(messageContentFingerprint)));
 
-            // Append to transcript
             if (
               orchestrator.config.transcriptEnabled &&
               stripped.length > 0 &&
@@ -4214,8 +3860,6 @@ const pluginDefinition = {
                 });
                 persistedTurnIndex += 1;
               } catch (bufferErr) {
-                // A full session-entry cap refuses new sessions (#3366). That must
-                // not skip the LCM archive below; matched by name, not exported.
                 if (!(bufferErr instanceof Error) || bufferErr.name !== "BufferAdmissionRefusedError") {
                   throw bufferErr;
                 }
@@ -4224,7 +3868,6 @@ const pluginDefinition = {
             }
           }
 
-          // LCM: index messages into lossless archive (best-effort)
           if (orchestrator.lcmEngine?.enabled) {
             try {
               const lcmMessages = lastTurn
@@ -4240,12 +3883,6 @@ const pluginDefinition = {
                 })
                 .filter((m) => m.content.length > 0);
               if (lcmMessages.length > 0) {
-                // Awaited: the archive append is durable before this returns,
-                // so a failure is reported instead of silently dropping the
-                // turn. Summary building stays in the background. The hook
-                // has no acknowledgement contract, so the failure is logged
-                // rather than thrown at the host (the turn is already
-                // persisted upstream and re-running it would duplicate work).
                 await orchestrator.lcmEngine.enqueueObserveMessages(
                   sessionKey,
                   lcmMessages,
@@ -4261,11 +3898,9 @@ const pluginDefinition = {
       },
     );
 
-    // Stash pre-compaction token counts so after_compaction can record the pair.
     const lcmTokensBefore = new Map<string, number>();
 
     // ========================================================================
-    // HOOK: before_compaction — Save checkpoint before context is lost
     // ========================================================================
     api.on(
       "before_compaction",
@@ -4275,7 +3910,6 @@ const pluginDefinition = {
         ctx: import("openclaw/plugin-sdk").PluginHookAgentContext &
           Record<string, unknown>,
       ) => {
-        // Fall back to event.sessionKey when ctx is empty (new SDK may provide it on the event).
         const sessionKey =
           (ctx?.sessionKey as string) ??
           (event?.sessionKey as string) ??
@@ -4309,16 +3943,12 @@ const pluginDefinition = {
               log.warn(`codexCompat signal flush failed: ${String(error)}`);
             }
           }
-          // LCM: flush pending summaries before context is lost
-          // (runs regardless of checkpoint setting — LCM needs pre-compaction flush)
-          // Token count is stashed here; after_compaction records the final pair.
           if (orchestrator.lcmEngine?.enabled) {
             try {
               let tokensBefore = 0;
               if (typeof event.tokenCount === "number") {
                 tokensBefore = event.tokenCount;
               } else if (Array.isArray(event.messages)) {
-                // Auto-compaction path: estimate from messages array
                 for (const msg of event.messages as Array<{
                   content?: unknown;
                 }>) {
@@ -4352,7 +3982,6 @@ const pluginDefinition = {
             return;
           }
 
-          // Get recent turns from transcript
           const entries = await orchestrator.transcript.readRecent(
             1,
             sessionKey,
@@ -4377,7 +4006,6 @@ const pluginDefinition = {
     );
 
     // ========================================================================
-    // HOOK: after_compaction — Trigger session reset (compaction reset flow)
     // ========================================================================
     api.on(
       "after_compaction",
@@ -4404,16 +4032,12 @@ const pluginDefinition = {
             preserveMessageCount: true,
             preserveThreadBinding: true,
           });
-          // LCM: record compaction with real token counts and verify coverage
-          // (runs regardless of reset setting — LCM needs compaction metrics)
           if (orchestrator.lcmEngine?.enabled) {
             try {
               let tokensAfter = 0;
               if (typeof event.tokenCount === "number") {
                 tokensAfter = event.tokenCount;
               } else {
-                // Auto-compaction path: no token count available.
-                // Estimate from messageCount ratio if we have tokensBefore.
                 const storedBefore = lcmTokensBefore.get(sessionKey) ?? 0;
                 const msgCountAfter =
                   typeof event.messageCount === "number"
@@ -4425,7 +4049,6 @@ const pluginDefinition = {
                     : 0;
                 const msgCountBefore = msgCountAfter + compacted;
                 if (storedBefore > 0 && msgCountBefore > 0) {
-                  // Rough estimate: tokens scale proportionally to message count
                   tokensAfter = Math.round(
                     storedBefore * (msgCountAfter / msgCountBefore),
                   );
@@ -4456,9 +4079,6 @@ const pluginDefinition = {
             `compaction completed for ${sessionKey}, triggering session reset`,
           );
 
-          // Reset the session first — only write the signal file if reset succeeds.
-          // This prevents the next recall() from injecting recovery content when
-          // no actual reset occurred (e.g., gateway doesn't support resetSession).
           const apiAny = api as any;
           if (typeof apiAny.resetSession === "function") {
             const result = await apiAny.resetSession(sessionKey, "new");
@@ -4467,9 +4087,6 @@ const pluginDefinition = {
                 `session reset via API for ${sessionKey}, new sessionId=${result.sessionId}`,
               );
 
-              // Write signal file AFTER successful reset so recall() knows
-              // a compaction reset just happened and can inject BOOT.md.
-              // Signal file is per-session to prevent multi-session overwrites.
               const safeSessionKey = sanitizeSessionKeyForFilename(sessionKey);
               const signalPath = path.join(
                 workspaceDir,
@@ -4574,10 +4191,6 @@ const pluginDefinition = {
           if (timeoutId) {
             clearTimeout(timeoutId);
           }
-          // When the flush itself timed out, the reset deadline is already
-          // spent — skip flush-plan processing entirely rather than relying on
-          // a Date.now() >= deadlineMs check that can be off by 1–2 ms when the
-          // abort timer fires early under CI load (#1686 tests(root) flake).
           if (!flushTimedOut) {
             await queueOpenClawFlushPlanProcessing(
               "before_reset",
@@ -4608,12 +4221,8 @@ const pluginDefinition = {
     }
 
     // ========================================================================
-    // NEW SDK HOOKS (≥2026.3.22 only)
-    // These hooks are only available on the new SDK and provide richer
-    // lifecycle, tool, LLM, and subagent observation capabilities.
     // ========================================================================
     if (!passiveMode && sdkCaps.hasBeforePromptBuild) {
-      // ---- Session lifecycle ----
       api.on(
         "session_start",
         async (
@@ -4689,7 +4298,6 @@ const pluginDefinition = {
         },
       );
 
-      // ---- Tool observation ----
       api.on(
         "before_tool_call",
         async (
@@ -4712,9 +4320,6 @@ const pluginDefinition = {
           _ctx: import("openclaw/plugin-sdk").PluginHookAgentContext &
             Record<string, unknown>,
         ) => {
-          // Log tool usage for debugging. Tool stats for hourly summaries are
-          // recorded in agent_end (gated on success=true) to avoid counting
-          // tools from failed/aborted turns.
           if (event.toolName) {
             log.debug(
               `after_tool_call: ${event.toolName} (${event.durationMs ?? "?"}ms)`,
@@ -4723,7 +4328,6 @@ const pluginDefinition = {
         },
       );
 
-      // ---- LLM observation ----
       api.on(
         "llm_output",
         async (
@@ -4741,12 +4345,6 @@ const pluginDefinition = {
         },
       );
 
-      // ---- Subagent lifecycle ----
-      // Migrated off the deprecated `subagent_spawning` hook (issue #1550).
-      // OpenClaw core now prepares thread-bound subagent bindings through
-      // channel session-binding adapters before `subagent_spawned` fires,
-      // so this hook is observation-only — routing is handled by the core
-      // session-binding adapters (no in-plugin routing logic).
       api.on(
         "subagent_spawned",
         async (
@@ -4779,7 +4377,6 @@ const pluginDefinition = {
     }
 
     // ========================================================================
-    // Helper: Auto-register hourly summary cron job
     // ========================================================================
     async function ensureHourlySummaryCron(
       api: OpenClawPluginApi,
@@ -4801,17 +4398,11 @@ const pluginDefinition = {
           );
           return;
         }
-        // Only bootstrap a new jobs file when the file is absent. Invalid
-        // existing files are preserved above so recoverable jobs are not lost.
         const jobsData: HourlySummaryCronJobsData =
           loadedJobs.status === "loaded"
             ? loadedJobs.jobsData
             : { version: 1, jobs: [] };
 
-        // If the job already exists, reconcile its model routing in place so
-        // upgraded installs (the population affected by #1469) pick up the
-        // configured task model/fallbacks without the operator deleting the job.
-        // Schedule, delivery, message, and createdAtMs are preserved.
         const existingIndex = jobsData.jobs.findIndex((j) => j.id === jobId);
         if (existingIndex >= 0) {
           const { changed, job } = reconcileHourlySummaryCronRouting(
@@ -4832,7 +4423,6 @@ const pluginDefinition = {
           return;
         }
 
-        // Pick a random minute (1-59) to avoid colliding with other top-of-hour crons
         const randomMinute = Math.floor(Math.random() * 59) + 1;
 
         const newJob = buildHourlySummaryCronJob(cfg, {
@@ -4843,7 +4433,6 @@ const pluginDefinition = {
 
         jobsData.jobs.push(newJob);
 
-        // Write back
         await writeTextFileLater(
           cronFilePath,
           JSON.stringify(jobsData, null, 2),
@@ -5095,29 +4684,9 @@ const pluginDefinition = {
     }
 
     // ========================================================================
-    // Register tools (every registration) and CLI (first registration only)
     // ========================================================================
-    // Tools are scoped to the current api/registry instance. When the gateway
-    // creates multiple plugin registries (e.g. different cache keys for cron
-    // vs. reply contexts), each registry gets its own api object and must have
-    // tools registered against it. Skipping registration on secondary calls
-    // leaves those registries with hooks but zero tools, making
-    // memory_summarize_hourly (and all other Remnic tools) invisible to the LLM.
     //
-    // CLI commands, by contrast, live in the central plugin registry (not in
-    // per-registry api state), so registering them more than once would create
-    // duplicate engram command trees. CLI registration stays behind the guard.
-    // Both bridge modes register these names through ONE ownership record
-    // (`registerEmbeddedTools` / `registerDelegateTools`): the canonical and
-    // legacy plugin ids register separately against one api and either can
-    // arrive first, including passively. The record registers each name once
-    // and lets the ACTIVE slot owner decide what it executes, so no mode ever
-    // installs a duplicate `memory_search`.
     //
-    // With the adapters disabled this hands over the LEGACY search
-    // implementation, which is what this owner would have registered on its
-    // own — the disabled adapter must not keep serving searches just because a
-    // delegate sibling registered the name first.
     const adaptersEnabled = cfg.openclawToolsEnabled !== false;
     const ownedToolNames = registerEmbeddedTools(api, {
       enabled: adaptersEnabled,
@@ -5135,10 +4704,6 @@ const pluginDefinition = {
     // attempting to bind it through api.on() produces an "unknown typed hook"
     // warning on current runtimes.
     const commandApi = api as { registerCommand?: (spec: unknown) => void };
-    // Durable command registration is a runtime concern: a discovery pass is
-    // transient, its registrations are discarded, and claiming the
-    // process-global guard here would make the later full registration skip
-    // them — leaving the deployment with no session commands at all.
     if (
       !discoveryPass &&
       !passiveMode &&
@@ -5163,12 +4728,9 @@ const pluginDefinition = {
     registerTools(
       api as unknown as Parameters<typeof registerTools>[0],
       orchestrator,
-      // Host-native, model-inaccessible origin for shared-context tool writes.
       getOpenClawRuntimeAgentId(api),
-      // Names the shared ownership record already carries.
       ownedToolNames,
     );
-    // Register LCM tools when enabled
     if (orchestrator.lcmEngine?.enabled) {
       registerLcmTools(
         api as unknown as Parameters<typeof registerLcmTools>[0],
@@ -5176,8 +4738,6 @@ const pluginDefinition = {
       );
     }
 
-    // CLI guard is intentionally process-global (not per-serviceId) because CLI
-    // commands live in the gateway's central registry.  See CLI_REGISTERED_GUARD.
     if (!discoveryPass && !(globalThis as any)[CLI_REGISTERED_GUARD]) {
       (globalThis as any)[CLI_REGISTERED_GUARD] = true;
       registerCli(
@@ -5188,51 +4748,16 @@ const pluginDefinition = {
     }
 
     // ========================================================================
-    // Register service (every registration)
     // ========================================================================
-    // registerService must be called on every api instance, not just the first.
-    // Each gateway registry has its own api object; startPluginServices() iterates
-    // the registry it owns — if that registry has no service registered, start()
-    // never fires and the orchestrator never initializes (issue #285).
     //
-    // Duplicate start() calls are safe: the per-serviceId SERVICE_STARTED guard
-    // inside start() makes initialize() idempotent within a process lifetime.
-    // stop() clears the flag so restart cycles reinitialize correctly.
     let activeOpikExporter: import("@remnic/core/opik-exporter").OpikExporter | null =
       null;
-    // Whether this specific registry's start() claimed a slot in ACTIVE_REGISTRIES.
-    // Ensures stop() only decrements the count for registries whose start() ran
-    // (not secondary registries whose start() was a no-op, nor registries whose
-    // start() threw before successfully initializing).
     let didCountStart = false;
     api.registerService({
       id: serviceId,
       start: async () => {
-        // Check the in-flight promise BEFORE the started flag. SERVICE_STARTED
-        // is set to true inside the IIFE (only on success), so checking the flag
-        // first would let concurrent callers return before init completes. By
-        // checking INIT_PROMISE first, concurrent start() calls await the in-flight
-        // init rather than resolving immediately while the orchestrator and HTTP
-        // server are still initializing.
         //
-        // Outer loop handles two cases:
-        //   1. A failed takeover init: if an awaited INIT_PROMISE rejects (the
-        //      takeover primary's initialize() threw), the inner while catches the
-        //      rejection so the waiting secondary can retry — either await the next
-        //      INIT_PROMISE or claim ownership.
-        //   2. Defensive ownership re-check: after the inner while exits
-        //      (INIT_PROMISE=null) there is no await before the break, so in
-        //      single-threaded JS INIT_PROMISE cannot be set by another secondary
-        //      in that window. The explicit re-check makes the invariant clear.
         for (;;) {
-          // Inner while: wait out any in-flight init.
-          // Loop rather than a single if: when multiple secondaries are awaiting the
-          // same INIT_PROMISE (e.g. after primary abort), the first waiter to resume
-          // synchronously sets a new INIT_PROMISE for its own takeover. Without the
-          // loop, subsequent waiters fall through the if-block and enter the init path
-          // concurrently — re-running orchestrator.initialize() multiple times. The
-          // while-loop re-checks INIT_PROMISE after every await so each waiter sees
-          // the new promise and awaits it instead of racing to become a second primary.
           while ((globalThis as any)[keys.INIT_PROMISE]) {
             try {
               await (globalThis as any)[keys.INIT_PROMISE];
@@ -5242,75 +4767,43 @@ const pluginDefinition = {
               // secondary claimed INIT_PROMISE in the meantime, await it; otherwise
               // exit and decide whether to become the next primary.
             }
-            // Re-check after awaiting: the primary's start() may have been aborted by
-            // a concurrent stop() (via the !didCountStart early return), leaving
-            // SERVICE_STARTED=false even though the promise resolved. In that
-            // case continue the loop — we will either see a new INIT_PROMISE (set by
-            // the first-resuming takeover waiter) or exit the loop to become primary.
             if ((globalThis as any)[keys.SERVICE_STARTED]) return;
           }
-          // No in-flight init — check if already fully initialized.
           if ((globalThis as any)[keys.SERVICE_STARTED]) {
             log.debug(
               `${serviceId}: service.start() called again — skipping duplicate init`,
             );
             return;
           }
-          // Defensive re-check before claiming ownership. In practice (single-threaded
-          // JS, no await between the inner while exit and here) INIT_PROMISE cannot
-          // become non-null at this point, but the check makes the ownership invariant
-          // self-documenting: we only proceed when no other primary is in-flight.
           if ((globalThis as any)[keys.INIT_PROMISE]) continue;
           break;
         }
-        // We are the first — claim ownership and drive initialization.
         didCountStart = true;
         (globalThis as any)[CLI_ACTIVE_SERVICE_COUNT] =
           ((globalThis as any)[CLI_ACTIVE_SERVICE_COUNT] || 0) + 1;
-        // Republish the keyed orchestrator slot. A full stop() deletes it
-        // after destroy(); a secondary registry taking over afterwards revives
-        // its captured orchestrator here, and a fresh register() while the
-        // service is running must find that live instance in the slot — not
-        // construct a split-brain second orchestrator over the same memoryDir.
         (globalThis as any)[keys.ORCHESTRATOR] = orchestrator;
-        // IMPORTANT: Do NOT put a `finally` inside the IIFE to clear INIT_PROMISE.
-        // If anything in the try block throws synchronously (before the first `await`),
-        // the IIFE's finally would run before the outer assignment, and the outer line
-        // `INIT_PROMISE = initPromise` would then overwrite null with a stale
-        // rejected promise — permanently blocking future start() calls. Instead, clear
-        // INIT_PROMISE in the outer try-finally below after `await initPromise`.
         const initPromise = (async () => {
           try {
             log.info("initializing engram memory system...");
             await orchestrator.initialize();
 
-            // If stop() was called while orchestrator.initialize() was in progress,
-            // it already cleared didCountStart. Abort further setup to avoid
-            // proceeding after the service was intentionally stopped.
             if (!didCountStart) return;
 
-            // Initialize Opik exporter if configured
             activeOpikExporter = createOpikExporter({}, log);
             if (activeOpikExporter) activeOpikExporter.subscribe();
 
-            // Cleanup old transcripts
             if (orchestrator.config.transcriptEnabled) {
               await orchestrator.transcript.cleanup(
                 orchestrator.config.transcriptRetentionDays,
               );
-              // Abort if stop() was called during transcript cleanup.
               if (!didCountStart) return;
             }
 
-            // Cron integration guard:
-            // - Hourly summaries are supported, but auto-registering cron is a footgun across installs.
-            // - Only auto-register when explicitly enabled by config.
             if (
               orchestrator.config.hourlySummariesEnabled &&
               orchestrator.config.hourlySummaryCronAutoRegister
             ) {
               await ensureHourlySummaryCron(api);
-              // Abort if stop() was called during cron registration.
               if (!didCountStart) return;
             } else if (orchestrator.config.hourlySummariesEnabled) {
               log.info(
@@ -5361,12 +4854,7 @@ const pluginDefinition = {
             }
 
             if (cfg.agentAccessHttp.enabled) {
-              // Abort if stop() was called before starting the HTTP server.
               if (!didCountStart) return;
-              // Resolve agentAccessHttp.authToken SecretRef (issue #757).
-              // This MUST run before accessHttpServer.start() so the listener
-              // never opens with an empty auth set. A resolution failure is
-              // fatal — log loudly and skip starting the bridge entirely.
               if (authTokenIsSecretRef) {
                 const resolved = await resolveAgentAccessAuthToken(rawAuthToken, {
                   resolveSecretRef: await loadOpenClawSecretRefResolver(),
@@ -5388,26 +4876,11 @@ const pluginDefinition = {
               }
             }
 
-            // Final abort check before marking service as ready.
             if (!didCountStart) return;
-            // Mark service as started only after all initialization steps succeed and
-            // cancellation has not been requested. Setting the flag here (not before
-            // the await) prevents SERVICE_STARTED=true from being observable while init
-            // is still in-flight, and ensures the flag accurately reflects completion.
             (globalThis as any)[keys.SERVICE_STARTED] = true;
-            // Note: REGISTERED_GUARD is intentionally NOT set here.
             //
-            // In the stop-during-init takeover case (the one that prompted PR description
-            // language about "restoring GUARD=true"): stop() no longer clears GUARD for
-            // stop-during-init paths, so GUARD is already true when a secondary completes
-            // init — no restore is needed (thread PRRT_kwDORJXyws5159OQ).
             //
-            // In the full-stop-then-secondary-start case: stop() cleared GUARD to signal
-            // that the next register() may re-register CLI. A secondary completing init
-            // after a full stop must leave GUARD=false so that signal is preserved.
             log.info("engram memory system ready");
-            // Operator-visible confirmation that gateway_start fired successfully.
-            // Used by `remnic doctor` and install docs to verify hooks are active.
             log.info(
               `gateway_start fired — Remnic memory plugin is active (id=${pluginDefinition.id}, memoryDir=${cfg.memoryDir})`,
             );
@@ -5416,21 +4889,11 @@ const pluginDefinition = {
               getOpenClawRuntimeWorkspaceDir(api),
             );
           } catch (err) {
-            // Unsubscribe Opik exporter if it was subscribed before the failure so
-            // a retry from another registry doesn't accumulate multiple subscribers.
             try {
               activeOpikExporter?.unsubscribe();
             } catch {}
             activeOpikExporter = null;
-            // Roll back ownership so the next registry's start() can retry.
-            // SERVICE_STARTED was not set yet (only set on success above), but
-            // clear it defensively in case another code path set it.
             //
-            // Only decrement CLI_ACTIVE_SERVICE_COUNT if didCountStart is still
-            // true.  If stop() already ran during this init, it set
-            // didCountStart=false and already decremented the count.  Without
-            // this guard, both paths decrement → underflow → premature CLI
-            // guard clearing while another service is still running.
             if (didCountStart) {
               (globalThis as any)[CLI_ACTIVE_SERVICE_COUNT] = Math.max(
                 0,
@@ -5439,148 +4902,60 @@ const pluginDefinition = {
             }
             didCountStart = false;
             (globalThis as any)[keys.SERVICE_STARTED] = false;
-            // Do NOT clear REGISTERED_GUARD here. On an ordinary startup
-            // failure (no preceding stop/reload) the CLI registered during register()
-            // is still present in the gateway's command registry. Clearing the guard
-            // would let a subsequent register() call re-register CLI commands,
-            // duplicating the central engram command tree.
             //
-            // For the stop-during-init case: stop() leaves GUARD as-is because
-            // the CLI registered by the original register() call is still present
-            // in the gateway's registry. No deferred clearing is performed.
             throw err;
           }
           // No finally here — see comment above. INIT_PROMISE is cleared
           // by the outer try-finally after `await initPromise` below.
         })();
-        // SERVICE_STARTED is set inside the IIFE (on success only), so any
-        // concurrent caller that arrives after INIT_PROMISE is set will await the
-        // in-flight init. The SERVICE_STARTED early-return path above is only
-        // reachable when INIT_PROMISE is null (init not in-flight), which means
-        // SERVICE_STARTED truly reflects a completed, successful init.
         (globalThis as any)[keys.INIT_PROMISE] = initPromise;
         try {
           await initPromise;
         } finally {
-          // Clear the in-flight promise after init settles (success or failure).
-          // Placing this here (not inside the IIFE) avoids the ordering hazard where
-          // a pre-await throw inside the IIFE would let the outer assignment overwrite
-          // null with the rejected promise.
           (globalThis as any)[keys.INIT_PROMISE] = null;
         }
       },
       stop: async () => {
-        // Only the registry whose start() successfully ran initialize() does teardown.
-        // Secondary registries (start() returned early on SERVICE_STARTED) and
-        // failed registries (start() rolled back in catch) have didCountStart=false
-        // and skip all cleanup — including Opik — to avoid detaching a live exporter.
         if (!didCountStart) return;
         didCountStart = false;
 
-        // Snapshot takeover-relevant state BEFORE any await points.
-        // The deferredReady await below can take seconds (QMD warmup, cron).
-        // During that window a secondary registry can finish start() and set
-        // SERVICE_STARTED / clear INIT_PROMISE. If we read those globals
-        // AFTER the await, we'd observe the secondary's state and skip the
-        // takeover guard — then proceed to tear down the secondary's live
-        // resources (HTTP server, watchers, etc.). By snapshotting before the
-        // await we compare against the state as it was when stop() was
-        // called, making the takeover check immune to concurrent start().
         const initPromiseAtStopEntry = (globalThis as any)[
           keys.INIT_PROMISE
         ] as Promise<void> | null;
 
-        // Wait for the deferred initialization (QMD probe, warmup, cron) to
-        // settle before tearing down. Without this, fire-and-forget tasks
-        // from deferredInitialize() continue after stop() completes and can
-        // race with a subsequent start() — duplicate cron registrations,
-        // background QMD updates after the service is marked stopped, etc.
-        // The promise always resolves (never rejects), so this is safe.
         try {
           await orchestrator.deferredReady;
         } catch {
           // deferredReady should never reject, but guard defensively.
         }
 
-        // Decrement the process-global active-service count.  When it reaches
-        // zero, all Remnic services have stopped and it's safe to clear the CLI
-        // guard so a subsequent reload cycle can re-register CLI commands.
         const remainingServices = Math.max(
           0,
           ((globalThis as any)[CLI_ACTIVE_SERVICE_COUNT] || 0) - 1,
         );
         (globalThis as any)[CLI_ACTIVE_SERVICE_COUNT] = remainingServices;
 
-        // Uses the pre-await snapshot (initPromiseAtStopEntry) so a secondary
-        // that finishes start() during the deferredReady await doesn't cause
-        // us to misclassify a stop-during-init as a full stop.
         const currentInitPromise = initPromiseAtStopEntry;
-        // Track whether a secondary completed init during stop()'s await window
-        // (either the deferredReady await or the currentInitPromise await below).
-        // Used to guard SERVICE_STARTED=false, hook/guard cleanup, AND shared
-        // service teardown (HTTP server, watchers, globals).
         let secondaryTookOver = false;
 
-        // --- Takeover detection (both paths) ---
-        // Both the full-stop and stop-during-init paths must complete their
-        // takeover checks BEFORE any shared resource teardown. Otherwise the
-        // stop-during-init path (which awaits currentInitPromise) would let
-        // the shared teardown block run while secondaryTookOver is still false,
-        // tearing down resources that belong to a live secondary.
 
-        // Check if a secondary started during the deferredReady await.
-        // When stop() was called with no in-flight init (full stop),
-        // INIT_PROMISE was null. If it's now non-null, a secondary entered
-        // start() while we were awaiting deferredReady. Without this check
-        // we'd tear down the secondary's live resources.
-        // Note: we only check INIT_PROMISE here, not SERVICE_STARTED,
-        // because SERVICE_STARTED is expected to be true from our own
-        // start() in the full-stop case.
         if (!currentInitPromise && (globalThis as any)[keys.INIT_PROMISE]) {
           secondaryTookOver = true;
         }
 
-        // REGISTERED_GUARD policy:
         //
-        // Full stop (INIT_PROMISE is null when stop() was called):
-        //   Clear GUARD so a subsequent register() in a fresh session can
-        //   re-register CLI commands after a stop/reload cycle.
         //
-        // Stop-during-init (INIT_PROMISE is non-null when stop() was called):
-        //   Leave GUARD as-is. The CLI registered by the original register()
-        //   call is still present in the gateway's registry — stop() does not
-        //   unregister CLI commands. Clearing GUARD here would allow a
-        //   subsequent register() to register CLI again on top of the
-        //   still-live registration, duplicating the CLI command tree.
         if (!currentInitPromise) {
           if (!secondaryTookOver) {
             (globalThis as any)[keys.REGISTERED_GUARD] = false;
-            // Clear CLI guard only when ALL Remnic services have stopped.
-            // In multi-plugin installs, one plugin stopping must not clear the
-            // guard while the other is still running — that would let a
-            // subsequent register() duplicate CLI commands.  When the refcount
-            // reaches zero, the gateway's reload cycle can safely re-register.
             if (remainingServices === 0) {
               (globalThis as any)[CLI_REGISTERED_GUARD] = false;
               (globalThis as any)[SESSION_COMMANDS_REGISTERED_GUARD] = false;
             }
           }
         } else {
-          // Stop-during-init: leave GUARD as-is.
           // The CLI registered by the original register() call is still present
-          // in the gateway's registry; clearing GUARD here would allow a
-          // subsequent register() to register CLI again, duplicating commands
-          // on top of the still-live registration (thread PRRT_kwDORJXyws5159Kz).
 
-          // Check if a secondary already completed init during the deferredReady
-          // await above.  Without this, the stop-during-init path bypasses the
-          // full-stop takeover check (gated by !currentInitPromise) and proceeds
-          // to await currentInitPromise / shared teardown with secondaryTookOver
-          // still false — tearing down a live secondary's resources.
-          // We detect takeover the same way as the full-stop path: if
-          // INIT_PROMISE changed (a new secondary entered start()) or if
-          // SERVICE_STARTED is set by someone other than our own init (which
-          // aborted via didCountStart=false), a secondary is live.
           if (
             (globalThis as any)[keys.INIT_PROMISE] &&
             (globalThis as any)[keys.INIT_PROMISE] !== currentInitPromise
@@ -5589,14 +4964,9 @@ const pluginDefinition = {
           }
 
           //
-          // Await the in-flight init (didCountStart=false signals it to abort at
-          // its next checkpoint). Ignore errors — we only care about settlement.
           try {
             await currentInitPromise;
           } catch {}
-          // One queueMicrotask tick: any secondary whose .then() on
-          // currentInitPromise runs after stop()'s `await` continuation will
-          // execute here and synchronously set its own INIT_PROMISE.
           await new Promise<void>((resolve) => queueMicrotask(resolve));
           if (
             (globalThis as any)[keys.INIT_PROMISE] ||
@@ -5606,25 +4976,13 @@ const pluginDefinition = {
           }
         }
 
-        // --- Shared service teardown ---
-        // Runs AFTER both takeover detection paths so secondaryTookOver is
-        // accurate regardless of whether stop() entered the full-stop or
-        // stop-during-init branch. If a secondary became live during any
-        // await window, we skip teardown to avoid destroying its resources.
         if (!secondaryTookOver) {
-          // Opik cleanup: placed after the guard so secondary stop()s never detach
-          // the process-wide exporter while Engram is still running.
-          // Wrapped in try-catch so a throwing unsubscribe does not leave
-          // SERVICE_STARTED=true and prevent restart.
           try {
             activeOpikExporter?.unsubscribe();
           } catch (err) {
             log.debug(`engram opik exporter unsubscribe failed: ${err}`);
           }
           activeOpikExporter = null;
-          // Abort in-flight Codex work before HTTP close. An access request
-          // blocked on a Codex child keeps server.close() pending until the
-          // runner is aborted and the force-kill timer starts.
           const finishCodex = beginCodexSubscriptionShutdown(getCodexSubscriptionRunnerForOwner(cfg));
           try {
             try {
@@ -5638,15 +4996,6 @@ const pluginDefinition = {
             stopHeartbeatWatcher = null;
             removeDreamingObserver?.();
             removeDreamingObserver = null;
-            // Tear down the orchestrator itself (#1537): destroy() clears the
-            // QMD maintenance timer and disposes the QMD client, the namespace
-            // router's per-namespace backends, and conversation QMD — releasing
-            // their refcounted shared daemon sessions (close-on-zero). Without
-            // this, every stop/start cycle stranded refs, the shared daemon map
-            // could never reach zero, and qmd child processes plus their map
-            // entries leaked across gateway reloads. The global slot is cleared
-            // (identity-guarded) so a subsequent start() constructs a fresh
-            // orchestrator instead of reusing a destroyed one.
             try {
               await orchestrator.destroy();
             } catch (err) {
@@ -5668,36 +5017,17 @@ const pluginDefinition = {
           delete (globalThis as any)[keys.ACCESS_HTTP_SERVER];
           delete (globalThis as any)[keys.ACCESS_HTTP_AUTH_STATE];
           delete (globalThis as any)[keys.ACCESS_SERVICE];
-          // Fire-and-forget flush-plan drains may outlive service stop/reload.
-          // Keep their fences visible to the next registration until they settle.
           if (flushPlanProcessingChains.size === 0) {
             delete (globalThis as any)[keys.FLUSH_PLAN_PROCESSING_CHAINS];
           }
         }
 
-        // Clear per-api hook tracking so hooks can be re-bound to fresh api objects.
-        // Skip when a secondary is live — its api objects already have hooks bound
-        // and resetting the WeakSet here would cause duplicate hook registration
-        // the next time those api objects trigger hook paths (thread PRRT_kwDORJXyws5159K0).
         if (!secondaryTookOver) {
           (globalThis as any)[keys.HOOK_APIS] = new WeakSet();
         }
-        // Allow service.start() to reinitialize after a stop/restart cycle.
-        // Skip this when a secondary completed init while stop() was suspended:
-        // that registry's start() is the owner of SERVICE_STARTED=true, and its
-        // own stop() call will clear the flag. Clobbering it here would let the
-        // next start() bypass the idempotency guard and re-run initialize() on
-        // the live singleton (Cursor review thread PRRT_kwDORJXyws5156Lw).
         if (!secondaryTookOver) {
           (globalThis as any)[keys.SERVICE_STARTED] = false;
         }
-        // Do NOT clear INIT_PROMISE here. If stop() is called while init is
-        // still in-flight (start() suspended at an await), clearing the promise here
-        // would let a new registry enter start() before the original initializer settles
-        // and call orchestrator.initialize() a second time on the same singleton.
-        // The outer try-finally in start() already clears INIT_PROMISE when
-        // initPromise settles, so no cleanup is needed here — in the normal (after init)
-        // case it is already null, and in the in-flight case it must stay set.
         log.info("stopped");
       },
     });
@@ -5707,7 +5037,6 @@ const pluginDefinition = {
 export default tryDefinePluginEntry(pluginDefinition);
 
 // ============================================================================
-// Helpers
 // ============================================================================
 
 const OPENCLAW_BOOLEAN_ACCEPTED_VALUES = "true/false/1/0/yes/no/on/off";
@@ -5763,10 +5092,6 @@ function resolveOpenClawFlushPlanProcessingEnabledFromConfig(
       )
     : undefined;
 
-  // OpenClaw may merge schema defaults into runtime pluginConfig. Treat this
-  // adapter-owned switch as enabled by default, but make any explicit opt-out
-  // from either config source sticky so a runtime default `true` cannot mask a
-  // persisted file-level `false`.
   if (runtimeValue === false || fileValue === false) return false;
   return fileValue ?? runtimeValue ?? true;
 }

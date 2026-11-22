@@ -32,9 +32,6 @@ async function main(): Promise<void> {
   const outDir = path.resolve(here, "../baselines");
   const outPath = path.join(outDir, "procedural-recall-baseline.json");
   await mkdir(outDir, { recursive: true });
-  // Pin `generatedAt` to a stable string so the committed baseline stays
-  // byte-stable across regens. Consumers that want wall-clock timing can
-  // read `git log` on the file.
   const stamped = { ...artifact, generatedAt: "baseline-v1" };
   await writeFile(outPath, JSON.stringify(stamped, null, 2) + "\n", "utf8");
   console.log(

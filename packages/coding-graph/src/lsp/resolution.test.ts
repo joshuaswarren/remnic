@@ -1,18 +1,3 @@
-/**
- * LSP resolution pass tests (issue #1555 step 4 — prove-fail-before).
- *
- * Covers:
- *   - Planner: basic planning, budget enforcement, deterministic ordering
- *   - Executor: happy path (location maps → upgrade applied)
- *   - Executor: location doesn't map → unresolved
- *   - Executor: mid-batch applyUpgrades failure → caught, counted as unresolved
- *   - Executor: server crash mid-run → degradation, remaining sites unresolved
- *   - Executor: fatal error after upgrade in same batch → NOT committed (rule 25)
- *   - Executor: didOpen sent before definition requests (LSP 3.17)
- *   - Executor: workspaceRoot resolves repo-relative paths to absolute URIs
- *   - mapLocationToNode: same-file, cross-file with resolver, fallback
- *   - Characterization: with lsp.enabled=false, resolution is a no-op
- */
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -27,8 +12,6 @@ import {
 import type { LspLocation } from "./types.js";
 import type { LspClient } from "./client.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Planner tests (pure — no I/O)
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeCallSite(
@@ -56,7 +39,6 @@ test("planner: basic — plans one request per call site", () => {
   const result = planLspUpgrades(sites, { maxRequests: 100 });
   assert.equal(result.requests.length, 2);
   assert.equal(result.budgetExhausted, 0);
-  // Sorted by file path.
   assert.equal(result.requests[0].filePath, "src/a.ts");
   assert.equal(result.requests[1].filePath, "src/b.ts");
 });
@@ -91,15 +73,12 @@ test("planner: deterministic ordering — same input always same output", () => 
     r1.requests.map((r) => `${r.filePath}:${r.position.line}:${r.position.character}`),
     r2.requests.map((r) => `${r.filePath}:${r.position.line}:${r.position.character}`),
   );
-  // Sorted: a.ts byte 3, a.ts byte 5, z.ts byte 10.
   assert.equal(r1.requests[0].calleeName, "b");
   assert.equal(r1.requests[1].calleeName, "a");
   assert.equal(r1.requests[2].calleeName, "z");
 });
 
 test("planner: position conversion — byte offset → line/character", () => {
-  // content = "line0\nline1\nline2"
-  //                    ^ byte 6 = start of "line1"
   const site = makeCallSite("a.ts", "foo", 6, "a.x", "line0\nline1\nline2");
   const result = planLspUpgrades([site], { maxRequests: 100 });
   assert.equal(result.requests.length, 1);
@@ -108,12 +87,10 @@ test("planner: position conversion — byte offset → line/character", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Location → node mapping tests (rule 35 — half-open containment)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("mapLocationToNode: location in span → returns qualified name", () => {
   const locator: NodeLocator = (_path, byteOffset) => {
-    // Node spans bytes [0, 10).
     return byteOffset >= 0 && byteOffset < 10 ? "mod.target" : null;
   };
   const locations: LspLocation[] = [
@@ -122,8 +99,6 @@ test("mapLocationToNode: location in span → returns qualified name", () => {
       range: { start: { line: 0, character: 5 }, end: { line: 0, character: 8 } },
     },
   ];
-  // callerContent is used for position→byte conversion.
-  // character 5 on line 0 = byte 5 (ASCII content).
   const result = mapLocationToNode(
     locations,
     { callerFilePath: "src/target.ts", callerContent: "abcdefghij" },
@@ -177,9 +152,6 @@ test("mapLocationToNode: empty locations → null", () => {
 });
 
 test("mapLocationToNode: cross-file definition uses resolveContent", () => {
-  // Target file has different content than the caller. The correct byte
-  // offset can only be computed from the target file's content.
-  // Target: "ab\ncdefgh\n" — line 1 starts at byte 3, character 2 = byte 5.
   const locator: NodeLocator = (filePath, byteOffset) => {
     if (filePath === "src/target.ts" && byteOffset === 5) return "mod.target";
     return null;
@@ -204,8 +176,6 @@ test("mapLocationToNode: cross-file definition uses resolveContent", () => {
 });
 
 test("mapLocationToNode: cross-file without resolveContent → callerContent fallback", () => {
-  // Without a content resolver, cross-file definitions fall back to the
-  // caller's content (best-effort, documented behavior).
   const locator: NodeLocator = () => "mod.fallback";
   const locations: LspLocation[] = [
     { uri: "file:///src/other.ts", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } },
@@ -219,18 +189,13 @@ test("mapLocationToNode: cross-file without resolveContent → callerContent fal
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Executor tests (mock client)
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * Minimal mock LspClient — only implements the methods the executor calls.
- */
 function makeMockClient(
   definitionResults: Map<string, { ok: true; locations: LspLocation[] } | { ok: false; code: string }>,
 ): LspClient {
   return {
     definition: async (params: { textDocument: { uri: string }; position: { line: number; character: number } }) => {
-      // Key by uri+line+character for deterministic lookup.
       const key = `${params.textDocument.uri}:${params.position.line}:${params.position.character}`;
       const result = definitionResults.get(key);
       if (!result) return { ok: true, locations: [] };
@@ -253,8 +218,6 @@ test("executor: happy path — definition maps to node, upgrade applied", async 
     { maxRequests: 100 },
   ).requests;
 
-  // Mock: definition at position {0, 0} returns a location at byte 0
-  // in src/target.ts. The nodeLocator finds "mod.target" at byte 0.
   const mockClient = makeMockClient(new Map([
     ["file:///src/a.ts:0:0", {
       ok: true as const,
@@ -295,8 +258,6 @@ test("executor: definition returns empty → unresolved", async () => {
     client: mockClient,
     nodeLocator: locator,
     applyUpgrades: async () => {},
-    // Warm-up retry (issue #1933) is exercised by its own tests below;
-    // this test asserts the definitive-empty path.
     warmupRetryDelayMs: 0,
   });
 
@@ -305,9 +266,6 @@ test("executor: definition returns empty → unresolved", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Warm-up retry (issue #1933): tsserver answers pre-project-load definition
-// requests with [] instead of an error. An empty result before the server
-// has proven warm is retried once; the retry's answer is final.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("executor: warm-up retry — empty first answer retried once, retry result upgrades", async () => {
@@ -316,8 +274,6 @@ test("executor: warm-up retry — empty first answer retried once, retry result 
     { maxRequests: 100 },
   ).requests;
 
-  // Stateful mock: first definition call returns [], second returns the
-  // real location (project finished loading between the two).
   let calls = 0;
   const client = {
     definition: async () => {
@@ -377,8 +333,6 @@ test("executor: warm-up retry — only ONE retry is paid; later empties are defi
     warmupRetryDelayMs: 5,
   });
 
-  // Site 1: initial + one warm-up retry = 2 calls; the server is then
-  // considered warm. Site 2: exactly 1 call, its empty answer is final.
   assert.equal(calls, 3, "one warm-up retry total, not one per site");
   assert.equal(result.upgraded, 0);
   assert.equal(result.unresolved, 2);
@@ -449,7 +403,6 @@ test("executor: mid-batch applyUpgrades failure → caught, counted as unresolve
     },
   });
 
-  // The upgrade was found but the apply failed → counted as unresolved.
   assert.equal(result.upgraded, 0);
   assert.equal(result.unresolved, 1);
 });
@@ -461,7 +414,6 @@ test("executor: server crash mid-run → degradation, remaining unresolved", asy
   ];
   const requests = planLspUpgrades(sites, { maxRequests: 100 }).requests;
 
-  // First file batch: definition request gets server_crashed.
   const mockClient = makeMockClient(new Map([
     ["file:///src/a.ts:0:0", { ok: false as const, code: "server_crashed" }],
   ]));
@@ -474,14 +426,10 @@ test("executor: server crash mid-run → degradation, remaining unresolved", asy
 
   assert.ok(result.degradation, "should have a degradation");
   assert.equal(result.degradation.code, "server_crashed");
-  // The first request was interrupted by the crash; subsequent file
-  // batches are NOT processed because the degradation short-circuits.
   assert.equal(result.upgraded, 0);
 });
 
 test("executor: fatal error after upgrade in same batch → NOT committed (rule 25)", async () => {
-  // Two call sites in the SAME file. First succeeds, second crashes.
-  // The first upgrade must NOT be committed — per-batch atomicity.
   const sites = [
     makeCallSite("src/a.ts", "first", 0, "a.x"),
     makeCallSite("src/a.ts", "second", 6, "a.y"),
@@ -489,7 +437,6 @@ test("executor: fatal error after upgrade in same batch → NOT committed (rule 
   const requests = planLspUpgrades(sites, { maxRequests: 100 }).requests;
 
   const mockClient = makeMockClient(new Map([
-    // byte 0 → line 0, char 0 — succeeds.
     ["file:///src/a.ts:0:0", {
       ok: true as const,
       locations: [{
@@ -497,7 +444,6 @@ test("executor: fatal error after upgrade in same batch → NOT committed (rule 
         range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } },
       }],
     }],
-    // byte 6 → line 1, char 0 — server crashes.
     ["file:///src/a.ts:1:0", { ok: false as const, code: "server_crashed" }],
   ]));
 
@@ -508,13 +454,10 @@ test("executor: fatal error after upgrade in same batch → NOT committed (rule 
     applyUpgrades: async () => { applyCalled = true; },
   });
 
-  // Per-batch atomicity: the upgrade from the first request is NOT
-  // committed because the batch was poisoned by the fatal error.
   assert.equal(result.upgraded, 0);
   assert.equal(applyCalled, false, "applyUpgrades must NOT be called for a poisoned batch");
   assert.ok(result.degradation);
   assert.equal(result.degradation.code, "server_crashed");
-  // The crashed request (1) + the lost upgrade (1) = 2 unresolved.
   assert.equal(result.unresolved, 2);
 });
 
@@ -525,7 +468,6 @@ test("executor: request_timeout counts as unresolved, pass continues", async () 
   ];
   const requests = planLspUpgrades(sites, { maxRequests: 100 }).requests;
 
-  // First request times out; second succeeds.
   const mockClient = makeMockClient(new Map([
     ["file:///src/a.ts:0:0", { ok: false as const, code: "request_timeout" }],
     ["file:///src/b.ts:0:0", {
@@ -594,7 +536,6 @@ test("executor: workspaceRoot resolves repo-relative paths to absolute URIs", as
     { maxRequests: 100 },
   ).requests;
 
-  // With workspaceRoot, the URI sent to the server is absolute.
   const definitionUris: string[] = [];
   const didOpenUris: string[] = [];
   const mockClient = {
@@ -611,7 +552,6 @@ test("executor: workspaceRoot resolves repo-relative paths to absolute URIs", as
     nodeLocator: () => null,
     applyUpgrades: async () => {},
     workspaceRoot: "/workspace",
-    // This test asserts URI shapes, not warm-up behavior (issue #1933).
     warmupRetryDelayMs: 0,
   });
 

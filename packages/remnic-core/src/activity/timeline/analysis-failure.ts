@@ -18,9 +18,7 @@ export type AnalysisFailureKind = (typeof ANALYSIS_FAILURE_KINDS)[number];
 
 export interface AnalysisFailure {
   kind: AnalysisFailureKind;
-  /** True only when retrying the same request could plausibly succeed. */
   retryable: boolean;
-  /** True when the deterministic cards must be preserved unchanged. */
   preservesDeterministic: true;
 }
 
@@ -35,7 +33,6 @@ const RETRYABLE_BY_KIND: Readonly<Record<AnalysisFailureKind, boolean>> = {
   invalid_config: false,
 };
 
-/** True when the value is one of the known failure kinds. */
 export function isAnalysisFailureKind(
   value: unknown,
 ): value is AnalysisFailureKind {

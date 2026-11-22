@@ -156,8 +156,6 @@ test("multi-source: one source's fault is isolated and never advances the other"
         return { ok: true };
       },
       async fetchSnapshots() {
-        // A network-shaped error whose message embeds a host: it must be
-        // sanitized to a name+code, not echoed verbatim, on ActivitySourceRunItem.
         throw Object.assign(new Error("daemon connection refused at 10.0.0.5:8761"), { code: "ECONNREFUSED" });
       },
     };
@@ -184,7 +182,6 @@ test("multi-source: one source's fault is isolated and never advances the other"
     assert.equal(byLabel.get("workstation-b")?.ran, false);
     assert.match(byLabel.get("workstation-b")?.error ?? "", /ECONNREFUSED/);
     assert.ok(!byLabel.get("workstation-b")?.error?.includes("10.0.0.5"), "raw host is sanitized out of the error");
-    // The healthy source still committed; the faulty one never wrote a cursor.
     assert.equal(store.getCursor(activityCursorKey("workstation-b", "2026-07-22")), null);
   } finally {
     store.close();
@@ -224,11 +221,9 @@ test("error stays distinguishable from an empty page", async () => {
     });
 
     const byLabel = new Map(summary.results.map((item) => [item.machineLabel, item]));
-    // Empty page: a real, successful sync that fetched and inserted nothing.
     assert.equal(byLabel.get("empty-src")?.ran, true);
     assert.equal(byLabel.get("empty-src")?.inserted, 0);
     assert.equal(byLabel.get("empty-src")?.error, undefined);
-    // Fault: surfaced as an error, not silently conflated with an empty result.
     assert.equal(byLabel.get("fault-src")?.ran, false);
     assert.notEqual(byLabel.get("fault-src")?.error, undefined);
   } finally {
@@ -287,8 +282,6 @@ test("abort halts the whole run: later sources never build a client or sync", as
       },
     });
 
-    // The first source's fast-failing (aborted) attempt is recorded; the run
-    // then halts — the second source is never even instantiated.
     assert.deepEqual(built, ["workstation-a"], "abort stops the run before later sources build a client");
     assert.equal(summary.results.length, 1);
     assert.equal(summary.ranCount, 0);
@@ -320,9 +313,6 @@ test("restart: a fresh run resumes from the persisted cursor", async () => {
     });
     assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), "c1");
 
-    // Simulate a process restart: a brand-new client that only knows how to
-    // continue from the persisted cursor. If the runner ignored it, this
-    // fixture would throw ("no page for cursor null").
     const second = fixtureClient(
       "workstation-a",
       new Map([["c1", { snapshots: [snapshot({ contentHash: "hash-3" })], nextCursor: null }]]),
@@ -361,18 +351,15 @@ test("reindexSearch is forwarded per source and a failure never fails the run", 
       createSourceClient: () => client,
       reindexSearch: async () => {
         reindexCalls += 1;
-        // Realistic forced-strict failure surfaced by updateCollectionStrict.
         throw new Error("QMD update skipped by per-collection failure backoff");
       },
     });
 
     assert.equal(reindexCalls, 1, "the runner forwards reindexSearch to the source sync");
-    // Durable write still committed despite the reindex failure:
     assert.equal(summary.ranCount, 1, "a reindex failure does not fail the source");
     assert.equal(summary.errorCount, 0, "a reindex failure is not a sync error");
     assert.equal(summary.results[0]?.ran, true);
     assert.equal(summary.results[0]?.inserted, 1);
-    // ...but the failed refresh is surfaced as a signal, not a silent clean run:
     assert.equal(summary.reindexErrorCount, 1, "the failed refresh is counted");
     assert.match(summary.results[0]?.reindexError ?? "", /failure backoff/);
   } finally {
@@ -393,7 +380,6 @@ test("partial multi-day sync reports ran=true for days that synced before a late
       },
       async fetchSnapshots() {
         calls += 1;
-        // First local day (oldest) syncs; the second day's daemon call fails.
         if (calls === 1) return { snapshots: [snapshot({ capturedAtUtc: "2026-07-21T14:00:00.000Z" })], nextCursor: null };
         throw new Error("activity source HTTP 503");
       },
@@ -430,8 +416,6 @@ test("an older-day failure does not starve newer dates in a multi-day window", a
       },
       async fetchSnapshots() {
         calls += 1;
-        // Dates are oldest-first: the first call is the OLDER day and fails;
-        // the newer day (today) must still sync.
         if (calls === 1) throw new Error("activity source HTTP 500");
         return { snapshots: [snapshot()], nextCursor: null };
       },
@@ -467,7 +451,6 @@ test("runActivitySyncOnce reports every local date that gained snapshots (issue 
       },
       async fetchSnapshots() {
         calls += 1;
-        // Dates are processed oldest-first: day 1 = 2026-07-21, day 2 = 2026-07-22.
         const capturedAtUtc = calls === 1 ? "2026-07-21T14:00:00.000Z" : "2026-07-22T14:00:00.000Z";
         return { snapshots: [snapshot({ capturedAtUtc, contentHash: `hash-${calls}` })], nextCursor: null };
       },
@@ -590,12 +573,10 @@ test("next sync re-analyzes a pending day and does not repeat a failed analysis"
     assert.equal(calls, 1);
     const dayPath = timelineDayPath(memoryDir, "2026-07-22");
     const persisted = JSON.parse(await readFile(dayPath, "utf8")) as { status: string };
-    // A crash after the deterministic prewrite leaves "pending" on disk.
     persisted.status = "pending";
     await writeFile(dayPath, `${JSON.stringify(persisted)}\n`);
     await runActivitySyncOnce({ ...syncOpts, analysisDeps: okRemote });
     assert.equal(calls, 2, "a pending prewrite must be re-analyzed by the next sync");
-    // A completed provider failure is terminal: no repeated spend.
     persisted.status = "provider_failed";
     await writeFile(dayPath, `${JSON.stringify(persisted)}\n`);
     await runActivitySyncOnce({ ...syncOpts, analysisDeps: okRemote });

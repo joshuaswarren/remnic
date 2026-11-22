@@ -1,22 +1,6 @@
-/**
- * Pure-function helpers for the `remnic capsule` CLI surface (issue #676 PR 6/6).
- *
- * All functions here are free of orchestrator / filesystem side-effects so
- * they can be unit-tested without booting the gateway (CLAUDE.md rules 14, 51).
- *
- * Responsibilities:
- *  - Input validation + option parsing for every capsule sub-command flag.
- *  - Rendering of `capsule list` and `capsule inspect` output in text /
- *    markdown / json forms.
- *
- * The actual I/O (export, import, merge, directory listing, manifest read) is
- * wired in `cli.ts` because those operations need the orchestrator's config.
- */
 
 import path from "node:path";
 
-// ---------------------------------------------------------------------------
-// Shared types
 // ---------------------------------------------------------------------------
 
 export type CapsuleOutputFormat = "text" | "markdown" | "json";
@@ -43,7 +27,6 @@ export interface CapsuleListEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Validation helpers
 // ---------------------------------------------------------------------------
 
 /**
@@ -70,9 +53,6 @@ export function parseCapsuleOutputFormat(
   return v;
 }
 
-/**
- * Validate and coerce the `--mode` flag for `capsule import`.
- */
 export function parseCapsuleImportMode(
   raw: unknown,
 ): "skip" | "overwrite" | "fork" {
@@ -91,9 +71,6 @@ export function parseCapsuleImportMode(
   return v as "skip" | "overwrite" | "fork";
 }
 
-/**
- * Validate and coerce the `--conflict-mode` flag for `capsule merge`.
- */
 export function parseCapsuleConflictMode(
   raw: unknown,
 ): "skip-conflicts" | "prefer-source" | "prefer-local" {
@@ -196,13 +173,9 @@ export function parseCapsuleIncludeKinds(raw: unknown): string[] | undefined {
       );
     }
   }
-  // Deduplicate while preserving order.
   return [...new Set(parts)];
 }
 
-/**
- * Parse a comma-separated peer id value into an array of peer ids.
- */
 export function parseCapsulePeers(
   raw: unknown,
   optionName = "--peers",
@@ -234,8 +207,6 @@ export function parseCapsulePeers(
 }
 
 // ---------------------------------------------------------------------------
-// Parsed option bags (returned by the parse helpers below and consumed by
-// cli.ts action handlers).
 // ---------------------------------------------------------------------------
 
 export interface CapsuleExportOptions {
@@ -267,8 +238,6 @@ export interface CapsuleInspectOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Option bag parsers (Rule 51: validate + throw on bad input, never silently
-// default to a value that hides user misconfiguration).
 // ---------------------------------------------------------------------------
 
 export function parseCapsuleExportOptions(
@@ -350,7 +319,6 @@ export function parseCapsuleInspectOptions(
 }
 
 // ---------------------------------------------------------------------------
-// Default capsules directory
 // ---------------------------------------------------------------------------
 
 /**
@@ -369,16 +337,12 @@ export function defaultCapsulesDir(memoryDir: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Renderers
 // ---------------------------------------------------------------------------
 
 function escapeMarkdownCell(v: string): string {
   return v.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 
-/**
- * Render the `capsule list` output.
- */
 export function renderCapsuleList(
   entries: CapsuleListEntry[],
   format: CapsuleOutputFormat,
@@ -415,7 +379,6 @@ export function renderCapsuleList(
     ].join("\n");
   }
 
-  // text
   const lines = entries.map((e) => {
     const date = e.createdAt?.slice(0, 10) ?? "—";
     const files =
@@ -429,9 +392,6 @@ export function renderCapsuleList(
   return lines.join("\n") + "\n";
 }
 
-/**
- * Render the `capsule inspect` output from a manifest object.
- */
 export function renderCapsuleInspect(
   manifest: CapsuleInspectData,
   format: CapsuleOutputFormat,

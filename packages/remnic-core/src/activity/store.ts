@@ -30,9 +30,6 @@ export async function ensureActivityStateDir(memoryDir: string): Promise<void> {
 }
 
 export function openActivityDatabase(memoryDir: string): BetterSqlite3Database {
-  // Create the state/ dir synchronously first: better-sqlite3 can't open a file
-  // in a missing directory, and open() is the sync public entry point (callers
-  // don't await ensureActivityStateDir). Idempotent.
   mkdirSync(path.join(memoryDir, "state"), { recursive: true });
   const db = openBetterSqlite3(activityDatabasePath(memoryDir));
   db.pragma("journal_mode = WAL");
@@ -82,8 +79,6 @@ function applySchema(db: BetterSqlite3Database): void {
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='activity_snapshots_fts'")
     .get();
   if (!hasFts) {
-    // Standalone FTS5 (not external-content): populated explicitly on insert so
-    // it never drifts from the base table.
     db.exec(`
       CREATE VIRTUAL TABLE activity_snapshots_fts USING fts5(
         text, app_name, window_title, browser_url
@@ -96,12 +91,6 @@ function applySchema(db: BetterSqlite3Database): void {
   );
 }
 
-/**
- * Canonicalize a UTC timestamp to `YYYY-MM-DDTHH:MM:SS.sssZ` so day-window
- * range filtering (a TEXT comparison against activityDayWindow bounds) is valid
- * regardless of the input ISO form (trailing `Z` vs `+00:00`, missing millis).
- * A non-parseable value is stored verbatim (an outlier the day filter skips).
- */
 function canonicalizeUtc(iso: string): string {
   const parsed = Date.parse(iso);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : iso;
@@ -118,8 +107,6 @@ function assertRequiredSnapshotFields(s: ActivitySnapshot): void {
   ];
   for (const [field, value] of required) {
     if (typeof value !== "string") {
-      // INSERT OR IGNORE would otherwise swallow a NOT NULL failure as if it
-      // were a dedup conflict, silently dropping a malformed capture.
       throw new RangeError(`activity: snapshot field "${field}" is required (got ${value === null ? "null" : typeof value}).`);
     }
   }
@@ -127,18 +114,10 @@ function assertRequiredSnapshotFields(s: ActivitySnapshot): void {
     throw new RangeError('activity: snapshot "machine" and "contentHash" must be non-empty.');
   }
   if (s.textSource !== "ax" && s.textSource !== "ocr") {
-    // rowToSnapshot maps any non-"ocr" value to "ax"; reject unknown sources at
-    // the boundary instead of silently coercing them on read.
     throw new RangeError(`activity: snapshot "textSource" must be "ax" or "ocr" (got "${s.textSource}").`);
   }
 }
 
-/**
- * Reject an impossible capture timestamp instead of letting Date.parse silently
- * roll it over (e.g. 2026-02-30 → Mar 2, in either `Z` or explicit-offset form),
- * which would file the snapshot under the wrong day. Validates the wall-clock
- * calendar fields in the string directly, independent of the zone designator.
- */
 function assertValidUtcInstant(iso: string, what: string): void {
   const m = iso.match(
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](?:0\d:[0-5]\d|1[0-3]:[0-5]\d|14:00))$/,
@@ -166,13 +145,6 @@ function optStr(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-/**
- * Build a safe FTS5 MATCH expression from free text: extract alphanumeric
- * tokens and quote each as a phrase, so punctuation common in captured
- * activity (URLs like github.com/x/pull/412, quotes, bare boolean operators)
- * can never be parsed as FTS5 syntax and make SQLite throw. Tokens are AND-ed
- * (implicit). Returns null when there is nothing to match.
- */
 function ftsMatchFor(query: string): string | null {
   if (typeof query !== "string") return null;
   const tokens = query.match(/[\p{L}\p{N}_]+/gu);
@@ -210,18 +182,7 @@ export class ActivityStore {
     return new ActivityStore(openActivityDatabase(memoryDir));
   }
 
-  /**
-   * Insert a snapshot, idempotent on (machine, captured_at_utc, content_hash):
-   * the same screen content recurring at a *different* time is kept; only an
-   * exact re-ingestion of the same capture dedups. Returns `inserted: false`
-   * for a duplicate. The FTS row is written only on a real insert (atomically),
-   * so it never drifts from the base table.
-   */
   insertSnapshot(snapshot: ActivitySnapshot): { inserted: boolean; id: number } {
-    // Base row + FTS row must be atomic. Without a transaction, a crash (or an
-    // FTS throw) between the two statements leaves a snapshot in the base table
-    // with no matching FTS row — silently unsearchable. The transaction rolls
-    // back both on any throw.
     const runInsert = this.db.transaction((s: ActivitySnapshot): { inserted: boolean; id: number } => {
       assertValidUtcInstant(s.capturedAtUtc, "capture timestamp");
       assertRequiredSnapshotFields(s);
@@ -320,9 +281,6 @@ export class ActivityStore {
            LIMIT ?`,
       )
       .all(match, capped);
-    // ftsMatchFor sanitizes the query to quoted alphanumeric phrases, so there
-    // is no path to an FTS5 syntax error; a real backend failure (closed handle,
-    // missing/corrupt table, disk I/O) propagates rather than reading as empty.
     return rows.map(rowToSnapshot);
   }
 

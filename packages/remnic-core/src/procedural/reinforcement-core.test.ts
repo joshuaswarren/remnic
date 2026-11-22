@@ -25,7 +25,6 @@ test("clusterByKey returns a single cluster when all items share a key", () => {
   const cluster = out.get("g1");
   assert.ok(cluster);
   assert.equal(cluster.length, 3);
-  // Preserves input order
   assert.deepEqual(
     cluster.map((s) => s.id),
     ["a", "b", "c"],
@@ -45,7 +44,6 @@ test("clusterByKey splits items into multiple clusters by key", () => {
   assert.deepEqual(out.get("g1")?.map((s) => s.id), ["a", "c"]);
   assert.deepEqual(out.get("g2")?.map((s) => s.id), ["b", "e"]);
   assert.deepEqual(out.get("g3")?.map((s) => s.id), ["d"]);
-  // First-seen insertion order
   assert.deepEqual(Array.from(out.keys()), ["g1", "g2", "g3"]);
 });
 
@@ -107,7 +105,6 @@ test("summarizeCluster handles all-equal timestamps", () => {
 });
 
 test("summarizeCluster works with non-ISO string keys via localeCompare", () => {
-  // Simple lexicographic ordering — extractTimestamp can return any string.
   const items = [{ k: "b" }, { k: "a" }, { k: "c" }];
   const out = summarizeCluster(items, (s) => s.k);
   assert.equal(out.firstSeen, "a");

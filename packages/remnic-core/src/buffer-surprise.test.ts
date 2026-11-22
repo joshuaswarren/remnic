@@ -8,8 +8,6 @@ import {
 } from "./buffer-surprise.js";
 
 // -----------------------------------------------------------------------------
-// Deterministic mock embedFn
-// -----------------------------------------------------------------------------
 //
 // We use two complementary mock embedders so that tests are fully reproducible
 // and do not depend on any real embedding model.
@@ -44,7 +42,6 @@ function fixtureEmbedder(
 ) {
   return async (text: string): Promise<readonly number[]> => {
     if (Object.prototype.hasOwnProperty.call(map, text)) {
-      // Defensive copy so callers can't see mutations across calls.
       return [...map[text]!];
     }
     if (fallback) return [...fallback];
@@ -57,7 +54,6 @@ function mem(id: string, content: string): RecentMemoryLike {
 }
 
 // -----------------------------------------------------------------------------
-// Tests
 // -----------------------------------------------------------------------------
 
 test("computeSurprise returns 1.0 when recentMemories is empty", async () => {
@@ -85,7 +81,6 @@ test("computeSurprise returns ~0 for a single identical memory", async () => {
   const score = await computeSurprise("user likes espresso", memories, {
     embedFn: hashEmbedder(),
   });
-  // Identical text under the hash embedder → cosine 1 → surprise 0.
   assert.ok(
     Math.abs(score - 0) < 1e-9,
     `expected surprise ~0, got ${score}`,
@@ -93,7 +88,6 @@ test("computeSurprise returns ~0 for a single identical memory", async () => {
 });
 
 test("computeSurprise returns ~1 for orthogonal memories", async () => {
-  // Construct vectors that are exactly orthogonal to the turn.
   const embed = fixtureEmbedder({
     TURN: [1, 0, 0, 0],
     A: [0, 1, 0, 0],
@@ -262,8 +256,6 @@ test("computeSurprise returns 0 when embedding-length mismatch (treated as sim 0
 test("computeSurprise default k is 5 (docstring matches constant)", async () => {
   assert.equal(DEFAULT_SURPRISE_K, 5);
 
-  // Behavioral check: when n=5 and we omit k, we should get the same answer
-  // as passing k=5 explicitly.
   const embed = hashEmbedder(8);
   const memories = [
     mem("a", "alpha content"),

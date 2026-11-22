@@ -142,9 +142,6 @@ export class GranolaClient {
     if (!Array.isArray(notesRaw)) {
       throw new GranolaApiError("Granola API returned an unexpected /v1/notes shape (missing notes array)");
     }
-    // `id` is required by the List Notes schema; a row missing it is a
-    // backend/schema failure. Reject the page rather than silently dropping
-    // rows and advancing the cursor over an incomplete day (§22).
     const notes: GranolaNote[] = [];
     for (const entry of notesRaw) {
       if (!isRecord(entry) || typeof entry.id !== "string") {
@@ -155,8 +152,6 @@ export class GranolaClient {
     const hasMore = isRecord(payload) && payload.hasMore === true;
     const cursor = isRecord(payload) && typeof payload.cursor === "string" ? payload.cursor : null;
     if (hasMore && (cursor === null || cursor.length === 0)) {
-      // A `hasMore: true` page with no usable cursor is a malformed pagination
-      // response; fail loudly rather than silently sync a partial day (§22).
       throw new GranolaApiError("Granola reported hasMore=true but returned no pagination cursor");
     }
     return { notes, nextCursor: hasMore ? cursor : null };
@@ -171,9 +166,6 @@ export class GranolaClient {
     if (!isRecord(payload) || typeof payload.id !== "string") {
       throw new GranolaApiError("Granola API returned an unexpected note shape (missing id)");
     }
-    // Validated boundary: `id` is confirmed a string above; every other field
-    // is optional and the normalizer re-checks each. Cast through `unknown`
-    // because the external JSON shape can't be proven structurally here.
     return payload as unknown as GranolaNote;
   }
 

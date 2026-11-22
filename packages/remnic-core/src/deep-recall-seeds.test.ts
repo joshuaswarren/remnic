@@ -1,11 +1,3 @@
-/**
- * Deep-recall seed-search wiring regressions (issue #2915).
- *
- * The seed search must forward the transport cancellation signal into the
- * namespace search router, and keep asking the router for exactly the capped
- * candidate set (`maxResults`), resolving each returned hit per hit — never
- * pre-scanning the namespace corpus.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";

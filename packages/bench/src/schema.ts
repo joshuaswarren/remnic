@@ -1,6 +1,3 @@
-/**
- * JSON schema contract for BenchmarkResult payloads.
- */
 
 import { BENCHMARK_SPLIT_TYPES } from "./integrity/types.js";
 

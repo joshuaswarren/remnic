@@ -187,7 +187,6 @@ export class CodexCreditAccountingError extends Error {
   }
 }
 
-/** The Codex child was confirmed not to have started, so no credits were charged. */
 export class CodexCreditDispatchError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -719,7 +718,6 @@ function calculateCodexBudgetNanounits(model: string, usage: CodexCliNativeUsage
   );
 }
 
-/** @deprecated Use calculateCodexBudgetUnits; this value is a local budget unit, not an account debit. */
 export function calculateCodexCredits(model: string, usage: CodexCliNativeUsage): number {
   return calculateCodexBudgetUnits(model, usage);
 }

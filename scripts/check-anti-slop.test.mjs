@@ -56,8 +56,6 @@ function commitAll(root, message) {
 function runGate(root, args = [], env = {}) {
   return spawnSync(process.execPath, [RUNNER, "--root", root, ...args], {
     encoding: "utf8",
-    // An inherited CI value would hijack default-resolution cases; empty is
-    // treated as unset by the runner.
     env: { ...process.env, REMNIC_ANTI_SLOP_BASE_REF: "", ...env },
   });
 }
@@ -186,8 +184,6 @@ test("introduced violations fail even when another violation is removed", (t) =>
   t.after(() => rmSync(root, { recursive: true, force: true }));
   write(root, "swapped.ts", `${VIOLATION}const between = 1;\n`);
   commitAll(root, "one existing violation");
-  // Removes the existing violation and introduces a new multi-line one: the
-  // count is unchanged, the gate must still fail on the added lines.
   write(root, "swapped.ts", `const between = 1;\n${MULTI_LINE_VIOLATION}`);
   git(root, ["config", "color.ui", "always"]);
   const result = runGate(root, ["--base", "HEAD"]);
@@ -209,8 +205,6 @@ test("new, staged, renamed, and new-extension sources are scanned whole, includi
   assertStatus(runGate(root, ["--base", "HEAD"]), 1, "staged file");
 
   commitAll(root, "untracked becomes committed debt");
-  // Pure rename of a path that already holds committed debt: the new path
-  // has no base revision, so the whole file must be scanned.
   git(root, ["mv", "new file.ts", "moved file.ts"]);
   let result = runGate(root, ["--base", "HEAD"]);
   assertStatus(result, 1, "renamed path scanned whole");

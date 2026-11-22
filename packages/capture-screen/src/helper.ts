@@ -1,21 +1,3 @@
-/**
- * Native-helper seam. The actual screen reader is a platform Swift binary
- * shipped separately as `@remnic/capture-native-<platform>-<arch>`, exporting a
- * `helperBinaryPath`. This module resolves that binary, spawns it, and parses
- * its JSON — with two hard rules:
- *
- *   - A MISSING helper package NEVER surfaces as a raw MODULE_NOT_FOUND: it
- *     resolves to `{ binaryPath: null, hint }` with an actionable install hint,
- *     and the daemon reports axAvailable/ocrAvailable = false (degraded but
- *     honest).
- *   - Every helper invocation is bounded and its output validated: a nonzero
- *     exit, empty output, or invalid/partial JSON throws a sanitized
- *     CaptureInputError, never a crash and never foreign text.
- *
- * `REMNIC_CAPTURE_HELPER_BIN` overrides resolution with an explicit binary path
- * (manual installs and the hardware-free test seam, which points it at a fake
- * script emitting canned JSON).
- */
 
 import { spawn } from "node:child_process";
 
@@ -25,7 +7,6 @@ import type { AxNode } from "./axtree.js";
 import { CaptureInputError } from "./errors.js";
 import { expandTilde } from "./paths.js";
 
-/** Max helper stdout we will buffer (guards a runaway child). */
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 15_000;
 
@@ -68,18 +49,14 @@ export async function resolveHelperBinaryPath(env: NodeJS.ProcessEnv = process.e
 
   const pkg = helperPackageName();
   try {
-    // Runtime-selected specifier: the helper package is platform/arch-specific
-    // and absent on most hosts, so a static import is impossible here.
     const mod: unknown = await import(pkg);
     if (mod && typeof mod === "object" && "helperBinaryPath" in mod) {
       const value: unknown = mod.helperBinaryPath;
       if (typeof value === "string" && value.length > 0) return { binaryPath: value, hint: null };
     }
-    // Package present but did not export a usable path — still degrade honestly.
     return { binaryPath: null, hint: `${pkg} is installed but exports no helperBinaryPath` };
   } catch (err) {
     if (isModuleNotFound(err)) return { binaryPath: null, hint: installHint(pkg, process.platform) };
-    // Any other load failure (broken binding, bad build) — degrade, never crash.
     return { binaryPath: null, hint: `${pkg} failed to load; reinstall it to enable live capture` };
   }
 }
@@ -117,7 +94,6 @@ function spawnHelper(binaryPath: string, args: string[], timeoutMs: number): Pro
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      // Sanitize: name + errno only, never the spawn path.
       const code = (err as NodeJS.ErrnoException).code;
       reject(new CaptureInputError(`native helper failed to spawn (${code ?? err.name})`));
     });
@@ -206,18 +182,12 @@ export interface OcrWindowOptions {
   expectTitle?: string;
 }
 
-/** The `ax-snapshot` arguments that pick the window: by id, by process, or the one in front. */
 function axTarget(opts: AxSnapshotOptions): string[] {
   if (opts.windowId !== undefined) return ["ax-snapshot", "--window", opts.windowId];
   if (opts.pid !== undefined) return ["ax-snapshot", "--pid", String(opts.pid)];
   return ["ax-snapshot", "--frontmost"];
 }
 
-/**
- * One AX node as the helper prints it, checked on its own: every field is optional, unknown fields are kept
- * (the helper may report roles this build does not model), and the children are only known to be objects.
- * Each child is checked when its turn comes in `decodeAxTree`, so a deep tree does not need a deep call stack.
- */
 const AxNodeSchema = z.looseObject({
   role: z.string().optional(),
   value: z.string().optional(),
@@ -229,7 +199,6 @@ const AxNodeSchema = z.looseObject({
 });
 type ShallowAxNode = z.infer<typeof AxNodeSchema>;
 
-/** A decoded node and the children of it that still wait to be checked. */
 interface PendingNode {
   node: AxNode;
   pending: ShallowAxNode["children"];
@@ -240,7 +209,6 @@ function pendingNode(shallow: ShallowAxNode): PendingNode {
   return { node: children === undefined ? fields : { ...fields, children: [] }, pending: children };
 }
 
-/** Check every node of an `ax-snapshot` tree, parents before children, with an explicit stack. */
 function decodeAxTree(root: ShallowAxNode): AxNode {
   const top = pendingNode(root);
   const stack = [top];
@@ -256,11 +224,9 @@ function decodeAxTree(root: ShallowAxNode): AxNode {
   return top.node;
 }
 
-/** The helper's JSON answer: an object, with the fields it reports kept as printed. */
 const HelperEnvelopeSchema = z.looseObject({});
 type HelperEnvelope = z.infer<typeof HelperEnvelopeSchema>;
 
-/** The `ocr-window` answer: the text, and the title the helper read it under when it reports one. */
 const OcrAnswerSchema = z.looseObject({ text: z.string(), windowTitle: z.string().optional().catch(undefined) });
 
 /** One window-fact field the helper reports: absent, `null` or mistyped means "not reported". */
@@ -272,14 +238,12 @@ const HelperTextField = z.string();
  */
 const HelperWindowIdField = z.union([z.string(), z.number().transform(String)]).nullish();
 
-/** Decode one helper JSON answer at the boundary: anything but an object throws the sanitized error. */
 function envelopeOrThrow<T>(json: T): HelperEnvelope {
   const parsed = HelperEnvelopeSchema.safeParse(json);
   if (!parsed.success) throw new CaptureInputError("native helper did not return an object");
   return parsed.data;
 }
 
-/** The window fields every `ax-snapshot` answer carries, validated; none of them is window content. */
 function readWindowFields(json: HelperEnvelope): Omit<WindowContext, "snapshot"> {
   if (!("app" in json) || !("windowTitle" in json)) {
     throw new CaptureInputError("native helper ax-snapshot missing app/windowTitle");
@@ -300,7 +264,6 @@ function readWindowFields(json: HelperEnvelope): Omit<WindowContext, "snapshot">
   return fields;
 }
 
-/** Thin wrapper over a resolved helper binary. */
 export class NativeHelper {
   readonly binaryPath: string;
   #windowOnlyUnsupported = false;

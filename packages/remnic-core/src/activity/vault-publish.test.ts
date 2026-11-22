@@ -286,8 +286,6 @@ test("applyManagedRegion heading demotes owned headings below the owning heading
   if (!second.ok) return;
   assert.equal(second.text, first.text);
 
-  // A recap heading already at six stays six — still strictly deeper than
-  // a level-2 owning heading, so it cannot terminate the region either.
   const clamped = applyManagedRegion("## Timeline\nold\n", {
     strategy: "heading",
     name: "Timeline",

@@ -1,9 +1,3 @@
-/**
- * QMD status parsing and backlog reporting helpers.
- *
- * Extracted from qmd.ts to keep that module under its structural ceiling.
- * Issue #2019: expose embedding backlog metrics in health and CLI surfaces.
- */
 
 export interface QmdStatusReport {
   totalFiles: number | null;
@@ -17,7 +11,6 @@ export interface QmdStatusReport {
   error?: string;
 }
 
-/** Minimal interface for backends that expose QMD status. */
 export interface QmdStatusCapable {
   status(): Promise<QmdStatusReport>;
 }
@@ -85,7 +78,6 @@ export function parseQmdStatusOutput(stdout: string): QmdStatusReport {
   return { totalFiles, embeddedFiles, pendingEmbeddings, oldestPendingAgeMs, raw };
 }
 
-/** Empty status report returned when QMD is unavailable or the command fails. */
 export const EMPTY_QMD_STATUS: QmdStatusReport = {
   totalFiles: null,
   embeddedFiles: null,

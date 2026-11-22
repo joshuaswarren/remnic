@@ -31,12 +31,9 @@ function createConfig(memoryDir: string) {
   });
 }
 
-/** Second SQLite handle on the same file: proves content is durable on disk,
- * independent of the engine's in-memory queue state. */
 function durableRowCount(memoryDir: string, sessionId: string): number {
   const db = openLcmDatabase(memoryDir);
   try {
-    // SAFETY: the query returns exactly one aggregate column, `n`.
     const row = db
       .prepare("SELECT COUNT(*) AS n FROM lcm_messages WHERE session_id = ?")
       .get(sessionId) as { n: number };
@@ -49,7 +46,6 @@ function durableRowCount(memoryDir: string, sessionId: string): number {
 function durableContents(memoryDir: string, sessionId: string): string[] {
   const db = openLcmDatabase(memoryDir);
   try {
-    // SAFETY: the query returns the lcm_messages `content` column.
     const rows = db
       .prepare(
         "SELECT content FROM lcm_messages WHERE session_id = ? ORDER BY turn_index",
@@ -64,7 +60,6 @@ function durableContents(memoryDir: string, sessionId: string): string[] {
 function leafRanges(memoryDir: string, sessionId: string): Array<[number, number]> {
   const db = openLcmDatabase(memoryDir);
   try {
-    // SAFETY: the query returns the summary node range columns.
     const rows = db
       .prepare(
         "SELECT msg_start, msg_end FROM lcm_summary_nodes WHERE session_id = ? AND depth = 0 ORDER BY msg_start",
@@ -93,8 +88,6 @@ test("enqueueObserveMessages archives content durably before acknowledgement whi
       { role: "user", content: "burst payload alpha" },
     ]);
 
-    // Acknowledgement returned with the summarizer still parked: the payload
-    // must already be in SQLite, not only in the in-memory queue.
     assert.equal(durableRowCount(dir, "session-1"), 1);
     assert.deepEqual(durableContents(dir, "session-1"), ["burst payload alpha"]);
 
@@ -122,8 +115,6 @@ test("burst enqueue keeps the pending queue metadata-only and every message land
       ]);
     }
 
-    // One running job plus one pending marker for the single session: the
-    // queue never grows with the number of archived messages.
     assert.equal(engine.observeQueueDepth, 1);
     assert.equal(engine.observeQueueInFlightCount, 1);
 
@@ -160,14 +151,11 @@ test("close-and-recreate recovers the full archived session and resumes outstand
       ]);
     }
     await summarizeStarted;
-    // Simulated crash: drop the engine (and its in-flight summarize job).
     blockedEngine.close();
     resolveRelease();
 
-    // Content survived the crash.
     assert.equal(durableRowCount(dir, "session-1"), 4);
 
-    // Restart: outstanding complete batches must resume without any new observe.
     let summarizeCalls = 0;
     const resumedEngine = new LcmEngine(createConfig(dir), async () => {
       summarizeCalls += 1;
@@ -200,7 +188,6 @@ test("unsummarized archive reads are bounded by the requested limit without drop
     assert.equal(archive.getUnsummarizedMessages("session-1").length, 10);
     assert.equal(archive.getUnsummarizedMessages("session-1", 4).length, 4);
     assert.equal(archive.getUnsummarizedMessages("session-1", 0).length, 0);
-    // Rows themselves untouched.
     assert.equal(archive.getMaxTurnIndex("session-1"), 9);
     assert.equal(durableRowCount(dir, "session-1"), 10);
     db.close();
@@ -254,7 +241,6 @@ test("maxLeafBatches caps one summarize pass and repeated passes keep contiguous
 
 test("enqueueObserveMessages rejects instead of silently claiming acceptance when initialization fails", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-durable-6-"));
-  // memoryDir points at a regular file: ensureLcmStateDir cannot mkdir beneath it.
   const filePath = path.join(dir, "not-a-dir");
   await writeFile(filePath, "occupied", "utf8");
   try {
@@ -268,7 +254,6 @@ test("enqueueObserveMessages rejects instead of silently claiming acceptance whe
       failure = err;
     }
     assert.ok(failure instanceof Error, "the archive failure must reject");
-    // Nothing was archived: the failed init left no database behind.
     assert.equal(existsSync(path.join(filePath, "state")), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -304,8 +289,6 @@ test("a failed summary pass is retried from the durable archive without a new ob
     const engine = new LcmEngine(createConfig(dir), async () => "retry summary");
     await engine.ensureInitialized();
 
-    // Fail the first summary pass, then let the retry succeed.
-    // SAFETY: the stub replaces the engine's own summarizer for this test.
     const summarizer = (engine as any).summarizer as {
       summarizeIncremental: (
         sessionId: string,
@@ -330,8 +313,6 @@ test("a failed summary pass is retried from the durable archive without a new ob
       { role: "assistant", content: "retry me too" },
     ]);
 
-    // The durable backlog must be summarized by the retry alone: no new
-    // observe, no restart.
     await eventually(
       async () => {
         const summary = await engine.describeContext("session-1", 0, 1);
@@ -352,7 +333,6 @@ test("a summary pass that keeps failing is retried until it succeeds", async () 
     const engine = new LcmEngine(createConfig(dir), async () => "persistent summary");
     await engine.ensureInitialized();
 
-    // SAFETY: the test drives the engine's own retry pacing and summarizer.
     const internals = engine as any;
     internals.summarizeRetryBaseMs = 10;
     // SAFETY: the stub replaces the engine's own summarizer for this test.
@@ -369,8 +349,6 @@ test("a summary pass that keeps failing is retried until it succeeds", async () 
       options?: { maxLeafBatches?: number },
     ) => {
       failures += 1;
-      // More failures than any attempt budget would allow: the retry must
-      // keep trying, not stop and strand the durable backlog.
       if (failures <= 7) throw new Error("persistent summary failure");
       return realSummarize(sessionId, options);
     };
@@ -456,8 +434,6 @@ test("pre-compaction flush serializes with a pending summary retry", async () =>
     ) => {
       failures += 1;
       if (failures === 1) throw new Error("transient summary failure");
-      // Keep later passes busy long enough for a retry timer to fire mid-pass,
-      // which is exactly the overlap a direct flush must not allow.
       await new Promise((resolveSleep) => setTimeout(resolveSleep, 50));
       return realSummarize(sessionId, options);
     };
@@ -467,13 +443,10 @@ test("pre-compaction flush serializes with a pending summary retry", async () =>
       { role: "assistant", content: "flush race too" },
     ]);
 
-    // Compaction starts while the retry delay is still pending: the flush
-    // must serialize behind the retry, not run a second pass beside it.
     await engine.preCompactionFlush("session-1");
     await engine.waitForObserveQueueIdle();
 
     assert.ok(failures >= 2, "the retry must have run before the flush");
-    // Exactly one leaf for the batch: no duplicate summary ranges.
     assert.deepEqual(leafRanges(dir, "session-1"), [[0, 1]]);
     engine.close();
   } finally {
@@ -486,7 +459,6 @@ test("no summary pass starts while a retry is pending for the session", async ()
   try {
     const engine = new LcmEngine(createConfig(dir), async () => "ordered summary");
     await engine.ensureInitialized();
-    // Seed the archive directly: the backlog exists before any observe.
     await ensureLcmStateDir(dir);
     const seedDb = openLcmDatabase(dir);
     const seedArchive = new LcmArchive(seedDb);
@@ -511,9 +483,6 @@ test("no summary pass starts while a retry is pending for the session", async ()
       sessionId: string,
       options?: { maxLeafBatches?: number },
     ) => {
-      // A pass that starts while this session's retry timer is still pending
-      // is either the armed retry or a racy direct flush; the flush must not
-      // start until the retry has fired.
       const retryPending = internals.summarizeRetryTimers.has(sessionId);
       const label: (typeof passOrder)[number] =
         failures === 0 ? "background" : retryPending ? "direct" : "retry";
@@ -523,8 +492,6 @@ test("no summary pass starts while a retry is pending for the session", async ()
       return realSummarize(sessionId, options);
     };
 
-    // The background pass fails and arms a 150ms retry; compaction starts
-    // inside that window.
     await engine.enqueueObserveMessages("session-1", [
       { role: "user", content: "ordering one" },
       { role: "assistant", content: "ordering two" },
@@ -532,9 +499,6 @@ test("no summary pass starts while a retry is pending for the session", async ()
     await engine.preCompactionFlush("session-1");
     await engine.waitForObserveQueueIdle();
 
-    // The flush must serialize behind the armed retry, never start while the
-    // retry timer is pending: no "direct" label may appear. The retry pass
-    // covers both seeded batches; the flush pass then finds nothing left.
     assert.deepEqual(passOrder, ["background", "retry", "retry"]);
     assert.deepEqual(leafRanges(dir, "session-1"), [
       [0, 1],
@@ -651,8 +615,6 @@ test("an aborted global idle wait rejects while a summary job is still in flight
     const engine = new LcmEngine(createConfig(dir), async () => "unused");
     await engine.ensureInitialized();
 
-    // SAFETY: the stub replaces the engine's own summarizer: hold the first
-    // pass in flight so the wait is parked on the observe queue, not a retry.
     let releaseFirstPass!: () => void;
     const firstPassBlocked = new Promise<void>((resolve) => {
       releaseFirstPass = resolve;
@@ -693,9 +655,6 @@ test("an aborted global idle wait rejects while a summary job is still in flight
   }
 });
 
-/** Spawn a real one-shot host child process with the shared engine setup.
- * The retry timer is the only handle a quiet host has left: `mode` decides
- * whether it parks an explicit global idle wait before ending its script. */
 function spawnOneShotHost(
   memoryDir: string,
   mode: "global-idle" | "background",
@@ -715,10 +674,6 @@ function spawnOneShotHost(
     `}), async () => "host summary");`,
     `await engine.ensureInitialized();`,
     `engine.summarizeRetryBaseMs = 150;`,
-    // SAFETY: stub replaces the engine's own summarizer. "global-idle" fails
-    // exactly once so a genuine retry pass runs against the real archive;
-    // "background" fails forever so a wrongly referenced timer would keep
-    // the host alive on an endless retry loop.
     `const summarizer = engine.summarizer;`,
     `if (mode === "global-idle") {`,
     `  const realSummarize = summarizer.summarizeIncremental.bind(summarizer);`,
@@ -734,7 +689,6 @@ function spawnOneShotHost(
     `  { role: "user", content: "one-shot host" },`,
     `  { role: "assistant", content: "one-shot host too" },`,
     `]);`,
-    // Wait (referenced) until the failed pass really left a retry pending.
     `for (let i = 0; i < 200 && engine.summarizeRetryTimers.size === 0; i++) {`,
     `  await new Promise((resolve) => setTimeout(resolve, 10));`,
     `}`,
@@ -743,8 +697,6 @@ function spawnOneShotHost(
     `  process.exit(5);`,
     `}`,
     `if (mode === "background") {`,
-    // No explicit wait: the unreferenced retry is pure background work and
-    // must not keep the host alive. Natural exit proves it.
     `  process.stdout.write("RETRY_PENDING_NO_WAITER\\n");`,
     `} else {`,
     `  process.on("beforeExit", () => {`,
@@ -789,8 +741,6 @@ function spawnOneShotHost(
     stdout: string;
     stderr: string;
   }>();
-  // A one-shot host must settle in seconds; a wrongly referenced retry loop
-  // never exits, so the deadline kill is part of the assertion.
   const deadline = setTimeout(() => {
     child.kill("SIGKILL");
     reject(new Error(`one-shot host (${mode}) did not exit within 10s; stderr: ${stderr || "(empty)"}`));
@@ -806,18 +756,11 @@ function spawnOneShotHost(
   return promise;
 }
 
-// EXCEPTION (real timers): this test exercises genuine event-loop liveness —
-// whether a real unref'd retry timer keeps a one-shot host alive. Fake timers
-// cannot represent unref/ref or event-loop exhaustion, so real wall-clock
-// backoff (150ms) is the subject under test, not an accidental delay.
 test("a one-shot host survives a pending summary retry only while an idle wait is parked on it", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-retry-host-"));
   try {
     const moduleUrl = (name: string) => new URL(name, import.meta.url).href;
 
-    // Parked on the global idle wait: the host must stay alive while the
-    // retry timer pends, the retry must really fire and finish the work,
-    // and only then may the host exit.
     const startedAt = Date.now();
     const idleHost = await spawnOneShotHost(dir, "global-idle", moduleUrl);
     assert.equal(
@@ -838,8 +781,6 @@ test("a one-shot host survives a pending summary retry only while an idle wait i
       "the global idle wait must span the real retry backoff",
     );
 
-    // No idle wait: the pending retry stays unreferenced background work and
-    // the host must still exit promptly (the previous referenced-timer bug).
     const backgroundHost = await spawnOneShotHost(dir, "background", moduleUrl);
     assert.equal(
       backgroundHost.code,

@@ -93,9 +93,7 @@ test("an external entities change invalidates the amortized completion verdict o
     await seed.ensureDirectories();
     const reader = await deferStore(dir);
     const canonical = reader.normalizeEntityName("Café", "project");
-    // First miss computes and caches the completion verdict.
     assert.equal(await reader.readEntity("project-missing"), "");
-    // An external rename changes the entities directory; the cached verdict
     // must not keep hiding the now-legacy file from the same reader.
     await rename(path.join(dir, "entities", `${id}.md`), path.join(dir, "entities", "legacy-cafe.md"));
     assert.match(await reader.readEntity(canonical), /Synthetic legacy fact/);
@@ -115,7 +113,6 @@ test("an external aliases change invalidates the amortized completion verdict on
     assert.equal(JSON.parse(journal).complete, true);
 
     const reader = await deferStore(dir);
-    // Warm amortized completion (and any same-reader completion memo) on a miss.
     assert.equal(await reader.readEntity("project-missing"), "");
 
     // Block migration repair so fingerprint drift stays visible to reads.

@@ -25,10 +25,8 @@ import {
 const ENABLED: SeedGraduationConfig = { enabled: true, minCorroborations: 1 };
 
 const SEED_TEXT = "The launch moved to September twelfth after the vendor call.";
-// Restates the seed in similar wording (the wearable support-corpus pair).
 const RESTATE_TEXT = "Launch moved to September twelfth after the vendor call.";
 const UNRELATED_TEXT = "Quarterly budget planning covered the new office lease.";
-// Restates the seed's core content with flipped negation polarity.
 const CONTRADICT_TEXT = "The launch was not moved to September twelfth after the vendor call.";
 const NEGATED_UNRELATED_TEXT =
   "The office lease was not approved during quarterly budget planning.";
@@ -63,8 +61,6 @@ function fakeMemory(overrides: {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Config
 // ---------------------------------------------------------------------------
 
 test("seedGraduation defaults to disabled with minCorroborations 2", () => {
@@ -126,7 +122,6 @@ test("parseConfig wires seedGraduation; conservative pins it off", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Gate — echo suppression (pure)
 // ---------------------------------------------------------------------------
 
 test("evidence from the seed's own session never corroborates (self-echo)", () => {
@@ -177,8 +172,6 @@ test("a session that recalled the seed cannot corroborate it (quoted-back echo)"
     source: "wearable:bee",
     structuredAttributes: { sessionKey: "session-a" },
   });
-  // Different session AND different source — passes the anchor rules, but the
-  // session's recall history shows the seed was injected there: pure echo.
   const readback = fakeMemory({
     id: "ev-1",
     content: RESTATE_TEXT,
@@ -193,7 +186,6 @@ test("a session that recalled the seed cannot corroborate it (quoted-back echo)"
   });
   assert.equal(decision.decision, "hold");
   assert.equal(decision.echoSuppressedCount, 1);
-  // Same evidence, but the session never recalled the seed → real corroboration.
   const clean = evaluateSeedGraduation(seed, [readback], {
     config: ENABLED,
     recalledBySession: () => [],
@@ -267,7 +259,6 @@ test("minCorroborations counts distinct corroborating memories", () => {
   const one = evaluateSeedGraduation(seed, evidence, {
     config: { enabled: true, minCorroborations: 2 },
   });
-  // ev-2 restates via a superset of tokens; both count → promotes at 2.
   assert.equal(one.decision, "promote");
   assert.equal(one.corroborationCount, 2);
 
@@ -336,7 +327,6 @@ test("disabled config holds with the disabled reason (zero-value semantics)", ()
 });
 
 // ---------------------------------------------------------------------------
-// Gate — contradiction during the corroboration window (issue #2974)
 // ---------------------------------------------------------------------------
 
 function seedMemory(overrides: Partial<Parameters<typeof fakeMemory>[0]> & { id: string }): MemoryFile {
@@ -488,7 +478,6 @@ test("a superseded contradictor no longer holds the seed (review resolution unbl
 });
 
 // ---------------------------------------------------------------------------
-// Pass — against a real StorageManager (acceptance cases)
 // ---------------------------------------------------------------------------
 
 function makeStorage(): { storage: StorageManager; dir: string } {
@@ -684,7 +673,6 @@ test("pass: disabled config touches nothing", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Wiring — parseConfig + lifecycle policy pass
 // ---------------------------------------------------------------------------
 
 function coordinatorDeps(

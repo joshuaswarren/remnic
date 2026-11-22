@@ -54,9 +54,6 @@ function collectSegments(
             : undefined;
         out.push({
           text,
-          // The wearer's stable key is "user"; other speakers key by the
-          // provider name so saved names survive across lifelogs and the
-          // registry can re-label "Speaker 2" everywhere at once.
           speakerKey: isWearer ? "user" : (speakerName ?? "unknown"),
           ...(speakerName !== undefined ? { speakerName } : {}),
           ...(isWearer ? { isWearer: true } : {}),

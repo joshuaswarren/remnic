@@ -1,7 +1,3 @@
-/**
- * Synthetic cases for procedural recall: task-initiation gating + optional
- * storage-backed recall (issue #519).
- */
 
 export interface ProceduralRecallIntentCase {
   id: string;

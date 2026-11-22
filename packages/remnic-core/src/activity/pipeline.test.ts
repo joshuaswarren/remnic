@@ -122,8 +122,6 @@ test("syncActivitySource completes normally when the final page lands on the pag
       ]),
     );
 
-    // Two pages with a page budget of exactly two: the terminal null cursor
-    // arrives on the last allowed page, which must not be treated as a runaway.
     const result = await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store, maxPages: 2 });
     assert.equal(result.inserted, 2);
     assert.equal(result.cursor, "cursor-1");
@@ -252,8 +250,6 @@ test("syncActivitySource isolates a reindex failure: rows, digest, and cursor st
       memoryDir,
       store,
       afterWrites: async () => {
-        // A backend error whose message embeds an absolute path must be
-        // sanitized to a name+code in the exported reindexError, not echoed.
         throw Object.assign(new Error("ENOENT: /abs/qmd/index.sqlite missing"), { code: "ENOENT" });
       },
     });
@@ -285,7 +281,6 @@ test("syncActivitySource honors an abort before committing the digest and cursor
         return { ok: true };
       },
       async fetchSnapshots() {
-        // Abort fires after the last page returns but before the digest write.
         controller.abort();
         return { snapshots: [snapshot()], nextCursor: null };
       },
@@ -327,8 +322,6 @@ test("syncActivitySource persists out-of-window snapshots under their own day, n
           null,
           [
             snapshot({ capturedAtUtc: "2026-07-22T14:00:00.000Z", contentHash: "in-window" }),
-            // A snapshot the daemon misplaced onto a different day (replay /
-            // timezone bug). It must be retained under its own day, not lost.
             snapshot({ capturedAtUtc: "2026-07-20T10:00:00.000Z", contentHash: "out-of-window" }),
           ],
         ],
@@ -340,14 +333,11 @@ test("syncActivitySource persists out-of-window snapshots under their own day, n
 
     assert.equal(result.fetched, 2, "both snapshots were fetched");
     assert.equal(result.inserted, 2, "both snapshots are durably persisted (no data loss)");
-    // The requested day's digest is a window query: only its in-window row.
     const day = store.listSnapshotsForDay(null, "2026-07-22T00:00:00.000Z", "2026-07-23T00:00:00.000Z");
     assert.deepEqual(day.map((s) => s.contentHash), ["in-window"], "the requested day contains only its in-window row");
     assert.match(await readFile(activityDigestPath(memoryDir, "2026-07-22"), "utf8"), /snapshotCount: 1/);
-    // The misplaced row is durable under ITS OWN day, surfacing when that day syncs.
     const ownDay = store.listSnapshotsForDay(null, "2026-07-20T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
     assert.deepEqual(ownDay.map((s) => s.contentHash), ["out-of-window"], "the misplaced row is retained under its own day, not dropped");
-    // Nothing was skipped, so the cursor advancing past the page is correct.
     assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), null, "cursor advances after a fully-persisted page");
   } finally {
     store.close();
@@ -361,8 +351,6 @@ test("syncActivitySource rejects a calendar-overflow timestamp instead of skippi
   try {
     const client = source(
       "workstation-a",
-      // 2026-02-30 is impossible; Date.parse rolls it to Mar 2, which would fall
-      // outside a Feb 28 sync window. It must fail loudly, not be silently skipped.
       new Map([[null, [snapshot({ capturedAtUtc: "2026-02-30T12:00:00.000Z", contentHash: "overflow" })]]]),
       new Map([[null, null]]),
     );

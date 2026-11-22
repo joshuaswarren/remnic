@@ -1,18 +1,3 @@
-/**
- * Access-surface binding for the recall-miss diagnosis (issue #3033).
- *
- * `recall-why.ts` holds the stage logic and a port; this module binds that
- * port to the live orchestrator. It lives beside `access-recall-surface.ts`
- * rather than inside it because that file is at its file-size ratchet
- * ceiling (AGENTS.md: extract the addition to a sibling module).
- *
- * Namespace scope is enforced BEFORE the recall fires and the expected-memory
- * lookup is confined to namespaces the caller may read, so the diagnosis can
- * never confirm the existence of a memory in a namespace the caller has no
- * read access to. Read path and write path resolve through the same namespace
- * layer (Review Prevention Checklist #30): the lookup consumes exactly the
- * `recallNamespacesForPrincipal` set the recall itself is scoped by.
- */
 
 import { resolveNamespaceCapabilities, resolveQmdCapabilities } from "./capabilities.js";
 import { planRecallMode } from "./intent.js";
@@ -36,7 +21,6 @@ import type { MemoryFile, MemoryStatus } from "./types.js";
 
 export interface RecallWhyRequest {
   query: string;
-  /** Memory id or substring to trace through every stage. */
   expect?: string;
   sessionKey?: string;
   namespace?: string;
@@ -46,16 +30,13 @@ export interface RecallWhyRequest {
 }
 
 export interface RecallWhyResponse {
-  /** False when the namespace ACL denied the diagnosis. */
   reportFound: boolean;
   report?: RecallWhyReport;
-  /** One-line verdict, for agent callers that do not parse the full report. */
   summary?: string;
 }
 
 export interface RecallWhyServiceDeps {
   readonly orchestrator: Orchestrator;
-  /** The surface's shared namespace resolver. */
   resolveNamespace(namespace?: string): string;
 }
 
@@ -84,8 +65,6 @@ export async function runRecallWhy(deps: RecallWhyServiceDeps, request: RecallWh
       return { reportFound: false };
     }
   } else if (namespacesEnabled && !authenticatedPrincipal && !request.sessionKey?.trim()) {
-    // Namespaces on but no identity supplied: refuse rather than diagnose
-    // against the global namespace (least-privileged default).
     return { reportFound: false };
   }
 
@@ -99,10 +78,6 @@ export async function runRecallWhy(deps: RecallWhyServiceDeps, request: RecallWh
     namespacesEnabled,
     isExcludedPath: (memoryPath) => isGenericRecallExcludedPath(memoryPath, config),
     runRecall: async (recallQuery, options) => {
-      // A configured-but-unreachable search backend is an OUTAGE, and must
-      // never render as "0 candidates" (Review Prevention Checklist #22).
-      // This is the same pair of expressions the pipeline emits as
-      // `qmdEnabled` / `qmdAvailable` on its recall_summary trace.
       if (resolveQmdCapabilities(config).qmd && !orchestrator.qmd.isAvailable()) {
         return {
           ok: false,
@@ -110,10 +85,6 @@ export async function runRecallWhy(deps: RecallWhyServiceDeps, request: RecallWh
           detail: "the search backend is enabled but reported itself unavailable",
         };
       }
-      // A backend that answers the availability probe can still fail
-      // mid-recall (daemon timeout, deadline exceeded, subprocess error).
-      // The pipeline already collects those; `degradationSink` hands us the
-      // same array it fills, so the outage is observed rather than inferred.
       const degradations: SearchDegradation[] = [];
       try {
         const captured = await orchestrator.recallWithXrayCapture(recallQuery, options.sessionKey, {
@@ -129,7 +100,6 @@ export async function runRecallWhy(deps: RecallWhyServiceDeps, request: RecallWh
         }
         return { ok: true, snapshot: captured.snapshot };
       } catch (err) {
-        // Cancellation is the caller's decision, not a backend outage.
         if (err instanceof Error && err.name === "AbortError") throw err;
         const observed = degradations.length > 0 ? `${describeSearchDegradations(degradations)}; ` : "";
         return {
@@ -174,8 +144,6 @@ async function findExpectedMemory(
       const storage = await orchestrator.getStorageForNamespace(namespace);
       memories = await storage.readAllMemories();
     } catch {
-      // A namespace whose storage cannot be read contributes no candidates;
-      // the diagnosis still reports on the ones that could be read.
       continue;
     }
     for (const memory of memories) {

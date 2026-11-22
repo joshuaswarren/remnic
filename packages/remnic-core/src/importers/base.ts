@@ -1,30 +1,8 @@
 // ---------------------------------------------------------------------------
-// Shared importer base (issue #568)
-// ---------------------------------------------------------------------------
 //
-// The importer adapters defined by issue #568 (`@remnic/import-chatgpt`,
-// `@remnic/import-claude`, `@remnic/import-gemini`, `@remnic/import-mem0`) all
-// follow the same three-step shape:
 //
-//   1. parse(input)          — turn a raw file / API payload into a
-//                              source-specific intermediate structure.
-//   2. transform(parsed)     — flatten that structure into a uniform list of
-//                              `ImportedMemory` records with provenance
-//                              attached (sourceLabel, importedFromPath,
-//                              importedAt).
-//   3. writeTo(orchestrator) — hand each memory to the orchestrator via
-//                              `ingestBulkImportBatch`. Dry-run mode stops
-//                              after transform() and never calls writeTo().
 //
-// This file defines the shared `ImporterAdapter` interface plus a thin
-// `runImporter` helper that handles batching, dry-run plan reporting, and
-// progress callbacks so every adapter does not reimplement the same loop.
 //
-// The existing lower-level `BulkImportSourceAdapter` (weclone-shaped: produces
-// turn-structured transcripts) remains untouched and continues to drive
-// `runBulkImportCliCommand`. Importer adapters are the higher-level surface
-// intended for the four memory sources in #568 — they emit *memories*
-// (intent-level content) rather than raw conversation turns.
 
 import { validateImportTurn, type ImportTurn } from "../bulk-import/types.js";
 
@@ -172,16 +150,6 @@ export interface ImporterAdapter<Parsed = unknown> {
   ): Promise<ImporterWriteResult>;
 }
 
-/**
- * Shape of the "target" passed to `writeTo`.
- *
- * This is intentionally narrower than the full `Orchestrator` class: importer
- * adapters only need to push `ImportTurn[]` batches and read the active
- * bulk-import namespace. Narrowing keeps test doubles simple (the slice-1
- * integration test uses a pure in-memory mock) and prevents adapters from
- * reaching into orchestrator internals that would make them harder to move
- * between host environments.
- */
 export interface ImporterWriteTarget {
   ingestBulkImportBatch(
     turns: ImportTurn[],
@@ -222,7 +190,6 @@ export interface ImporterTransformOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Validation helpers
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_IMPORT_BATCH_SIZE = 25;
@@ -273,19 +240,8 @@ export function validateImportRateLimit(value: number | undefined): number | und
 }
 
 // ---------------------------------------------------------------------------
-// Orchestration helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Convert an `ImportedMemory` into an `ImportTurn` suitable for
- * `orchestrator.ingestBulkImportBatch`. The resulting turn is always
- * `role="user"` because every downstream source (saved memories, personal
- * context, mem0 entries) represents a first-person statement rather than an
- * assistant response.
- *
- * Keeps provenance on the turn via `participantName` so the extraction
- * pipeline's transcript renderer labels the speaker with the source platform.
- */
 export function importedMemoryToTurn(memory: ImportedMemory): ImportTurn {
   const timestamp =
     typeof memory.sourceTimestamp === "string" && memory.sourceTimestamp.length > 0
@@ -382,9 +338,6 @@ export async function runImporter<Parsed>(
   const dryRun = options.dryRun === true;
   const onProgress = options.onProgress;
 
-  // Phase 1 — parse. Forward the validated rateLimit so API-backed adapters
-  // (mem0) can throttle their own fetches. Caller-supplied parseOptions
-  // takes precedence so tests can still override.
   onProgress?.({ processed: 0, total: 0, phase: "parse" });
   const parseOptions: ImporterParseOptions = {
     ...(options.rateLimit !== undefined ? { rateLimit: options.rateLimit } : {}),
@@ -392,7 +345,6 @@ export async function runImporter<Parsed>(
   };
   const parsed = await adapter.parse(input, parseOptions);
 
-  // Phase 2 — transform
   onProgress?.({ processed: 0, total: 0, phase: "transform" });
   const memoriesRaw = await adapter.transform(parsed, options.transformOptions);
   if (!Array.isArray(memoriesRaw)) {
@@ -420,7 +372,6 @@ export async function runImporter<Parsed>(
   });
   memories.forEach((memory, index) => validateImportedMemory(memory, adapter.name, index));
 
-  // Phase 3 — write (or dry-run plan)
   if (dryRun) {
     onProgress?.({
       processed: memories.length,
@@ -485,7 +436,6 @@ export async function defaultWriteMemoriesToOrchestrator(
 }
 
 // ---------------------------------------------------------------------------
-// File-importer factory (issue #2794)
 // ---------------------------------------------------------------------------
 
 /** Parse args `defineFileImporterAdapter` forwards — the keys file adapters use. */

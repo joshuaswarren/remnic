@@ -1288,7 +1288,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   readonly reviewDeckEnabled: boolean;
   readonly recallNavigationEnabled: boolean;
 
-  /** AccessObserveWriteSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessObserveWriteSurface: AccessObserveWriteSurface | undefined;
 
   private get accessObserveWriteSurface(): AccessObserveWriteSurface {
@@ -1300,7 +1299,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return this._accessObserveWriteSurface;
   }
 
-  /** AccessLcmSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessLcmSurface: AccessLcmSurface | undefined;
 
   private get accessLcmSurface(): AccessLcmSurface {
@@ -1310,7 +1308,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return this._accessLcmSurface;
   }
 
-  /** AccessAdminOpsSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessAdminOpsSurface: AccessAdminOpsSurface | undefined;
 
   private get accessAdminOpsSurface(): AccessAdminOpsSurface {
@@ -1333,7 +1330,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return this._reviewDeckSurface;
   }
 
-  /** AccessRecallSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessRecallSurface: AccessRecallSurface | undefined;
 
   private get accessRecallSurface(): AccessRecallSurface {
@@ -1345,7 +1341,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return this._accessRecallSurface;
   }
 
-  /** AccessIdentityContinuitySurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessIdentityContinuitySurface: AccessIdentityContinuitySurface | undefined;
 
   private get accessIdentityContinuitySurface(): AccessIdentityContinuitySurface {
@@ -1370,15 +1365,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     super();
     this.idempotency = new AccessIdempotencyStore(orchestrator.config.memoryDir);
     this.secretRefResolver = options.resolveSecretRef ?? null;
-    // Peer SecretRef tokens resolve at poll time through the host resolver, the
-    // same indirection as agentAccessHttp.authToken (review round 1). Absent a
-    // resolver, string/${ENV} tokens still work and a SecretRef degrades to a
-    // per-peer `unreachable` (never a throw).
     this.replicaDivergenceMonitor = new ReplicaDivergenceMonitor({ resolveSecretRef: options.resolveSecretRef });
     this.injectedSupportPassportGatewayRoute = options.supportPassportGatewayRoute ?? null;
     this.reviewDeckEnabled = options.reviewDeckEnabled === true;
-    // Configs built without parseConfig (test stubs, older host shapes) may
-    // omit the block; the parsed default (enabled: true) is the contract.
     this.recallNavigationEnabled = (orchestrator.config.recallNavigation ?? RECALL_NAVIGATION_CONFIG_DEFAULTS).enabled;
     const accessCaps = resolveAccessSetupCapabilities(orchestrator.config); // #1566 Cluster B
     this.budget = new CrossNamespaceBudget({
@@ -1465,9 +1454,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     sessionKey: string | undefined,
     authenticatedPrincipal?: string
   ): string {
-    // #1521: delegates to the scope-module resolver. The inline
-    // namespace/principal resolution + writability check is retired so the
-    // adHocNamespaceResolutions ratchet no longer counts this site.
     const result = resolveWritableNamespaceValue(
       namespace,
       sessionKey,
@@ -1504,11 +1490,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     overlay: CodingNamespaceOverlay | null;
     profilePlan: ResolvedScopeProfilePlan | null;
   }> {
-    // A sessionKey is REQUIRED to apply the overlay. The recall path can only
-    // attach/look up coding context per session, so a sessionless recall always
-    // searches the base namespace; a sessionless write/read must too — otherwise
-    // a client that injects cwd/projectTag but no sessionKey would land in a
-    // `default-project-*` namespace its own recall never searches (Codex review).
     const hasSession = typeof request.sessionKey === "string" && request.sessionKey.length > 0;
     const codingContext =
       hasSession &&
@@ -1620,14 +1601,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const inputs = await this.resolveCodingScopeInputs(request);
     const { overlay, profilePlan, principal: resolvedPrincipal } = inputs;
     if (profilePlan) {
-      // The write layer is the namespace decisions are RECORDED under. The
-      // WRITE path authorizes it through the profile plan (selectedLayer.
-      // writable AND readNamespaces.includes(writeNamespace)), NOT the raw
-      // namespace ACL, so the READ path must use the SAME profile-plan
-      // authorization. canReadNamespace only recognizes explicit policies
-      // plus default/shared namespaces, which would reject a profile-granted
-      // layer the same session just wrote through (review P2: scope-profile
-      // read authorization for decision reads; rule 42).
       const target = profilePlan.writeNamespace;
       if (!profilePlan.readNamespaces.includes(target)) {
         throw new EngramAccessInputError(`namespace is not readable: ${target}`);
@@ -1635,12 +1608,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       return target;
     }
     if (!overlay) {
-      // No coding overlay → read the base namespace through the standard read
-      // ACL, identical to memory_get with no explicit namespace.
       return this.resolveReadableNamespace(undefined, resolvedPrincipal);
     }
-    // Coding overlay → overlay onto the principal self base, the SAME namespace
-    // the write path writes to, then enforce the read ACL.
     const base = defaultNamespaceForPrincipal(resolvedPrincipal, this.orchestrator.config);
     if (!canReadNamespace(resolvedPrincipal, base, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace is not readable: ${base}`);
@@ -1684,10 +1653,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const hasExplicitNamespace = typeof request.namespace === "string" && request.namespace.trim().length > 0;
 
     if (hasExplicitNamespace) {
-      // Explicit namespace wins; authorized through the existing policy path.
-      // The overlay never applies, so base == write == the explicit namespace.
-      // Objective-state converges on the same explicit target (the stricter
-      // principal-self contract only governs the IMPLICIT path).
       const writeNamespace = this.writableNamespaceFor(
         request.namespace,
         request.sessionKey,
@@ -1706,15 +1671,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       };
     }
 
-    // No explicit namespace → principal self base, optionally overlaid with the
-    // session's coding (project/branch) context — the SAME resolution recall and
-    // the orchestrator buffer-flush write path use (rule 42 symmetry).
     const baseNamespace = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
 
-    // Resolve the coding context and overlay through the shared read-only
-    // resolver used by the other scoped access paths. It applies the same
-    // session-first, per-call fallback precedence without mutating session
-    // state, so concurrent requests cannot observe temporary context.
     const { overlay: codingOverlay, profilePlan } = await this.resolveCodingScopeInputs(request);
     const overlaidBase = codingOverlay ? combineNamespaces(baseNamespace, codingOverlay.namespace) : baseNamespace;
     const codingOverlayApplied = overlaidBase !== baseNamespace;
@@ -1772,27 +1730,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     }
 
     if (!codingOverlayApplied) {
-      // No overlay → the LCM/extraction/response write namespace mirrors the
-      // legacy memory_store path (resolveWritableNamespace with no explicit
-      // namespace), collapsing the namespaces-disabled / no-session /
-      // projectScope-off cases to config.defaultNamespace exactly as before
-      // (rule 39 parity with resolveCodingScopedWriteNamespace).
       const writeNamespace = this.writableNamespaceFor(undefined, request.sessionKey, request.authenticatedPrincipal);
-      // Objective-state keeps its STRICTER pre-#1495 contract (#928): an implicit
-      // snapshot is based on the PRINCIPAL SELF namespace and authorized against
-      // THAT base (rule 48 least-privilege). This rejection MUST stay (security):
-      // an implicit observe by a principal that cannot write its own self
-      // namespace must not silently snapshot objective-state to the default
-      // store.
-      //
-      // GATED on objective-state writes being ENABLED, exactly like the pre-#1495
-      // code (`if (shouldWriteObjectiveState && !hasExplicitNamespace && …)`).
-      // The general LCM/extraction write path collapses an unqualified write to
-      // config.defaultNamespace (always writable), so when objective-state writes
-      // are OFF there is no self-base write to authorize and observe must NOT
-      // reject (the "skips … when writes are disabled" invariant). When namespaces
-      // are off the self base collapses to config.defaultNamespace, so this is a
-      // no-op for single-store deployments either way.
       const willWriteObjectiveState =
         resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateMemory === true &&
         resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateSnapshotWrites === true;
@@ -1806,16 +1744,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       assertWriteNamespaceAllowed(writeNamespace);
       return {
         principal,
-        // scopeDebug.baseNamespace must report the principal SELF base
-        // (`defaultNamespaceForPrincipal`), NOT the general write namespace —
-        // which collapses to config.defaultNamespace on this implicit no-overlay
-        // path (#1505 cursor "Wrong scopeDebug base namespace"). It already
-        // matches `objectiveStateNamespace` below; `writeNamespace` is unchanged.
         baseNamespace,
         writeNamespace,
-        // Implicit objective-state stays on the principal self base, NOT the
-        // (possibly default) general write namespace — preserving the #928
-        // semantics the objective-state suite asserts.
         objectiveStateNamespace: baseNamespace,
         readNamespaces: [writeNamespace],
         codingOverlayApplied: false,
@@ -1823,18 +1753,11 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       };
     }
 
-    // Overlay applied → both the general write namespace AND objective-state
-    // converge on the overlaid principal self base. Authorize the self base
-    // (the overlay is a principal-owned `project-*` sub-namespace derived from
-    // it, so it needs no separate write policy — rule 42 / 47 / 48).
     if (!canWriteNamespace(principal, baseNamespace, this.orchestrator.config)) {
       throw new NamespaceNotWritableError(baseNamespace, principal);
     }
     const writeNamespace = overlaidBase;
     const readNamespaces = [writeNamespace];
-    // Include read fallbacks (branch→project→root) so the diagnostic readNamespaces
-    // matches what a same-session recall searches. They come from the shared pure
-    // coding-scope resolver, so the write namespace and read fallbacks agree.
     for (const fallback of codingOverlay?.readFallbacks ?? []) {
       const ns = combineNamespaces(baseNamespace, fallback);
       if (!readNamespaces.includes(ns)) readNamespaces.push(ns);
@@ -1853,9 +1776,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
 
   private legacyResponseNamespaceForScope(scope: MemoryScopePlan): string {
     if (scope.explicitNamespace) return scope.writeNamespace;
-    // Legacy overlay compatibility only applies to the principal-owned
-    // user-project layer. Hosted profile layers such as teamProject are not the
-    // old overlay response shape; reporting default there hides the real write.
     if (scope.scopeProfile && scope.writeLayer !== "userProject") {
       return scope.writeNamespace;
     }
@@ -1889,18 +1809,13 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const namespacesEnabled = resolveNamespaceCapabilities(this.orchestrator.config).namespaces;
 
     if (!namespacesEnabled) {
-      // Namespaces are disabled globally — no ACL needed for any caller.
       return resolved;
     }
 
-    // Namespaces are enabled.  An absent principal means the caller is
-    // unauthenticated.  Unauthenticated callers must NOT be allowed to read
-    // arbitrary namespaces: that would bypass all readPrincipals policies.
     if (!principal) {
       throw new EngramAccessInputError("authentication required: namespaces are enabled and no principal was supplied");
     }
 
-    // Authenticated caller — enforce the namespace ACL as normal.
     if (!canReadNamespace(principal, resolved, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace is not readable: ${resolved}`);
     }
@@ -1932,13 +1847,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       codingOverlay: null,
     });
     if (profilePlan) {
-      // Issue #2018: memory_search has no sessionKey, so unlike recall it
-      // cannot resolve a coding overlay. Reach the base collection (default
-      // namespace) only when the profile intends a global layer and the
-      // principal is authorized — see access-memory-search-fanout.ts. The
-      // flat-root storage probe runs lazily HERE (after auth, no explicit
-      // namespace, profile active) so explicit-namespace queries and auth
-      // rejections never touch the default store (#2056 r5).
       const profileNamespaces = expandScopeProfileReadNamespaces({
         profilePlan,
         principalSelfNamespace: profilePlan.baseNamespace,
@@ -2355,8 +2263,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
             degradedReason: scopedDegradedReason,
           }
         : extraction;
-    // ONE call: the corpus array and the flag describing it must not come from
-    // two independently-cached scans (round 8, codex P1).
     const corpusCensus = await computeServiceCorpusCensus(this.orchestrator, {
       cache: this.corpusWatermarkCache,
       caps,
@@ -2381,7 +2287,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
-      // #3444: process-local buffer add-path counters, TOP LEVEL (not inside `extraction`).
       bufferIngress: this.orchestrator.buffer?.ingress?.snapshot() ?? {
         totals: {
           accepted: { turns: 0, chars: 0 },
@@ -2393,13 +2298,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       },
       extraction: visibleExtraction,
       corpus: corpusCensus.watermarks,
-      // Describes THIS response's array (round 8): a separate scan could report
-      // complete while the shipped corpus was partial, and peers trust it.
       corpusComplete: corpusCensus.complete,
       replica: this.replicaDivergenceMonitor.getReport({
         config: this.orchestrator.config.replicaPeers,
-        // Capability-INDEPENDENT: this poll is cached instance-wide, so a
-        // restricted caller's filtered census must never seed it (round 9).
         computeLocalWatermarks: () => computeServiceCorpusCensus(this.orchestrator, {}),
         caps,
         localCensusComplete: corpusCensus.complete,
@@ -2507,7 +2408,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const namespace = this.resolveRecallNamespace(request.namespace, request.sessionKey);
 
     if (memories.length === 0) {
-      // Auto-gather today's facts from the resolved namespace
       return this.orchestrator.generateDaySummaryAuto(namespace, daySummaryAutoOptions(request));
     }
     return this.orchestrator.generateDaySummary(memories);
@@ -2549,9 +2449,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     options: { cwd?: string; projectTag?: string; authenticatedPrincipal?: string }
   ): Promise<void> {
     if (!sessionKey) return;
-    // Respect the configuration gate (CLAUDE.md #30).
     if (!this.orchestrator.config.codingMode?.projectScope) return;
-    // Don't overwrite an already-attached context.
     if (this.orchestrator.getCodingContextForSession(sessionKey)) return;
     // The daemon is the caller on this internal attach: when the transport
     // carried no principal, resolve the session-derived one (the same
@@ -2563,7 +2461,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       options.authenticatedPrincipal
       ?? this.orchestrator.getCodingContextOwnerForSession?.(sessionKey)
       ?? resolvePrincipal(sessionKey, this.orchestrator.config);
-    // projectTag takes priority over cwd.
     if (typeof options.projectTag === "string" && options.projectTag.trim().length > 0) {
       const projectId = projectTagProjectId(options.projectTag);
       try {
@@ -2582,7 +2479,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       }
       return;
     }
-    // cwd → git resolution
     if (typeof options.cwd === "string" && options.cwd.trim().length > 0) {
       try {
         const gitCtx = await resolveGitContext(options.cwd, { cache: sharedNonRepoGitContextCache });
@@ -2649,8 +2545,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       throw new EngramAccessInputError("authentication required: namespaces are enabled and no principal was supplied");
     }
     const principalKey = principal ?? "default";
-    // Single-flight gate resolved through the shared access-setup capability
-    // projection so the config flag is read only in capabilities.ts (#1523).
     const singleFlight = resolveAccessSetupCapabilities(this.orchestrator.config).recallSingleFlight;
     return coordinateRecall(
       this as unknown as RecallCoordinatorHost,
@@ -2773,27 +2667,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const effective = resolveEffectiveDeepRecallConfig(cfg, request.maxSteps);
     const principal =
       request.authenticatedPrincipal?.trim() || resolvePrincipal(request.sessionKey, this.orchestrator.config);
-    // Read path resolves through the SAME namespace layer as memoryGet (§30):
-    // one resolved namespace, one storage instance, for seeds and expansions.
     const resolvedNamespace = this.resolveReadableNamespace(request.namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const config = this.orchestrator.config;
-    // `abstractionNodeStoreDir` names the DEFAULT namespace's graph store and
-    // takes precedence over `storage.dir` inside the store resolver, so only a
-    // default-namespace read may pass it. This is the rule the harmonic WRITE
-    // path already applies (persistConstructedHarmonicRecords: the override
-    // goes to the base namespace only); passing it here made every non-default
-    // namespace load the DEFAULT namespace's nodes and anchors, missing its own
-    // anchor expansions and exposing foreign graph metadata on an id collision.
     const graphStoreDir = resolvedNamespace === config.defaultNamespace ? config.abstractionNodeStoreDir : undefined;
-    // Seeds route through the namespace search router (never the base
-    // `config.qmdCollection`, which is the DEFAULT namespace's collection):
-    // a non-default caller must search its own suffixed collection or deep
-    // recall silently misses its corpus and returns foreign doc ids. Hit ->
-    // memory-id resolution is per hit through the shared QMD result resolver
-    // (which also decodes the raw collection-qualified path forms the
-    // namespaces-disabled fanout returns), so no invocation pre-scans the
-    // namespace corpus.
     // The transport cancellation signal reaches the seed router, the graph
     // read, and the policy legs (issue #2915).
     const result = await runBudgetedDeepRecall(
@@ -2807,12 +2684,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
           resolver: this.orchestrator.qmdResultResolver,
           ...(request.abortSignal ? { signal: request.abortSignal } : {}),
         }),
-        // Nodes and anchors are projected against the namespace's CURRENT
-        // active memories through the SAME helper searchHarmonicRetrieval
-        // uses. A raw read still carries the stored title, summary, and
-        // anchor value of a memory that was later rejected or quarantined,
-        // and the deep-recall state prompt hands those to the policy LLM long
-        // before `loadMemory(...).active` can exclude the memory itself.
         loadGraph: async () =>
           readProjectedHarmonicGraph({
             memoryDir: storage.dir,
@@ -2822,15 +2693,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
           }),
         loadMemory: async (memoryId) => {
           const memory = await storage.getMemoryById(memoryId);
-          // Same private-record exclusion memoryGet applies (#2332): a
-          // support-passport private record is reported as absent (null),
-          // never as content — deep recall must not become the read surface
-          // that answers what every other surface denies.
           if (!memory || isSupportPassportPrivateMemory(memory)) return null;
           return {
             memoryId,
             content: memory.frontmatter.structuredAttributes ? stripAttributesSuffix(memory.content) : memory.content,
-            // Enumerate the active set — never an exclusion list (§41).
             active: inferMemoryStatus(memory.frontmatter, toMemoryPathRel(storage.dir, memory.path)) === "active",
           };
         },
@@ -2983,7 +2849,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   async peekMemoryStoreIdempotency(
     rawRequest: EngramAccessMemoryStoreRequest
   ): Promise<EngramAccessIdempotencyStatus> {
-    // #2780/#2829: fingerprint the canonical category (schema transform already mapped aliases).
     const { canonical: request } = splitCanonicalWriteRequest(rawRequest);
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
@@ -2993,8 +2858,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return this.peekIdempotentWrite({
       operation: "memory_store",
       idempotencyKey: request.idempotencyKey,
-      // Shared builder (issue #1989 PR3): byte-parity with the historical
-      // inline literal is asserted by access-fingerprint-parity.test.ts.
       requestFingerprint: buildAccessWriteRequestFingerprint({
         schemaVersion,
         namespace,
@@ -3062,11 +2925,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
           },
           "legacy_tool"
         ),
-        // The namespace was resolved AND authorized by
-        // resolveCodingScopedWriteNamespace (explicit namespaces via
-        // resolveWritableNamespace; otherwise an auth-checked base + a
-        // session-owned project overlay), so the persist/queue layer must not
-        // re-reject a legitimately-derived dynamic project namespace (#1434).
         namespacePreResolved: true,
       };
     } catch (error) {
@@ -3115,9 +2973,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       memoryDir,
       principal,
       getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
-      // Project resolution chokepoint lives in codegraph-runtime.ts so every
-      // store-backed tool derives the same id and the tagged error flows back
-      // as a structured response (issue #1554 threads 7/9/11). Thin wiring.
       resolveStore: async (req) => {
         const projectId = resolveCodegraphProjectId({
           request: req,
@@ -3292,16 +3147,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
           authenticatedPrincipal,
         });
         const storage = await this.orchestrator.getStorage(ns);
-        // Delta only needs memoryDir + namespace (no readAllMemories). Use the
-        // namespace-ROUTED root (storage.dir), not the global config.memoryDir:
-        // non-default namespaces route to memoryDir/namespaces/<token>, so
-        // session-delta markers must read/write from the routed tree, mirroring
-        // the decision/architecture siblings (cursor review).
-        // Issue #1630 fix 2: gate the marker write on the WRITE-path resolver
-        // — it mirrors memory_store's exact authorization (base ACL for coding
-        // overlays, selectedLayer.writable for scope-profiles), not the raw
-        // canWriteNamespace which misses overlay/profile grants (cursor+codex
-        // review). A throw = read-only caller; delta computed but no advance.
         let canAdvanceState = false;
         try {
           await this.resolveCodingScopedWriteNamespace({
@@ -3320,8 +3165,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
         } satisfies DeltaSurfaceStorage;
       },
       gitInvoker: (cwd, args) => {
-        // Session-delta remains a synchronous pure calculation; use the
-        // bounded synchronous invoker rather than the abortable scope resolver.
         return defaultGitInvokerSync()(cwd, args);
       },
       throwInputError: (msg) => {
@@ -3331,10 +3174,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   }
 
   // -------------------------------------------------------------------------
-  // Correction Contract (issue #1580) — one plan/apply pipeline for every
-  // memory correction. The CorrectionService owns the planner + executor; the
-  // access-service constructs it lazily via the wiring helper and delegates.
-  // Each method below is thin wiring (≤4 lines) per the god-file ratchet.
   // -------------------------------------------------------------------------
   /** Whether the memory_correct_plan / memory_correct_apply tools should appear in tools/list (rule 39). Same reader as the runtime gate so visibility + enforcement stay in sync. */
   get correctionSurfaceVisible(): boolean {
@@ -3355,8 +3194,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
         return recallNamespacesForPrincipal(principal, this.orchestrator.config);
       },
       canWriteNamespace: (req) => {
-        // resolveWritableNamespace resolves + checks writability in one step;
-        // reusing it avoids a second ad-hoc namespace-resolution call site.
         try {
           this.writableNamespaceFor(req.namespace, req.sessionKey, req.principal);
           return Promise.resolve(true);
@@ -3872,8 +3709,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     scanFailed: boolean;
     warning?: string;
   }> {
-    // Issue #2783: the summarizer must not report success on empty work.
-    // Stats interpretation lives with the stats (summarizeHourlyStatus).
     const stats = await this.orchestrator.summarizer.runHourly();
     return { ok: true, ...stats, ...summarizeHourlyStatus(stats) };
   }
@@ -4099,35 +3934,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     request: EngramAccessObserveRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessObserveResponse> {
-    // Issue #1649: dedup retried observe POSTs server-side. A retry with the
-    // same `idempotencyKey` replays the cached response and skips every side
-    // effect (LCM/extraction/objective-state); divergent payload OR principal
-    // reuse is a conflict (fingerprint folds in authenticatedPrincipal, so a
-    // cross-identity replay can never be silent). `enforceWriteQuota` runs as
-    // `beforeExecute` inside the lock — only on a real miss — so a response-lost
-    // retry never 429s even when the first attempt filled the window (#1434).
     //
-    // The fingerprint folds in the EFFECTIVE coding context (#1649 codex P2):
-    // runObserve's scope can be derived from the session's ATTACHED coding
-    // context (which takes PRECEDENCE over per-call cwd/projectTag per
-    // resolveMemoryScopePlan), so neither cwd/projectTag NOR the raw ambient
-    // context alone fully captures the effective scope. The effective context
-    // is computed the SAME way resolveMemoryScopePlan does — session-attached
-    // first, per-call cwd/projectTag fallback — but READ-ONLY: it does NOT seed
-    // the session, so a conflict/quota-rejection path leaves no orphaned binding.
-    // The value is stable across replays because resolveMemoryScopePlan's
-    // seeding writes the IDENTICAL context that resolveCodingContextFromOptions
-    // derives — so getCodingContextForSession returns the same object on the
-    // replay as resolveCodingContextFromOptions returned on the first call.
-    // Only computed when a key is present; non-keyed observes skip the work.
     const idempotencyKey = request.idempotencyKey?.trim();
     let effectiveCodingContext: CodingContext | null | undefined;
     if (idempotencyKey && !(typeof request.namespace === "string" && request.namespace.trim().length > 0)) {
-      // Explicit namespace pins the scope (resolveMemoryScopePlan returns early),
-      // so the coding context is irrelevant — skip it to avoid false conflicts
-      // when the session context changes under a namespace-pinned observe.
-      // Reuse the write resolver's namespace/projectScope gates so context
-      // ignored by runObserve cannot change the retry fingerprint.
       effectiveCodingContext = (await this.resolveCodingScopeInputs(request)).codingContext;
     }
     const response = await this.handleIdempotentWrite<EngramAccessObserveResponse>({
@@ -4242,26 +4052,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   private resolveImplicitLcmReadFallbackNamespace(principal: string | undefined): string | undefined {
     const config = this.orchestrator.config;
     if (!resolveNamespaceCapabilities(config).namespaces) return config.defaultNamespace;
-    // PROCEED when `default` is readable (single-store / readable-default flows)
-    // — the LCM prefix resolves to the overlay when self-authorized, else the
-    // default raw key.
     if (canReadNamespace(principal, config.defaultNamespace, config)) {
       return config.defaultNamespace;
     }
-    // Restrictive `default` READ policy. The ONLY way the implicit LCM read can
-    // target an AUTHORIZED key is via the coding OVERLAY, which
-    // `resolveLcmReadNamespace` switches to ONLY when the principal SELF base is
-    // in the readable recall set (the SAME gate the orchestrator's
-    // `lcmReadNamespaceForSession` uses). So PROCEED here ONLY when the SELF base
-    // is readable-in-recall — NOT when merely some OTHER recall namespace (e.g.
-    // `shared`) is readable: the LCM read can never legitimately target `shared`,
-    // and returning `config.defaultNamespace` for that case would let a sessionless
-    // `lcmSearch`/raw recall scan the DENIED default LCM store (codex P1 "Don't
-    // treat any readable namespace as default LCM access"). The downstream
-    // overlay-unreadable READ branch and `lcmSearch`'s sessionless guard both
-    // collapse to the default raw key, so a self-readable PROCEED still yields the
-    // scoped overlay key (with a session) or empty (sessionless). SUPPRESS
-    // (`undefined`) when the self base is not readable-in-recall.
     const selfBase = defaultNamespaceForPrincipal(principal, config);
     const selfReadableInRecall = recallNamespacesForPrincipal(principal, config).includes(selfBase);
     return selfReadableInRecall ? config.defaultNamespace : undefined;
@@ -4377,8 +4170,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
     }
 
-    // Authorize compaction against the same effective write namespace that
-    // observe archived under, not a premature default writable-namespace check.
     const scope = await this.resolveMemoryScopePlan(request);
     const namespace = this.legacyResponseNamespaceForScope(scope);
     if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
@@ -4391,7 +4182,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       };
     }
 
-    // Flush the same LCM session ID observe archived under.
     const lcmSessionKey =
       lcmSessionKeyForNamespace(scope.writeNamespace, request.sessionKey, this.orchestrator.config.defaultNamespace) ??
       request.sessionKey;
@@ -4436,17 +4226,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       throw new EngramAccessInputError("tokensAfter must be a non-negative integer");
     }
 
-    // Authorize compaction against the SCOPED WRITE TARGET — the SAME effective
-    // write namespace `observe` archived the LCM queue under — NOT a premature
-    // the writable-namespace resolver (undefined ⇒ config.defaultNamespace) (#1505
-    // thread NBHWs). See `lcmCompactionFlush` for the full rationale: under a
-    // restrictive `default` WRITE policy where the principal can still write its
-    // self/project overlay, the old premature default write-auth threw `namespace
-    // is not writable: default` before the scoped key was computed, leaving the
-    // overlay queue observe wrote unrecordable. `resolveMemoryScopePlan` is the
-    // ONE write-scoped plan/gate observe uses; it authorizes the self base for an
-    // overlay write and never throws `not writable: default` for a validly scoped
-    // observe's queue.
     const scope = await this.resolveMemoryScopePlan(request);
     const namespace = this.legacyResponseNamespaceForScope(scope);
     if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
@@ -4459,12 +4238,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       };
     }
 
-    // Record against the SAME LCM session_id `observe` archived under — encode
-    // the scope plan's EFFECTIVE write namespace through the SAME
-    // `lcmSessionKeyForNamespace` helper observe uses, so the record key is
-    // byte-for-byte the write key (#1495 thread 2 / #1505 thread NBHWs, rule 42).
-    // A write-only / self-omitted principal still records on the overlay queue
-    // because the scope plan authorized the write target by WRITE policy.
     const lcmSessionKey =
       lcmSessionKeyForNamespace(scope.writeNamespace, request.sessionKey, this.orchestrator.config.defaultNamespace) ??
       request.sessionKey;
@@ -4478,9 +4251,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     };
   }
 
-  // ── Parity tools (match OpenClaw plugin feature set) ──────────────────
 
-  // ── Continuity / Identity ──────────────────────────────────────────────
 
   async continuityAuditGenerate(request: {
     period?: "weekly" | "monthly";
@@ -4577,7 +4348,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return this.accessIdentityContinuitySurface.memoryIdentity(request);
   }
 
-  // ── Work Layer ──────────────────────────────────────────────────────────
 
   async workTask(request: {
     action: "create" | "get" | "list" | "update" | "transition" | "delete";
@@ -4962,7 +4732,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   }): Promise<unknown> {
     const resolvedNs = this.writableNamespaceFor(request.namespace, request.sessionKey, request.principal);
     const storage = await this.orchestrator.getStorage(resolvedNs);
-    // Update frontmatter to active status (promote from pending/draft)
     await storage.updateMemoryFrontmatter(request.memoryId, {
       lifecycleState: "active",
       updated: new Date().toISOString(),
@@ -5002,11 +4771,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const storageDir = storage.dir;
     const { writeFile, mkdir } = await import("node:fs/promises");
     const { join, resolve } = await import("node:path");
-    // Sanitize sessionKey to prevent path traversal
     const safeKey = request.sessionKey.replace(/[^a-zA-Z0-9_-]/g, "_");
     if (!safeKey) throw new EngramAccessInputError("sessionKey is required");
     const checkpointDir = join(storageDir, "checkpoints", safeKey);
-    // Double-check resolved path stays inside storageDir
     const resolved = resolve(checkpointDir);
     if (!resolved.startsWith(resolve(storageDir))) {
       throw new EngramAccessInputError("Invalid sessionKey");
@@ -5074,7 +4841,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     );
   }
 
-  // ── Operator Console state (issue #688 PR 2/3) ────────────────────────────
 
   /**
    * Gather a point-in-time `ConsoleStateSnapshot` from the orchestrator.
@@ -5090,16 +4856,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     namespace?: string,
     principal?: string
   ): Promise<import("./console/state.js").ConsoleStateSnapshot> {
-    // Enforce namespace ACL — throws EngramAccessInputError if unauthorized.
     const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
-    // Resolve the storage dir for the namespace so the ledger-tail reader
-    // scans the right directory tree.
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const { gatherConsoleState } = await import("./console/state.js");
-    // Pass a thin proxy that overrides config.memoryDir with the namespace-
-    // scoped storage dir while delegating everything else to the real
-    // orchestrator (buffer, qmd, extraction queue, etc. are process-global
-    // and don't require further namespace scoping for a read-only snapshot).
     const orchestratorProxy = Object.create(this.orchestrator, {
       config: {
         value: { ...this.orchestrator.config, memoryDir: storage.dir },
@@ -5110,7 +4869,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return gatherConsoleState(orchestratorProxy);
   }
 
-  // ── Peer Registry surfaces (issue #679 PR 4/5) ────────────────────────────
 
   /**
    * List all registered peers. Returns the array of `Peer` objects in
@@ -5170,7 +4928,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
 
     const ALLOWED_KINDS = new Set(["self", "human", "agent", "integration"]);
     if (!existing) {
-      // First write — require kind.
       const kind = input.kind ?? "human";
       if (!ALLOWED_KINDS.has(kind)) {
         throw new EngramAccessInputError(`peer kind must be one of ${[...ALLOWED_KINDS].join(", ")}`);
@@ -5187,7 +4944,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       return { ok: true, created: true, peer: newPeer };
     }
 
-    // Update — kind and createdAt are immutable.
     const updated: import("./peers/types.js").Peer = {
       id: existing.id,
       kind: existing.kind,
@@ -5218,12 +4974,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     } catch (err) {
       throw new EngramAccessInputError((err as Error).message);
     }
-    // Cursor M (PR #756 review): route through `peers.deletePeer` so
-    // the unlink runs `assertPeerDirNotEscaped`, the peers-root
-    // symlink check, and the parent-inode-stable / O_NOFOLLOW guards
-    // shared with `readPeer`/`writePeer`. A manual `path.join` +
-    // raw `fs.unlink` would let a symlinked `peers/<id>/` redirect
-    // the delete to an arbitrary `identity.md` outside `memoryDir`.
     const deleted = await peers.deletePeer(this.orchestrator.config.memoryDir, peerId);
     return { ok: true, deleted };
   }
@@ -5279,7 +5029,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return { found: true, profile };
   }
 
-  // ── Contradiction Review (issue #520) ──────────────────────────────────────
 
   get memoryDir(): string {
     return this.orchestrator.config.memoryDir;
@@ -5336,7 +5085,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return this.orchestrator.storage;
   }
 
-  // #1522: recordCatalogWrite removed — catalog touch handled at the storage chokepoint.
 
   get configRef(): PluginConfig {
     return this.orchestrator.config;
@@ -5668,7 +5416,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     }
   }
 
-  // ── Dreams pipeline telemetry surfaces (issue #678 PR 3+4) ──────────────
 
   /**
    * Return per-phase Dreams telemetry for the last N hours (default 24).
@@ -5700,18 +5447,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   }
 
   // ---------------------------------------------------------------------------
-  // Wearables (Limitless / Bee / Omi transcript ingestion)
   //
-  // Thin delegations to the orchestrator-owned WearablesService — the
-  // same instance behind the CLI, so HTTP/MCP callers observe identical
-  // behavior and validation (renderer-sharing rule).
   // ---------------------------------------------------------------------------
 
-  /**
-   * Structural host bound per call so the wearables + meetings ops (issue
-   * #2123) delegate to the pure surface module while the namespace/principal
-   * resolvers stay private.
-   */
   private get wmHost(): WearablesMeetingsHost {
     return {
       orchestrator: this.orchestrator,
@@ -5749,7 +5487,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return wearablesMeetings.wearablesTranscriptMemories(this.wmHost, request);
   }
 
-  // Meetings (issue #1900): thin delegations to the caller-ns MeetingsService.
   async meetingsList(date?: string, scope?: WearablesMeetingsScope): Promise<MeetingsListResult> {
     return wearablesMeetings.meetingsList(this.wmHost, date, scope);
   }
@@ -5762,12 +5499,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return wearablesMeetings.meetingsBuild(this.wmHost, date, scope);
   }
 
-  // ── Admin console surfaces (issue #1502) ────────────────────────────────
   //
-  // Thin delegators. Every method threads `this.orchestrator` references
-  // into the pure `admin/admin-surfaces.ts` functions so the dashboard
-  // never re-resolves scope, re-derives promotion targets, or re-lists
-  // namespaces.
 
   /**
    * Resolve an effective scope inspection for the console. Inputs are
@@ -5781,9 +5513,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     operation?: InspectScopeOptions["operation"];
   }): Promise<ScopeInspection> {
     const config = this.orchestrator.config;
-    // Fetch the coding context when a session is supplied; the pure
-    // inspectScope helper (admin-surfaces.ts) owns the single namespace-flag
-    // read for this surface and threads it through resolveScopePlan.
     const codingContext = options.sessionKey
       ? (this.orchestrator.getCodingContextForSession(options.sessionKey) ?? null)
       : null;
@@ -5795,9 +5524,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       codingContext,
       operation: options.operation,
     });
-    // Redact operator free-text inputs that may carry credentials. The plan
-    // itself is derived from config + storage layout, not user input, so its
-    // fields stay intact for diagnostics.
     return redactSensitive(inspection);
   }
 
@@ -5836,8 +5562,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
             daemonMode: health.daemonMode,
           };
         } catch (err) {
-          // The report marks the namespace degraded and records the reason;
-          // a probe failure must not abort the whole report.
           throw err;
         }
       },

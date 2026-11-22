@@ -260,14 +260,6 @@ function parseBenchRuntimeProfile(
   );
 }
 
-/**
- * Shared allow-list for `--provider`, `--system-provider`, and
- * `--judge-provider`. Keeping these in lockstep is a CLAUDE.md rule 52
- * concern: if one flag accepts "local-llm" but another rejects it,
- * behavior becomes path-dependent. Issue #566 slice 5 added
- * "local-llm"; Codex CLI provider wiring added "codex-cli"; Claude CLI
- * provider wiring added "claude-cli". The single source of truth is here.
- */
 const BENCH_PROVIDER_ALLOWED: readonly BuiltInProvider[] = Object.freeze([
   "openai",
   "anthropic",
@@ -278,18 +270,6 @@ const BENCH_PROVIDER_ALLOWED: readonly BuiltInProvider[] = Object.freeze([
   "claude-cli",
 ]);
 
-/**
- * `--internal-provider` allow-list. Deliberately narrower than
- * `BENCH_PROVIDER_ALLOWED`: it excludes "claude-cli". The internal
- * provider feeds Remnic's own gateway (`@remnic/core`), which only
- * special-cases `api === "codex-cli"` and `api === "anthropic-messages"` —
- * there is no `claude-cli` gateway integration, so selecting it here would
- * silently fall through to the generic/OpenAI-compatible gateway path
- * instead of actually invoking `claude -p`. `claude-cli` is only wired for
- * the bench responder/judge factory path (`--provider` / `--system-
- * provider` / `--judge-provider`), see providers/factory.ts. (PR #1735
- * review)
- */
 const BENCH_INTERNAL_PROVIDER_ALLOWED: readonly BuiltInProvider[] = Object.freeze(
   BENCH_PROVIDER_ALLOWED.filter((provider) => provider !== "claude-cli"),
 );
@@ -526,8 +506,6 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
       ? args.slice(1)
       : args;
   const benchmarks = collectBenchmarks(benchmarkArgs);
-  // `--dataset` is an alias for `--dataset-dir`. `--dataset-dir` wins
-  // if both are supplied.
   const datasetDir =
     readBenchOptionValue(args, "--dataset-dir") ??
     readBenchOptionValue(args, "--dataset");
@@ -895,9 +873,6 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     }
   }
 
-  // `bench published` flags. Parsed unconditionally so `--name`, `--model`,
-  // etc. raise consistent errors even when used outside the `published`
-  // action (mirrors CLAUDE.md rule 14: validate flag args at input boundaries).
   const publishedNameRaw = readBenchOptionValue(args, "--name");
   const publishedModelRaw = readBenchOptionValue(args, "--model");
   const publishedLimitRaw = readBenchOptionValue(args, "--limit");
@@ -1080,14 +1055,10 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   let memcorrectAdapter: "remnic" | "prompt-only" | undefined;
   if (memcorrectAdapterRaw !== undefined) {
     if (memcorrectAdapterRaw !== "remnic" && memcorrectAdapterRaw !== "prompt-only") {
-      // Rule 51: reject invalid enum values with the valid options listed.
       throw new Error(
         'ERROR: --memcorrect-adapter must be "remnic" or "prompt-only".',
       );
     }
-    // Mirror the other benchmark-specific flag checks (--task-filter,
-    // --ingest-concurrency): an explicit adapter choice on a non-MemCorrect
-    // run would be silently ignored downstream — reject instead (codex P2).
     const targetsMemcorrect =
       action !== "published" &&
       !args.includes("--all") &&
@@ -1112,36 +1083,19 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     publishedSeed = parsed;
   }
 
-  // `--model` is free-form (any provider-specific model ID), but we
-  // reject empty strings so it doesn't silently fall through to a
-  // default at a later stage.
   if (publishedModelRaw !== undefined && publishedModelRaw.trim().length === 0) {
     throw new Error("ERROR: --model must not be empty.");
   }
 
-  // `--provider` is validated against the same allow-list as
-  // `--system-provider` so the two surfaces stay in lockstep
-  // (CLAUDE.md rule 52). `bench published` callers that prefer the
-  // legacy flags can keep using `--system-provider`; `--provider`
-  // is a shorthand specific to the published action.
   let publishedProvider: BuiltInProvider | undefined;
   if (publishedProviderRaw !== undefined) {
     publishedProvider = parseBenchProvider(publishedProviderRaw, "--provider");
   }
 
-  // Published action aliases: `--system-*` takes precedence; the
-  // shorthand `--provider` / `--base-url` / `--model` only fill in
-  // when the legacy flags are absent so the two code paths stay
-  // behaviorally identical.
   const effectiveSystemProvider = systemProvider ?? publishedProvider;
   const effectiveSystemModel = systemModel ?? publishedModelRaw;
   const effectiveSystemBaseUrl = systemBaseUrl ?? publishedBaseUrlRaw;
 
-  // Issue #566 slice 5 — when the effective provider is `local-llm`,
-  // a base URL is REQUIRED at the boundary. Silently defaulting to
-  // an OpenAI URL violates CLAUDE.md rule 51 (reject invalid user
-  // input with a listed option) and makes the `--provider local-llm`
-  // contract untrustworthy. The same rule applies to `--judge-provider`.
   if (effectiveSystemProvider === "local-llm" && !effectiveSystemBaseUrl) {
     throw new Error(
       "ERROR: --provider local-llm requires --base-url (or --system-base-url). " +
@@ -1320,7 +1274,6 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
       : undefined,
     expectedTaskIdListSha256,
     drainTimeout,
-    // Issue #1573 PR1: surface judge-cache flags into the runner options.
     noJudgeCache: args.includes("--no-judge-cache"),
     judgeCacheDir: judgeCacheDirRaw ? path.resolve(expandTilde(judgeCacheDirRaw)) : undefined,
     localLabManifestPath: localLabManifestRaw

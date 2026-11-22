@@ -127,7 +127,6 @@ export class UtilityCheckpointStore {
       if (!entry.endsWith(".inflight")) continue;
       const taskId = readFileSync(path.join(this.directory, entry), "utf8").trim();
       if (!taskId) continue;
-      // A crash between the durable commit and the marker removal leaves a
       // marker for a task that is already checkpointed: nothing is owed.
       const checkpoint = this.checkpointPath(taskId);
       if (existsSync(checkpoint) && !isRetryableUtilityFailure(JSON.parse(readFileSync(checkpoint, "utf8")) as TaskResult)) {
@@ -320,7 +319,6 @@ async function runPublishedUtility(
   const completed = store.loadTasks();
   const adapter = await createUtilityAdapter(input, arm, seed);
   try {
-    // Every task the benchmark starts (including ones that later fail) is
     // part of the planned universe, so an item that fails in every cell
     // still counts as missing. ponytail: an item the benchmark never starts
     // in any of the 10 cells is invisible here; enumerate the dataset ahead
@@ -350,7 +348,6 @@ async function runPublishedUtility(
       score: taskScore(task),
     }));
   } catch (error) {
-    // A partial benchmark (provider trial failures) must not abort the
     // remaining seeds: every completed task is already checkpointed, the
     // failed ones are excluded from the resume map, and the next run retries
     // only those. Surface the partial cell; the analysis treats missing
@@ -447,7 +444,6 @@ export function datasetDigest(directory: string | undefined): string | null {
   if (!directory) return null;
   const root = path.resolve(directory);
   const files: string[] = [];
-  // Symlinks are followed (the benchmark loaders read through them) with
   // realpath cycle protection, so a link target edited between partial runs
   // changes the digest instead of going unnoticed (PR #3079 review).
   const visited = new Set<string>();
@@ -504,7 +500,6 @@ export function utilityContract(
     modelDigest: input.modelDigest?.trim() || "unverified",
     modelProfileId: input.modelProfileId,
     baseUrl: executor.baseUrl,
-    // The backend selects non-generic request fields, so resuming under a
     // different override is a different condition (PR #3079 post-cap).
     backend: executor.backend,
     benchmarks: [...benchmarks],
@@ -565,7 +560,6 @@ export async function runInjectionSuiteUtility(
   if (benchmarks.includes("drift-gen")) {
     await readFile(path.join(DRIFT_ROOT, "..", "dataset.manifest.json"), "utf8");
   }
-  // Utility evidence carries the same identity guarantees as the injection
   // runs it is paired with: pilot/main need a frozen digest, a declared
   // context window, and a clean tree; main forbids --limit.
   enforceRunIdentityGate(input, !captureBenchmarkExecutionProvenance().gitDirty);

@@ -1,12 +1,3 @@
-/**
- * Renderers for RecallTierExplain (issue #518).
- *
- * Pure functions that format a `LastRecallSnapshot` and its
- * optional `tierExplain` field for human text and machine JSON
- * consumption.  CLI / HTTP / MCP surfaces consume these — they do
- * not format explain output themselves, so rendering is tested in
- * one place.
- */
 
 import type { LastRecallSnapshot } from "./recall-state.js";
 import type { RecallTierExplain } from "./types.js";
@@ -26,12 +17,6 @@ function sanitizeFiniteNumber(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-/**
- * `text` and `json` are the original formats (backwards-compatible
- * since issue #518).  `markdown` was added in issue #570 PR 7 and
- * delegates to the shared X-ray renderer so the three observability
- * surfaces stay in lock-step (CLAUDE.md rule 22).
- */
 export type RecallExplainFormat = "text" | "json" | "markdown";
 
 export interface RecallExplainJsonPayload {
@@ -119,14 +104,6 @@ export function toRecallExplainJson(
   };
 }
 
-/**
- * Render the shared "--- tier explain ---" text block used by both the
- * recall-explain surface and the Recall X-ray surface.  Callers provide
- * the normalized `RecallTierExplain` (or `null` for the
- * not-populated/disabled case) so the block stays character-for-character
- * identical across surfaces (CLAUDE.md rule 22).  The returned strings do
- * NOT include leading blank lines or headers — callers own that framing.
- */
 export function renderTierExplainTextLines(
   tierExplain: RecallTierExplain | null,
 ): string[] {
@@ -220,19 +197,6 @@ export function toRecallExplainText(
  * left empty because the legacy snapshot doesn't carry them.  The
  * renderer handles missing fields gracefully.
  */
-/**
- * Strip backticks, pipes, and newlines from a host-provided value so it
- * cannot escape its enclosing markdown code span, break the surrounding
- * table row, or inject extra rows when it lands in
- * `renderXrayMarkdown`.  Applied at the adapter boundary because
- * `LastRecallSnapshot` is hydrated from on-disk JSON without schema
- * validation (codex P2 review on #605).
- *
- * Accepts `unknown` so non-string truthy values (numbers, objects,
- * booleans, arrays) coming from a corrupted snapshot are coerced to
- * the empty string rather than crashing on `.replace(...)`.  Callers
- * should treat an empty return as "drop this field."
- */
 function sanitizeForMarkdownInline(value: unknown): string {
   if (typeof value !== "string") return "";
   return value.replace(/[`|\r\n]/g, " ").trim();
@@ -265,12 +229,6 @@ export function toRecallXraySnapshotFromLegacy(
   const memoryIds = Array.isArray(snapshot.memoryIds)
     ? snapshot.memoryIds.filter((x): x is string => typeof x === "string")
     : [];
-  // Codex P2 + Cursor Medium on #605: every converted result used to
-  // be stamped with `servedBy: "hybrid"`, misattributing legacy
-  // snapshots that came from `recent_scan` (or any future source).
-  // Propagate the recorded `source` so markdown `recall-explain`
-  // output matches the `served-by=` string the native x-ray capture
-  // would emit for the same recall.
   const servedBy = mapLegacySourceToServedBy(snapshot.source);
   const results: RecallXrayResult[] = memoryIds.map((memoryId) => ({
     memoryId,
@@ -282,24 +240,12 @@ export function toRecallXraySnapshotFromLegacy(
   const filters: RecallFilterTrace[] = [];
   return {
     schemaVersion: "1",
-    // `LastRecallSnapshot` does not preserve the original query text;
-    // synthesize a placeholder so the renderer has a non-empty
-    // string to print.  `queryHash` + `queryLen` stay in the JSON
-    // payload via `toRecallExplainJson` for callers that need them.
     query:
       snapshot.queryHash
         ? `(legacy explain; queryHash=${snapshot.queryHash})`
         : "(legacy explain)",
-    // `snapshotId` is synthesized here; `sessionKey` is already
-    // sanitized before it reaches the ID because we re-use the
-    // sanitized string below.
     snapshotId: `legacy-${sanitizeForMarkdownInline(snapshot.sessionKey ?? "unknown") || "unknown"}-${capturedAt}`,
     capturedAt,
-    // Run the raw on-disk value through the same normalizer the text
-    // and JSON paths use so the markdown adapter cannot render
-    // unvalidated tier-explain payloads (cursor / codex review on
-    // #605).  A malformed tierExplain is dropped to null, matching the
-    // behavior of the non-markdown surfaces.
     tierExplain: normalizeTierExplain(snapshot.tierExplain) ?? null,
     results,
     appliedResultLimit: 0,
@@ -307,11 +253,6 @@ export function toRecallXraySnapshotFromLegacy(
     headroomResults: [],
     filters,
     budget: { chars: 0, used: 0 },
-    // Sanitize legacy session metadata at the adapter boundary so a
-    // malformed on-disk value (containing backticks, pipes, or
-    // newlines) cannot break the enclosing markdown table when
-    // `renderXrayMarkdown` prints it in a raw code-span cell (codex P2
-    // review on #605).
     ...(snapshot.sessionKey
       ? (() => {
           const clean = sanitizeForMarkdownInline(snapshot.sessionKey);
@@ -335,10 +276,6 @@ export function renderRecallExplain(
     return JSON.stringify(toRecallExplainJson(snapshot), null, 2);
   }
   if (format === "markdown") {
-    // Delegate to the shared X-ray renderer so CLI / HTTP / MCP
-    // markdown output all share one implementation (CLAUDE.md rule
-    // 22).  The JSON and text paths remain byte-for-byte
-    // backwards-compatible with pre-#570 behavior.
     return renderXrayMarkdown(toRecallXraySnapshotFromLegacy(snapshot));
   }
   return toRecallExplainText(snapshot);

@@ -48,7 +48,6 @@ export function createPassphraseReader(
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
   const errorStream = options.errorStream ?? process.stderr;
-  // Codex/Cursor on PR #737: a fresh readline interface per call
   // breaks confirm-mode on piped non-TTY input — the first
   // `createInterface` consumes the entire prebuffered stream
   // (including the second line), so the second `createInterface`
@@ -79,7 +78,6 @@ export function createPassphraseReader(
     if (inputAsAny.isTTY && typeof inputAsAny.setRawMode === "function") {
       return readNoEcho(prompt, inputAsAny, output);
     }
-    // Non-TTY: line-buffered fallback. Warn once per reader so
     // operators piping plaintext passphrases in shell pipelines are
     // aware their history may contain the secret.
     if (!nonTtyWarned) {
@@ -89,7 +87,6 @@ export function createPassphraseReader(
       );
       nonTtyWarned = true;
     }
-    // Codex P1 on PR #737: write the prompt to stderr, not stdout.
     // When the surrounding command outputs JSON to stdout (e.g.
     // `remnic secure-store status --json`), injecting prompt text on
     // stdout corrupts the JSON output and breaks machine consumers.
@@ -111,7 +108,6 @@ function readNoEcho(
     let buffer = "";
     let settled = false;
     const wasRaw = (input as Readable & { isRaw?: boolean }).isRaw === true;
-    // Codex P2 on PR #737: per-chunk `chunk.toString("utf8")` corrupts
     // multibyte characters that straddle a chunk boundary (Node inserts
     // U+FFFD replacement characters for incomplete sequences). Use a
     // StringDecoder, which buffers partial sequences across chunks so
@@ -122,10 +118,8 @@ function readNoEcho(
     const cleanup = (): void => {
       input.pause();
       input.removeListener("data", onData);
-      // Flush any remaining bytes the decoder is holding so trailing
       // partial sequences are surfaced rather than silently swallowed.
       decoder.end();
-      // Restore the prior raw-mode state so we don't strand the parent shell
       // in an unexpected configuration.
       if (input.setRawMode) input.setRawMode(wasRaw);
       output.write("\n");
@@ -135,21 +129,18 @@ function readNoEcho(
       for (const ch of str) {
         if (settled) return;
         const code = ch.charCodeAt(0);
-        // Enter / newline: submit.
         if (ch === "\n" || ch === "\r") {
           settled = true;
           cleanup();
           resolve(buffer);
           return;
         }
-        // Ctrl+C: abort.
         if (code === 0x03) {
           settled = true;
           cleanup();
           reject(new Error("passphrase entry aborted (Ctrl+C)"));
           return;
         }
-        // Ctrl+D / EOT: treat as abort if buffer is empty, else submit.
         if (code === 0x04) {
           settled = true;
           cleanup();
@@ -160,8 +151,6 @@ function readNoEcho(
           }
           return;
         }
-        // Backspace / DEL.
-        // Cursor on PR #737: `buffer.slice(0, -1)` deletes one UTF-16
         // code unit, which splits a surrogate pair when the last
         // character is a non-BMP code point (emoji, etc.). Fix: count
         // code points with `Array.from` and remove the last one. This
@@ -174,7 +163,6 @@ function readNoEcho(
           }
           continue;
         }
-        // Ignore other control bytes (escape sequences, etc.).
         if (code < 0x20) {
           continue;
         }
@@ -222,7 +210,6 @@ function createNonTtyLineReader(input: Readable): NonTtyLineReader {
     closed = true;
     while (waiterQueue.length > 0) {
       const w = waiterQueue.shift()!;
-      // Drop the matching error slot since we're settling cleanly.
       errorQueue.shift();
       w("");
     }
@@ -231,7 +218,6 @@ function createNonTtyLineReader(input: Readable): NonTtyLineReader {
     error = err;
     while (errorQueue.length > 0) {
       const r = errorQueue.shift()!;
-      // Drop the matching value slot.
       waiterQueue.shift();
       r(err);
     }

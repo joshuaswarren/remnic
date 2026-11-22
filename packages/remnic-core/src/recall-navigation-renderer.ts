@@ -1,10 +1,3 @@
-/**
- * Shared markdown renderer for recall navigation (issue #1956).
- *
- * Rule 22: CLI text output, MCP `rendered`, and HTTP human output all
- * render through this one module — never forked per surface.
- * Deterministic: items in result order, budget and disclosure spend last.
- */
 
 import type { RecallNavigationResult } from "./recall-navigation.js";
 

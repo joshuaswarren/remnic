@@ -343,15 +343,6 @@ function buildExplicitCaptureReviewEntries(
     }));
 }
 
-/**
- * List every `*.md` under `root`, refusing to follow symlinked directories or
- * entries that resolve outside `containmentRoot` (a realpath-resolved memory
- * store root). Mirrors the containment guard in consolidation-provenance's
- * walkMarkdownFiles / the CLI walker, reusing the shared assertPathInsideRoot
- * (rule 22). Without this, a symlinked category dir (e.g. decisions/ → outside
- * memoryDir) would be walked and its files surfaced by the malformed-import
- * governance sweep — an out-of-store info leak.
- */
 async function listMarkdownFiles(root: string, containmentRoot: string): Promise<string[]> {
   const files: string[] = [];
   const walk = async (dir: string) => {
@@ -398,12 +389,6 @@ async function buildMalformedImportEntries(
   candidateFiles?: string[],
 ): Promise<MemoryGovernanceReviewQueueEntry[]> {
   const parsedPaths = new Set(parsedMemories.map((memory) => memory.path));
-  // Inspect every recall category directory (RECALL_FALLBACK_DIRS — the single
-  // source of truth) so malformed files under newly-routed categories
-  // (decisions/, preferences/, ...) are surfaced too, not just facts/ (#1546).
-  // Resolve the containment root (realpath) once and thread it into the walker
-  // so a symlinked category dir can't escape memoryDir. If memoryDir itself
-  // can't be resolved, there is nothing valid to inspect.
   let containmentRoot: string | null = null;
   try {
     containmentRoot = await realpath(memoryDir);
@@ -1023,13 +1008,7 @@ export async function restoreMemoryGovernanceRun(
     await mkdir(path.dirname(entry.originalPath), { recursive: true });
     await writeFile(entry.originalPath, entry.beforeRaw, "utf-8");
     restoredActions += 1;
-    // Restore writes/removes memory files directly (out-of-band — not through a
-    // StorageManager mutation). Bump the corpus sentinel PER entry so a
-    // same-process or peer readAllMemories rescans mid-batch and never serves a
-    // partially-restored corpus (Cursor Medium, #1902).
     bumpMemoryCorpusVersionForDir(options.memoryDir);
-    // Restored bytes predate the current migration journal and can carry
-    // legacy entity references (issue #2213) — request one reconcile pass.
     await requestEntityCanonicalIdReconcile(path.join(options.memoryDir, "state"));
   }
 

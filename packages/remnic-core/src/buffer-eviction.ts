@@ -5,7 +5,6 @@ const EMPTY_ENTRY: BufferEntryState = { turns: [], lastExtractionAt: null, extra
 export interface BufferEvictionHooks {
   /** Last activity time (ms) of an entry; older entries are evicted first. */
   activityAt(entry: BufferEntryState): number;
-  /** Accepted captures exit via refusal/backpressure, never eviction (#3251). */
   holdsAcceptedCapture(entry: BufferEntryState | undefined): boolean;
 }
 
@@ -34,8 +33,6 @@ export function selectEvictedBufferKeys(
   const candidates = keys.filter(
     (key) => key !== "default" && !retainKeys.includes(key) && !hooks.holdsAcceptedCapture(entries[key]),
   );
-  // Backlog = active turns OR retained retry turns (#1908); only an entry
-  // holding neither counts as empty.
   const emptyRemovable = candidates
     .filter((key) => (entries[key]?.turns.length ?? 0) === 0 && (entries[key]?.retainedTurns?.length ?? 0) === 0)
     .sort(byOldestActivity);

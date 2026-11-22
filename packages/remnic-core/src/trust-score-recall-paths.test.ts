@@ -111,7 +111,6 @@ test("TrustScore runs on the recent-scan path: trust map reaches the X-ray snaps
       withTrust.length > 0,
       "recent-scan path must surface trust projections (rule 41 parity)",
     );
-    // Each trust projection is well-formed (cloneResult preserved it).
     for (const r of withTrust) {
       assert.ok(typeof r.trust!.score === "number", "trust.score is a number");
       assert.ok(

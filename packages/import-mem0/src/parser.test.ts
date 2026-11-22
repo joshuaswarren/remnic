@@ -18,7 +18,6 @@ function loadFixture(name: string): string {
 describe("parseMem0Export", () => {
   it("parses a flat results-array replay dump", () => {
     const parsed = parseMem0Export(loadFixture("replay-dump.json"));
-    // 4 entries total, but the dump's 'empty' one keeps its id so it survives parse.
     assert.equal(parsed.memories.length, 4);
   });
 

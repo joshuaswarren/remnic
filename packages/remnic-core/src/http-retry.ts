@@ -1,30 +1,9 @@
-/**
- * Shared retrying fetch for connector packages (issue #2792).
- *
- * One copy of the retry loop that six connector clients and the X MCP
- * client duplicated: attempt counting, per-attempt timeout signal,
- * 429/5xx retry with Retry-After (seconds or HTTP-date) plus capped
- * exponential backoff, raw rethrow of caller aborts, and socket
- * release on retryable responses. Vendors keep everything
- * request-specific: headers/body, the error classes their callers
- * match on, and what happens to a successful response body.
- *
- * Import via the `@remnic/core/http-retry` subpath (same pattern as
- * `@remnic/core/abort-error`) — the root index stays untouched.
- */
 
 import { sleep as defaultSleep } from "./utils/sleep.js";
 
 export interface RetryingFetchOptions {
   /** Request init for every attempt. Ignored when `buildInit` is set. */
   init?: RequestInit;
-  /**
-   * Init builder invoked ONCE, before the retry loop. Request
-   * construction (e.g. token acquisition) must stay outside the
-   * transport retry boundary: a deterministic provider failure —
-   * missing grant, revoked grant, unpersistable token file — runs once
-   * and propagates unwrapped, never retried or vendor-wrapped.
-   */
   buildInit?: () => RequestInit | Promise<RequestInit>;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
@@ -72,18 +51,12 @@ const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
 const DEFAULT_BACKOFF_BASE_MS = 1_000;
 
-/**
- * Network/timeout failures wrap Node error text that can carry loader
- * paths or stack fragments; sync errors reach MCP clients verbatim, so
- * only the error name + code survive.
- */
 export function describeNetworkError(err: unknown): string {
   if (!(err instanceof Error)) return "unexpected non-Error failure";
   const code = (err as NodeJS.ErrnoException).code;
   return typeof code === "string" && code.length > 0 ? `${err.name} (${code})` : err.name;
 }
 
-/** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
 export function stripTrailingSlashes(value: string): string {
   let end = value.length;
   while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end--;
@@ -134,9 +107,6 @@ export async function retryingFetch(
     Math.min(maxRetryDelayMs, backoffBaseMs * 2 ** attempt);
   const attempts = maxRetries + 1;
 
-  // Request construction runs once, outside the retry boundary: only
-  // fetch/network/HTTP-retryable failures retry, so initializer/token
-  // provider errors execute once and propagate unchanged (issue #2792).
   options.signal?.throwIfAborted();
   const init = options.buildInit ? await options.buildInit() : options.init;
 
@@ -151,7 +121,6 @@ export async function retryingFetch(
     try {
       response = await fetchImpl(url, { ...init, signal: combined });
     } catch (err) {
-      // The caller's abort always propagates unwrapped and unretried.
       if (options.signal?.aborted) throw err;
       if (attempt < maxRetries) {
         await sleep(backoffMs(attempt));

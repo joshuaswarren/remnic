@@ -1,10 +1,3 @@
-/**
- * Isolated span-provenance builder (issue #2333).
- *
- * Pure. Builds the ProvenanceSource quote/charStart/charEnd triple from
- * offsets and verifies a model-supplied quote equals the sliced text, so a
- * bad offset pair can never persist a quote absent from the source.
- */
 
 export interface SpanProvenance {
   quote: string;

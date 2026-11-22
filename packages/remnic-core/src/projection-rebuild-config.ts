@@ -1,10 +1,3 @@
-/**
- * Scheduled projection-rebuild knobs (issue #2119, heap guard).
- *
- * Extracted from `config.ts` / `types.ts` so those god-file ceilings do not
- * grow. `PluginConfig` extends the interface and `parseConfig` spreads
- * {@link parseProjectionRebuildScheduleConfig}.
- */
 
 import { coerceBooleanLike, coerceNumber } from "./connectors/coerce.js";
 

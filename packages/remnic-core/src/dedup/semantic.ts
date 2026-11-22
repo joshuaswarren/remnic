@@ -1,36 +1,12 @@
-/**
- * @remnic/core — Write-time semantic dedup guard
- *
- * Complements the exact content-hash check in the orchestrator's write path
- * by detecting near-duplicate candidate facts via embedding cosine similarity.
- *
- * The module intentionally has no dependency on the EmbeddingFallback or QMD
- * classes directly — callers pass in a `lookup` function that returns the
- * top-K nearest neighbors with their cosine scores. This keeps the decision
- * logic pure and trivially testable with synthetic fixtures, and lets the
- * orchestrator reuse whichever backend it already has wired up.
- *
- * Related issue: joshuaswarren/remnic#373
- */
 
 import { connectorMatchesScope, normalizeConnectorScope } from "./connector-scope.js";
 
-// ── Public types ──────────────────────────────────────────────────────────────
 
-/** A single nearest-neighbor hit from the embedding backend. */
 export interface SemanticDedupHit {
-  /** Memory id of the existing neighbor. */
   id: string;
   /** Cosine similarity score in [0, 1]. */
   score: number;
-  /** Optional source path, purely informational. */
   path?: string;
-  /**
-   * Source connector of the existing neighbor memory's provenance, used by
-   * the connector-aware skip gate (PR #1852 review finding on 7e0eb1a0).
-   * Absent when the neighbor is operator/unattributed or its frontmatter
-   * could not be read.
-   */
   sourceConnector?: string;
 }
 
@@ -52,16 +28,7 @@ export interface SemanticDedupOptions {
   enabled: boolean;
   /** Cosine similarity threshold (0-1). ≥ threshold ⇒ treat as duplicate. */
   threshold: number;
-  /** How many nearest neighbors to compare against. */
   candidates: number;
-  /**
-   * Source connector of the CANDIDATE fact being evaluated (its provenance).
-   * When present, a near-duplicate skip is permitted only against a neighbor
-   * carrying the SAME connector; a different or absent neighbor connector
-   * must NOT suppress the write (PR #1852 review finding on 7e0eb1a0).
-   * Absent for operator / unattributed writes, which preserve the original
-   * behavior (skip on any near-duplicate regardless of neighbor connector).
-   */
   sourceConnector?: string;
 }
 
@@ -85,7 +52,6 @@ export type SemanticDedupDecision =
       topPath?: string;
     };
 
-// ── Pure decision function ────────────────────────────────────────────────────
 
 const DEFAULT_SEMANTIC_THRESHOLD = 0.92;
 const DEFAULT_SEMANTIC_CANDIDATES = 5;
@@ -130,8 +96,6 @@ export async function decideSemanticDedup(
   }
   const threshold = normalizeSemanticThreshold(options.threshold);
   const candidates = normalizeSemanticCandidates(options.candidates);
-  // Zero candidates means the operator has disabled the embedding lookup.
-  // Treat it identically to enabled=false so no backend call is made.
   if (candidates === 0) {
     return { action: "keep", reason: "disabled" };
   }
@@ -143,14 +107,9 @@ export async function decideSemanticDedup(
   try {
     hits = await lookup(trimmed, candidates);
   } catch {
-    // Fail-open: a lookup error must not block writes.
     return { action: "keep", reason: "backend_unavailable" };
   }
   if (!Array.isArray(hits) || hits.length === 0) {
-    // Provider responded (no throw) but returned no hits: the embedding index
-    // is empty or contains no neighbors above the score floor. Use a distinct
-    // reason so callers and telemetry can differentiate this from a genuine
-    // backend failure.
     return { action: "keep", reason: "no_candidates" };
   }
 
@@ -161,10 +120,6 @@ export async function decideSemanticDedup(
 
   // Defensive: callers ought to return sorted, but don't trust it.
   let top: SemanticDedupHit | undefined;
-  // Best same-connector neighbor — only tracked when the candidate is
-  // provenance-bearing. Tracked in the same pass so a connector-aware skip
-  // matches the best neighbor from the SAME connector even when a higher-
-  // scoring neighbor from a DIFFERENT connector would otherwise win.
   let sameConnectorTop: SemanticDedupHit | undefined;
   for (const hit of hits) {
     if (
@@ -192,13 +147,6 @@ export async function decideSemanticDedup(
   }
 
   if (top.score >= threshold) {
-    // Connector-aware skip gate (PR #1852 review finding on 7e0eb1a0):
-    // A provenance-bearing candidate may be suppressed ONLY by a near-
-    // duplicate from the SAME connector. A different or absent neighbor
-    // connector must NOT suppress the write — otherwise a connector B
-    // paraphrase would be dropped against connector A's memory before the
-    // write ever happens. When the candidate carries no connector (operator
-    // / unattributed), preserve the original behavior and skip on any match.
     if (candidateConnector !== undefined) {
       const match =
         sameConnectorTop !== undefined && sameConnectorTop.score >= threshold
@@ -213,8 +161,6 @@ export async function decideSemanticDedup(
           topPath: match.path,
         };
       }
-      // Best overall hit cleared threshold but came from a different or
-      // absent connector; no same-connector near-duplicate exists. Keep.
       return {
         action: "keep",
         reason: "connector_mismatch",

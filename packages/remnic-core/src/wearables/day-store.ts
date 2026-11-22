@@ -45,9 +45,6 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  */
 export const TRANSCRIPT_FORMAT_VERSION = 2;
 
-/**
- * Result of parsing a rendered transcript segment line.
- */
 export interface TranscriptSegmentMatch {
   /** Speaker label text between the `**` delimiters. */
   label: string;
@@ -100,15 +97,11 @@ function isRegexWhitespace(code: number): boolean {
 export function parseTranscriptSegmentLine(
   line: string,
 ): TranscriptSegmentMatch | null {
-  // Must start with '**'.
   if (!line.startsWith("**")) return null;
 
   // Find the closing '**' of the label: the first '**' at index >= 3
   // (label is at least 1 char) that is immediately followed by \s and
-  // then '['. This mirrors the non-greedy regex: the engine tries the
-  // shortest label first and extends only when the subsequent fixed
   // delimiters do not line up. An escaped label ending with '\*' is
-  // correctly handled because the spurious '**' (escape-star + close-
   // star) is not followed by \s and the scan continues.
   let labelEnd = -1;
   for (let i = 3; i < line.length; i++) {
@@ -130,8 +123,6 @@ export function parseTranscriptSegmentLine(
   // Clock content starts after the closing '**', the \s, and the '['.
   const clockStart = labelEnd + 4;
 
-  // Find the closing ']' of the clock: the first ']' at index >=
-  // clockStart + 1 (clock is at least 1 char) that is immediately
   // followed by ':' and \s — matching the non-greedy regex.
   let clockEnd = -1;
   for (let i = clockStart + 1; i < line.length; i++) {
@@ -163,10 +154,7 @@ export function isValidTranscriptDate(date: string): boolean {
 
 export function hashTranscriptBody(body: string): string {
   // The version prefix makes the hash an idempotency key for the body AS
-  // SERIALIZED under the current format: when the escape encoding changes
   // (version bump) every existing file's stored hash no longer matches and
-  // the pipeline rewrites it with the new marker — no separate migration
-  // pass needed (issue #1849).
   return createHash("sha256")
     .update(`v${TRANSCRIPT_FORMAT_VERSION}\n${body}`, "utf-8")
     .digest("hex");
@@ -185,7 +173,6 @@ function formatClockTime(iso: string | undefined, timezone: string): string {
     }).format(new Date(ms));
   } catch {
     // Unknown timezone identifiers fall back to UTC rather than
-    // crashing a sync that already fetched data.
     return new Date(ms).toISOString().slice(11, 16);
   }
 }
@@ -342,7 +329,6 @@ export function composeDayTranscriptBody(
     const bMs = Date.parse(b.startIso);
     if (aMs < bMs) return -1;
     if (aMs > bMs) return 1;
-    // Stable secondary key so equal start times order deterministically.
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
   for (const conversation of ordered) {
@@ -395,7 +381,6 @@ export function composeDayTranscriptMeta(
   };
 }
 
-/** Serialize meta + body into the persisted file format. */
 export function serializeDayTranscript(
   meta: WearableDayTranscriptMeta,
   body: string,
@@ -473,8 +458,6 @@ export function parseDayTranscript(raw: string): WearableDayTranscript | null {
     source,
     date,
     // Preserve a missing timezone field as "" rather than coercing to a
-    // default: the fusion identity guard must see "no resolvable tz id"
-    // and skip, never silently match a known zone.
     timezone: scalars.get("timezone") ?? "",
     conversationCount: parseNonNegativeInt(scalars.get("conversationCount")),
     segmentCount: parseNonNegativeInt(scalars.get("segmentCount")),

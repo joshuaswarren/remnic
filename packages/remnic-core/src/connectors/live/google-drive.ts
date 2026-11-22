@@ -370,7 +370,6 @@ function requireNonEmptyString(value: unknown, key: string): string {
 }
 
 
-/** Longest wait for the host secret resolver, so a stalled secret store cannot hold the sync loop. */
 export const SECRET_RESOLVE_DEADLINE_MS = 30_000;
 
 async function resolveWithinDeadline(
@@ -536,7 +535,6 @@ export function createGoogleDriveConnector(
     },
 
     async syncIncremental(args: SyncIncrementalArgs): Promise<SyncIncrementalResult> {
-      // Re-validate on every pass: a JS caller could mutate it between passes.
       const config = await resolveGoogleDriveConfig(
         validateGoogleDriveConfig(args.config),
         args.resolveSecretRef,
@@ -547,11 +545,6 @@ export function createGoogleDriveConnector(
       const client = await clientFactory(config);
       throwIfAborted(args.abortSignal, "googleDrive: sync aborted");
 
-      // Cursor bootstrap. On the very first pass (cursor=null) we ask Drive
-      // for a page token but DO NOT consume any changes — this aligns with
-      // the documented Drive recipe and keeps "first install" from
-      // re-importing the user's entire history. Subsequent passes consume
-      // changes from the persisted token.
       let pageToken: string;
       const isFirstSync = args.cursor === null;
       if (isFirstSync) {
@@ -580,14 +573,10 @@ export function createGoogleDriveConnector(
       let consumed = 0;
       let resolvedNextToken: string | undefined;
 
-      // Page through `changes.list` until we run out, hit the per-pass cap,
-      // or get aborted.
       while (true) {
         throwIfAborted(args.abortSignal, "googleDrive: sync aborted");
         const remaining = MAX_CHANGES_PER_PASS - consumed;
         if (remaining <= 0) {
-          // Hit the cap — persist whatever we have. The next pass resumes
-          // from `pageToken`.
           resolvedNextToken = pageToken;
           break;
         }
@@ -613,16 +602,12 @@ export function createGoogleDriveConnector(
             case "skip-too-large":
               skippedTooLarge++;
               break;
-            // skip-removed / skip-trashed are intentionally not counted —
-            // they're upstream-driven and noisy.
             default:
               break;
           }
         }
 
         if (typeof page.newStartPageToken === "string" && page.newStartPageToken.length > 0) {
-          // End of stream — the new start token is what we persist for the
-          // next sync.
           resolvedNextToken = page.newStartPageToken;
           break;
         }
@@ -630,8 +615,6 @@ export function createGoogleDriveConnector(
           pageToken = page.nextPageToken;
           continue;
         }
-        // Neither continuation nor end token — defensive bail to avoid a
-        // tight loop on a malformed Drive response.
         resolvedNextToken = pageToken;
         break;
       }
@@ -678,18 +661,9 @@ async function fetchDocument(
           })
         : await client.getFileMedia({ fileId: file.id });
   } catch (err) {
-    // Distinguish terminal per-file errors (skip-and-continue) from
-    // transient backend errors (re-throw so the caller can stop the pass
-    // and retry on the next poll WITHOUT advancing the cursor past the
-    // affected batch). Silently swallowing transient errors here would
-    // permanently lose imports during outages: the cursor would advance,
-    // and the file would never be retried unless its modifiedTime changed.
     if (isTransientDriveError(err)) {
       throw err;
     }
-    // 404 / 403 etc.: log-and-skip is fine — the file is gone or we lack
-    // access, and there's nothing useful to retry. We deliberately don't
-    // log the file name (privacy).
     return null;
   }
   if (typeof body !== "string" || body.length === 0) return null;
@@ -787,12 +761,6 @@ interface GoogleDriveSdkClient {
 export const defaultGoogleDriveClientFactory: GoogleDriveClientFactory = async (
   config,
 ) => {
-  // Computed specifier. DO NOT replace with a string literal — bundlers
-  // will eagerly resolve `import("googleapis")` and break à-la-carte.
-  // We deliberately do not reference `typeof import("googleapis")` because
-  // `@remnic/core` does not (and must not) declare `googleapis` as a hard
-  // dependency or devDependency — its types would not be installed in the
-  // base layout and `tsc --noEmit` would fail.
   const specifier = "google" + "apis";
   let mod: { google: GoogleApisRoot };
   try {

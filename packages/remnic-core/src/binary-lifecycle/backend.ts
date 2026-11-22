@@ -13,11 +13,8 @@ import type { BinaryStorageBackendConfig } from "./types.js";
 import { isErrnoCode } from "../utils/errno.js";
 
 // ---------------------------------------------------------------------------
-// Interface
-// ---------------------------------------------------------------------------
 
 export interface BinaryStorageBackend {
-  /** Discriminator for the backend type. */
   readonly type: string;
   /**
    * Upload a local file to the backend.
@@ -33,7 +30,6 @@ export interface BinaryStorageBackend {
 }
 
 // ---------------------------------------------------------------------------
-// Filesystem backend
 // ---------------------------------------------------------------------------
 
 export class FilesystemBackend implements BinaryStorageBackend {
@@ -224,7 +220,6 @@ export class FilesystemBackend implements BinaryStorageBackend {
     try {
       await fsp.unlink(dest);
     } catch (err: unknown) {
-      // Ignore ENOENT (already deleted); rethrow everything else.
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
   }
@@ -235,7 +230,6 @@ export class FilesystemBackend implements BinaryStorageBackend {
 }
 
 // ---------------------------------------------------------------------------
-// None backend (no-op, for dry-run / testing)
 // ---------------------------------------------------------------------------
 
 export class NoneBackend implements BinaryStorageBackend {
@@ -255,7 +249,6 @@ export class NoneBackend implements BinaryStorageBackend {
 }
 
 // ---------------------------------------------------------------------------
-// Factory
 // ---------------------------------------------------------------------------
 
 export function createBackend(cfg: BinaryStorageBackendConfig): BinaryStorageBackend {

@@ -66,14 +66,12 @@ test("parseLocalLabManifest preserves optional quantization + embedding + notes"
 
 test("parseLocalLabManifest rejects an unknown provider and lists the valid ones (rule 51)", () => {
   const manifest = validManifest();
-  // Deliberately invalid kind — must be rejected, never silently coerced.
   manifest.responder.provider = "vllm" as never;
   assert.throws(
     () => parseLocalLabManifest(manifest),
     (err: unknown) => {
       assert.ok(err instanceof Error, "expected an Error");
       const msg = err.message;
-      // Rule 51: error must enumerate the valid kinds.
       for (const kind of LOCAL_LAB_PROVIDER_KINDS) {
         assert.ok(msg.includes(kind), `error must list "${kind}"\n-- message was:\n${msg}`);
       }
@@ -179,15 +177,11 @@ test("parseLocalLabManifest rejects non-object root (rule 18: object-not-null)",
 });
 
 test("loadLocalLabManifest read failure reports errno code, not raw error path diagnostics (cursor review: #1573 PR2)", async () => {
-  // Node readFile errors embed the absolute path + system diagnostics in
-  // error.message. The thrown error must use the stable errno code instead.
   const missingPath = "/tmp/remnic-local-lab-manifest-nonexistent-" + Date.now() + ".json";
   await assert.rejects(
     () => loadLocalLabManifest(missingPath),
     (error: Error) => {
       assert.match(error.message, /could not be read \(ENOENT\)/);
-      // The absolute path appears once (as filePath) but must NOT be doubled
-      // by a raw Node message like "open '/tmp/...'".
       const occurrences = error.message.split(missingPath).length - 1;
       assert.equal(occurrences, 1, "filePath should appear exactly once, not echoed from raw error");
       return true;
@@ -203,8 +197,6 @@ test("loadLocalLabManifest invalid JSON reports parse detail without path leakag
       () => loadLocalLabManifest(tmpPath),
       (error: Error) => {
         assert.match(error.message, /contains invalid JSON/);
-        // JSON.parse errors carry position info but not file-system paths,
-        // so the detail is safe to surface.
         assert.match(error.message, /position \d+/);
         return true;
       },

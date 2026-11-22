@@ -1,6 +1,4 @@
 // ---------------------------------------------------------------------------
-// @remnic/import-chatgpt — public surface (issue #568 slice 2)
-// ---------------------------------------------------------------------------
 
 export { adapter, chatgptAdapter } from "./adapter.js";
 export {

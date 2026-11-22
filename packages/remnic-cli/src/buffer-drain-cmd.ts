@@ -150,7 +150,6 @@ function resolveWorkerEntry(): DrainWorkerEntry {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const compiled = path.join(moduleDir, "buffer-drain-worker.js");
   if (fs.existsSync(compiled)) return { file: compiled, args: [] };
-  // Source checkout (tsx): run the TypeScript worker through the repo's tsx.
   return { file: path.join(moduleDir, "buffer-drain-worker.ts"), args: ["--import", "tsx"] };
 }
 
@@ -286,8 +285,6 @@ export async function runBufferDrain(argv: readonly string[], deps: BufferDrainD
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk: string) => deps.stderr(chunk.trimEnd()));
       await new Promise<void>((resolve) => {
-        // close, not exit: exit can fire before the stdout pipe is fully
-        // read, losing a late session_finished report from the summary.
         child.on("close", () => resolve());
         child.on("error", (err) => {
           errors.push(err.message);
@@ -422,8 +419,6 @@ export function matchesFilters(
     if (!matches) return false;
   }
   if (options.namespace !== undefined) {
-    // A session captured for another namespace stays with its namespace: the
-    // drain must not move content across namespaces.
     const inNamespace = entry.turns.every((turn) =>
       turn.writeNamespaceOverride !== undefined
         ? turn.writeNamespaceOverride === options.namespace

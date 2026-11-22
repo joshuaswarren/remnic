@@ -96,14 +96,8 @@ const EMPTY_LCM_STATS = {
   maxDepth: -1,
 } as const;
 
-/**
- * Upper bound on leaf batches summarized by one background job. Keeps a single
- * job's archive read and wall time bounded; leftover batches stay durable and
- * the job re-queues itself.
- */
 const LCM_SUMMARIZE_MAX_LEAF_BATCHES_PER_JOB = 16;
 
-/** Retry pacing for a failed summary pass: base delay and backoff ceiling. */
 const LCM_SUMMARIZE_RETRY_BASE_MS = 500;
 const LCM_SUMMARIZE_RETRY_MAX_MS = 30_000;
 
@@ -391,13 +385,10 @@ export class LcmEngine {
       retry.resolve();
     }, delayMs);
     // Pure background: unreferenced, so a one-shot host is never kept alive
-    // by a retry loop. An explicit idle waiter (see waitForSessionObserveIdle)
-    // references it for the duration of the wait, and close() clears all.
     timer.unref?.();
     this.summarizeRetryTimers.set(sessionId, timer);
   }
 
-  /** True when the session still holds a complete unsummarized batch. */
   private hasCompleteBatchPending(sessionId: string): boolean {
     if (!this.archive) return false;
     return (
@@ -406,7 +397,6 @@ export class LcmEngine {
     );
   }
 
-  /** Drop a pending retry, its attempt counter, and release idle waiters. */
   private clearSummarizeRetry(sessionId: string): void {
     const timer = this.summarizeRetryTimers.get(sessionId);
     if (timer) {
@@ -455,8 +445,6 @@ export class LcmEngine {
     await this.ensureInitialized();
     abortSignal?.throwIfAborted();
     if (this.closed) return;
-    // Serialize with pending summary retries: a direct flush (pre-compaction)
-    // must not run beside a retry pass for the same session.
     for (;;) {
       await this.waitForPendingObserveInitIdle(normalizedSessionId, abortSignal);
       await this.observeQueue?.whenSessionIdle(normalizedSessionId, abortSignal) ?? Promise.resolve();
@@ -559,7 +547,6 @@ export class LcmEngine {
     });
   }
 
-  /** Build the compressed history recall section for a session. */
   async assembleRecall(
     sessionId: string,
     budgetChars: number,
@@ -567,7 +554,6 @@ export class LcmEngine {
     return (await this.assembleRecallWithTrace(sessionId, budgetChars)).text;
   }
 
-  /** Build compressed recall plus content-free selected-summary receipts. */
   async assembleRecallWithTrace(
     sessionId: string,
     budgetChars: number,
@@ -663,7 +649,6 @@ export class LcmEngine {
     );
   }
 
-  /** Verify archive coverage after compaction. */
   async verifyPostCompaction(sessionId: string): Promise<void> {
     if (!this.config.enabled) return;
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
@@ -677,9 +662,7 @@ export class LcmEngine {
     );
   }
 
-  // ── MCP Tool implementations ──
 
-  /** Search across all conversation history via FTS (snippet mode). */
   async searchContext(
     query: string,
     limit: number,
@@ -702,7 +685,6 @@ export class LcmEngine {
     return this.archive!.search(query, limit, normalizedSessionId, normalizedSessionPrefix);
   }
 
-  /** Search via FTS returning full message content (not snippets). */
   async searchContextFull(
     query: string,
     limit: number,
@@ -733,7 +715,6 @@ export class LcmEngine {
     );
   }
 
-  /** Get a compressed summary of a turn range. */
   async describeContext(
     sessionId: string,
     fromTurn: number,
@@ -746,7 +727,6 @@ export class LcmEngine {
 
     const nodes = this.dag!.getCoveringNodes(normalizedSessionId, fromTurn, toTurn);
     if (nodes.length === 0) {
-      // No summary exists — build a description from raw messages
       const messages = this.archive!.getMessages(normalizedSessionId, fromTurn, toTurn);
       if (messages.length === 0) return null;
       const preview = messages
@@ -760,7 +740,6 @@ export class LcmEngine {
       };
     }
 
-    // Use the deepest covering node
     const best = nodes[0]; // Already sorted by depth DESC
     return {
       summary: best.summary_text,
@@ -786,7 +765,6 @@ export class LcmEngine {
     return this.archive!.getMessages(normalizedSessionId, fromTurn, toTurn);
   }
 
-  /** Retrieve raw messages for a turn range (lossless expansion). */
   async expandContext(
     sessionId: string,
     fromTurn: number,
@@ -801,7 +779,6 @@ export class LcmEngine {
     const messages = this.archive!.getMessages(normalizedSessionId, fromTurn, toTurn);
     if (messages.length === 0) return [];
 
-    // Enforce the token budget while keeping the existing first/last shape.
     const tokenBudget = Math.max(0, Math.floor(maxTokens));
     if (tokenBudget === 0) return [];
     const totalTokens = messages.reduce(
@@ -860,7 +837,6 @@ export class LcmEngine {
   }
 
 
-  /** Get statistics about the LCM archive. */
   async getStats(sessionId?: string): Promise<{
     totalMessages: number;
     totalSummaryNodes: number;
@@ -891,7 +867,6 @@ export class LcmEngine {
     };
   }
 
-  /** Clear all LCM archive and summary state for one session. */
   async clearSession(sessionId: string, abortSignal?: AbortSignal): Promise<void> {
     if (!this.config.enabled || this.closed) return;
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
@@ -904,7 +879,6 @@ export class LcmEngine {
     this.archive.deleteSession(normalizedSessionId);
   }
 
-  /** Clear all LCM archive and summary state without closing the engine. */
   async clearAll(abortSignal?: AbortSignal): Promise<void> {
     if (!this.config.enabled || this.closed) return;
     await this.ensureInitialized();
@@ -915,7 +889,6 @@ export class LcmEngine {
     this.archive.deleteAll();
   }
 
-  /** Prune old data beyond retention period. */
   async prune(): Promise<{ messagesPruned: number; nodesPruned: number }> {
     if (!this.config.enabled) return { messagesPruned: 0, nodesPruned: 0 };
     await this.ensureInitialized();
@@ -929,7 +902,6 @@ export class LcmEngine {
     return { messagesPruned, nodesPruned };
   }
 
-  /** Close the database connection. */
   close(): void {
     this.closed = true;
     for (const timer of this.summarizeRetryTimers.values()) clearTimeout(timer);

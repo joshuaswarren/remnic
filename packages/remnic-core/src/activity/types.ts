@@ -102,11 +102,9 @@ export interface ActivityTimelineJournalConfig {
   enabled: boolean;
   /** Where the journal text is read from: the memoryDir day file (default) or the vault daily note. */
   source: JournalSource;
-  /** Review-only journal extraction gate (issue #1987): "off" | "review". No auto mode by design. */
   extractionMode: ActivityJournalExtractionMode;
 }
 
-/** Journal extraction is review-only by design (#1984 decision): no "auto". */
 export type ActivityJournalExtractionMode = "off" | "review";
 
 /** Vault daily-note read-back settings (issue #1987). */
@@ -145,11 +143,8 @@ export interface ActivityTimelineVaultConfig {
   sectionStrategy: VaultSectionStrategy;
   publish: {
     timeline: ActivityTimelineVaultTargetConfig;
-    /** Standup target lights up when phase 3 lands. */
     standup: ActivityTimelineVaultTargetConfig;
-    /** Weekly target lights up when phase 4 lands. */
     weekly: ActivityTimelineVaultTargetConfig;
-    /** Locations target lights up with the location day renderer. */
     locations: ActivityTimelineVaultTargetConfig;
   };
   /** Markers strategy: heading under which missing marker pairs are inserted; empty = never insert. */

@@ -130,10 +130,6 @@ export async function buildMergedTargetPromotionPayload(
   storage: StorageManager,
   merge: { targetId: string; mergedContent: string; provenancePatched: boolean },
 ): Promise<MergedTargetPromotionResult> {
-  // Round N+7 (A): a degraded merge's record still holds its pre-merge
-  // confidence, provenance, sources, and hash — a copy built off it would
-  // publish incoming claims under that stronger metadata. No promotion may
-  // be constructed from an unpatched provenance record.
   if (!merge.provenancePatched) {
     log.warn(
       `semantic-merge: skipping merged-target promotion for ${merge.targetId} — provenance patch did not land; the record still holds pre-merge trust metadata`,
@@ -144,7 +140,6 @@ export async function buildMergedTargetPromotionPayload(
   try {
     committed = await storage.getMemoryByIdIncludingArchived(merge.targetId);
   } catch (err) {
-    // Round N+18 (B): fail-open with a notice, like the artifact helper.
     log.warn(
       `semantic-merge: merged-target promotion reread failed for ${merge.targetId} (non-fatal; promotion skipped, the committed merge stands): ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -153,26 +148,10 @@ export async function buildMergedTargetPromotionPayload(
   if (!committed || committed.content !== merge.mergedContent) {
     return { payload: null, readFailed: false };
   }
-  // Final round (B): the including-archived lookup still returns a retired
-  // record, and body equality alone cannot tell a concurrent archive or
-  // supersede apart from a live target. Recompute the status from the
-  // committed record itself and refuse to promote unless it is still
-  // active.
   if (inferMemoryStatus(committed.frontmatter, committed.path) !== "active") {
     return { payload: null, readFailed: false };
   }
   const fm = committed.frontmatter;
-  // #2870: bind to the record's SEMANTIC identity, not its bytes. The
-  // receipt's committed semantic fingerprint — the durable file with the
-  // access-telemetry keys (`accessCount:`, `lastAccessed:`) stripped, the
-  // same exclusion set `invalidationCommitFingerprint` applies — stays
-  // equal across an access-tracking flush (which rewrites exactly those
-  // two lines without minting a receipt), so a flush between the merge
-  // commit and this reread no longer blocks a valid promotion. Any other
-  // frontmatter or body change still refuses. Shards recorded before
-  // #2870 carry no stored semantic fingerprint; those keep the stricter
-  // full-digest comparison until the next semantic write re-records the
-  // shard.
   const snapshotDigest =
     typeof storage.readDurableFileDigest === "function"
       ? await storage.readDurableFileDigest(committed.path).catch(() => null)

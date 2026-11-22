@@ -1,13 +1,3 @@
-// Round-4 regression suite for PR #3148 (issue #3146 embedding index).
-// Covers the six review findings:
-//   1. incoming legacy generation replaces local shards (cross-layout);
-//   2. entry-shape validation at the read boundary (fail-closed, tagged);
-//   3. unchanged-base shortcut requires the shared base to be supplied;
-//   4. a deferral anywhere in a generation defers the WHOLE generation;
-//   5. filtered-out generations are omitted (files + deletion metadata),
-//      never interpreted as deleted by the receiver;
-//   6. atomic staged generation replacement with crash recovery, and
-//      secure-store staged ciphertext readable at the canonical path.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -77,7 +67,6 @@ function serializeIndex(index: EmbeddingIndexFile): string {
   return JSON.stringify(index);
 }
 
-/** Collect every entry across the published shard generation. */
 async function readGenerationEntries(
   root: string,
   shardDirRel = "state/embeddings"
@@ -93,14 +82,11 @@ async function readGenerationEntries(
 }
 
 // ---------------------------------------------------------------------------
-// Finding 1 — incoming legacy generation replaces local shards
-// ---------------------------------------------------------------------------
 
 test("incoming legacy index replaces a local sharded generation as a whole", async () => {
   const localRoot = await tempDir("remnic-3148-legacy-over-shards");
   const remoteRoot = await tempDir("remnic-3148-legacy-remote");
   try {
-    // Local sharded generation (older identity).
     await write(
       localRoot,
       "state/embeddings/shard-0000.json",
@@ -119,7 +105,6 @@ test("incoming legacy index replaces a local sharded generation as a whole", asy
         })
       )
     );
-    // Remote legacy generation: new identity, new entries only.
     const incoming = indexFile("openai", "text-embedding-3-large", {
       remote1: { path: "memories/remote1.md", vector: [0.5, 0.5] },
     });
@@ -133,12 +118,9 @@ test("incoming legacy index replaces a local sharded generation as a whole", asy
 
     const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
 
-    // The whole local generation is replaced by the converted incoming one.
     const entries = await readGenerationEntries(localRoot);
     assert.deepEqual(Object.keys(entries).sort(), ["remote1"]);
     assert.deepEqual(entries.remote1?.vector, [0.5, 0.5]);
-    // The incoming marker is written as the inert remote-authoritative
-    // artifact; the published directory remains the layout marker.
     assert.equal(await readUtf8(localRoot, "state/embeddings.json"), serializeIndex(incoming));
     const store = new EmbeddingIndexFileStore(
       path.join(localRoot, "state/embeddings.json"),
@@ -146,7 +128,6 @@ test("incoming legacy index replaces a local sharded generation as a whole", asy
       path.join(localRoot, "state/embedding-fallback-status.json")
     );
     assert.equal(await store.detectLayout(), "sharded");
-    // Reload finds the incoming generation and a subsequent write works.
     const merged: Record<string, EmbeddingIndexEntry> = {};
     assert.deepEqual(await store.readShardGenerationInto(merged), {
       provider: "openai",
@@ -196,7 +177,6 @@ test("sharded incoming generation over a local legacy marker removes the marker"
       includeContent: true,
     });
     await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
-    // Legacy generation removed wholesale; incoming generation published.
     assert.equal(await existsQuiet(localRoot, "state/embeddings.json"), false);
     const entries = await readGenerationEntries(localRoot);
     assert.deepEqual(Object.keys(entries), ["fresh"]);
@@ -216,34 +196,26 @@ async function existsQuiet(root: string, relPath: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Finding 2 — entry-shape validation at the read boundary
 // ---------------------------------------------------------------------------
 
 test("parseEmbeddingIndexDocument rejects malformed entry shapes as unreadable", () => {
   const base = { version: 1 as const, provider: "openai", model: "m" };
-  // entries is an array, not a plain record
   const arrayEntries = parseEmbeddingIndexDocument(JSON.stringify({ ...base, entries: [] }));
   assert.equal(arrayEntries.outcome, "unreadable");
   assert.match(arrayEntries.outcome === "unreadable" ? arrayEntries.reason : "", /entries must be a plain record/);
-  // entries null
   assert.equal(parseEmbeddingIndexDocument(JSON.stringify({ ...base, entries: null })).outcome, "unreadable");
-  // entry value is not an object
   const scalarEntry = parseEmbeddingIndexDocument(JSON.stringify({ ...base, entries: { id1: "nope" } }));
   assert.equal(scalarEntry.outcome, "unreadable");
-  // entry missing string path
   const badPath = parseEmbeddingIndexDocument(JSON.stringify({ ...base, entries: { id1: { vector: [1] } } }));
   assert.match(badPath.outcome === "unreadable" ? badPath.reason : "", /path must be a string/);
-  // entry vector not an array
   const badVector = parseEmbeddingIndexDocument(
     JSON.stringify({ ...base, entries: { id1: { path: "p", vector: "x" } } })
   );
   assert.match(badVector.outcome === "unreadable" ? badVector.reason : "", /vector must be an array/);
-  // non-finite vector component
   const nonFinite = parseEmbeddingIndexDocument(
     JSON.stringify({ ...base, entries: { id1: { path: "p", vector: [1, "x"] } } })
   );
   assert.match(nonFinite.outcome === "unreadable" ? nonFinite.reason : "", /finite/);
-  // a valid document still parses, and a foreign header stays foreign
   assert.equal(
     parseEmbeddingIndexDocument(JSON.stringify({ ...base, entries: { id1: { path: "p", vector: [1, 2] } } })).outcome,
     "ok"
@@ -272,9 +244,7 @@ test("corrupt shard files stay in place and are tagged unreadable for the store"
     );
     const read = await store.readFileAt(path.join(root, "state/embeddings/shard-0000.json"));
     assert.equal(read.outcome, "unreadable");
-    // Bytes preserved: the corrupt file is not rewritten or deleted.
     assert.equal(await readUtf8(root, "state/embeddings/shard-0000.json"), corrupt);
-    // Strict mutation path fails closed with the tagged error.
     await assert.rejects(
       () => store.readShardGenerationInto({}),
       (err: unknown) => err instanceof EmbeddingIndexStorageError
@@ -285,7 +255,6 @@ test("corrupt shard files stay in place and are tagged unreadable for the store"
 });
 
 // ---------------------------------------------------------------------------
-// Finding 4 — a deferral anywhere defers the WHOLE generation
 // ---------------------------------------------------------------------------
 
 test("a deferred incoming shard defers the whole incoming generation", async () => {
@@ -360,7 +329,6 @@ test("a deferred legacy marker defers the whole cross-layout replacement", async
 });
 
 // ---------------------------------------------------------------------------
-// Finding 5 — filtered generations are omitted, never deleted
 // ---------------------------------------------------------------------------
 
 test("a user exclude on one shard omits the whole generation from files and deletions", async () => {
@@ -380,7 +348,6 @@ test("a user exclude on one shard omits the whole generation from files and dele
     const paths = snapshot.files.map((file) => file.path);
     assert.deepEqual(paths, ["facts/a.md"]);
     assert.deepEqual(snapshot.omittedEmbeddingGenerationDirs, ["state/embeddings"]);
-    // The sibling shard's deletion revision is suppressed with the generation.
     assert.deepEqual(snapshot.deletions, []);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -446,7 +413,6 @@ test("a receiver keeps an omitted generation instead of deleting it", async () =
       omittedEmbeddingGenerationDirs: ["state/embeddings"],
     };
     const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot, baseFiles });
-    // Generation kept byte-for-byte; absence never became a delete.
     assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0000.json"), "local 0000");
     assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0001.json"), "local 0001");
     assert.equal(result.deleted, 0);
@@ -483,7 +449,6 @@ function sha256Of(content: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Finding 6 — atomic staged replacement, failure and crash recovery
 // ---------------------------------------------------------------------------
 
 test("a staging write failure preserves the local generation", async () => {
@@ -522,7 +487,6 @@ test("a staging write failure preserves the local generation", async () => {
         }),
       /disk full during stage/
     );
-    // Local generation byte-identical, no staging leftovers.
     assert.equal(await readUtf8(localRoot, trueShardRel("neu")), "local 0000");
     assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0050.json"), "local 0050");
     const stateDir = await readdir(path.join(localRoot, "state"));
@@ -549,7 +513,6 @@ test("a publish rename failure rolls the former generation back into place", asy
       () => store.publishSwappedGeneration(path.join(root, "state/embeddings.staging.tmp-missing")),
       (err: unknown) => (err as NodeJS.ErrnoException).code === "ENOENT"
     );
-    // Rollback restored the former generation; no backup left behind.
     assert.equal(await readUtf8(root, "state/embeddings/shard-0000.json"), "published 0000");
     assert.equal(await existsQuiet(root, "state/embeddings.pre-replace.tmp"), false);
   } finally {
@@ -561,8 +524,6 @@ test("a crash in the rename gap is recovered before the next sync replacement", 
   const localRoot = await tempDir("remnic-3148-rename-gap");
   const remoteRoot = await tempDir("remnic-3148-gap-remote");
   try {
-    // Simulate the gap: former generation sits in the fixed backup, the
-    // published directory is absent, no legacy marker.
     await write(localRoot, "state/embeddings.pre-replace.tmp/shard-0000.json", "former 0000");
     await write(
       remoteRoot,
@@ -580,8 +541,6 @@ test("a crash in the rename gap is recovered before the next sync replacement", 
       includeContent: true,
     });
     await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
-    // The backup was restored first (so detectLayout stayed truthful), then
-    // the incoming generation replaced it wholesale.
     assert.equal(await existsQuiet(localRoot, "state/embeddings.pre-replace.tmp"), false);
     assert.equal(
       await readUtf8(localRoot, trueShardRel("neu")),
@@ -612,7 +571,6 @@ test("a symlinked generation directory is rejected, not followed", async () => {
       includeContent: true,
     });
     await assert.rejects(() => applyOfflineSyncSnapshot({ root: localRoot, snapshot }));
-    // The symlink and its target are untouched.
     assert.equal(await readUtf8(outside, "shard-0000.json"), "outside bytes");
   } finally {
     await rm(localRoot, { recursive: true, force: true });
@@ -639,17 +597,13 @@ test("secure-store staged ciphertext decrypts at the canonical path after publis
     await storage.writeOfflineSyncStagingFile(path.join(memoryDir, ...stagingRel.split("/")), content, {
       aadFilePath: path.join(memoryDir, ...finalRel.split("/")),
     });
-    // Encrypted at rest in the staging location.
     const raw = await readFile(path.join(memoryDir, ...stagingRel.split("/")));
     assert.equal(raw.subarray(0, MAGIC_BYTES.length).toString("ascii"), MAGIC_BYTES.toString("ascii"));
-    // Read back through the staging hook with the final-path AAD.
     const staged = await storage.readOfflineSyncFile(path.join(memoryDir, ...stagingRel.split("/")), {
       aadFilePath: path.join(memoryDir, ...finalRel.split("/")),
     });
     assert.deepEqual(staged, content);
-    // WITHOUT the final-path AAD the staging ciphertext cannot decrypt.
     await assert.rejects(() => storage.readOfflineSyncFile(path.join(memoryDir, ...stagingRel.split("/"))));
-    // After the directory swap the canonical path decrypts normally.
     await mkdir(path.dirname(path.join(memoryDir, ...finalRel.split("/"))), { recursive: true });
     await rename(path.join(memoryDir, ...stagingRel.split("/")), path.join(memoryDir, ...finalRel.split("/")));
     const published = await readMaybeEncryptedFile(path.join(memoryDir, ...finalRel.split("/")), key, memoryDir);
@@ -660,7 +614,6 @@ test("secure-store staged ciphertext decrypts at the canonical path after publis
 });
 
 // ---------------------------------------------------------------------------
-// Store helpers shared with the transaction
 // ---------------------------------------------------------------------------
 
 test("shardEntriesForIndex and serializeEmbeddingShard round-trip through shards", () => {
@@ -720,7 +673,6 @@ test("computeOmittedEmbeddingGenerationPaths omits nothing when every member is 
 
 
 // ---------------------------------------------------------------------------
-// Round-5 batch: hydration, fail-closed IO, backup links, encrypted store io
 // ---------------------------------------------------------------------------
 
 test("metadata-only pulls hydrate unchanged shards from local bytes", async () => {
@@ -732,8 +684,6 @@ test("metadata-only pulls hydrate unchanged shards from local bytes", async () =
     }));
     await write(localRoot, trueShardRel("kept"), shardBody);
     await write(localRoot, "facts/readme.md", "readme");
-    // Remote: identical generation (metadata-only pull carries no content
-    // for the unchanged shard) plus one genuinely new shard.
     await write(remoteRoot, trueShardRel("kept"), shardBody);
     await write(remoteRoot, trueShardRel("neu"), serializeIndex(
       indexFile("openai", "m", { neu: { path: "p1", vector: [3] } }),
@@ -741,8 +691,6 @@ test("metadata-only pulls hydrate unchanged shards from local bytes", async () =
     const full = await buildOfflineSyncSnapshot({
       root: remoteRoot, sourceId: "remote", includeContent: true,
     });
-    // Simulate the CLI metadata hydration: keep content only for the NEW
-    // shard, drop it for the locally-unchanged one.
     const metadataOnly: OfflineSyncSnapshot = {
       ...full,
       files: full.files.map((file) =>
@@ -752,8 +700,6 @@ test("metadata-only pulls hydrate unchanged shards from local bytes", async () =
       ),
     };
     const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot: metadataOnly });
-    // The unchanged shard is intact (hydrated + republished) and the new
-    // shard landed: no "missing incoming content" failure.
     assert.equal(await readUtf8(localRoot, trueShardRel("kept")), shardBody);
     assert.ok((await readUtf8(localRoot, trueShardRel("neu"))).includes("neu"));
     assert.equal(result.upserted >= 2, true);
@@ -790,7 +736,6 @@ test("custom storage IO without the staging pair fails closed before touching lo
     }).then(() => null, (error: unknown) => error as Error);
     assert.ok(result instanceof Error);
     assert.match(result.message, /plaintext-downgrade|writeStagingFile and readStagingFile/);
-    // The local generation is byte-identical and no custom write happened.
     assert.ok((await readUtf8(localRoot, "state/embeddings/shard-0000.json")).includes("m1"));
     assert.equal(writeFileCalls, 0);
   } finally {
@@ -813,8 +758,6 @@ test("a planted symlink backup is rejected, never restored or followed", async (
       root: remoteRoot, sourceId: "remote", includeContent: true,
     });
     await assert.rejects(() => applyOfflineSyncSnapshot({ root: localRoot, snapshot }));
-    // The planted target is untouched and no generation was published
-    // through the link.
     assert.equal(await readUtf8(outside, "shard-0000.json"), "outside bytes");
     assert.equal(await existsQuiet(localRoot, "state/embeddings/shard-0000.json"), false);
   } finally {
@@ -841,7 +784,6 @@ test("mixed incoming (shards + marker) keeps the marker without a delete-rewrite
       root: remoteRoot, sourceId: "remote", includeContent: true,
     });
     await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
-    // The incoming marker survived (inert artifact), no flip-flop deletion.
     assert.equal(await readUtf8(localRoot, "state/embeddings.json"), marker);
     assert.ok((await readUtf8(localRoot, trueShardRel("fresh"))).includes("fresh"));
   } finally {
@@ -856,7 +798,6 @@ test("wired store io keeps encrypted migration, replacement, reload and writes c
   try {
     const storage = new StorageManager(memoryDir);
     await storage.setSecureStoreKeyAndWait(randomBytes(32), true);
-    // Emulate the orchestrator wiring: daemon store IO via StorageManager.
     const shardLimit = 1024; // resolver floor; forces one-way migration quickly
     process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT = String(shardLimit);
     const entry = (i: number): EmbeddingIndexEntry => ({
@@ -880,8 +821,6 @@ test("wired store io keeps encrypted migration, replacement, reload and writes c
           ),
       },
     );
-    // One-way migration under the small budget: staged ciphertext binds the
-    // FINAL shard paths, so the store can read its own migration back.
     await store.persist(indexFile("openai", "m", entries));
     assert.equal(await store.detectLayout(), "sharded");
     const merged: Record<string, EmbeddingIndexEntry> = {};
@@ -890,14 +829,12 @@ test("wired store io keeps encrypted migration, replacement, reload and writes c
       model: "m",
     });
     assert.equal(Object.keys(merged).length, 40);
-    // Raw bytes are encrypted at rest, canonical path decrypts via the io.
     const someShard = path.join(memoryDir, "state/embeddings/shard-0000.json");
     const raw = await readFile(someShard);
     assert.equal(
       raw.subarray(0, MAGIC_BYTES.length).toString("ascii"),
       MAGIC_BYTES.toString("ascii"),
     );
-    // Identity replacement also publishes encrypted + readable.
     await store.persist(indexFile("openai", "m2", {
       swapped: { path: "p", vector: [1] },
     }));
@@ -907,7 +844,6 @@ test("wired store io keeps encrypted migration, replacement, reload and writes c
       model: "m2",
     });
     assert.deepEqual(Object.keys(replaced), ["swapped"]);
-    // Subsequent dirty-shard write stays canonical-decryptable.
     await store.persist(indexFile("openai", "m2", {
       ...replaced,
       swapped2: { path: "p2", vector: [2] },
@@ -915,9 +851,6 @@ test("wired store io keeps encrypted migration, replacement, reload and writes c
     const after: Record<string, EmbeddingIndexEntry> = {};
     await store.readShardGenerationInto(after);
     assert.ok(after.swapped && after.swapped2);
-    // Diagnostics status: ALWAYS plain, recorded even on a locked store, and
-    // counts real failures (round 6: no conditional vacuity — the outcomes
-    // are actually recorded and read back through the console_state reader).
     await store.recordIndexWriteOutcome(new Error("boom-one"));
     await store.recordIndexWriteOutcome(new Error("boom-two"));
     const statusPath = path.join(memoryDir, "state/embedding-fallback-status.json");
@@ -950,7 +883,6 @@ test("streamed snapshot header carries omission metadata and the receiver keeps 
       userExcludeRegexps: [/^state\/embeddings\/shard-0003\.json$/],
     });
     assert.deepEqual(build.omittedEmbeddingGenerationDirs, ["state/embeddings"]);
-    // Serve the snapshot through the REAL ndjson stream writer.
     const { createServer } = await import("node:http");
     const received: string[] = [];
     const server = createServer((request, response) => {
@@ -975,12 +907,9 @@ test("streamed snapshot header carries omission metadata and the receiver keeps 
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-    // Header round-trips the omission (server writer + client decoder field).
     assert.equal(received.length, 1);
     const header = JSON.parse(received[0] ?? "{}") as Record<string, unknown>;
     assert.deepEqual(header.omittedEmbeddingGenerationDirs, ["state/embeddings"]);
-    // Receiver: normalize the streamed header+files exactly like the client
-    // and apply — the local generation must survive.
     const streamed = normalizeOfflineSyncSnapshot({
       format: header.format,
       schemaVersion: header.schemaVersion,
@@ -1006,7 +935,6 @@ test("streamed snapshot header carries omission metadata and the receiver keeps 
 
 
 // ---------------------------------------------------------------------------
-// Round 6: legacy-marker hydration, shard membership, recovery diagnostics
 // ---------------------------------------------------------------------------
 
 test("metadata-only pulls hydrate an unchanged legacy marker", async () => {
@@ -1022,8 +950,6 @@ test("metadata-only pulls hydrate an unchanged legacy marker", async () => {
     const full = await buildOfflineSyncSnapshot({
       root: remoteRoot, sourceId: "remote", includeContent: true,
     });
-    // Metadata-only pull: the marker's content is omitted because the local
-    // hash already matches.
     const metadataOnly: OfflineSyncSnapshot = {
       ...full,
       files: full.files.map((file) =>
@@ -1032,12 +958,9 @@ test("metadata-only pulls hydrate an unchanged legacy marker", async () => {
           : file,
       ),
     };
-    // Second (and every subsequent) sync must not throw
-    // "missing decoded content for state/embeddings.json".
     const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot: metadataOnly });
     assert.equal(await readUtf8(localRoot, "state/embeddings.json"), marker);
     assert.equal(result.conflicts.length, 0);
-    // The one-way conversion published the same entries as shards.
     const entries = await readGenerationEntries(localRoot);
     assert.deepEqual(Object.keys(entries), ["kept"]);
   } finally {
@@ -1050,7 +973,6 @@ test("a shard file holding ids assigned to another shard is rejected", async () 
   const root = await tempDir("remnic-3148-misplaced");
   try {
     await write(root, "state/embeddings.json", "{}");
-    // Find an id that does NOT belong in shard 0000.
     let misplaced = "id-0";
     for (let i = 1; i < 4096; i += 1) {
       const candidate = `id-${i}`;
@@ -1074,8 +996,6 @@ test("a shard file holding ids assigned to another shard is rejected", async () 
       () => store.readShardGenerationInto({}),
       (err: unknown) => err instanceof EmbeddingIndexStorageError && err.message.includes(misplaced),
     );
-    // Bytes preserved; incoming generation with the same misplaced shard is
-    // rejected too (fail closed, no merge of misplaced vectors).
     assert.equal(await readUtf8(root, "state/embeddings/shard-0000.json"), misplacedBody);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1090,7 +1010,6 @@ test("recovery failure is recorded durably before the mutation is rejected", asy
     await storage.setSecureStoreKeyAndWait(randomBytes(32), true);
     const fallback = new EmbeddingFallback({ memoryDir } as never,
       storageBackedIndexStoreIo(storage));
-    // Plant the rename gap with a symlinked backup: recovery must fail.
     await mkdir(path.join(memoryDir, "state"), { recursive: true });
     await symlink(outside, path.join(memoryDir, "state/embeddings.pre-replace.tmp"));
     await write(outside, "shard-0000.json", "outside bytes");
@@ -1101,8 +1020,6 @@ test("recovery failure is recorded durably before the mutation is rejected", asy
       () => probe.enqueueIndexMutation(async () => undefined),
       (err: unknown) => err instanceof Error && /symlink/.test(err.message),
     );
-    // The failure is DURABLY recorded (round 6: recovery happens before the
-    // write-outcome try, so the wrapper must record it itself).
     const status = JSON.parse(
       await readFile(path.join(memoryDir, "state/embedding-fallback-status.json"), "utf-8"),
     ) as { failureCount?: number; lastWriteFailure?: { message?: string } };
@@ -1117,15 +1034,12 @@ test("recovery failure is recorded durably before the mutation is rejected", asy
 
 
 // ---------------------------------------------------------------------------
-// Round 6.5: converted-shard base bookkeeping + atomic whole-generation removal
 // ---------------------------------------------------------------------------
 
 test("converted shard paths are recorded in the persisted base immediately", async () => {
   const localRoot = await tempDir("remnic-3148-converted-base");
   const remoteRoot = await tempDir("remnic-3148-converted-base-remote");
   try {
-    // Local has ONLY the legacy marker: the converted shards are brand-new
-    // local paths that appear in none of the base/incoming/current maps.
     const incoming = serializeIndex(indexFile("openai", "m", {
       conv1: { path: "p1", vector: [1] },
       conv2: { path: "p2", vector: [2] },
@@ -1139,7 +1053,6 @@ test("converted shard paths are recorded in the persisted base immediately", asy
       .map((f) => f.path)
       .filter((path) => path.startsWith("state/embeddings/shard-"));
     assert.equal(shardPaths.length >= 2, true);
-    // The state digests match the actually-published shard bytes.
     for (const state of result.nextBaseFiles.filter((f) => f.path.startsWith("state/embeddings/shard-"))) {
       const published = await readFile(path.join(localRoot, ...state.path.split("/")));
       assert.equal(createHash("sha256").update(published).digest("hex"), state.sha256);
@@ -1184,25 +1097,19 @@ test("a remotely deleted generation is removed as one atomic transaction", async
     const result = await applyOfflineSyncSnapshot({
       root: localRoot,
       snapshot,
-      // Emulate the real storage hook contract: the hook DELETES the file
-      // and records the replicated tombstone.
       deleteFile: async (target) => {
         recorded.push(target.path);
         await rm(path.join(localRoot, ...target.path.split("/")), { force: true });
       },
     });
-    // The whole generation is gone in ONE swap: no shard, no marker.
     assert.equal(await existsQuiet(localRoot, "state/embeddings/shard-0000.json"), false);
     assert.equal(await existsQuiet(localRoot, trueShardRel("hydrated")), false);
     assert.equal(await existsQuiet(localRoot, "state/embeddings.json"), false);
     assert.equal(result.deleted >= 3, true);
     assert.equal(await existsQuiet(localRoot, "state/embeddings.pre-replace.tmp"), false);
-    // Replicated tombstones are preserved through the configured hook.
     assert.ok(recorded.includes("state/embeddings/shard-0000.json"));
     assert.ok(recorded.includes(trueShardRel("hydrated")));
     assert.ok(recorded.includes("state/embeddings.json"));
-    // The published directory remains as the EMPTY one-way layout marker:
-    // even a stray legacy file planted afterwards can never win.
     const store = new EmbeddingIndexFileStore(
       path.join(localRoot, "state/embeddings.json"),
       path.join(localRoot, "state/embeddings"),
@@ -1249,9 +1156,6 @@ test("a marker delete failure after a committed removal keeps the empty generati
         if (target.path === "state/embeddings.json") throw new Error("marker delete IO error");
       },
     }), /marker delete IO error/);
-    // The removal COMMITTED before the marker delete failed: the empty
-    // published generation stays authoritative across a restart, and the
-    // stale marker can never resurrect entries.
     const store = new EmbeddingIndexFileStore(
       path.join(localRoot, "state/embeddings.json"),
       path.join(localRoot, "state/embeddings"),
@@ -1270,7 +1174,6 @@ test("a marker delete failure after a committed removal keeps the empty generati
 
 
 // ---------------------------------------------------------------------------
-// Round 6.5b: base-evidenced remote absence (no tombstones needed)
 // ---------------------------------------------------------------------------
 
 test("a base-shared generation absent from the incoming snapshot is removed without tombstones", async () => {
@@ -1288,8 +1191,6 @@ test("a base-shared generation absent from the incoming snapshot is removed with
       { path: trueShardRel("a2"), sha256: "b".repeat(64), bytes: 2, mtimeMs: 1 },
     ];
     void base;
-    // Incoming: ONLY the fact file; the generation vanished remotely and the
-    // snapshot carries NO deletions array at all.
     const snapshot: OfflineSyncSnapshot = {
       format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
       schemaVersion: 1,
@@ -1315,7 +1216,6 @@ test("a base-shared generation absent from the incoming snapshot is removed with
       snapshot,
       baseFiles: baseEntries,
     });
-    // Whole generation removed as one unit, no partial shard left behind.
     assert.equal(await existsQuiet(localRoot, trueShardRel("a1")), false);
     assert.equal(await existsQuiet(localRoot, trueShardRel("a2")), false);
     assert.equal(await existsQuiet(localRoot, "state/embeddings.json"), false);
@@ -1355,7 +1255,6 @@ test("a wholly-local generation with no base or tombstone evidence is preserved"
       }],
     };
     const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
-    // No base entries, no tombstones: the generation is untouched.
     assert.ok((await readUtf8(localRoot, trueShardRel("local1"))).includes("local1"));
     assert.ok((await readUtf8(localRoot, trueShardRel("local2"))).includes("local2"));
     assert.equal(result.deleted, 0);
@@ -1390,8 +1289,6 @@ test("remote deletion preserves a shared generation with local-only additions as
       files: [],
     };
     const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot, baseFiles });
-    // The local addition conflicts with remote deletion: preserve the WHOLE
-    // generation rather than deleting the shared member or the added shard.
     assert.equal(await existsQuiet(localRoot, trueShardRel("shared")), true);
     assert.equal(await existsQuiet(localRoot, trueShardRel("extra")), true);
     assert.equal(result.deleted, 0);
@@ -1402,14 +1299,11 @@ test("remote deletion preserves a shared generation with local-only additions as
 
 
 // ---------------------------------------------------------------------------
-// Round 6.5c: remaining codex P1s + deterministic crash-state regressions
 // ---------------------------------------------------------------------------
 
 test("remote tombstones over a partial known set sweep local-only extras and the marker", async () => {
   const localRoot = await tempDir("remnic-3148-sweep-extras");
   try {
-    // Local: the two shards the remote knew + a local-only extra + an inert
-    // legacy marker the remote never had.
     await write(localRoot, trueShardRel("known"), serializeIndex(indexFile("openai", "m", {
       known: { path: "p", vector: [1] },
     })));
@@ -1427,8 +1321,6 @@ test("remote tombstones over a partial known set sweep local-only extras and the
       deletions: [{ path: trueShardRel("known"), mtimeMs: 100 }],
     };
     const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
-    // The remote deletion is established by the one known tombstone; the
-    // sweep removes the local-only extra and the marker as the same unit.
     assert.equal(await existsQuiet(localRoot, trueShardRel("known")), false);
     assert.equal(await existsQuiet(localRoot, trueShardRel("extra")), false);
     assert.equal(await existsQuiet(localRoot, "state/embeddings.json"), false);
@@ -1462,7 +1354,6 @@ test("a snapshot that both includes and omits a generation fails closed", async 
     };
     await assert.rejects(() => applyOfflineSyncSnapshot({ root: localRoot, snapshot }),
       (err: unknown) => err instanceof EmbeddingIndexStorageError);
-    // Nothing applied from the contradictory snapshot.
     assert.ok((await readUtf8(localRoot, trueShardRel("a1"))).includes("a1"));
   } finally {
     await rm(localRoot, { recursive: true, force: true });
@@ -1476,8 +1367,6 @@ test("an excluded tombstoned member omits its whole generation from the push", a
     await write(root, trueShardRel("kept"), serializeIndex(indexFile("openai", "m", {
       kept: { path: "p", vector: [1] },
     })));
-    // shard-0007 was already deleted locally and is only represented by a
-    // deletion revision; the user regexp excludes exactly that member.
     const snapshot = await buildOfflineSyncSnapshot({
       root,
       sourceId: "source",
@@ -1488,7 +1377,6 @@ test("an excluded tombstoned member omits its whole generation from the push", a
     const paths = snapshot.files.map((file) => file.path);
     assert.deepEqual(paths, ["facts/a.md"]);
     assert.deepEqual(snapshot.omittedEmbeddingGenerationDirs, ["state/embeddings"]);
-    // The tombstone for the excluded member is suppressed with the generation.
     assert.deepEqual(snapshot.deletions, []);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1515,21 +1403,16 @@ test("a partially removed backup after a committed removal stays inert across re
       ],
     };
     await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
-    // Committed removal: the empty published generation is authoritative.
     const store = new EmbeddingIndexFileStore(
       path.join(localRoot, "state/embeddings.json"),
       path.join(localRoot, "state/embeddings"),
       path.join(localRoot, "state/embedding-fallback-status.json"),
     );
     assert.equal(await store.detectLayout(), "sharded");
-    // Simulate a crash mid backup-cleanup: the demoted backup holds a
-    // PARTIAL old generation on disk.
     await mkdir(path.join(localRoot, "state/embeddings.pre-replace.tmp"), { recursive: true });
     await write(localRoot, "state/embeddings.pre-replace.tmp/shard-0000.json", serializeIndex(
       indexFile("openai", "m", { resurrect: { path: "p", vector: [9] } }),
     ));
-    // A FRESH instance (restart) still serves the empty authoritative
-    // generation; the partial backup never resurrects entries.
     const fresh = new EmbeddingIndexFileStore(
       path.join(localRoot, "state/embeddings.json"),
       path.join(localRoot, "state/embeddings"),
@@ -1539,7 +1422,6 @@ test("a partially removed backup after a committed removal stays inert across re
     const merged: Record<string, EmbeddingIndexEntry> = {};
     await fresh.readShardGenerationInto(merged);
     assert.deepEqual(Object.keys(merged), []);
-    // A subsequent removal cleans the stale partial backup safely.
     await fresh.removePublishedGeneration();
     assert.equal(await existsQuiet(localRoot, "state/embeddings.pre-replace.tmp"), false);
     const mergedAfter: Record<string, EmbeddingIndexEntry> = {};
@@ -1554,9 +1436,6 @@ test("a partially removed backup after a committed removal stays inert across re
 test("remote tombstones for already-missing shards still sweep the local unit", async () => {
   const localRoot = await tempDir("remnic-3148-sweep-missing");
   try {
-    // Local: ONE remaining extra shard. The remote tombstones two shards:
-    // one already absent locally (removed in an earlier round) and... the
-    // local extra itself is NOT tombstoned (the remote never had it).
     await write(localRoot, trueShardRel("extra"), serializeIndex(indexFile("openai", "m", {
       extra: { path: "p2", vector: [2] },
     })));
@@ -1570,8 +1449,6 @@ test("remote tombstones for already-missing shards still sweep the local unit", 
       deletions: [{ path: trueShardRel("gone"), mtimeMs: 100 }],
     };
     const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
-    // The unit sweep removes the remaining local shard even though the only
-    // tombstone names an already-missing shard.
     assert.equal(await existsQuiet(localRoot, trueShardRel("extra")), false);
     assert.equal(await existsQuiet(localRoot, trueShardRel("gone")), false);
     assert.equal(result.deleted >= 1, true);
@@ -1652,7 +1529,6 @@ test("removing the last sharded entry propagates an explicit empty generation wi
 });
 
 // ---------------------------------------------------------------------------
-// Codex P1 — cross-process generation mutation lock (writer vs swap races)
 // ---------------------------------------------------------------------------
 
 test("a concurrent locked writer during staging survives the sync swap", async () => {
@@ -1678,9 +1554,6 @@ test("a concurrent locked writer during staging survives the sync swap", async (
       incomingBuffers,
       baseStates: new Map([["state/embeddings/shard-0000.json", { sha256: createHash("sha256").update(keptBody).digest("hex") }]]),
       io: {
-        // A lock-taking daemon mutation racing the staging window must block
-        // until the swap finished and then land IN the published generation —
-        // never be discarded by the directory swap.
         writeStagingFile: async ({ filePath, content }) => {
           await writeFile(filePath, content);
           if (writer) return;
@@ -1719,9 +1592,6 @@ test("a streamed generation capture never mixes a concurrent swap (codex P1)", a
     const safeRoot: SafeArchiveRoot = await prepareSafeArchiveRoot(root, "test", "root");
     const stateDirAbs = path.join(root, "state");
 
-    // A whole-generation swap: kept shard name with NEW bytes plus a
-    // new-only shard — exactly the overlap that used to look like a valid
-    // partial generation.
     const idForShard = (target: number): string => {
       for (let k = 0; k < 10_000; k += 1) {
         if (shardIndexOf(`id${k}`, 64) === target) return `id${k}`;
@@ -1749,9 +1619,6 @@ test("a streamed generation capture never mixes a concurrent swap (codex P1)", a
       readFile: async ({ filePath }) => {
         if (!firstShardRead && filePath.endsWith("shard-0000.json")) {
           firstShardRead = true;
-          // Launch the swap, then hold this read until the swap PUBLISHED
-          // (pre-fix) or its bounded wait expires (post-fix, the capture
-          // holds the lock so the swap cannot publish mid-iteration).
           swap = applyEmbeddingGenerationTransaction({
             root: safeRoot,
             shardDirRel: "state/embeddings",
@@ -1789,8 +1656,6 @@ test("a streamed generation capture never mixes a concurrent swap (codex P1)", a
     ]);
     assert.equal(swapError, undefined);
 
-    // The captured census must be EXACTLY the old complete generation —
-    // never a mix of the old and swapped generations.
     const captured = new Map(
       records
         .filter((record) => record.path.startsWith("state/embeddings/"))
@@ -1815,8 +1680,6 @@ test("a local divergence discovered under the lock defers the whole generation",
     await write(localRoot, "state/embeddings/shard-0000.json", baseBody);
     const safeRoot: SafeArchiveRoot = await prepareSafeArchiveRoot(localRoot, "test", "root");
     const divergedBody = serializeIndex(indexFile("openai", "m2", { daemon: { path: "p", vector: [7] } }));
-    // The daemon indexed after the early census: disk now diverges from the
-    // shared base, while the incoming record still equals the base.
     await writeFile(path.join(localRoot, "state/embeddings/shard-0000.json"), divergedBody);
     const incomingBuffers = new Map<string, Buffer>();
     incomingBuffers.set(trueShardRel("neu"), Buffer.from(serializeIndex(indexFile("openai", "m2", { neu: { path: "p", vector: [1] } }))));
@@ -1857,8 +1720,6 @@ test("a local divergence discovered under the lock defers the whole generation",
 });
 
 // ---------------------------------------------------------------------------
-// Codex P1 round 2 — fresh under-lock census (contentful incoming, added
-// shards, whole-generation deletion)
 // ---------------------------------------------------------------------------
 
 test("contentful incoming over a stale census defers instead of discarding the daemon mutation", async () => {
@@ -1867,8 +1728,6 @@ test("contentful incoming over a stale census defers instead of discarding the d
     const baseBody = serializeIndex(indexFile("openai", "m2", { base: { path: "p", vector: [0] } }));
     await write(localRoot, "state/embeddings/shard-0000.json", baseBody);
     const safeRoot: SafeArchiveRoot = await prepareSafeArchiveRoot(localRoot, "test", "root");
-    // The daemon indexed AFTER the census: disk diverges from the shared
-    // base, while the incoming record STILL equals the base (contentful).
     const divergedBody = serializeIndex(indexFile("openai", "m2", { daemon: { path: "p", vector: [7] } }));
     await writeFile(path.join(localRoot, "state/embeddings/shard-0000.json"), divergedBody);
     const incomingBuffers = new Map<string, Buffer>();
@@ -1952,7 +1811,6 @@ test("a whole remote deletion defers when the live generation diverged from the 
     await write(localRoot, "state/embeddings/shard-0000.json", base0);
     await write(localRoot, "state/embeddings/shard-0001.json", base1);
     const safeRoot: SafeArchiveRoot = await prepareSafeArchiveRoot(localRoot, "test", "root");
-    // The daemon re-indexed shard-0000 after the census.
     const diverged0 = serializeIndex(indexFile("openai", "m2", { daemon0: { path: "p", vector: [7] } }));
     await writeFile(path.join(localRoot, "state/embeddings/shard-0000.json"), diverged0);
     const result = await applyEmbeddingGenerationRemoval({
@@ -2029,8 +1887,6 @@ test("late whole-generation deferral retains a locally deleted base-only shard",
       includeTranscripts: true,
       files: [{ ...baseFiles[0], contentBase64: Buffer.from(body).toString("base64") }],
     };
-    // The initial census still saw both shards, but a daemon deleted member1
-    // before the transaction took the generation lock.
     const result = await applyOfflineSyncSnapshot({ root, snapshot, baseFiles, currentFiles: baseFiles });
     assert.ok(result.nextBaseFiles.some((file) => file.path === member1), "the deferred base-only member must not disappear from the shared base");
     assert.equal(result.deleted, 0);
@@ -2051,8 +1907,6 @@ test("late whole-generation removal deferral keeps base when no handled paths su
       createdAt: "2026-09-27T00:00:00.000Z", sourceId: "remote",
       includeTranscripts: true, files: [], deletions: [{ path: relPath, mtimeMs: 1 }],
     };
-    // The caller's census is stale: the last member was deleted locally
-    // before the transaction acquired the generation lock.
     const result = await applyOfflineSyncSnapshot({ root, snapshot, baseFiles, currentFiles: baseFiles });
     assert.ok(result.nextBaseFiles.some((file) => file.path === relPath), "local deletion must remain in the shared base for the next sync");
     assert.equal(result.deleted, 0);

@@ -1,29 +1,3 @@
-/**
- * Deterministic staged-memory benchmark runner (issue #2346,
- * `staged-memory-synthetic-v1`).
- *
- * Proves the staged invariants offline on synthetic drift-gen material
- * only: an early fact survives a context reset, distractors leave no
- * residue after `resetContext`, a newer fact replaces an older fact, and
- * user scope stays closed. The system under test is the hermetic
- * deterministic engine below (same pattern as retention-aged-dataset): no
- * orchestrator, no QMD, no network, no wall-clock inputs. Tokens are
- * estimated (`ceil(chars / 4)`): cost diagnostics, never provider claims.
- *
- * Arms — identical fixture, seeds, task order, and token budgets:
- *   empty            task query only; calibration floor.
- *   persist-only     Stage 1 + Stage 3, no distractors; safety/cost pair.
- *   static-context   distractors ride into Stage 3 (no reset); rejection pair.
- *   staged-memory    the full three-stage path; gates apply to this arm.
- *   oracle-retrieval fixture-selected gold evidence only; scorer
- *                   calibration — never a system quality claim.
- *
- * Paired statistics report observational differences only; no
- * counterfactual lift is claimed. Controller arms (baseline/shadow/active,
- * issue #2348) are not implemented: the coordinator does not exist yet and
- * #2348 depends on this issue. Requesting shadow/active fails loudly rather
- * than silently degrading to baseline.
- */
 
 import { createHash, randomUUID } from "node:crypto";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
@@ -71,7 +45,6 @@ export const stagedMemorySyntheticV1Definition: BenchmarkDefinition = {
 
 /** Pinned context budget (chars) for every recall in every arm. */
 export const STAGED_MEMORY_CONTEXT_BUDGET_CHARS = 2000;
-/** Cost gate: staged input tokens per success may exceed persist-only by 10%. */
 const STAGED_COST_TOLERANCE = 0.1;
 
 interface Gate {
@@ -192,7 +165,6 @@ export function parseStagedQuestion(question: string): { subject: string; attrib
   return undefined;
 }
 
-/** Strip a trailing plural "s" so "works" matches "work" (ranking only). */
 function stem(token: string): string {
   return token.length > 3 && token.endsWith("s") ? token.slice(0, -1) : token;
 }
@@ -295,7 +267,6 @@ export class DeterministicStagedMemory {
     return `${scope.trustedPrincipal}|${scope.namespace}`;
   }
 
-  /** Wipe one scope's persistent tuples and every session context. */
   async reset(scope: StagedScope): Promise<void> {
     const key = this.requireScope(scope);
     this.tuplesByScope.delete(key);
@@ -306,11 +277,6 @@ export class DeterministicStagedMemory {
     this.witnesses.push({ op: "reset", ok: true, count: 1, status: "recorded" });
   }
 
-  /**
-   * Stage 1 ingestion: template-parseable statements in `messages` become
-   * persistent tuples under the scope's namespace. The engine never sees
-   * gold rows or IDs; construction is measured by parsing alone.
-   */
   async store(scope: StagedScope, sessionId: string, messages: readonly string[], epoch: number): Promise<void> {
     const key = this.requireScope(scope);
     const tuples = this.tuplesByScope.get(key) ?? [];
@@ -337,11 +303,6 @@ export class DeterministicStagedMemory {
     this.witnesses.push({ op: "drain", ok: true, count: 1, status: "recorded" });
   }
 
-  /**
-   * Fixture-authorized supersession scored with the pinned transition epoch
-   * — never the system clock. Marks every strictly older tuple for the
-   * subject+attribute non-current; unrelated facts stay unchanged.
-   */
   async correct(scope: StagedScope, transition: { subject: string; attribute: string; epoch: number }): Promise<void> {
     const key = this.requireScope(scope);
     let affected = 0;
@@ -364,7 +325,6 @@ export class DeterministicStagedMemory {
     });
   }
 
-  /** Stage 2: active-context writes for one session; tuples are untouched. */
   async appendContext(scope: StagedScope, sessionId: string, messages: readonly string[]): Promise<void> {
     const key = this.requireScope(scope);
     const sessionKey = `${key}|${sessionId}`;
@@ -380,7 +340,6 @@ export class DeterministicStagedMemory {
     });
   }
 
-  /** Boundary reset: clears one session's appended messages, keeps tuples. */
   async resetContext(scope: StagedScope, sessionId: string): Promise<void> {
     const key = this.requireScope(scope);
     this.contextBySession.set(`${key}|${sessionId}`, []);
@@ -402,12 +361,6 @@ export class DeterministicStagedMemory {
     return [...(this.contextBySession.get(`${key}|${sessionId}`) ?? [])];
   }
 
-  /**
-   * Namespace-filtered deterministic recall: current tuples plus the asked
-   * session's active-context lines, ranked by stemmed token overlap with the
-   * query. Ties break fresher-epoch-first, then statement order (total
-   * order, byte-stable across runs).
-   */
   recall(
     scope: StagedScope,
     sessionId: string,
@@ -466,9 +419,6 @@ export class DeterministicStagedMemory {
   }
 }
 
-/* ---------------------------------------------------------------------------
- * Case execution.
- * ------------------------------------------------------------------------- */
 
 interface CaseRun {
   task: TaskResult;
@@ -490,7 +440,6 @@ async function runStagedCase(arm: StagedMemoryArm, fixtureCase: StagedMemoryCase
   const metrics: Record<string, number | "NA"> = {};
   const details: Record<string, unknown> = { arm };
 
-  // Invariant 1-3: fresh store, reset, assert zero stats.
   await engine.reset(scope);
   if (!(await engine.statsAreZero(scope))) {
     throw new Error(`case ${fixtureCase.caseId}: store not empty after reset`);
@@ -498,8 +447,6 @@ async function runStagedCase(arm: StagedMemoryArm, fixtureCase: StagedMemoryCase
 
   const runsStage1 = arm !== "empty" && arm !== "oracle-retrieval";
   if (runsStage1) {
-    // Invariants 4-6: exposure ingestion in manifest order (epoch groups,
-    // ascending), one drain after the stores complete.
     const epochs = [...new Set(fixtureCase.exposure.goldFacts.map((row) => row.introducedEpoch))].sort(
       (left, right) => left - right
     );
@@ -511,7 +458,6 @@ async function runStagedCase(arm: StagedMemoryArm, fixtureCase: StagedMemoryCase
     }
     await engine.drain();
 
-    // Construction recall: required current facts retrievable after Stage 1.
     const currentPairs = new Set(engine.currentTuples(scope).map((tuple) => `${tuple.subject}|${tuple.attribute}`));
     let requiredHit = 0;
     for (const factId of fixtureCase.task.requiredFactIds) {
@@ -520,8 +466,6 @@ async function runStagedCase(arm: StagedMemoryArm, fixtureCase: StagedMemoryCase
     }
     metrics.construction_recall = requiredHit / fixtureCase.task.requiredFactIds.length;
 
-    // Invariants 47-49: transitions through the authorized adapter, scored
-    // with the pinned epoch — never correction-planner wall-clock time.
     let validTransitions = 0;
     for (const transition of fixtureCase.transitions) {
       const oldRow = gold.get(transition.oldFactId);
@@ -545,8 +489,6 @@ async function runStagedCase(arm: StagedMemoryArm, fixtureCase: StagedMemoryCase
     metrics.supersession_accuracy =
       fixtureCase.transitions.length === 0 ? "NA" : validTransitions / fixtureCase.transitions.length;
 
-    // Retrieval diagnostics: rank of the required statement among current
-    // tuples, before any distractor context exists.
     const requiredRow = gold.get(fixtureCase.task.requiredFactIds[0] as string);
     if (requiredRow) {
       const ranked = engine.recall(scope, fixtureCase.exposure.sessionId, fixtureCase.task.question).rankedStatements;
@@ -563,8 +505,6 @@ async function runStagedCase(arm: StagedMemoryArm, fixtureCase: StagedMemoryCase
     metrics.retrieval_mrr = "NA";
   }
 
-  // Invariants 43-46: both namespaces share one engine; a cross-namespace
-  // recall must return nothing from this case's namespace.
   const otherNamespace = STAGED_MEMORY_NAMESPACES.find((namespace) => namespace !== fixtureCase.namespace) as string;
   const crossRecall = engine.recall(
     { trustedPrincipal: scope.trustedPrincipal, namespace: otherNamespace },
@@ -578,13 +518,10 @@ async function runStagedCase(arm: StagedMemoryArm, fixtureCase: StagedMemoryCase
   const recallSession = appliesDistractors ? stage2Session : fixtureCase.exposure.sessionId;
 
   if (appliesDistractors) {
-    // Invariant 9-13 + 21-22: reset -> append at the Stage 1/2 boundary,
-    // same principal and namespace on every call, Stage 1 facts stay put.
     await engine.resetContext(scope, stage2Session);
     const survivedAfterBoundary = requiredStatementsIn(engine, scope, fixtureCase, gold);
     metrics.persistent_survival = survivedAfterBoundary ? 1 : 0;
 
-    // Stage 2: exactly the registered distractors, never answer text.
     await engine.appendContext(
       scope,
       stage2Session,
@@ -595,7 +532,6 @@ async function runStagedCase(arm: StagedMemoryArm, fixtureCase: StagedMemoryCase
     ).length;
 
     if (arm === "staged-memory") {
-      // Invariants 37-38: resetContext before the task query.
       await engine.resetContext(scope, stage2Session);
     }
   } else if (arm === "persist-only") {
@@ -604,9 +540,6 @@ async function runStagedCase(arm: StagedMemoryArm, fixtureCase: StagedMemoryCase
     metrics.persistent_survival = "NA";
   }
 
-  // Stage 3: one recall + deterministic responder. The oracle arm recalls
-  // only fixture-selected gold statements (scorer calibration, not a
-  // quality claim).
   const stage3 = engine.recall(scope, recallSession, fixtureCase.task.question);
   const recallText =
     arm === "oracle-retrieval"
@@ -624,7 +557,6 @@ async function runStagedCase(arm: StagedMemoryArm, fixtureCase: StagedMemoryCase
     metrics.distractor_rejection = residue === 0 ? 1 : 0;
     metrics.context_reset_leakage = arm === "staged-memory" ? (residue > 0 ? 1 : 0) : "NA";
     if (arm === "staged-memory") {
-      // Invariant 64: required facts still present after both resets.
       const requiredRow = gold.get(fixtureCase.task.requiredFactIds[0] as string);
       const survived = requiredRow ? recallText.includes(requiredRow.statement) : false;
       metrics.persistent_survival = metrics.persistent_survival === 1 && survived ? 1 : 0;
@@ -753,7 +685,6 @@ export async function runStagedMemoryBenchmark(options: ResolvedRunBenchmarkOpti
   let fixtureHash: string;
   let cases: StagedMemoryCaseV1[];
   if (options.datasetDir) {
-    // Full protocol: only a validated, hash-verified fixture on disk.
     const loaded = await loadStagedMemoryFixture(options.datasetDir);
     manifest = loaded.manifest;
     fixtureHash = loaded.fixtureHash;
@@ -762,8 +693,6 @@ export async function runStagedMemoryBenchmark(options: ResolvedRunBenchmarkOpti
     if (options.mode === "full") {
       throw new Error("staged-memory-synthetic-v1 full mode requires --dataset-dir; generate a fixture first");
     }
-    // Quick mode: the committed synthetic smoke corpus only — never a real
-    // dataset and never a caller-owned store.
     const built = await buildStagedMemoryFixture({
       driftDir: canonicalDriftDir(),
       seed: typeof options.seed === "number" ? options.seed : 11,
@@ -804,8 +733,6 @@ export async function runStagedMemoryBenchmark(options: ResolvedRunBenchmarkOpti
   }
   const staged = summaries["staged-memory"] as ArmSummary;
 
-  // Paired permutation + bootstrap, paired by case ID. NA pairs are excluded
-  // pairwise; p-values are descriptive evidence, never significance claims.
   const pairedPermutation: Record<
     string,
     { pValue: number; samples: number } | "NA"
@@ -853,8 +780,6 @@ export async function runStagedMemoryBenchmark(options: ResolvedRunBenchmarkOpti
   const primaryKeys = PRIMARY_PERMUTATION_PAIRS.map((pairing) => pairing.key);
   const holm = holmAdjust(holmInput, primaryKeys);
 
-  // Deterministic gates on the staged arm plus the staged-vs-persist-only
-  // cost gate. A failed gate fails the run loudly; nothing is hidden.
   const gateResults: Record<string, boolean> = {};
   for (const gate of GATES) {
     const value = staged.means[gate.meanKey];
@@ -902,8 +827,6 @@ export async function runStagedMemoryBenchmark(options: ResolvedRunBenchmarkOpti
       .map((run) => run.metrics[metric])
       .filter((candidate): candidate is number => typeof candidate === "number");
     if (values.length > 0) {
-      // Seeded per metric so replayed runs reproduce identical intervals
-      // (Math.random would break the determinism gate).
       confidenceIntervals[`staged-memory:${metric}`] = bootstrapMeanConfidenceInterval(values, {
         random: createSeededRandom((STAGED_MEMORY_STATISTICS_SEED + ciSeedCounter++) >>> 0),
       });

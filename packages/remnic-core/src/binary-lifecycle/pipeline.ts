@@ -29,15 +29,8 @@ import {
 } from "../storage/entity-canonical-id-references.js";
 import { withRawEntityPageMutation } from "../storage/entity-canonical-id-lock.js";
 
-// Write-boundary journal cache for redirect rewrites (issue #2213).
 const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
-/**
- * True when `mdPath` is an active recall-corpus memory file under `memoryDir`
- * (a top-level RECALL_FALLBACK_DIRS category), so a redirect rewrite of it must
- * bump the corpus sentinel to self-heal a warm hot-memories cache (#1902).
- * entities/, artifacts/, and other non-recall paths need no bump.
- */
 function isRecallCorpusMarkdown(mdPath: string, memoryDir: string): boolean {
   const rel = path.relative(memoryDir, mdPath);
   if (rel.startsWith("..") || path.isAbsolute(rel)) return false;
@@ -45,7 +38,6 @@ function isRecallCorpusMarkdown(mdPath: string, memoryDir: string): boolean {
   return (RECALL_FALLBACK_DIRS as readonly string[]).includes(top);
 }
 
-/** Minimal logger interface so we don't depend on the full logger module. */
 interface PipelineLogger {
   info(msg: string): void;
   warn(msg: string): void;
@@ -65,8 +57,6 @@ interface PipelineOptions {
   writeMarkdownFile?: WriteMarkdownFile;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
 async function hashFile(filePath: string): Promise<string> {
@@ -88,10 +78,6 @@ function guessMimeType(ext: string): string {
   return map[ext.toLowerCase()] ?? "application/octet-stream";
 }
 
-/**
- * Escape special regex characters in a string.
- * CLAUDE.md #46: always escapeRegex on user-derived parts.
- */
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -141,7 +127,6 @@ function markdownTargetForAsset(asset: BinaryAssetRecord): string {
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline stages
 // ---------------------------------------------------------------------------
 
 async function stageMirror(
@@ -211,13 +196,9 @@ async function stageRedirect(
   let redirected = 0;
   const errors: string[] = [];
 
-  // Redirect mirrored assets and retry prior redirect errors. Clean-stage errors
-  // remain safe because the redirect path validation below will keep rejecting
-  // invalid manifest records.
   const candidates = assets.filter((a) => a.status === "mirrored" || a.status === "error");
   if (candidates.length === 0) return { redirected, errors };
 
-  // Find all markdown files in memoryDir (recursive).
   const mdFiles = await findMarkdownFiles(memoryDir);
 
   for (const asset of candidates) {
@@ -242,7 +223,6 @@ async function stageRedirect(
 
         if (!pattern.test(content)) continue;
 
-        // Reset lastIndex after test().
         pattern.lastIndex = 0;
         const updated = content.replace(pattern, (_match, open, _target, close) => {
           return `${open as string}${markdownTargetForAsset(asset)}${close as string}`;
@@ -344,26 +324,12 @@ async function stageRedirect(
     let writeFailCount = 0;
     for (const update of updates) {
       try {
-        // Whole-record rewrite of bytes read earlier (issue #2213): for
-        // memory-tier records, resolve the frontmatter entityRef through the
-        // CURRENT journal at the write and REPAIR afterwards — writing back
-        // the as-read bytes could revert a rewrite a peer migration performed
-        // since the read. findMarkdownFiles also surfaces transcripts,
-        // profiles, and other Markdown outside the migration's scope: those
-        // keep their bytes (plus the redirect) untouched, and entities/ pages
-        // get the bounded reconcile marker instead — their migrated surface
-        // is relationship targets, not an entityRef frontmatter field.
         await withRawEntityPageMutation(memoryDir, update.mdPath, async () => {
         const stateDir = path.join(memoryDir, "state");
         const kind = classifyEntityRefWritePath(memoryDir, update.mdPath);
         if (kind === "memory") {
           const idsAtWrite = historicalIdCache.get(stateDir);
           const written = canonicalizeEntityRefFrontmatter(update.content, idsAtWrite);
-          // Snapshot the ORIGINAL bytes: if repair fails after the write, the
-          // catch below reports a failed redirect, so the file must return to
-          // its pre-redirect state — a retry needs the original reference,
-          // and the skipped corpus bump means a warm cache would otherwise
-          // keep serving bytes that no longer match disk (AGENTS.md §14).
           const originalBytes = await readMarkdownFile(update.mdPath).catch(() => null);
           await writeMarkdownFile(update.mdPath, written);
           try {
@@ -388,10 +354,6 @@ async function stageRedirect(
           }
         }
         });
-        // The redirect rewrote an on-disk memory file out-of-band (not through a
-        // StorageManager mutation). Bump the corpus sentinel per write so a warm
-        // hot-memories cache rescans — mid-batch too, never serving pre-redirect
-        // content (#1902). Only recall-corpus files affect that cache.
         if (isRecallCorpusMarkdown(update.mdPath, memoryDir)) {
           bumpMemoryCorpusVersionForDir(memoryDir);
         }
@@ -423,8 +385,6 @@ async function stageRedirect(
     );
     if (verifyResult.errors.length > 0 || verifyResult.remaining > 0) {
 asset.status = "error";
-// Failed verify must not read as a completed redirect (#2471); this also
-// clears stale stamps written by manifests from before that fix.
 delete asset.redirectedAt;
       for (const msg of verifyResult.errors) {
         log.error(`[binary-lifecycle] ${msg}`);
@@ -488,8 +448,6 @@ function markdownReferencePattern(
     }
   };
 
-  // Markdown links may be file-relative to the note or memory-root-relative in
-  // Remnic notes. Match both forms so verification cannot miss a live local ref.
   addCandidate(path.relative(mdDir, assetAbsolute));
   const originalPath = asset.originalPath.split(path.sep).join("/");
   const originalAsFileRelative = path.resolve(mdDir, ...originalPath.split("/"));
@@ -520,9 +478,6 @@ async function stageClean(
   const now = Date.now();
   const graceMs = gracePeriodDays * 24 * 60 * 60 * 1000;
 
-  // Clean only assets that have been redirected (markdown refs already rewritten).
-  // Mirrored-only assets must NOT be cleaned — their markdown refs still point
-  // to the local file, so deletion would break links.
   const candidates = assets.filter(
     (a) => a.status === "redirected",
   );
@@ -541,7 +496,6 @@ async function stageClean(
     const ageMs = now - mirroredMs;
 
     if (!forceClean && ageMs < graceMs) {
-      // Not yet past grace period.
       continue;
     }
 
@@ -590,7 +544,6 @@ async function stageClean(
       log.info(`[binary-lifecycle] cleaned: ${asset.originalPath}${dryRun ? " [dry-run]" : ""}`);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        // Already gone — mark as cleaned.
         if (!dryRun) {
           asset.status = "cleaned";
           asset.cleanedAt = new Date().toISOString();
@@ -608,7 +561,6 @@ async function stageClean(
 }
 
 // ---------------------------------------------------------------------------
-// Markdown file discovery
 // ---------------------------------------------------------------------------
 
 async function findMarkdownFiles(dir: string): Promise<string[]> {
@@ -637,12 +589,8 @@ async function findMarkdownFiles(dir: string): Promise<string[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Main pipeline entry point
 // ---------------------------------------------------------------------------
 
-/**
- * Run the binary lifecycle pipeline: scan, mirror, redirect, clean.
- */
 export async function runBinaryLifecyclePipeline(
   memoryDir: string,
   config: BinaryLifecycleConfig,
@@ -668,11 +616,9 @@ export async function runBinaryLifecyclePipeline(
 
   const manifest = await readManifest(memoryDir);
 
-  // Stage 0: Scan
   const newPaths = await scanForBinaries(memoryDir, config, manifest);
   const scanned = newPaths.length;
 
-  // Stage 1: Mirror
   const mirrorResult = await stageMirror(
     memoryDir,
     newPaths,
@@ -682,7 +628,6 @@ export async function runBinaryLifecyclePipeline(
     dryRun,
   );
 
-  // Stage 2: Redirect
   const redirectResult = await stageRedirect(
     memoryDir,
     manifest.assets,
@@ -692,7 +637,6 @@ export async function runBinaryLifecyclePipeline(
     opts?.writeMarkdownFile ?? ((filePath: string, content: string) => fsp.writeFile(filePath, content, "utf-8")),
   );
 
-  // Stage 3: Clean
   const cleanResult = await stageClean(
     memoryDir,
     manifest.assets,
@@ -703,7 +647,6 @@ export async function runBinaryLifecyclePipeline(
     forceClean,
   );
 
-  // Persist manifest (unless dry-run).
   manifest.lastScanAt = new Date().toISOString();
   if (!dryRun) {
     await writeManifest(memoryDir, manifest);

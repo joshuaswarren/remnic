@@ -1,6 +1,3 @@
-/**
- * Tests for the procedural recall ablation harness (issue #567 PR 1/5).
- */
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -27,12 +24,6 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-/**
- * Canonical ablation fixture for tests: prompts that look like task
- * initiation and DO have matching procedures should recall when procedural is
- * on (and not when it's off). A distractor prompt ("What is our usual…")
- * should reject on both sides.
- */
 const ABLATION_FIXTURE: ProceduralAblationScenario[] = [
   {
     id: "deploy-gateway",
@@ -81,7 +72,6 @@ test("runProceduralAblation: lift >= 0 on matching-positive fixture", async () =
   assert.equal(artifact.perCase.length, ABLATION_FIXTURE.length);
   assert.ok(artifact.onScore >= artifact.offScore, "on should not regress");
   assert.ok(artifact.lift >= 0, `lift was ${artifact.lift}`);
-  // The positive-match scenarios should recall when procedural is on.
   const onMatched = artifact.perCase
     .filter((c) => c.expectMatch === true)
     .every((c) => c.onMatched === true);
@@ -92,7 +82,6 @@ test("runProceduralAblation: lift >= 0 on matching-positive fixture", async () =
     true,
     "off should never recall (gate is disabled)",
   );
-  // Confidence interval should be well-formed.
   assert.ok(
     artifact.confidenceInterval.lower <= artifact.confidenceInterval.upper,
     "CI bounds must be ordered",
@@ -149,8 +138,6 @@ test("fixtureToAblationScenarios skips gate-control rows and preserves on-side r
     (c) => c.proceduralEnabled !== false,
   );
   assert.equal(mapped.length, eligible.length);
-  // Every mapped row must derive from a row where procedural was ON (or
-  // unset), so `expectMatch` reflects ON-side ground truth.
   const mappedIds = new Set(mapped.map((m) => m.id));
   for (const c of eligible) {
     assert.ok(
@@ -218,9 +205,6 @@ test("loadAblationFixture rejects invalid input", async () => {
     await writeFile(p, "not-json", "utf8");
     await assert.rejects(() => loadAblationFixture(p), /parse fixture JSON/);
 
-    // Rejects non-string tags instead of silently filtering them. Dropping a
-    // malformed tag changes recall scoring (tags are used in overlap text),
-    // so strict rejection prevents silently corrupted benchmark scores.
     const withBadTag = [
       {
         id: "x",
@@ -237,8 +221,6 @@ test("loadAblationFixture rejects invalid input", async () => {
       /procedureTags\[1\] must be a string/,
     );
 
-    // Rejects non-integer step.order — Math.floor coercion silently mutates
-    // benchmark input. Strict rejection prevents hidden drift.
     const withFractionalOrder = [
       {
         id: "x",
@@ -255,8 +237,6 @@ test("loadAblationFixture rejects invalid input", async () => {
       /order must be a positive integer/,
     );
 
-    // Rejects non-number step.order (e.g. "1") — should not fall back to
-    // positional index.
     const withStringOrder = [
       {
         id: "x",
@@ -273,7 +253,6 @@ test("loadAblationFixture rejects invalid input", async () => {
       /order must be a positive integer/,
     );
 
-    // Rejects zero / negative step.order.
     const withNegativeOrder = [
       {
         id: "x",
@@ -371,7 +350,6 @@ test("runProceduralAblationCli falls back to built-in fixture when --fixture omi
 test("runProceduralAblationCli creates missing parent directories for --out", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "remnic-ablation-cli-mkdir-"));
   try {
-    // Nested, not-yet-existing output directory.
     const outPath = path.join(dir, "nested", "deeper", "artifact.json");
     const artifact = await runProceduralAblationCli({
       fixturePath: null,

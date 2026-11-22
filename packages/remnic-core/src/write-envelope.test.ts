@@ -25,8 +25,6 @@ function minimalInput(overrides: Partial<MemoryWriteInput> = {}): MemoryWriteInp
 }
 
 // ---------------------------------------------------------------------------
-// Composition + normalization
-// ---------------------------------------------------------------------------
 
 test("composeMemoryEnvelope seals a minimal input with defaults", () => {
   const env = composeMemoryEnvelope(minimalInput(), CTX);
@@ -53,7 +51,6 @@ test("tag limits are enforced, not clamped", () => {
   assert.throws(() => composeMemoryEnvelope(minimalInput({ tags: tooMany }), CTX), /50-tag limit/);
   const tooLong = "x".repeat(TAG_LIMITS.maxTagLength + 1);
   assert.throws(() => composeMemoryEnvelope(minimalInput({ tags: [tooLong] }), CTX), /256 characters/);
-  // Exactly at the limits passes.
   const atLimit = Array.from({ length: TAG_LIMITS.maxTags }, (_, i) => `t${i}`);
   const env = composeMemoryEnvelope(
     minimalInput({ tags: [...atLimit.slice(0, 49), "y".repeat(TAG_LIMITS.maxTagLength)] }),
@@ -114,7 +111,6 @@ test("content, ctx.source, confidence, validAt, and optional strings are validat
   assert.throws(() => composeMemoryEnvelope(minimalInput({ confidence: Number.NaN }), CTX), /finite/);
   assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "not-a-date" }), CTX), /ISO 8601/);
   assert.throws(() => composeMemoryEnvelope(minimalInput({ sourceConnector: "  " }), CTX), /non-empty/);
-  // Boundary confidence values are accepted.
   assert.equal(composeMemoryEnvelope(minimalInput({ confidence: 0 }), CTX).confidence, 0);
   assert.equal(composeMemoryEnvelope(minimalInput({ confidence: 1 }), CTX).confidence, 1);
 });
@@ -129,7 +125,6 @@ test("optional strings are trimmed on the envelope", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Brand enforcement
 // ---------------------------------------------------------------------------
 
 test("isSealedMemoryEnvelope rejects hand-built lookalikes", () => {
@@ -180,7 +175,6 @@ test("the sealed brand is not constructible outside the composer (compile-time)"
 });
 
 // ---------------------------------------------------------------------------
-// Fingerprint registry + payload builder
 // ---------------------------------------------------------------------------
 
 test("registry and exempt list disjointly cover every MemoryWriteInput field", () => {
@@ -301,17 +295,12 @@ test("payload is deterministic for identical inputs (two composes, one hash)", (
 });
 
 // ---------------------------------------------------------------------------
-// Review-round fixes (#1998): canonicalization + strict ISO validation
 // ---------------------------------------------------------------------------
 
 test("content is stored VERBATIM; writeMemory persists byte-for-byte (PR2 parity)", () => {
-  // StorageManager.writeMemory persists content verbatim (callers that trim,
-  // e.g. explicit capture, do so before composing). The earlier compose-time
-  // trim broke byte-parity with extraction writes and was removed in PR2.
   const env = composeMemoryEnvelope(minimalInput({ content: "  padded fact  " }), CTX);
   assert.equal(env.content, "  padded fact  ");
   assert.equal(env.persistedBody, "  padded fact  ");
-  // Whitespace-only content is still rejected.
   assert.throws(() => composeMemoryEnvelope(minimalInput({ content: "   " }), CTX), /content/);
 });
 
@@ -321,7 +310,6 @@ test("attribute keys canonicalize to lowercase like storage's normalizeAttribute
     CTX,
   );
   assert.deepEqual(env.structuredAttributes, { city: "Austin", country: "US" });
-  // Keys colliding only after lowercasing are rejected, not silently merged.
   assert.throws(
     () =>
       composeMemoryEnvelope(
@@ -340,10 +328,8 @@ test("attribute keys canonicalize to lowercase like storage's normalizeAttribute
 });
 
 test("validAt delegates to the shared flexible ISO parser and canonicalizes to the epoch round-trip", () => {
-  // Non-ISO shapes Date.parse would happily accept.
   assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "07/17/2026" }), CTX), /ISO 8601/);
   assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "Jul 17 2026" }), CTX), /ISO 8601/);
-  // Calendar/clock overflow Date would silently normalize.
   assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "2026-02-30T12:00:00Z" }), CTX), /ISO 8601/);
   assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17T12:61:00Z" }), CTX), /validAt/);
   // Offset bounds: ±14:00 is the ISO maximum.
@@ -374,7 +360,6 @@ test("validAt delegates to the shared flexible ISO parser and canonicalizes to t
     hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(viaOffset, SCOPE)),
     hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(viaUtc, SCOPE)),
   );
-  // Leap-day correctness both directions.
   assert.equal(
     composeMemoryEnvelope(minimalInput({ validAt: "2028-02-29" }), CTX).validAt,
     "2028-02-29T00:00:00.000Z",
@@ -388,7 +373,6 @@ test("write source participates in the fingerprint; scope values are trimmed", (
   const h = (e: SealedMemoryEnvelope, s: FingerprintScope = SCOPE) =>
     hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(e, s));
   assert.notEqual(h(fromExtraction), h(fromWearable));
-  // Scope trimming: "ns" and " ns " are the same namespace.
   assert.equal(
     h(fromExtraction, { surface: "memory_store", namespace: " default " }),
     h(fromExtraction, { surface: " memory_store", namespace: "default" }),
@@ -396,9 +380,6 @@ test("write source participates in the fingerprint; scope values are trimmed", (
 });
 
 test("prototype-machinery attribute keys are rejected outright", () => {
-  // stableStringify rebuilds objects with plain assignment, where an own
-  // "__proto__" property silently vanishes — so such keys can never
-  // round-trip through the fingerprint and must be rejected, not smuggled.
   const attrs = JSON.parse('{"__proto__": "spoof", "city": "Austin"}') as Record<string, string>;
   assert.throws(
     () => composeMemoryEnvelope(minimalInput({ structuredAttributes: attrs }), CTX),
@@ -497,15 +478,12 @@ test("persistedBody is the assembled+sanitized form; fingerprints hash it (PR2)"
     CTX,
   );
   assert.equal(attrInjection.persistedBody, "[content removed: unsafe memory text]");
-  // Clean content passes through unchanged.
   const clean = composeMemoryEnvelope(minimalInput({ content: "User prefers dark mode" }), CTX);
   assert.equal(clean.persistedBody, "User prefers dark mode");
   assert.deepEqual([...clean.sanitizeViolations], []);
 });
 
 // ---------------------------------------------------------------------------
-// Salvage mode (#2014 review round): machine-generated input must not abort
-// a persistence batch; drops are visible on salvageNotes, never silent.
 // ---------------------------------------------------------------------------
 
 test("salvage mode drops invalid optional fields with notes; strict mode still throws", () => {
@@ -524,10 +502,8 @@ test("salvage mode drops invalid optional fields with notes; strict mode still t
     sourceConnector: "   ",
   });
 
-  // Strict: first violation throws (batch-fatal for operator input).
   assert.throws(() => composeMemoryEnvelope(input, CTX), /composeMemoryEnvelope/);
 
-  // Salvage: envelope composes; every drop is recorded.
   const env = composeMemoryEnvelope(input, CTX, { salvage: true });
   assert.equal(env.tags.length, TAG_LIMITS.maxTags);
   assert.deepEqual(env.structuredAttributes, { good: "keeps" });
@@ -536,9 +512,7 @@ test("salvage mode drops invalid optional fields with notes; strict mode still t
   assert.equal(env.confidence, undefined);
   assert.equal(env.sourceConnector, undefined);
   assert.ok(env.salvageNotes.length >= 5, `expected notes for every drop, got: ${env.salvageNotes.join(" | ")}`);
-  // persistedBody assembled from SURVIVING attributes only.
   assert.equal(env.persistedBody, "User prefers dark mode\n[Attributes: good: keeps]");
-  // Structural seal check accepts a salvaged envelope.
   assert.equal(isSealedMemoryEnvelope(env), true);
 });
 
@@ -581,15 +555,12 @@ test("structural fallback rejects frozen lookalikes that violate composer invari
   });
   assert.equal(isSealedMemoryEnvelope(overTagged), false, "51-tag lookalike must be rejected");
 
-  // Out-of-range confidence.
   const badConfidence = Object.freeze({ ...clone, confidence: 1.7 });
   assert.equal(isSealedMemoryEnvelope(badConfidence), false, "confidence 1.7 must be rejected");
 
-  // Untrimmed optional string the composer would never emit.
   const untrimmed = Object.freeze({ ...clone, entityRef: "  padded  " });
   assert.equal(isSealedMemoryEnvelope(untrimmed), false, "untrimmed entityRef must be rejected");
 
-  // Garbage composedAt.
   const badComposedAt = Object.freeze({ ...clone, composedAt: "not-a-timestamp" });
   assert.equal(isSealedMemoryEnvelope(badComposedAt), false, "invalid composedAt must be rejected");
 
@@ -631,13 +602,11 @@ test("structural fallback rejects accessor-property lookalikes (round 12 TOCTOU 
 });
 
 test("salvage keeps persisted body, attributes, and notes mutually consistent (round 9)", () => {
-  // Duplicate canonical key: "State" and "state" collide after trim+lowercase.
   const env = composeMemoryEnvelope(
     minimalInput({ structuredAttributes: { State: "old", state: "new" } }),
     CTX,
     { salvage: true },
   );
-  // First entry survives; the duplicate is dropped WITH a note.
   assert.deepEqual(env.structuredAttributes, { state: "old" });
   assert.deepEqual(env.rawStructuredAttributes, { State: "old" });
   assert.ok(env.salvageNotes.some((n) => n.includes("duplicate key")), env.salvageNotes.join(" | "));

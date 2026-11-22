@@ -47,10 +47,8 @@ export interface ChunkEvent {
   device: string | null;
 }
 
-/** Which channels the `audio-capture` subcommand records. */
 export type ChannelSelection = "mic" | "system" | "both";
 
-/** A resolved native helper: its source specifier and the on-disk binary path. */
 export interface HelperResolution {
   specifier: string;
   binaryPath: string;
@@ -113,18 +111,15 @@ export interface NativeRunnerOptions {
   cancelRestart?: (timer: RestartTimer) => void;
 }
 
-/** A running native-capture supervisor. */
 export interface NativeCaptureRunner {
   start(): void;
   /** Stop the helper (SIGTERM) and resolve once it exits and its final chunk is read. */
   stop(): Promise<void>;
-  /** True between a `start()` and its matching `stop()`. */
   readonly running: boolean;
 }
 
 /** The env var that overrides package resolution with an explicit binary path. */
 export const HELPER_BIN_ENV = "REMNIC_CAPTURE_HELPER_BIN";
-/** How long stop() waits for the helper to flush its final chunk and exit. */
 const STOP_DRAIN_TIMEOUT_MS = 5000;
 /** The `bin` key the #2138 platform package declares (same file as helperBinaryPath). */
 const HELPER_BIN_NAME = "remnic-capture-helper";
@@ -299,7 +294,6 @@ interface LineReader {
   flush(): void;
 }
 
-/** Incrementally split a byte/string stream into complete newline-terminated lines. */
 function makeLineReader(onLine: (line: string) => void): LineReader {
   let buffer = "";
   return {

@@ -23,11 +23,6 @@ import type { MemoryFile, PluginConfig, QmdSearchResult } from "./types.js";
 
 const RECALL_PROMPT = "how does the atlas source lookup behave?";
 
-/**
- * Complete typed SearchBackend stub (no casts): answers availability and
- * returns one settled QMD candidate from `search`; every other read surface
- * is empty. Mirrors the recall-hardening backend-stub shape.
- */
 function settledQmdBackend(result: QmdSearchResult): SearchBackend {
   return {
     async probe() {
@@ -70,11 +65,8 @@ interface OrderingHarness {
   config: PluginConfig;
   qmdMemory: MemoryFile;
   harmonicSource: MemoryFile;
-  /** Releases the parked harmonic source read (idempotent). */
   releaseHarmonicRead: () => void;
-  /** Section ids in append order, via the section coordinator prototype. */
   appendedSectionIds: string[];
-  /** How often the harmonic source read was asked for (and parked). */
   harmonicReadCalls: { count: number };
   recall: () => Promise<string>;
 }
@@ -120,8 +112,6 @@ async function makeOrderingHarness(
   });
   await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
 
-  // Defaults only — the ordering fix must not move any budget, and the
-  // default candidate/namespace sets stay untouched.
   const config = parseConfig({
     openaiApiKey: "sk-test",
     memoryDir,
@@ -183,7 +173,6 @@ async function makeOrderingHarness(
     },
   );
 
-  // Invoke the existing private delegate without booting background services.
   const recallSeam = orchestrator as unknown as Pick<RecallInternalCoordinator, "recallInternal">
     & Pick<RecallSectionCoordinator, "isRecallSectionEnabled">;
   t.mock.method(recallSeam, "isRecallSectionEnabled", (id: string) =>
@@ -208,22 +197,17 @@ test("settled QMD publishes while the harmonic read is still parked; harmonic re
     harness;
   let recallPromise: Promise<string> | undefined;
   try {
-    // The move must not touch any deadline: pin the configured defaults.
     assert.equal(config.recallOuterTimeoutMs, 75_000);
     assert.equal(config.recallCoreDeadlineMs, 75_000);
     assert.equal(config.recallEnrichmentDeadlineMs, 60_000);
 
     recallPromise = harness.recall();
 
-    // The harmonic read starts during phase 1 and is now parked.
     await eventually(
       async () => (harmonicReadCalls.count > 0 ? true : null),
       "harmonic source read reached the parked seam",
     );
 
-    // The fix: the settled QMD candidate is formatted and published while
-    // harmonic is still parked. Under the pre-fix order the assembly blocked
-    // on harmonic first, so this probe could never succeed.
     await eventually(
       async () => (appendedSectionIds.includes("memories") ? true : null),
       "QMD memories section published while harmonic is parked",
@@ -258,11 +242,6 @@ test("settled QMD publishes while the harmonic read is still parked; harmonic re
       "harmonic candidate content must render",
     );
 
-    // Budget parity: harmonic completed inside the untouched shared
-    // enrichment budget. A cancelled/timed-out harmonic drops its timing
-    // entry (timeout strings do not sanitize to numbers), so a numeric
-    // harmonicRetrieval timing proves the move neither shortened nor spent
-    // the budget ahead of QMD.
     const record = getRecallTimings(config).find(
       (candidate) => candidate.timingsMs.harmonicRetrieval !== undefined,
     );

@@ -1,19 +1,3 @@
-/**
- * Issue #3312 — non-fact dedup registration must share the fact-dedup commit
- * window.
- *
- * writeMemory indexes content hashes for facts only (rule 44 #1579); every
- * other category used to register its hash in a post-write block that ran
- * after persistUnderFactDedupWindow had already released the per-dir commit
- * window. With extractionQueueConcurrency > 1 a second session's in-window
- * recheck could then miss and both sessions wrote the same preference —
- * duplicate active copies. The fix registers the hash inside the window
- * callback, so any later window holder observes the committed content.
- *
- * These tests drive the real persistExtraction path (no LLM network; every
- * gate that would call one is off) and assert the durable outcome: exactly
- * one active copy survives a concurrent same-content write pair.
- */
 
 import assert from "node:assert/strict";
 import os from "node:os";
@@ -28,7 +12,6 @@ import type { LocalLlmClient } from "./local-llm.js";
 import type { PersistExtractionFn } from "./testing/orchestrator-lite.js";
 import type { StorageManager } from "./storage.js";
 
-// Fixture contract for the private Orchestrator surface this suite drives.
 interface OrchestratorFixture {
   localLlm?: unknown;
   chatCompletion?: unknown;
@@ -36,7 +19,6 @@ interface OrchestratorFixture {
   persistExtraction?: unknown;
 }
 
-// Named owner contract for the private internals this suite drives.
 interface OrchestratorInternals {
   localLlm: LocalLlmClient;
   getStorage: (ns: string) => Promise<StorageManager>;
@@ -70,8 +52,6 @@ async function makeHarness(): Promise<{
     extractionMinChars: 0,
     extractionMinImportanceLevel: "trivial",
     inlineSourceAttributionEnabled: false,
-    // Real deployment profile: the artifact write sits between the window
-    // release and hash registration, widening the exact gap under test.
     verbatimArtifactsEnabled: true,
     verbatimArtifactCategories: ["preference"],
   });
@@ -150,8 +130,6 @@ test("concurrent identical preferences leave exactly one active copy", async () 
     await storage.ensureDirectories();
 
     const sourceText = "User said they always want bullet points.";
-    // The race was probabilistic before the fix (the window released before
-    // registration); after it, this invariant holds for every interleaving.
     const [a, b] = await Promise.all([
       persist.persistExtraction(
         preferenceResult(PREFERENCE),

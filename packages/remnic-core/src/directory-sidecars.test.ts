@@ -60,7 +60,6 @@ test("maintenance writes sidecars bottom-up and skips unchanged on rerun", async
       first.written.some((p) => p === path.join(monthParent, DIRECTORY_SIDECAR_BASENAME)),
       "parent sidecar written after children (bottom-up)",
     );
-    // Bottom-up proof: the day sidecar is written BEFORE the parent.
     const dayIdx = first.written.findIndex((p) => p === path.join(dayDir, DIRECTORY_SIDECAR_BASENAME));
     const parentIdx = first.written.findIndex(
       (p) => p === path.join(monthParent, DIRECTORY_SIDECAR_BASENAME),
@@ -70,7 +69,6 @@ test("maintenance writes sidecars bottom-up and skips unchanged on rerun", async
     const daySidecar = await readFile(path.join(dayDir, DIRECTORY_SIDECAR_BASENAME), "utf8");
     assert.ok(daySidecar.startsWith(DIRECTORY_SIDECAR_MARKER));
     assert.match(daySidecar, /Telescope calibration/);
-    // The parent embeds the child directory's abstract.
     const parentSidecar = await readFile(path.join(monthParent, DIRECTORY_SIDECAR_BASENAME), "utf8");
     assert.match(parentSidecar, /2026-01-02/);
 
@@ -95,11 +93,8 @@ test("overview query answers from the sidecar without reading child memory files
     assert.ok(matches.length >= 1, "query finds a directory via its sidecar");
     assert.equal(path.dirname(matches[0].dir), path.join(root, "facts"));
     assert.match(matches[0].abstract, /Telescope/i);
-    // Catering directory must not outrank the telescope directory.
     assert.ok(!matches.some((m) => m.dir === path.join(root, "entities")));
 
-    // Strong proof no child file content was read: make children unreadable
-    // (stat still works, so freshness holds) and query again.
     if (process.getuid && process.getuid() === 0) {
       t.skip("chmod proof skipped under root");
     } else {
@@ -140,7 +135,6 @@ test("adding a file invalidates the sidecar and refresh refreshes it determinist
     const stale = await loadDirectorySidecar(dayDir, { refresh: false });
     assert.equal(stale?.fresh, false, "adding a file marks the sidecar stale");
 
-    // Eager maintenance rewrites the stale sidecar.
     const report = await runDirectorySidecarMaintenance(root, true);
     assert.ok(
       report.written.some((p) => p === path.join(dayDir, DIRECTORY_SIDECAR_BASENAME)),
@@ -150,7 +144,6 @@ test("adding a file invalidates the sidecar and refresh refreshes it determinist
     assert.equal(afterEager?.fresh, true);
     assert.match(afterEager?.overview ?? "", /Coolant pump/);
 
-    // Lazy refresh also converges after a later direct write, with no maintenance run.
     await writeMemory(root, "facts/2026-01-02/fact-3.md", "Thruster gimbal recalibrated.");
     const lazilyRefreshed = await loadDirectorySidecar(dayDir);
     assert.equal(lazilyRefreshed?.fresh, true);

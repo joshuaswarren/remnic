@@ -64,7 +64,6 @@ export async function appendEpisodicContextSection(
       timing,
     });
   if (maxEpisodes <= 0 || maxTurns <= 0) {
-    // Zero semantics (checklist item 33): disable before any archive query.
     skip("skip(limit=0)");
     return;
   }
@@ -87,9 +86,6 @@ export async function appendEpisodicContextSection(
     fallback: null,
     parentSignal: options.abortSignal,
     run: async (signal) => {
-      // 1. Structured provenance from the top recalled facts. Facts whose
-      // frontmatter carries no `sources` array are silently skipped (no
-      // legacy scalar `source` parsing — issue non-goal).
       const facts: EpisodicFactInput[] = [];
       const scanLimit = Math.min(
         options.recalledMemoryPaths.length,
@@ -120,10 +116,6 @@ export async function appendEpisodicContextSection(
       }
       if (facts.length === 0) return null;
 
-      // 2. Authoritative LCM session ids for a provenance sessionKey
-      // (checklist item 30): only keys framed under the caller's authorized read
-      // namespaces. A foreign session's rows live under a foreign namespace
-      // frame and are unreachable through this mapping.
       const readNamespaces = options.namespacesEnabled
         ? options.scopePlan.lcmReadNamespaces
         : [deps.config.defaultNamespace];
@@ -145,7 +137,6 @@ export async function appendEpisodicContextSection(
         return out;
       };
 
-      // 3. Plan windows (pure) with the single documented quote fallback.
       const windows = await planEpisodeWindowsWithFallback({
         recalledFacts: facts,
         maxEpisodes,
@@ -156,8 +147,6 @@ export async function appendEpisodicContextSection(
               const hits = await engine.searchContextFull(quote, 1, sessionId);
               if (hits.length > 0) return hits[0]!.turn_index;
             } catch (err) {
-              // One failing session read must not sink the fallback; try the
-              // next candidate (fail-open per candidate).
               log.debug(
                 `episodic-context: quote search failed for session ${sessionId}`,
                 err,
@@ -193,8 +182,6 @@ export async function appendEpisodicContextSection(
               break;
             }
           } catch (err) {
-            // A failing session read skips that candidate only; the window
-            // is dropped when every candidate fails (fail-open).
             log.debug(
               `episodic-context: turn-range read failed for session ${sessionId}`,
               err,

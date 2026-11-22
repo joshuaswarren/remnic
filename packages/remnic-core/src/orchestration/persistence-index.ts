@@ -1,19 +1,3 @@
-/**
- * Persistence-index coordinator — extracted from the orchestrator
- * (issue #1526, seam 23).
- *
- * Owns the post-persist bookkeeping that extraction-persist and
- * consolidation delegate back through the orchestrator:
- *   - content-hash dedup index add/has/remove/save
- *   - temporal-bounds backfill on dedup hits (bitemporal, #1578)
- *   - temporal tag index updates and persisted-memory indexing
- *   - recognition-index write-path maintenance when recallRecognitionTier is on
- *   - graph edge construction for newly persisted memories
- *   - semantic dedup candidate lookup
- *
- * Behavior-preserving move from orchestrator.ts (late-binding deps rule,
- * seams 18–22).
- */
 
 import path from "node:path";
 import { type GraphConstructionCapabilitySet, resolveCapabilities, resolveGraphConstructionCapabilities, resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities, resolveRecallEnhancementCapabilities } from "../capabilities.js";
@@ -103,36 +87,6 @@ export class PersistenceIndexCoordinator {
     targetStorage.removeFactOnlyHashForMemory(memory);
   }
 
-  /**
-   * Issue #1671 — backfill bi-temporal bounds onto an existing promoted/deduped
-   * copy that was written BEFORE the source fact carried a resolved
-   * `invalid_at`/`observedAt`/`eventTimeSource`.
-   *
-   * On re-extraction/backfill, a fact may now carry a resolved end bound (e.g.
-   * "until June 2025") that the existing copy lacks because it was promoted
-   * before bi-temporal wiring existed. Without this backfill, recall keeps
-   * surfacing an expired fact even though the source copy now expires correctly.
-   *
-   * Finds the active fact in `targetStorage` matching `dedupContent`, then
-   * patches the temporal frontmatter the existing copy is missing. Best-effort
-   * / fail-open — any I/O error is logged and swallowed so the dedup
-   * short-circuit is never blocked by a backfill failure.
-   *
-   * Matching: the stored `frontmatter.contentHash` is compared against
-   * `ContentHashIndex.computeHash(dedupContent)` first (the exact hash the
-   * content-hash index uses), then falls back to stripping citations and
-   * comparing normalized bodies. This handles inline-attribution deployments
-   * where the persisted body carries a citation marker the dedup key does not.
-   *
-   * I/O gate: only triggers when `invalidAt` is present (the end bound that
-   * actually changes recall behavior by expiring the fact). `observedAt` and
-   * `eventTimeSource` alone don'\''t expire a fact, so backfilling them without
-   * an end bound would cause a full readAllMemories scan on every dedup hit
-   * under biTemporal for no recall benefit.
-   *
-   * Only patches fields the existing copy LACKS — never overwrites a bound the
-   * copy already carries.
-   */
   async backfillTemporalBoundsOnDedupHit(
     targetStorage: StorageManager,
     dedupContent: string,
@@ -226,7 +180,6 @@ export class PersistenceIndexCoordinator {
         );
       });
       if (!existing) return;
-      // Build a patch containing ONLY the fields the existing copy lacks.
       const patch: Partial<MemoryFrontmatter> = {};
       const fm = existing.frontmatter;
       if (bounds.invalidAt && (!fm.invalid_at || fm.invalid_at.length === 0)) {
@@ -379,7 +332,6 @@ export class PersistenceIndexCoordinator {
     fallbackCausalPredecessor: string | undefined,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.deps.config),
   ): Promise<GraphEdge[]> {
-    // Entity siblings: other memories sharing the same entityRef
     const entitySiblings: string[] = [];
     if (entityRef) {
       try {
@@ -394,7 +346,6 @@ export class PersistenceIndexCoordinator {
         /* fail-open */
       }
     }
-    // Recent thread memories for time graph
     const recentInThread: string[] = [];
     if (threadIdForEdge && threadEpisodeIdsForGraph?.length) {
       try {
@@ -465,7 +416,6 @@ export class PersistenceIndexCoordinator {
       !resolveRecallEnhancementCapabilities(this.deps.config).eventOrderRecall
     )
       return;
-    // Check for missing indexes BEFORE the early-return so first-time enablement
     // can bootstrap the full corpus even when this extraction turn persisted nothing.
     const needsFullRebuild = !(await indexesExistAsync(this.deps.config.memoryDir));
     if (!needsFullRebuild && persistedIds.length === 0) return;

@@ -909,9 +909,6 @@ async function executeClaimedPlannedRow(
             ...(terminalEvidence ? { evidence: terminalEvidence, isolation } : {}),
           },
         });
-        // Commit first so the exhausting attempt is durably auditable, then
-        // pause. A resumed run replays from the next attempt with full history
-        // instead of silently losing the fault that stopped the suite.
         if (retriesExhausted) {
           throw new Error(
             `Host API fault retries exhausted on row ${rowKey}. Pausing run so the endpoint can be recovered. Fix the endpoint and use --run to resume.`,

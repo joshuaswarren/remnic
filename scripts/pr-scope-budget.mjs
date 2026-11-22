@@ -1,47 +1,4 @@
 #!/usr/bin/env node
-/**
- * PR scope budget (issue #1991 PR2, umbrella #1988; subsystem-group and
- * multi-issue detection added in issue #2067).
- *
- * Mean PR diff size doubled (1,246 -> 2,653 lines) the week after review
- * friction fell, and the 40-59-thread churn tails live in the largest
- * diffs. The narrow-scope rule was prose; this makes it a number.
- *
- * Measures the EFFECTIVE diff (changed lines minus .github/ai-review-ignore
- * artifact paths — shared manifest with the AI review gate) against CORE
- * package paths only, then:
- *
- *   <= warnLines            -> pass
- *   >  warnLines            -> warn (exit 0, ::warning annotation)
- *   >  failLines            -> fail (exit 1) unless the PR carries the
- *                              `scope-budget-exempt` label (auditable,
- *                              maintainer-applied; re-evaluated every run —
- *                              removing the label re-fails).
- *
- * Beyond raw line count, a diff can be small yet still unfocused: several
- * unrelated subsystems changed for several different issues in one PR. The
- * subsystem heuristic (issue #2067) classifies each core changed file into a
- * group (scripts/pr-scope-budget.json `subsystemGroups`) and reads issue
- * references from the PR title + body, then:
- *
- *   groups >= 3 AND issues >= 2                          -> warn
- *   groups >= 2 AND issues >= 2 AND groups share no
- *     package-level path ancestor (truly unrelated)      -> fail (exempt-able)
- *
- * Thresholds and the group map live in scripts/pr-scope-budget.json — no
- * magic numbers in workflow code; the check prints them on every run.
- *
- * Inputs (provided by the workflow):
- *   --files <path>    JSON array of GitHub `listFiles` objects
- *                     ({ filename, additions, deletions, status }) —
- *                     paginated to completion by the caller.
- *   --labels <path>   JSON array of label name strings on the PR.
- *   --pr-meta <path>  Optional plain-text PR title + body (issue references
- *                     are extracted from it). Absent -> no multi-issue signal.
- *
- * Pure with respect to the filesystem beyond those inputs — unit-testable
- * without GitHub.
- */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -111,27 +68,11 @@ export function loadThresholds(thresholdsPath) {
   };
 }
 
-/**
- * Articles that, in front of a PAST-PARTICIPLE keyword, form a noun phrase
- * rather than a claim: "follow-up to the closed #2448" names history, so
- * counting it inflated the multi-issue signal on a single-issue PR.
- *
- * Only articles qualify, and the list stays this short on purpose. A
- * demonstrative or copula is the grammatical SUBJECT of an ordinary claim —
- * "This closed #123", "That fixed #7" — and suppressing those undercounts a
- * genuinely multi-issue PR, letting it evade this gate. Undercounting is the
- * worse failure of the two, so anything that is not clearly a noun phrase
- * counts as a claim.
- */
 const DESCRIPTIVE_ARTICLES = new Set(["the", "a", "an"]);
 
 /** Past-participle spellings of the closing keywords ("closed", not "closes"). */
 const PAST_PARTICIPLE_KEYWORDS = new Set(["fixed", "closed", "resolved"]);
 
-/** The repository this gate runs on. A qualifier naming THIS repository
- * (`joshuaswarren/remnic#1234`) is the same claim as bare `#1234` — GitHub
- * renders both spellings for one issue, and counting both inflated the
- * multi-issue signal on single-issue PRs (issue #2948). */
 const CURRENT_REPO = "joshuaswarren/remnic";
 
 /**
@@ -173,17 +114,6 @@ export function extractIssueRefs(text) {
     "gi",
   );
   for (const match of prose.matchAll(closingKeywordPattern)) {
-    // An ARTICLE in front of a PAST-PARTICIPLE keyword is a noun phrase, not a
-    // claim: "follow-up to the closed #2448" names history, while "Closes
-    // #2448" claims the issue. Counting the former inflated the multi-issue
-    // signal on a single-issue PR (issue #2774), whose body cited the
-    // predecessor issue the file's own docstring also references.
-    //
-    // Both narrowings below are load-bearing, and both came from review:
-    // requiring past tense keeps "This fixes #123" countable, and requiring an
-    // article (not any determiner) keeps "This closed #123" countable. Either
-    // over-broad form UNDERCOUNTS a real multi-issue PR and lets it evade this
-    // gate — worse than the false positive being fixed.
     const lead = (match[1] ?? "").trim().toLowerCase();
     const keyword = match[2].toLowerCase();
     if (DESCRIPTIVE_ARTICLES.has(lead) && PAST_PARTICIPLE_KEYWORDS.has(keyword)) continue;
@@ -196,9 +126,6 @@ export function extractIssueRefs(text) {
 }
 
 function claimedIssue(repo, number) {
-  // A qualifier naming the current repository is the bare local identity
-  // (issue #2948); GitHub resolves owner/repo case-insensitively, so the
-  // compare lowercases. Any other qualifier stays a distinct cross-repo claim.
   if (!repo || repo.toLowerCase() === CURRENT_REPO) return Number(number);
   return `${repo}#${number}`;
 }
@@ -262,9 +189,6 @@ export function evaluateScopeBudget({ files, labels, thresholds, ignorePatterns,
     if (typeof filename !== "string" || filename.length === 0) {
       throw new Error(`evaluateScopeBudget: file entry has no filename: ${JSON.stringify(file)}`);
     }
-    // Renames: count when EITHER side is a non-ignored core path — a core
-    // file renamed into a non-core or ignored destination still changed core
-    // (review finding on #2003 round 3; mirrors splitEffectiveDiff's rule).
     const previous = typeof file?.previous_filename === "string" ? file.previous_filename : null;
     const currentCounts = countsAgainstBudget(filename);
     if (!currentCounts && !(previous !== null && countsAgainstBudget(previous))) {
@@ -273,11 +197,6 @@ export function evaluateScopeBudget({ files, labels, thresholds, ignorePatterns,
     const additions = Number.isInteger(file.additions) ? file.additions : 0;
     const deletions = Number.isInteger(file.deletions) ? file.deletions : 0;
     coreLines += additions + deletions;
-    // Classify BOTH core sides of a rename: a core file moved between
-    // subsystems (core->core) changed both, and one moved to a
-    // non-core/ignored destination still changed its source subsystem — so
-    // grouping follows every core side, never just the new name
-    // (review: cursor + codex on #2067).
     const classifyPaths = [];
     if (currentCounts) classifyPaths.push(filename);
     if (previous !== null && previous !== filename && countsAgainstBudget(previous)) {
@@ -292,9 +211,6 @@ export function evaluateScopeBudget({ files, labels, thresholds, ignorePatterns,
     .map((f) => `${f.filename} (${f.lines})`)
     .join(", ");
 
-  // Subsystem-group / multi-issue signal (issue #2067). Classification runs
-  // over the same core files the line budget counts, so docs/tests/artifact
-  // churn never inflates the group count.
   const groups = new Set();
   const prefixes = new Set();
   for (const file of coreFiles) {
@@ -380,19 +296,10 @@ function main() {
   const args = parseCliArgs(process.argv.slice(2));
   const files = JSON.parse(readFileSync(args.files, "utf8"));
   const labels = JSON.parse(readFileSync(args.labels, "utf8"));
-  // CI passes --thresholds/--ignore pointing at copies fetched from the PR's
-  // BASE ref, so a PR can never weaken its own budget by editing these files
-  // in the same head (review finding on #2003 — both bots, independently).
-  // The repo-local defaults serve local/manual runs only.
   const thresholds = loadThresholds(args.thresholds ?? path.join(SCRIPT_DIR, "pr-scope-budget.json"));
   const ignorePatterns = parseIgnoreManifest(
     readFileSync(args.ignore ?? path.join(ROOT, ".github", "ai-review-ignore"), "utf8")
   );
-  // PR body is DATA (author-controlled), never executed — only scanned for
-  // closing-keyword issue claims. Absent -> no multi-issue signal. The
-  // workflow passes the BODY only: closing keywords close issues from the PR
-  // description, never the title, and never commit messages or review text
-  // (#2919).
   const prText = args["pr-meta"] ? readFileSync(args["pr-meta"], "utf8") : "";
 
   const result = evaluateScopeBudget({

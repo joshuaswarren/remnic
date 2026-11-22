@@ -42,20 +42,6 @@ import { expectRow, expectRows } from "./row-types.js";
 
 export const CODING_GRAPH_SCHEMA_VERSION = 1;
 
-/**
- * FTS5 rowid derived from a deterministic node id. FTS5 rowids are
- * signed 64-bit integers; we slice the leading 16 hex chars (= 64 bits)
- * of the sha256 id and mask to the int64 positive range so SQLite
- * accepts it. The full 64-bit space is large enough that collisions
- * across distinct node ids are negligible. Contentless FTS5
- * (`content=''`) does NOT store UNINDEXED column values, so the only
- * reliable key into the virtual table is the rowid.
- *
- * Lives in graph-schema (not graph-store) so the schema migration path
- * can rebuild FTS rows from existing `nodes` without importing the
- * store module (which would create a circular dependency — graph-store
- * imports graph-schema).
- */
 export function ftsRowidForNodeId(nodeId: string): bigint {
   return BigInt(`0x${nodeId.slice(0, 16)}`) & BigInt("0x7fffffffffffffff");
 }
@@ -81,14 +67,6 @@ export function isEdgeProvenance(value: unknown): value is EdgeProvenance {
   );
 }
 
-/**
- * Apply (or upgrade) the coding-graph schema on an already-open SQLite
- * handle. Public so test seams and migration tools can bootstrap an
- * in-memory database without going through {@link openCodingGraphDatabase}.
- *
- * Mirrors `applyLcmSchema` in `packages/remnic-core/src/lcm/schema.ts` —
- * distinct function, same shape, separate version namespace.
- */
 export function applyCodingGraphSchema(db: BetterSqlite3Database): void {
   const versionRow = expectRow<{ name: string }>(
     db

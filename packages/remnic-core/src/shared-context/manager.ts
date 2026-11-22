@@ -43,7 +43,6 @@ export type SharedFeedbackEntry = z.infer<typeof SharedFeedbackEntrySchema>;
 
 function safeSlug(s: string): string {
   let slug = s.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  // Trim leading/trailing dashes without ReDoS-prone anchored quantifiers
   let start = 0;
   while (start < slug.length && slug[start] === "-") start++;
   let end = slug.length;
@@ -348,14 +347,11 @@ interface SharedCrossSignalReport {
   feedbackEntries: SharedFeedbackEntry[];
   sources: SharedCrossSignalSource[];
   overlaps: SharedCrossSignalOverlap[];
-  /** Control 2 (issue #1957): expiry drops and supersession circulation. */
   staleness: {
     expiredDropped: number;
     supersededStillCirculating: string[];
   };
-  /** Control 3 (issue #1957): refs two agents ruled on differently. */
   disputed: Array<{ ref: string; agents: string[]; decisions: string[] }>;
-  /** Control 4 (issue #1957): who synthesized this report and when. */
   provenance: { actor: string; at: string };
   semantic: {
     enabled: boolean;
@@ -472,12 +468,6 @@ export function resolveSharedContextDir(config: PluginConfig): string {
     : path.join(expandTildePath(config.workspaceDir), "shared-context");
 }
 
-/**
- * Feedback inbox path. An explicit `sharedContextDir` keeps the inbox beside
- * the other shared-context files. When that override is unset, the inbox
- * lives under the memory directory so a standalone store replicates it.
- * Priorities, outputs, and roundtable stay on {@link resolveSharedContextDir}.
- */
 export function resolveFeedbackInboxPath(config: PluginConfig): string {
   if (typeof config.sharedContextDir === "string" && config.sharedContextDir.length > 0) {
     return path.join(resolveSharedContextDir(config), "feedback", "inbox.jsonl");
@@ -632,7 +622,6 @@ export class SharedContextManager {
     await mkdir(path.join(this.dir, "calendar"), { recursive: true });
     await mkdir(path.join(this.dir, "content-calendar"), { recursive: true });
 
-    // Bootstrap files if missing.
     await this.ensureFile(
       this.prioritiesPath,
       [
@@ -728,7 +717,6 @@ export class SharedContextManager {
     authority?: string;
     /** Optional ISO-8601 expiry stamped on the item. */
     expiresAt?: string;
-    /** Optional id of the shared item this output supersedes. */
     supersedes?: string;
     /**
      * Server-resolved identity of the caller, supplied by the access
@@ -851,7 +839,6 @@ export class SharedContextManager {
     const date = opts.date;
     const maxSummaryItems = Math.max(1, opts.maxSummaryItems ?? 8);
 
-    // Collect outputs for the day (best-effort).
     const outputs: Array<{ agent: string; path: string; title: string; raw: string; envelope: SharedEnvelope }> = [];
     try {
       const agents = (await readdir(this.outputsDir, { withFileTypes: true }))
@@ -888,8 +875,6 @@ export class SharedContextManager {
         || a.title.localeCompare(b.title),
     );
 
-    // Control 2 (issue #1957): expired items never enter the working set;
-    // items another live item supersedes are marked while they circulate.
     const liveOutputs = filterLiveEnvelopes(
       outputs.map((output) => ({ output, expiresAt: output.envelope.expiresAt })),
       Date.now(),
@@ -902,7 +887,6 @@ export class SharedContextManager {
       .map((item) => item.id)
       .sort();
 
-    // Collect feedback entries for the day.
     const feedback: SharedFeedbackEntry[] = [];
     try {
       await migrateLegacyFeedbackInbox(this.config);
@@ -1001,9 +985,6 @@ export class SharedContextManager {
       feedbackByDecision[entry.decision] += 1;
     }
 
-    // Control 3 (issue #1957): feedback refs are claim keys; two agents
-    // ruling differently on the same ref surface as disputed, never silently
-    // averaged. Pairwise scan is bounded by one day's feedback entries.
     const claimItems = feedback.map((entry, index) => ({
       id: `${entry.agent}#${index}`,
       claims: Object.fromEntries((entry.refs ?? []).map((ref) => [ref, entry.decision])),
@@ -1048,7 +1029,6 @@ export class SharedContextManager {
         addedOverlapCount: semanticAddedOverlapCount,
       },
     };
-    // Control 4 (issue #1957): stamp who synthesized the report and when.
     const report = stampProvenance(baseReport, { actor: "shared-context:curation", at: generatedAt });
 
     const crossSignalsPath = path.join(this.crossSignalsDir, `${date}.json`);
@@ -1126,9 +1106,6 @@ export class SharedContextManager {
     const date = opts.date;
     const maxChars = Math.max(2_000, opts.maxChars ?? 20_000);
     const crossSignals = await this.synthesizeCrossSignalsUnlocked({ date });
-    // Control 4 (issue #1957): every synthesized claim must cite at least one
-    // item this run actually had. Overlaps are built from sources, so this is
-    // a tripwire — it fires only if a synthesized section stops citing.
     const lintFindings = lintCuratedClaims({
       claims: crossSignals.report.overlaps.map((overlap) => ({
         claimId: `overlap:${overlap.token}`,

@@ -17,7 +17,6 @@ import {
 } from "./causal-chain.js";
 import { log } from "./logger.js";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface CausalRetrievalConfig {
   maxDepth: number;
@@ -36,11 +35,7 @@ export interface CausalRetrievalResult {
   summary: string;
 }
 
-// ─── Graph Traversal ─────────────────────────────────────────────────────────
 
-/**
- * Walk upstream (incoming edges) from a seed trajectory.
- */
 function walkUpstream(
   seedId: string,
   index: CausalChainIndex,
@@ -65,7 +60,6 @@ function walkUpstream(
         if (visited.has(fromId)) continue;
         visited.add(fromId);
 
-        // Check if this is a counterfactual branching point
         const outgoingFromSource = index.outgoing[fromId] ?? [];
         const isCounterfactual = outgoingFromSource.length > 1;
 
@@ -114,7 +108,6 @@ function walkDownstream(
     for (const currentId of frontier) {
       const outgoingEdgeIds = index.outgoing[currentId] ?? [];
 
-      // Counterfactual: multiple outgoing = branching point
       const isCounterfactual = outgoingEdgeIds.length > 1;
 
       for (const edgeId of outgoingEdgeIds) {
@@ -149,7 +142,6 @@ function walkDownstream(
   return results;
 }
 
-// ─── Section Formatting ──────────────────────────────────────────────────────
 
 function formatRetrievalResult(result: CausalRetrievalResult): string {
   const direction = result.direction === "upstream" ? "↑" : result.direction === "downstream" ? "↓" : "•";
@@ -195,7 +187,6 @@ export function formatCausalRetrievalSection(
   return lines.join("\n");
 }
 
-// ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
  * Retrieve causal chain context for a recall query.
@@ -213,7 +204,6 @@ export async function retrieveCausalChains(options: {
   try {
     const { memoryDir, causalTrajectoryStoreDir, query, sessionKey, config: retrievalConfig } = options;
 
-    // 1. Search for seed trajectories matching the query
     const seeds = await searchCausalTrajectories({
       memoryDir,
       causalTrajectoryStoreDir,
@@ -224,7 +214,6 @@ export async function retrieveCausalChains(options: {
 
     if (seeds.length === 0) return null;
 
-    // 2. Load chain index
     const chainsDir = resolveChainsDir(memoryDir, causalTrajectoryStoreDir);
     const chainIndex = await readChainIndex(chainsDir);
 
@@ -233,11 +222,9 @@ export async function retrieveCausalChains(options: {
     const { trajectories } = await readCausalTrajectoryRecords({ memoryDir, causalTrajectoryStoreDir });
     const trajectoriesById = new Map(trajectories.map((trajectory) => [trajectory.trajectoryId, trajectory]));
 
-    // 3. Walk chains from each seed
     const allResults: CausalRetrievalResult[] = [];
 
     for (const seed of seeds) {
-      // Add seed itself
       allResults.push({
         trajectoryId: seed.record.trajectoryId,
         direction: "seed",
@@ -247,7 +234,6 @@ export async function retrieveCausalChains(options: {
         summary: `[${seed.record.outcomeKind}] ${seed.record.goal} → ${seed.record.outcomeSummary}`,
       });
 
-      // Walk upstream
       const upstream = walkUpstream(
         seed.record.trajectoryId,
         chainIndex,
@@ -267,7 +253,6 @@ export async function retrieveCausalChains(options: {
         });
       }
 
-      // Walk downstream
       const downstream = walkDownstream(
         seed.record.trajectoryId,
         chainIndex,
@@ -288,7 +273,6 @@ export async function retrieveCausalChains(options: {
       }
     }
 
-    // 4. Sort by score and format
     allResults.sort((a, b) => b.score - a.score);
 
     return formatCausalRetrievalSection(allResults, retrievalConfig.maxChars);

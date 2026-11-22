@@ -1,19 +1,3 @@
-/**
- * Operator-facing tier visibility (issue #686 PR 5/6).
- *
- * Two read-only surfaces:
- *
- *   - `summarizeTiers(storage)` — count memories by tier (hot vs cold)
- *     plus per-status breakdown so operators can see at a glance
- *     whether the lifecycle policy has actually demoted anything.
- *   - `explainTierForMemory(storage, id)` — show the value-score
- *     components and tier-transition decision for a single memory
- *     so an operator can reason about why a memory ended up where
- *     it did.
- *
- * Pure inspection — neither surface mutates anything.  The CLI wires
- * them as `remnic tier list` and `remnic tier explain <id>`.
- */
 
 import type { StorageManager } from "../storage.js";
 import type { MemoryFile, PluginConfig } from "../types.js";
@@ -111,8 +95,6 @@ export async function summarizeTiers(
     summary.byTier[tier] += 1;
     const status: string = m.frontmatter.status ?? "active";
     summary.byStatus[status] = (summary.byStatus[status] ?? 0) + 1;
-    // Compare via the widened `string` type so this module compiles
-    // both before and after PR 4/6 lands `"forgotten"` in MemoryStatus.
     if (status === "forgotten") summary.forgottenCount += 1;
     const cat = m.frontmatter.category ?? "(uncategorized)";
     summary.byCategory[cat] = (summary.byCategory[cat] ?? 0) + 1;
@@ -163,10 +145,6 @@ export async function explainTierForMemory(
   };
 }
 
-/**
- * Render a TierSummary as plain text for `remnic tier list` text mode.
- * Pure formatter — exposed so future surfaces (HTTP, MCP) can reuse.
- */
 export function formatTierSummaryText(summary: TierSummary): string {
   const lines: string[] = [];
   lines.push("=== Memory Tier Distribution ===");
@@ -194,9 +172,6 @@ export function formatTierSummaryText(summary: TierSummary): string {
   return lines.join("\n");
 }
 
-/**
- * Render a TierExplainResult as plain text for `remnic tier explain`.
- */
 export function formatTierExplainText(explain: TierExplainResult): string {
   const lines: string[] = [];
   lines.push(`=== Tier Explain: ${explain.id} ===`);

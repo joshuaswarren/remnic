@@ -1,27 +1,3 @@
-/**
- * Zep MemCorrect adapter (issue #1727 — second priority).
- *
- * Drives Zep through its public v2 REST API so MemCorrect can score Zep on the
- * same correction/steerability corpus as the Remnic adapter.
- *
- * Zep's model: sessions are the ingestion unit; `memory.add` ingests chat
- * messages into a session and builds a user-level knowledge graph; `memory.get`
- * retrieves a relevance-ranked context string for the prompt. This adapter
- * uses the documented high-level Memory API — the same path a Zep integrator
- * follows in production. Reaching into the graph internals would not be a
- * faithful exercise of Zep's normal recall path.
- *
- * REST endpoints used (base: `https://api.getzep.com/api/v2`):
- *   - `POST   /sessions/{sessionId}`            — ensure session exists
- *   - `POST   /sessions/{sessionId}/memory`     — add messages (ingest + correct)
- *   - `POST   /graph/search`                    — query-driven fact recall
- *   - `DELETE /sessions/{sessionId}`            — full clean slate (reset)
- *
- * The adapter accepts an injectable `fetch` so the deterministic fixture smoke
- * test exercises the full request/response cycle without a network. No keys
- * are embedded; without operator-provided credentials every method throws
- * `MissingCredentialError` (skip-with-reason — no keys in CI).
- */
 
 import type { MemCorrectSystemAdapter } from "../types.js";
 import {
@@ -52,14 +28,12 @@ export interface ZepAdapterConfig extends ThirdPartyAdapterConfig {
   settleMs?: number;
 }
 
-/** Zep graph search result (subset of fields we consume). */
 interface ZepGraphSearchResults {
   edges?: Array<{ fact?: string }>;
   nodes?: Array<{ summary?: string }>;
   episodes?: Array<{ content?: string }>;
 }
 
-/** Zep role_type enum. */
 type ZepRoleType = "norole" | "system" | "assistant" | "user" | "function" | "tool";
 
 /**
@@ -74,7 +48,6 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
   private readonly settleMs: number;
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number | undefined;
-  /** Sessions we have ensured exist, to avoid redundant POST /sessions calls. */
   private readonly knownSessions = new Set<string>();
   /** True when turns have been ingested since the last settle, so recall() can
    * wait for Zep's async graph pipeline before a scored read. */
@@ -84,7 +57,6 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
     this.baseUrl =
       config.baseUrl?.replace(/\/+$/, "") ?? "https://api.getzep.com/api/v2";
     this.apiKey = config.apiKey;
-    // Default to a unique per-instance prefix so independent bench runs don't
     // share a remote namespace (reset() only deletes ids tracked in-process).
     this.sessionPrefix = config.sessionPrefix ?? `memcorrect-${uniqueRunSuffix()}`;
     this.settleMs = config.settleMs ?? 0;
@@ -110,7 +82,6 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
 
   async reset(): Promise<void> {
     this.ensureReady();
-    // Delete every known session AND its user for a clean slate. The runner
     // calls reset() before each scenario. Zep's v2 session delete removes
     // messages but NOT the user's knowledge graph (per Zep docs), and we now
     // search facts via the user's graph — so the user must be deleted too or
@@ -129,10 +100,8 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
           { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
         );
       } catch (err) {
-        // Session may not exist yet (first reset) — not-found is fine.
         if (!isNotFoundDelete(err)) throw err;
       }
-      // User delete removes the knowledge graph. not-found is fine (already
       // gone); a real failure propagates so resetTrackedIds retains the id.
       await httpJson(
         this.fetchImpl,
@@ -144,10 +113,8 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
     this.pendingIngest = false;
   }
 
-  /** Ensure the Zep session (and its user) exist before adding memory. */
   private async ensureSession(sessionId: string): Promise<void> {
     if (this.knownSessions.has(sessionId)) return;
-    // Zep v2 requires a user to exist before a session references it. Each
     // MemCorrect session gets its own user for namespace isolation.
     //
     // Only HTTP 409 Conflict (entity already exists from a prior run) is
@@ -202,14 +169,12 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
         timeoutMs: this.timeoutMs,
       },
     );
-    // Zep extracts graph facts asynchronously; mark that a scored recall must
     // settle before reading.
     this.pendingIngest = true;
   }
 
   async recall(query: string, sessionKey: string): Promise<string[]> {
     this.ensureReady();
-    // If turns were ingested since the last settle, wait for Zep's async graph
     // pipeline to extract facts before reading. The MemCorrect runner records
     // the baseline recall right after establishing turns and the uptake recall
     // right after correct() — both before runMaintenance — so settling only in
@@ -221,7 +186,6 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
     }
     const sessionId = this.sessionIdFor(sessionKey);
     await this.ensureSession(sessionId);
-    // Query-driven recall via Zep's graph search. The MemCorrect runner passes
     // the scored probe only as recall(query, …) — it is never added to the
     // session — so memory.get (which ranks by the *last ingested message*)
     // would retrieve the wrong context. Graph search ranks facts by the probe
@@ -253,7 +217,6 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
   }
 
   async correct(text: string, sessionKey: string, _at?: string): Promise<void> {
-    // Zep has no explicit correction-contract API. The correction is observed
     // as a user turn through the normal memory.add path; Zep's graph extraction
     // is expected to update the relevant fact. non_resurrection measures
     // whether the retired fact survives the next maintenance + re-ingest cycle.
@@ -266,7 +229,6 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
   }
 
   async runMaintenance(): Promise<void> {
-    // Zep processes the graph asynchronously after memory.add. The settle
     // delay gives the pipeline time to extract facts before the next probe.
     // A no-op is allowed by the MemCorrect protocol; this delay is a
     // best-effort settle for reproducibility.

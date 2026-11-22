@@ -1,59 +1,3 @@
-/**
- * @remnic/core — GitHub live connector (issue #683 PR 5/6)
- *
- * Concrete `LiveConnector` implementation that incrementally imports notes
- * from a user's GitHub activity into Remnic. Fetches via the GitHub REST
- * API using raw `fetch` with a personal access token — no octokit dep,
- * per à-la-carte packaging rules (CLAUDE.md gotcha #57).
- *
- * What is imported:
- *   - Issue comments authored by `userLogin` on watched repos.
- *   - PR review comments authored by `userLogin` on watched repos.
- *   - Discussion comments authored by `userLogin` (optional, off by default).
- *
- * Design notes:
- *
- *   - **Auth.** GitHub personal access token via `connectors.github.token`.
- *     The token is accepted at config-parse time but never logged. Operators
- *     must populate it from a secret store; no real value may appear in
- *     tests, fixtures, or comments.
- *
- *   - **Cursor semantics.** The cursor encodes a per-repo, per-resource-type
- *     watermark (latest `updated_at` ISO 8601 string seen). On the very first
- *     sync (cursor=null) we seed the watermark from the current latest
- *     comment timestamp WITHOUT importing any content — mirrors Drive's
- *     `getStartPageToken` bootstrap pattern. Subsequent passes only import
- *     items created/updated after the stored watermark.
- *
- *   - **Watermark field.** All three GitHub resource types expose
- *     `updated_at` at the comment level. We always use `updated_at` (not
- *     `created_at`) so edits re-trigger ingestion.
- *
- *   - **Raw `fetch`.** We call `https://api.github.com/…` directly.
- *     `Authorization: Bearer <token>` + `User-Agent: remnic-connector` headers
- *     on every request. The `fetchFn` parameter is the test injection point —
- *     production callers omit it and the connector uses the global `fetch`.
- *
- *   - **Idempotency.** `ConnectorDocument.source.externalId` is
- *     `{repo}/{kind}/{commentId}` and `externalRevision` is `updated_at`, so
- *     downstream dedup (CLAUDE.md gotcha #44) can recognise repeat fetches.
- *
- *   - **Filtering by userLogin.** GitHub's `/issues/comments` endpoint does
- *     not support server-side author filtering in the public API. We filter
- *     client-side by comparing `comment.user.login` to the configured
- *     `userLogin`. This keeps the implementation free from authenticated
- *     user lookups and avoids an extra round-trip on first run.
- *
- *   - **Privacy.** No comment body is ever logged. Repo names and counts
- *     may be logged. The token is never exposed in logs, state, or errors.
- *
- *   - **Read-only.** This connector only reads. It never posts, edits,
- *     reacts to, or otherwise mutates any GitHub resource.
- *
- *   - **Error classification.** 429/5xx → transient (re-throw, cursor
- *     does NOT advance). 404/403/410 → terminal (skip repo/resource,
- *     continue). Network errors → transient.
- */
 
 import type {
   ConnectorConfig,
@@ -66,32 +10,23 @@ import type {
 import { throwIfAborted } from "../../abort-error.js";
 
 // ---------------------------------------------------------------------------
-// Public constants
-// ---------------------------------------------------------------------------
 
-/** Stable connector id. */
 export const GITHUB_CONNECTOR_ID = "github";
 
-/** Cursor `kind` emitted by this connector. */
 export const GITHUB_CURSOR_KIND = "githubWatermark";
 
-/** Default poll interval: 5 minutes. */
 export const GITHUB_DEFAULT_POLL_INTERVAL_MS = 5 * 60 * 1000;
 
-/** Hard cap on poll interval: 24 hours. */
 const GITHUB_MAX_POLL_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-/** Hard cap on body text we'll accept for a single comment. */
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
-/** Maximum number of items (across all repos and resource types) per pass. */
 const MAX_ITEMS_PER_PASS = 200;
 
 /** Page size for GitHub list requests. Maximum allowed by the API. */
 const GITHUB_PAGE_SIZE = 100;
 
 // ---------------------------------------------------------------------------
-// Config types
 // ---------------------------------------------------------------------------
 
 /**
@@ -111,36 +46,14 @@ export interface GitHubConnectorConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Cursor payload
 // ---------------------------------------------------------------------------
 
-/**
- * JSON payload encoded into `ConnectorCursor.value`.
- *
- * Watermarks are stored per repo per resource kind. We use ISO 8601 strings
- * (which sort lexicographically) for all comparisons — no epoch math needed.
- */
 interface GitHubCursorPayload {
-  /**
-   * Maps `{repo}/{kind}` → latest `updated_at` ISO string already ingested.
-   * `kind` is one of `"issue-comment"`, `"pr-review-comment"`, `"discussion"`.
-   */
   watermarks: Record<string, string>;
-  /**
-   * Same-second dedup map: maps `{repo}/{kind}/{commentId}` → `updated_at`
-   * ISO string for every comment processed within the same second as the
-   * current watermark. Cleared when the watermark advances past that second
-   * boundary. Prevents re-importing comments whose `updated_at` matches the
-   * watermark exactly — GitHub's `since=` filter is inclusive, so comments at
-   * the exact watermark timestamp are re-returned on every subsequent poll.
-   *
-   * Mirrors the Gmail connector's `seenIds` pattern from #745.
-   */
   seenIds: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
-// GitHub API response shapes (only the fields we consume)
 // ---------------------------------------------------------------------------
 
 export interface GitHubComment {
@@ -166,7 +79,6 @@ export interface GitHubDiscussionComment {
 }
 
 // ---------------------------------------------------------------------------
-// Fetch abstraction (test hook)
 // ---------------------------------------------------------------------------
 
 /**
@@ -188,10 +100,8 @@ export type GitHubFetchFn = (
 }>;
 
 // ---------------------------------------------------------------------------
-// Config validation
 // ---------------------------------------------------------------------------
 
-/** Pattern for `owner/repo`. Both segments allow alphanumeric + `-` + `_` + `.`. */
 const REPO_SLUG_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 /**
@@ -206,7 +116,6 @@ export function validateGitHubConfig(raw: unknown): GitHubConnectorConfig {
   }
   const r = raw as Record<string, unknown>;
 
-  // token
   if (typeof r.token !== "string") {
     throw new TypeError(`github: token must be a string (got ${typeof r.token})`);
   }
@@ -215,7 +124,6 @@ export function validateGitHubConfig(raw: unknown): GitHubConnectorConfig {
     throw new RangeError("github: token must be non-empty");
   }
 
-  // userLogin
   if (typeof r.userLogin !== "string") {
     throw new TypeError(`github: userLogin must be a string (got ${typeof r.userLogin})`);
   }
@@ -224,7 +132,6 @@ export function validateGitHubConfig(raw: unknown): GitHubConnectorConfig {
     throw new RangeError("github: userLogin must be non-empty");
   }
 
-  // pollIntervalMs
   let pollIntervalMs: number;
   if (r.pollIntervalMs === undefined) {
     pollIntervalMs = GITHUB_DEFAULT_POLL_INTERVAL_MS;
@@ -244,7 +151,6 @@ export function validateGitHubConfig(raw: unknown): GitHubConnectorConfig {
     pollIntervalMs = r.pollIntervalMs;
   }
 
-  // repos
   let repos: readonly string[] = [];
   if (r.repos !== undefined) {
     if (!Array.isArray(r.repos)) {
@@ -274,7 +180,6 @@ export function validateGitHubConfig(raw: unknown): GitHubConnectorConfig {
     repos = Object.freeze(out);
   }
 
-  // includeDiscussions (optional, default false)
   let includeDiscussions = false;
   if (r.includeDiscussions !== undefined) {
     if (typeof r.includeDiscussions !== "boolean") {
@@ -295,7 +200,6 @@ export function validateGitHubConfig(raw: unknown): GitHubConnectorConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Cursor helpers
 // ---------------------------------------------------------------------------
 
 function makeCursor(payload: GitHubCursorPayload): ConnectorCursor {
@@ -340,7 +244,6 @@ function watermarkKey(repo: string, kind: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Error classification
 // ---------------------------------------------------------------------------
 
 /**
@@ -368,19 +271,15 @@ export function isTransientGitHubError(err: unknown): boolean {
     message?: unknown;
   };
 
-  // AbortError
   if (typeof e.name === "string" && e.name === "AbortError") return true;
 
-  // HTTP status attached by our own error-throwing code.
   const status = pickNumericGitHubStatus(e);
   if (status !== undefined) {
     if (status === 429) return true;
     if (status >= 500 && status <= 599) return true;
-    // Any classified 4xx that isn't 429 is terminal.
     return false;
   }
 
-  // Network-layer error codes.
   const codeStr = typeof e.code === "string" ? e.code : undefined;
   if (codeStr !== undefined) {
     const transientCodes = new Set([
@@ -402,7 +301,6 @@ export function isTransientGitHubError(err: unknown): boolean {
     return false;
   }
 
-  // No status, no code — treat as transient (plain network failures).
   return true;
 }
 
@@ -421,7 +319,6 @@ function pickNumericGitHubStatus(e: {
 }
 
 // ---------------------------------------------------------------------------
-// GitHub API client helpers
 // ---------------------------------------------------------------------------
 
 const GITHUB_API_BASE = "https://api.github.com";
@@ -434,10 +331,6 @@ function makeGitHubApiError(status: number, message: string): Error & { githubSt
   return err;
 }
 
-/**
- * Execute a GET request against the GitHub REST API. Returns the parsed JSON
- * body on success. Throws a structured error on non-2xx responses.
- */
 async function githubGet(
   fetchFn: GitHubFetchFn,
   token: string,
@@ -469,7 +362,6 @@ async function githubGet(
 }
 
 // ---------------------------------------------------------------------------
-// Sync result type
 // ---------------------------------------------------------------------------
 
 /**
@@ -483,7 +375,6 @@ export interface GitHubSyncResult extends SyncIncrementalResult {
 }
 
 // ---------------------------------------------------------------------------
-// Connector factory
 // ---------------------------------------------------------------------------
 
 /**
@@ -521,7 +412,6 @@ export function createGitHubConnector(
       const config = validateGitHubConfig(args.config);
       throwIfAborted(args.abortSignal, "github: sync aborted");
 
-      // Short-circuit: nothing to do if no repos are configured.
       if (config.repos.length === 0) {
         const emptyPayload: GitHubCursorPayload = { watermarks: {}, seenIds: {} };
         const result: GitHubSyncResult = {
@@ -534,7 +424,6 @@ export function createGitHubConnector(
         return result;
       }
 
-      // Parse or seed cursor.
       const isFirstSync = args.cursor === null;
       const payload: GitHubCursorPayload = isFirstSync
         ? { watermarks: {}, seenIds: {} }
@@ -557,14 +446,8 @@ export function createGitHubConnector(
 }
 
 // ---------------------------------------------------------------------------
-// First-sync: seed watermarks without importing
 // ---------------------------------------------------------------------------
 
-/**
- * For each configured repo and resource type, query the current latest
- * item timestamp and record it as the starting watermark. Returns without
- * emitting any documents, mirroring Drive's `getStartPageToken` pattern.
- */
 async function seedWatermarks(
   fetchFn: GitHubFetchFn,
   config: GitHubConnectorConfig,
@@ -572,12 +455,10 @@ async function seedWatermarks(
   signal: AbortSignal | undefined,
 ): Promise<GitHubCursorPayload> {
   const watermarks = { ...initial.watermarks };
-  // seenIds starts empty for first-sync; nothing has been processed yet.
 
   for (const repo of config.repos) {
     throwIfAborted(signal, "github: sync aborted");
 
-    // Issue comments
     try {
       const latest = await fetchLatestTimestamp(
         fetchFn,
@@ -594,7 +475,6 @@ async function seedWatermarks(
 
     throwIfAborted(signal, "github: sync aborted");
 
-    // PR review comments
     try {
       const latest = await fetchLatestTimestamp(
         fetchFn,
@@ -608,7 +488,6 @@ async function seedWatermarks(
       if (isTransientGitHubError(err)) throw err;
     }
 
-    // Discussions (GraphQL not used; we use the REST search endpoint for simplicity)
     if (config.includeDiscussions) {
       throwIfAborted(signal, "github: sync aborted");
       try {
@@ -629,10 +508,6 @@ async function seedWatermarks(
   return { watermarks, seenIds: {} };
 }
 
-/**
- * Fetch the first page of a sorted list and return the `updated_at` field of
- * the first item, or `undefined` if the list is empty.
- */
 async function fetchLatestTimestamp(
   fetchFn: GitHubFetchFn,
   token: string,
@@ -649,7 +524,6 @@ async function fetchLatestTimestamp(
 }
 
 // ---------------------------------------------------------------------------
-// Incremental sync
 // ---------------------------------------------------------------------------
 
 async function incrementalSync(
@@ -666,12 +540,7 @@ async function incrementalSync(
   let skippedTooLarge = 0;
   let totalConsumed = 0;
 
-  // P1 fix (same-timestamp dedup): carry seenIds forward from the cursor.
-  // Maps `{repo}/{kind}/{commentId}` → `updated_at` ISO string for all
-  // comments processed within the same second as their resource watermark.
-  // Cleared per-resource when the watermark advances into a new second.
   const currentSeenIds: Record<string, string> = { ...payload.seenIds };
-  // Accumulate seenIds updates for each resource; merged into nextSeenIds below.
   const updatedSeenIds: Record<string, string> = { ...payload.seenIds };
 
   for (const repo of config.repos) {
@@ -705,8 +574,6 @@ async function incrementalSync(
           const prevWm = updatedWatermarks[wmKey];
           const nextWm = result.latestWatermark;
           updatedWatermarks[wmKey] = nextWm;
-          // Clear seenIds for this resource if the watermark crossed a second
-          // boundary; otherwise merge the newly-seen ids.
           if (prevWm && watermarkCrossedSecond(prevWm, nextWm)) {
             for (const k of Object.keys(updatedSeenIds)) {
               if (k.startsWith(`${repo}/issue-comment/`)) delete updatedSeenIds[k];
@@ -766,7 +633,6 @@ async function incrementalSync(
       }
     }
 
-    // --- Discussion comments (optional) ---
     if (config.includeDiscussions && totalConsumed < MAX_ITEMS_PER_PASS) {
       throwIfAborted(signal, "github: sync aborted");
       const wmKey = watermarkKey(repo, "discussion");
@@ -818,17 +684,11 @@ async function incrementalSync(
   };
 }
 
-/**
- * Returns true when the new watermark has crossed into a new second relative
- * to the previous watermark. ISO 8601 strings sort lexicographically and the
- * second boundary is at the 19-character prefix (e.g. "2026-04-26T09:00:01").
- */
 function watermarkCrossedSecond(prev: string, next: string): boolean {
   return prev.slice(0, 19) < next.slice(0, 19);
 }
 
 // ---------------------------------------------------------------------------
-// URL builders
 // ---------------------------------------------------------------------------
 
 function buildIssueCommentsUrl(repo: string, since?: string): string {
@@ -849,7 +709,6 @@ function buildDiscussionsUrl(repo: string, since?: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Comment fetching + filtering
 // ---------------------------------------------------------------------------
 
 interface FetchAndFilterResult {
@@ -857,41 +716,11 @@ interface FetchAndFilterResult {
   skippedOtherAuthor: number;
   skippedEmpty: number;
   skippedTooLarge: number;
-  /** Count of items that were actually ingested (budget-counted). Skipped
-   *  items (wrong author, empty body, too-large, seenIds dedup) do NOT
-   *  consume budget — see P1 fix `PRRT_kwDORJXyws59sfBs`. */
   consumed: number;
-  /** Latest `updated_at` we saw in this batch (includes skipped items so the
-   *  watermark can advance past them). */
   latestWatermark: string | undefined;
-  /**
-   * New seenId entries accumulated during this pass. Maps
-   * `{repo}/{kind}/{commentId}` → `updated_at` ISO string for every ingested
-   * comment. Used by the caller to build the next cursor's `seenIds` map
-   * (P1 fix `PRRT_kwDORJXyws59sfBq`).
-   */
   newSeenIds: Record<string, string>;
 }
 
-/**
- * Page through the comments at `firstPageUrl`, filter to comments authored
- * by `userLogin`, and build `ConnectorDocument` instances. Respects the
- * per-pass cap via `remainingBudget`.
- *
- * Budget fix (P1 `PRRT_kwDORJXyws59sfBs`): only count ingested records
- * against the budget. Items skipped for wrong author, empty/too-large body,
- * or same-second seenId dedup do NOT advance the cap counter — they should
- * not starve valid records.
- *
- * Same-timestamp dedup (P1 `PRRT_kwDORJXyws59sfBq`): `seenIds` carries
- * comment ids already processed within the same second as the current
- * watermark. If GitHub re-returns them because `since=` is inclusive and
- * matches the exact watermark second, we skip them without re-importing.
- *
- * Uses `since` as a client-side lower-bound filter in addition to the
- * server-side `?since=` param (the server may return items exactly at
- * the watermark that we already ingested).
- */
 async function fetchAndFilterComments(
   fetchFn: GitHubFetchFn,
   token: string,
@@ -929,40 +758,24 @@ async function fetchAndFilterComments(
         continue;
       }
 
-      // Skip items strictly before the watermark. Items whose `updated_at`
-      // equals the watermark second must pass through so the seenIds check
-      // below can distinguish already-ingested comments from new ones at the
-      // same timestamp. Using `<` (strict) here is intentional — `<=` would
-      // make seenIds unreachable for boundary items, permanently dropping any
-      // comment that arrives in the same second as the current watermark.
       if (since && comment.updated_at < since) {
         continue;
       }
 
-      // Same-second dedup: skip only if this exact (id, updated_at) pair was
-      // already ingested on a prior pass. A later edit of the same comment
-      // produces a newer `updated_at`, so we must NOT gate on id alone — we
-      // must also confirm the timestamp matches before skipping. This prevents
-      // silent data loss when a comment is edited after its first ingestion.
       const seenKey = `${repo}/${kind}/${comment.id}`;
       if (seenIds[seenKey] === comment.updated_at) {
         continue;
       }
 
-      // Author filter (client-side). Not counted against budget —
-      // P1 fix `PRRT_kwDORJXyws59sfBs`: only ingested records consume budget.
       const authorLogin = comment.user?.login ?? null;
       if (authorLogin !== userLogin) {
         skippedOtherAuthor++;
-        // Still track watermark for non-matching items to prevent re-fetching
-        // them on every subsequent poll.
         if (!latestWatermark || comment.updated_at > latestWatermark) {
           latestWatermark = comment.updated_at;
         }
         continue;
       }
 
-      // Body validation. Also not counted against budget.
       const body = comment.body ?? "";
       const trimmed = body.trim();
       if (trimmed.length === 0) {
@@ -980,10 +793,8 @@ async function fetchAndFilterComments(
         continue;
       }
 
-      // This item will be ingested — count it against the budget.
       consumed++;
 
-      // Build document.
       const doc = buildDocument(comment, repo, kind, fetchedAt);
       docs.push(doc);
 
@@ -991,19 +802,12 @@ async function fetchAndFilterComments(
         latestWatermark = comment.updated_at;
       }
 
-      // Record in newSeenIds for same-second dedup on subsequent polls.
       newSeenIds[seenKey] = comment.updated_at;
     }
 
-    // Follow GitHub's `Link: <url>; rel="next"` header for pagination.
-    // We don't have direct header access via the minimal fetch abstraction,
-    // so pagination is signaled by a full page being returned. If the page
-    // has fewer items than GITHUB_PAGE_SIZE we've reached the end.
-    // This is conservative but correct — a short page always means "no more".
     if (data.length < GITHUB_PAGE_SIZE) {
       nextUrl = undefined;
     } else {
-      // Full page received — there may be more. Advance via page parameter.
       nextUrl = advancePageUrl(nextUrl);
     }
   }
@@ -1036,11 +840,6 @@ function normalizeGitHubComment(
   };
 }
 
-/**
- * Advance a paginated GitHub URL by incrementing the `page` query parameter.
- * GitHub uses 1-based page numbers; if no `page` param is present we assume
- * we're on page 1 and bump to page 2.
- */
 function advancePageUrl(url: string): string {
   try {
     const u = new URL(url);
@@ -1048,13 +847,11 @@ function advancePageUrl(url: string): string {
     u.searchParams.set("page", String(isNaN(page) ? 2 : page + 1));
     return u.toString();
   } catch {
-    // If URL parsing fails, bail — don't loop infinitely.
     return "";
   }
 }
 
 // ---------------------------------------------------------------------------
-// Document builder
 // ---------------------------------------------------------------------------
 
 function buildDocument(
@@ -1084,10 +881,6 @@ function buildDocument(
   };
 }
 
-/**
- * Build a short human-readable title for the comment document.
- * We avoid fetching the issue/PR title to keep the connector read-light.
- */
 function buildTitle(repo: string, kind: string, comment: GitHubComment): string {
   const kindLabel =
     kind === "issue-comment"

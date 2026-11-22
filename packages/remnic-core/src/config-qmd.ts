@@ -43,7 +43,6 @@ export function parseQmdChunkStrategy(value: unknown): "auto" | "regex" {
   throw new Error(`qmdChunkStrategy must be "auto" or "regex"; got ${JSON.stringify(value)}`);
 }
 
-// Issue #1335. Default "hybrid" preserves the historical lex+vec+hyde daemon plan.
 export function parseQmdSearchStrategy(value: unknown): "hybrid" | "lex-vec" | "lex" {
   if (value === undefined || value === null) return "hybrid";
   if (typeof value !== "string") {
@@ -60,8 +59,6 @@ export function parseQmdSearchStrategy(value: unknown): "hybrid" | "lex-vec" | "
   );
 }
 
-// Issue #1335. Reject non-numeric / non-integer timeouts rather than silently
-// coercing them (gotcha #51), then clamp valid integers to the documented bounds.
 export function parseQmdDaemonTimeoutMs(value: unknown): number {
   if (value === undefined || value === null) return 60_000;
   const coerced = coerceNumber(value);
@@ -73,7 +70,6 @@ export function parseQmdDaemonTimeoutMs(value: unknown): number {
   return Math.min(120_000, Math.max(1_000, coerced));
 }
 
-// Issue #1335. Default "query" keeps `qmd query` (LLM expansion + rerank) per gotcha #7.
 export function parseQmdSubprocessStrategy(value: unknown): "query" | "search" {
   if (value === undefined || value === null) return "query";
   if (typeof value !== "string") {

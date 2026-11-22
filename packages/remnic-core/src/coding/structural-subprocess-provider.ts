@@ -78,9 +78,6 @@ const DEFAULT_SYMBOLS_SUBCOMMAND = "symbols-for-diff";
 export function createSubprocessStructuralProvider(
   options: SubprocessProviderOptions,
 ): StructuralContextProvider {
-  // Rule 17 — expand a leading ~ so a home-relative binary path
-  // (e.g. ~/bin/cbm) resolves instead of degrading to unavailable.
-  // Mirrors the codegraph-runtime.ts precedent for operator paths.
   const command = expandTildePath(options.command.trim());
   const extraArgs = options.args ?? [];
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -96,9 +93,6 @@ export function createSubprocessStructuralProvider(
       probeState = { available: false, detail: "structuralProviderCommand is empty" };
       return probeState;
     }
-    // Rule 24 — file existence check at probe time. An operator pointing at
-    // a missing/renamed binary gets a DISTINCT `provider_unavailable` code,
-    // never a silent empty result.
     let statOk = false;
     let notExecutable = false;
     try {
@@ -139,8 +133,6 @@ export function createSubprocessStructuralProvider(
       if (!probe.available) {
         return { ok: false, code: "provider_unavailable", detail: probe.detail };
       }
-      // Rule 10 — argv array; the diff is carried as a JSON argument so the
-      // binary never sees a shell and never re-interpolates paths.
       const payload = JSON.stringify({ diff });
       const argv = [symbolsSubcommand, payload, ...extraArgs];
       try {
@@ -178,8 +170,6 @@ export function createSubprocessStructuralProvider(
   };
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// JSON validation — rule 18 (object-not-null), rule 51 (shape), rule 34
 // ──────────────────────────────────────────────────────────────────────────
 
 function parseSymbolJson(stdout: string): SymbolsForDiffResult {
@@ -289,7 +279,6 @@ function defaultSpawn(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Doctor probe — construct a one-shot provider from config and probe it
 // ──────────────────────────────────────────────────────────────────────────
 
 /**

@@ -117,8 +117,6 @@ test("an absent failure omits the key; whitespace is refused, not cleaned", () =
     body: "deterministic render",
     kind: "deterministic",
   });
-  // With the typed contract, whitespace is an unknown kind, not a blank to
-  // silently drop: a caller must omit the field, not send a placeholder.
   assert.throws(
     () =>
       selectRecapForDay({
@@ -141,8 +139,6 @@ test("input is not mutated", () => {
   assert.deepEqual(input, snapshot);
 });
 
-// Review: an unknown failure kind must be refused, not echoed into telemetry
-// as though it were typed.
 test("an unknown failure kind throws instead of being echoed", () => {
   assert.throws(
     () =>
@@ -162,8 +158,6 @@ test("an unknown failure kind throws instead of being echoed", () => {
   }
 });
 
-// Review: a malformed lower-priority candidate must not hide behind a valid
-// higher-priority one. The contract throws on a bad kind whatever wins.
 test("a valid ai candidate does not hide a malformed previous candidate", () => {
   assert.throws(
     () =>

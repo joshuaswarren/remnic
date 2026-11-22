@@ -1,6 +1,3 @@
-/**
- * MemBench runner migrated into @remnic/bench for phase 1.
- */
 
 import { randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";

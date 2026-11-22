@@ -1,6 +1,3 @@
-/**
- * YAML custom benchmark loader.
- */
 
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";

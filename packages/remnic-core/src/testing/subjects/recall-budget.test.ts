@@ -1,28 +1,3 @@
-/**
- * Recall-budget contract lifecycle subject for the scenario-matrix harness
- * (issue #2067, umbrella #1988). The recall-output budgeting subsystem
- * (orchestration/recall-section-coordinator.ts, fed by config.ts
- * buildRecallPipelineConfig and consumed through retrieval / recall-qos /
- * recall-mmr) is the contract that keeps injected memory context inside a
- * bounded character budget derived from `maxMemoryTokens`. A regression there
- * silently over- or under-injects context, so the matrix guards it directly.
- *
- * The nine rows are realized honestly against the coordinator's REAL behavior —
- * no mocks. Config is built through the production `parseConfig` path so the
- * budget derivation (recallBudgetChars = maxMemoryTokens), section
- * enablement filtering, per-section maxChars caps, and cap-after-filter
- * ordering are all exercised as they ship. Each row asserts one recall-budget
- * contract invariant:
- *   - explicit-provider-identity : budget cap honored AFTER section filtering
- *   - sparse-metadata-with-binding: section sum ≤ maxMemoryTokens-derived budget
- *   - sparse-metadata-without-binding: a gated (disabled) fallback never injects
- *   - provider-rebinding         : minimal-mode budget override caps retrieval
- *   - restart-reload-recovery    : budget assembly is stable across restart
- *   - compaction-flush           : truncation respects the per-section budget
- *   - before-reset               : oversized sections are capped, not overrun
- *   - session-end                : a zero limit produces an empty injection
- *   - dedupe-replay              : assembly is idempotent; protected section kept
- */
 
 import assert from "node:assert/strict";
 
@@ -35,11 +10,6 @@ import { applyRuntimeRetrievalPolicy, expandQuery } from "../../retrieval.js";
 import type { PluginConfig, RecallSectionConfig } from "../../types.js";
 import { type LifecycleSubject, type MatrixRow, runLifecycleMatrix } from "../lifecycle-matrix.js";
 
-/**
- * The budget-capped assembly result the coordinator produces. Declared here
- * (not via `ReturnType<...>`) so the subject couples to a named contract, not
- * to the coordinator method's implementation signature.
- */
 interface AssembledSections {
   sections: string[];
   includedIds: string[];
@@ -49,21 +19,15 @@ interface AssembledSections {
 }
 
 interface RecallBudgetState {
-  /** Mutable so the restart / rebinding rows can swap in a fresh config. */
   config: PluginConfig;
   coordinator: RecallSectionCoordinator;
   buckets: Map<string, string[]>;
-  /** Assembly output captured in `exercise`, asserted in `invariants`. */
   assembled?: AssembledSections;
-  /** Second assembly for the idempotency row. */
   assembledReplay?: AssembledSections;
-  /** Assembly after a replayed injection into the same buckets (dedupe row). */
   assembledAfterReplayAppend?: AssembledSections;
-  /** appendRecallSection return values, keyed by section id (gating row). */
   appendReturns: Map<string, boolean>;
 }
 
-/** Build a real PluginConfig through the production parse path. */
 function buildConfig(overrides: {
   maxMemoryTokens?: number;
   recallBudgetChars?: number;
@@ -72,7 +36,6 @@ function buildConfig(overrides: {
   return parseConfig({ openaiApiKey: "sk-test", ...overrides });
 }
 
-/** A body of `chars` deterministic non-whitespace characters. */
 function body(label: string, chars: number): string {
   const seed = `[${label}] `;
   if (chars <= seed.length) return "x".repeat(chars);
@@ -82,7 +45,6 @@ function body(label: string, chars: number): string {
 /** The separator the coordinator inserts between assembled sections. */
 const SECTION_SEPARATOR = "\n\n---\n\n";
 
-/** Total character length of an assembled section list including separators. */
 function assembledCharLength(sections: readonly string[]): number {
   if (sections.length === 0) return 0;
   const content = sections.reduce((sum, s) => sum + s.length, 0);
@@ -95,12 +57,9 @@ function makeCoordinator(state: { config: PluginConfig }): RecallSectionCoordina
 
 const subject: LifecycleSubject<RecallBudgetState> = {
   async setup(row: MatrixRow): Promise<RecallBudgetState> {
-    // Per-row config: each row pins the exact budget dimension it probes so the
-    // assertion is unambiguous.
     let config: PluginConfig;
     switch (row.id) {
       case "sparse-metadata-with-binding":
-        // No explicit recallBudgetChars — force the maxMemoryTokens derivation.
         config = buildConfig({
           maxMemoryTokens: 40,
           recallPipeline: [
@@ -125,7 +84,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
           recallBudgetChars: 4000,
           recallPipeline: [
             { id: "memories", enabled: true, maxResults: 7 },
-            // The fallback section is disabled — a no-recall-style gate.
             { id: "peer-profile", enabled: false },
           ],
         });
@@ -153,8 +111,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
       buckets: new Map(),
       appendReturns: new Map(),
     };
-    // Rebind the coordinator's getter to the state so mutable config swaps
-    // (restart / rebinding rows) are honored.
     state.coordinator = new RecallSectionCoordinator({ getConfig: () => state.config });
     return state;
   },
@@ -163,8 +119,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
     const { coordinator, buckets, appendReturns } = state;
     switch (row.id) {
       case "explicit-provider-identity": {
-        // Fill enabled + disabled sections; the disabled one must be filtered
-        // out before the budget cap is applied.
         appendReturns.set("profile", coordinator.appendRecallSection(buckets, "profile", body("profile", 80)));
         appendReturns.set("memories", coordinator.appendRecallSection(buckets, "memories", body("memories", 80)));
         appendReturns.set(
@@ -175,7 +129,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         return;
       }
       case "sparse-metadata-with-binding": {
-        // Content far exceeds the derived budget so the cap must bite.
         coordinator.appendRecallSection(buckets, "profile", body("profile", 300));
         coordinator.appendRecallSection(buckets, "memories", body("memories", 300));
         coordinator.appendRecallSection(buckets, "recent", body("recent", 300));
@@ -195,7 +148,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         coordinator.appendRecallSection(buckets, "profile", body("profile", 150));
         coordinator.appendRecallSection(buckets, "memories", body("memories", 150));
         coordinator.appendRecallSection(buckets, "recent", body("recent", 150));
-        // Full budget first, then a minimal-mode override that caps retrieval.
         state.assembled = coordinator.assembleRecallSections(buckets);
         state.assembledReplay = coordinator.assembleRecallSections(buckets, 120);
         return;
@@ -204,7 +156,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         coordinator.appendRecallSection(buckets, "profile", body("profile", 120));
         coordinator.appendRecallSection(buckets, "memories", body("memories", 120));
         state.assembled = coordinator.assembleRecallSections(buckets);
-        // Simulate a restart: a fresh coordinator over the same live config.
         state.coordinator = new RecallSectionCoordinator({ getConfig: () => state.config });
         state.assembledReplay = state.coordinator.assembleRecallSections(buckets);
         return;
@@ -215,7 +166,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         return;
       }
       case "before-reset": {
-        // Every section is individually larger than the whole budget.
         coordinator.appendRecallSection(buckets, "profile", body("profile", 600));
         coordinator.appendRecallSection(buckets, "memories", body("memories", 600));
         coordinator.appendRecallSection(buckets, "recent", body("recent", 600));
@@ -223,19 +173,12 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         return;
       }
       case "session-end": {
-        // Content enters the bucket; the zero budget must then drop it entirely.
         appendReturns.set("memories", coordinator.appendRecallSection(buckets, "memories", body("memories", 200)));
-        // A maxChars:0 section refuses injection at append time.
         appendReturns.set("capped", coordinator.appendRecallSection(buckets, "capped", body("capped", 200)));
-        // Assemble with an explicit zero-limit override.
         state.assembled = coordinator.assembleRecallSections(buckets, 0);
         return;
       }
       case "dedupe-replay": {
-        // A genuine recall replay: run the full inject-then-assemble path
-        // twice over independent buckets and assert the second run reproduces
-        // the first exactly. This exercises the real replay flow (re-injecting
-        // the same recall), not merely re-calling a pure function on one Map.
         const inject = (target: Map<string, string[]>): void => {
           coordinator.appendRecallSection(target, "memories", body("memories", 120));
           coordinator.appendRecallSection(target, "recent", body("recent", 400));
@@ -245,10 +188,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         const replayBuckets = new Map<string, string[]>();
         inject(replayBuckets);
         state.assembledReplay = coordinator.assembleRecallSections(replayBuckets);
-        // Replay the SAME memories injection back into the original buckets: a
-        // duplicated recall must not overrun the budget nor drop the protected
-        // section. The coordinator does not dedup at this layer (the bucket now
-        // holds two chunks); the budget cap is the backstop against replay growth.
         coordinator.appendRecallSection(buckets, "memories", body("memories", 120));
         state.assembledAfterReplayAppend = coordinator.assembleRecallSections(buckets);
         return;
@@ -268,16 +207,11 @@ const subject: LifecycleSubject<RecallBudgetState> = {
 
     switch (row.id) {
       case "explicit-provider-identity": {
-        // The disabled section is filtered out; the cap is honored on the rest.
         assert.equal(state.appendReturns.get("disabled-section"), false, "a disabled section must not inject");
         assert.ok(!assembled.includedIds.includes("disabled-section"), "disabled section absent from assembly");
         assert.deepEqual(assembled.includedIds, ["profile", "memories"], "only enabled, non-empty sections assemble");
         assert.ok(assembled.finalChars <= budget, "assembled chars stay within the budget cap");
         assert.equal(assembled.finalChars, assembledCharLength(assembled.sections), "finalChars accounts for separators");
-        // The coordinator's budget-summary + source-collection contracts feed
-        // the recall snapshot: the summary echoes the applied budget/topK and
-        // sections, and the source list records the recall source plus every
-        // populated section id.
         const summary = coordinator.buildLastRecallBudgetSummary({
           requestedTopK: 5,
           recallResultLimit: assembled.includedIds.length,
@@ -298,7 +232,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         return;
       }
       case "sparse-metadata-with-binding": {
-        // Budget keeps Latin-script headroom and token-aware assembly caps wide scripts.
         assert.equal(config.recallBudgetChars, config.maxMemoryTokens * 4, "budget derives from maxMemoryTokens");
         assert.ok(budget <= config.maxMemoryTokens * 4, "coordinator honors the character budget");
         assert.ok(assembled.finalChars <= budget, "section sum stays within the character budget");
@@ -306,13 +239,10 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         return;
       }
       case "sparse-metadata-without-binding": {
-        // The gated fallback never injects — nothing fabricates its content.
         assert.equal(state.appendReturns.get("peer-profile"), false, "a gated fallback section is refused");
         assert.equal(state.appendReturns.get("memories"), true, "the bound section still injects");
         assert.ok(!assembled.includedIds.includes("peer-profile"), "gated fallback absent from assembly");
         assert.deepEqual(assembled.includedIds, ["memories"], "only the resolvable section assembles");
-        // Per-section numeric budget knobs resolve from config, and a disabled
-        // section stays gated even when its subsystem is top-level enabled.
         assert.equal(coordinator.getRecallSectionNumber("memories", "maxResults"), 7, "a per-section numeric budget is read from config");
         assert.equal(coordinator.getRecallSectionNumber("memories", "maxTurns"), undefined, "an unset per-section field is undefined");
         assert.equal(coordinator.isSpecializedRecallSectionEnabled("peer-profile", true), false, "a disabled section stays off even when its subsystem is enabled");
@@ -326,9 +256,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         assert.ok(minimal.finalChars < assembled.finalChars, "minimal mode injects strictly less than full mode");
         assert.ok(minimal.includedIds.length <= assembled.includedIds.length, "minimal mode retrieves no more sections");
         assert.ok(minimal.omittedIds.length >= 1, "the tighter budget omits at least one section");
-        // The sibling recall stages carry their own budget contracts. MMR's
-        // topN prioritizes a diverse head WITHOUT dropping recall content (no
-        // silent drops), and query expansion caps the derived query count.
         const pool = Array.from({ length: 8 }, (_v, i) => ({ path: `p${i}`, snippet: `snippet ${i}`, score: 1 - i / 10 }));
         const reordered = reorderRecallResultsWithMmr(pool, { topN: 3 });
         assert.equal(reordered.reordered.length, pool.length, "MMR reorders without dropping any candidate");
@@ -341,9 +268,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         const expanded = expandQuery("budget aware recall pipeline section caps", { maxQueries: 3, minTokenLen: 3 });
         assert.ok(expanded.length <= 3, "query expansion caps the number of derived queries");
         assert.equal(expanded[0], "budget aware recall pipeline section caps", "the original query is always retained first");
-        // A rebinding may carry a runtime retrieval-policy override; the policy
-        // resolver clamps the recency weight into [0,1] rather than trusting an
-        // out-of-range value, and falls back to the base when none is supplied.
         assert.equal(applyRuntimeRetrievalPolicy({ recencyWeight: 0.4 }, { recencyWeight: 5 }).recencyWeight, 1, "an over-range runtime recency weight is clamped to 1");
         assert.equal(applyRuntimeRetrievalPolicy({ recencyWeight: 0.4 }, { recencyWeight: -5 }).recencyWeight, 0, "an under-range runtime recency weight is clamped to 0");
         assert.equal(applyRuntimeRetrievalPolicy({ recencyWeight: 0.4 }, null).recencyWeight, 0.4, "no runtime override falls back to the base recency weight");
@@ -357,20 +281,15 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         return;
       }
       case "compaction-flush": {
-        // The per-section maxChars cap truncates the appended content.
         const perSectionCap = coordinator.getRecallSectionMaxChars("memories");
         assert.equal(perSectionCap, 30, "the per-section cap is resolved from config");
         const chunks = state.buckets.get("memories");
         assert.ok(chunks && chunks.length === 1, "the section holds one truncated chunk");
         const chunk = chunks![0]!;
         assert.ok(chunk.includes("...(trimmed)"), "the per-section truncation marker is present");
-        // The chunk is exactly the first `perSectionCap` chars of the original
-        // content followed by the trim marker — proving where the cut landed,
-        // not merely that a re-slice has the cap length.
         const original = body("memories", 500);
         assert.equal(chunk, `${original.slice(0, perSectionCap!)}\n\n...(trimmed)\n`, "content is cut at the per-section budget, then marked");
         assert.ok(chunk.length < original.length, "the truncated chunk is shorter than the original content");
-        // truncateRecallSectionToBudget respects a hard per-section budget too.
         const truncated = coordinator.truncateRecallSectionToBudget(body("m", 200), 50);
         assert.equal(truncated.length, 50, "budget-aware truncation lands exactly on the per-section limit");
         const tokenTrimmed = coordinator.truncateRecallSectionToBudget("x".repeat(200), 200, 20);
@@ -389,7 +308,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         assert.ok(emojiTrimmed.length <= 60, "astral text stays within the UTF-16 character cap");
         assert.ok(estimateTokenCount(emojiTrimmed) <= 29, "astral text stays within the token cap");
         assert.match(emojiTrimmed, /\.\.\.\(memory context trimmed\)$/);
-        // QoS accounting that flags a section dropped for the budget deadline.
         const skipMetric = formatRecallSectionMetric({
           section: "memories",
           priority: "enrichment",
@@ -400,8 +318,6 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         });
         assert.equal(skipMetric.timing, "skip", "a skipped section is timed as 'skip'");
         assert.equal(skipMetric.level, "debug", "a skipped enrichment section logs at debug level");
-        // The recorder factory writes the section's timing into a timings map
-        // and routes a successful core section to an info-level log.
         const timings: Record<string, string> = {};
         const infoLogs: string[] = [];
         const record = createRecallSectionMetricRecorder({
@@ -422,20 +338,15 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         return;
       }
       case "before-reset": {
-        // Cap-after-filter: every section is oversized, so the assembly is
-        // truncated and later sections are omitted, never overrunning budget.
         assert.ok(assembled.finalChars <= budget, "oversized sections never overrun the budget");
         assert.ok(assembled.truncated, "oversized assembly is marked truncated");
         assert.ok(assembled.omittedIds.length >= 1, "sections past the budget are omitted");
-        // The protected "memories" section survives even when every section is
-        // oversized: budget reservation keeps it in, it is never omitted.
         assert.ok(assembled.includedIds.includes("memories"), "the protected memories section survives budget pressure");
         assert.ok(!assembled.omittedIds.includes("memories"), "the protected memories section is never omitted under pressure");
         assert.equal(assembled.finalChars, assembledCharLength(assembled.sections), "finalChars is accurate under pressure");
         return;
       }
       case "session-end": {
-        // A zero limit produces an empty injection — no partial context.
         assert.equal(budget, 0, "the budget is zero");
         assert.deepEqual(assembled.sections, [], "zero budget injects no sections");
         assert.deepEqual(assembled.includedIds, [], "zero budget includes nothing");
@@ -449,12 +360,8 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         const replay = state.assembledReplay;
         assert.ok(replay, "replayed assembly must exist");
         assert.deepEqual(replay, assembled, "a re-injected recall replay reproduces the assembly exactly");
-        // "memories" is protected — retained even though "recent" overflows.
         assert.ok(assembled.includedIds.includes("memories"), "the protected memories section is always kept");
         assert.ok(assembled.finalChars <= budget, "protected assembly still respects the budget");
-        // The replayed injection duplicated the memories chunk in the bucket
-        // (no coordinator-level dedup), yet the budget still bounds the output
-        // and the protected section survives.
         assert.equal(state.buckets.get("memories")?.length, 2, "a replayed append is not coalesced by the coordinator");
         const afterReplay = state.assembledAfterReplayAppend;
         assert.ok(afterReplay, "post-replay-append assembly must exist");

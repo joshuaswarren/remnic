@@ -1,18 +1,3 @@
-/**
- * Codegraph OKF projection (issue #1950).
- *
- * Read-only projection of one project's code-graph SQLite store into an
- * OKF v0.1 knowledge bundle: the stored architecture card, decision
- * records, and one `Code Module` concept per indexed source file with its
- * symbols and outgoing edges. The store is NEVER opened for write — the
- * SQLite file is opened `readonly`, so an export cannot mutate indexing
- * state and the file's bytes are stable across runs.
- *
- * Rendering discipline mirrors architecture-card.ts (rule 38): byte-stable
- * output for an unchanged graph; every list is sorted with a total order.
- * Shared bundle mechanics come from ../okf/render.ts (one source of truth
- * with the memory exporter, issue #1948).
- */
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
@@ -150,9 +135,6 @@ export async function exportCodegraphOkfBundle(
     );
   }
   rejectSymlinkPath(path.resolve(opts.outDir));
-  // Explicit option validation (config-coercion footgun): honor the given
-  // value or fail loudly — never silently default a bad input. `0` is a
-  // legitimate "no module concepts" cap and is honored.
   const maxModules = opts.maxModuleConcepts ?? DEFAULT_OKF_CODEGRAPH_MAX_MODULE_CONCEPTS;
   if (!Number.isInteger(maxModules) || maxModules < 0) {
     throw new Error(
@@ -181,8 +163,6 @@ export async function exportCodegraphOkfBundle(
     );
   }
 
-  // Read the graph through a readonly handle — bytes on disk are never
-  // touched, and the store cache (write-mode handles) is bypassed entirely.
   const graphIndexedAt = statSync(dbPath).mtime.toISOString();
   const db = openBetterSqlite3(dbPath, { readonly: true, fileMustExist: true });
   let files: GraphFileRow[];
@@ -211,9 +191,6 @@ export async function exportCodegraphOkfBundle(
     db.close();
   }
 
-  // Trust boundary: file paths come from the indexed graph. Reject anything
-  // that is not a strict repo-relative POSIX path so a hostile row cannot
-  // escape the staging directory via writeBundleFile's path.join.
   const safeFiles = files.filter(
     (f) => f.path.length > 0 && !f.path.startsWith("/") && !f.path.split("/").includes(".."),
   );
@@ -226,8 +203,6 @@ export async function exportCodegraphOkfBundle(
     nodesByFile.set(node.file_id, list);
   }
 
-  // Deterministic truncation: most symbols first, path ascending as the
-  // tie-break (issue acceptance: cap of 1 keeps the highest-symbol file).
   const ranked = [...safeFiles].sort((a, b) => {
     const aCount = (nodesByFile.get(a.id) ?? []).length;
     const bCount = (nodesByFile.get(b.id) ?? []).length;
@@ -249,7 +224,6 @@ try {
     if (opts.includeAdrs !== false && existsSync(namespaceDir)) {
       const storage = new StorageManager(namespaceDir);
       const memories = await storage.readAllMemories();
-      // Architecture card — reuse the surface's classification (rule 53).
       const card = await findArchitectureCardMemory(readOnlyCardStorage(storage, namespaceDir, namespace));
       if (card) {
         architectureCard = true;
@@ -272,9 +246,6 @@ try {
         try {
           const parsed = parseDecisionRecord(memory.content);
           records.push({
-            // Production writes leave the ADR frontmatter id empty and use
-            // the memory id as the canonical identifier (decisionRecord
-            // surface path) — prefer the ADR id, fall back to the memory id.
             record: parsed.id ? parsed : { ...parsed, id: memory.frontmatter.id },
             timestamp: memory.frontmatter.updated ?? memory.frontmatter.created,
           });
@@ -318,9 +289,6 @@ try {
       renderRootIndex(git.repoName, projectId, architectureCard, decisions, keptFiles, safeFiles, truncated),
     );
 
-    // Self-validate with the #1946 conformance checker; non-conformant
-    // output fails the command. Reserved basenames (the bundle's own
-    // index.md files) are the documented exemption, as in the memory export.
     const lint = lintOkfDir(staging);
     const blocking = lint.findings.filter((f) => f.code !== "skipped_encrypted" && f.code !== "reserved_basename");
     if (blocking.length > 0) {
@@ -341,11 +309,6 @@ try {
   };
 }
 
-/**
- * Read-only adapter over the namespace StorageManager for
- * {@link findArchitectureCardMemory} — write arms throw so a future edit
- * cannot silently turn the exporter into a mutating surface.
- */
 function readOnlyCardStorage(
   storage: StorageManager,
   dir: string,

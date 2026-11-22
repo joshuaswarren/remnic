@@ -1,9 +1,3 @@
-/**
- * correction/index.ts — barrel for the Correction Contract (issue #1580).
- *
- * One plan/apply pipeline for all memory corrections. See
- * {@link CorrectionService} for the single entry point every surface calls.
- */
 
 export {
   CorrectionContractError,

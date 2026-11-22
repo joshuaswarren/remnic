@@ -81,10 +81,8 @@ test("applyMmrToCandidates collapses near-duplicate clusters (cosine)", () => {
       .join(",")}`,
   );
 
-  // The highest-relevance duplicate should still be included.
   const ids = selected.map((c) => c.id);
   assert.ok(ids.includes("dupe-1"), `expected dupe-1 in selection: ${ids}`);
-  // All three fully diverse axes should also surface.
   assert.ok(ids.includes("div-y"));
   assert.ok(ids.includes("div-z"));
   assert.ok(ids.includes("div-w"));
@@ -129,9 +127,7 @@ test("applyMmrToCandidates falls back to Jaccard when embeddings are missing", (
 
   assert.equal(selected.length, 3);
   const ids = selected.map((c) => c.id);
-  // The top-scored lexical duplicate should be included...
   assert.ok(ids.includes("s1"));
-  // ...but MMR should prefer the diverse candidates over the other near-dupes.
   const sxCount = ids.filter((id) => id.startsWith("s")).length;
   assert.ok(
     sxCount < 3,
@@ -151,7 +147,6 @@ test("applyMmrToCandidates is sensitive to lambda", () => {
     makeCandidate("d", "gamma", 0.4, [0, 0, 1, 0]),
   ];
 
-  // Lambda = 1.0 → pure relevance, no diversity adjustment.
   const pureRelevance = applyMmrToCandidates({
     candidates,
     lambda: 1.0,
@@ -159,8 +154,6 @@ test("applyMmrToCandidates is sensitive to lambda", () => {
   });
   assert.deepEqual(pureRelevance.map((c) => c.id), ["a", "b"]);
 
-  // Lambda = 0.2 → diversity dominates, the second pick should avoid the
-  // near-duplicate of `a`.
   const diverse = applyMmrToCandidates({
     candidates,
     lambda: 0.2,
@@ -199,7 +192,6 @@ test("applyMmrToCandidates respects topN clamping", () => {
     budget: 5,
   });
   assert.equal(out.length, 5);
-  // All selected should come from the top 10 (indices 0-9).
   for (const c of out) {
     const idx = Number.parseInt(c.id.split("-")[1]!, 10);
     assert.ok(idx < 10, `selected candidate ${c.id} outside topN window`);
@@ -209,7 +201,6 @@ test("applyMmrToCandidates respects topN clamping", () => {
 test("applyMmrToCandidates handles budget=0 as empty selection", () => {
   const candidates = [makeCandidate("a", "one", 1), makeCandidate("b", "two", 0.5)];
   const out = applyMmrToCandidates({ candidates, budget: 0 });
-  // budget=0 is clamped to 0, nothing selected
   assert.equal(out.length, 0);
 });
 
@@ -296,8 +287,6 @@ test("applyMmrToCandidates end-to-end: duplicate sentences reduced vs disabled",
   );
 });
 
-// ---------------------------------------------------------------------------
-// Regression: path-first keying for reorderRecallResultsWithMmr
 // (ChatGPT Codex P2 review comment on PR #391)
 // ---------------------------------------------------------------------------
 
@@ -364,7 +353,6 @@ test(
 );
 
 // ---------------------------------------------------------------------------
-// Regression: head-of-list diversity metric actually reflects reordering
 // (Cursor Bugbot Medium review comment on PR #391)
 // ---------------------------------------------------------------------------
 
@@ -420,8 +408,6 @@ test(
 );
 
 // ---------------------------------------------------------------------------
-// Regression: MMR must run before truncation so diverse candidates just below
-// the cutoff can be promoted into the final injected set.
 // (ChatGPT Codex P2 review comment on PR #391)
 // ---------------------------------------------------------------------------
 
@@ -519,7 +505,6 @@ test(
 );
 
 // ---------------------------------------------------------------------------
-// Regression: Unicode-aware Jaccard tokenization for multilingual snippets
 // (ChatGPT Codex P2 review comment on PR #391)
 // ---------------------------------------------------------------------------
 
@@ -633,7 +618,6 @@ test(
 // Regression: diversity metric must emit an actionable signal even in
 // reorder-only mode. `kept/considered` alone is unactionable when MMR never
 // drops candidates; the new `headReorderCount` field makes the metric useful.
-// (Cursor Bugbot Low-severity review comment on PR #391)
 // ---------------------------------------------------------------------------
 
 test(
@@ -680,7 +664,6 @@ test(
       lambda: 0.7,
       budget: candidates.length,
     });
-    // Sanity: MMR should not reshuffle a perfectly diverse pool.
     assert.deepEqual(
       reordered.map((c) => c.id),
       ["x", "y", "z"],
@@ -798,7 +781,6 @@ test(
       diversity.avgPairwiseSimAfter + 1e-9 < diversity.avgPairwiseSimBefore,
       `head-of-list MMR should lower avg pairwise similarity: before=${diversity.avgPairwiseSimBefore} after=${diversity.avgPairwiseSimAfter}`,
     );
-    // Sanity: MMR should have pulled at least one diverse candidate into the head.
     const headDocids = reordered.slice(0, 4).map((r) => r.docid);
     assert.ok(
       headDocids.some((d) => d && d.startsWith("d")),

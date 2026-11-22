@@ -30,10 +30,6 @@ function isTimelineCategoryId(id: string): boolean {
 }
 
 
-/**
- * Default registry. User category orders step by 10 so a corrected registry
- * can insert between without renumbering; system categories sort last.
- */
 export const DEFAULT_TIMELINE_CATEGORIES: readonly TimelineCategory[] = [
   { id: "development", name: "Development", color: "#3b82f6", description: "Editors, terminals, IDEs, and code forges.", order: 10 },
   { id: "communication", name: "Communication", color: "#f59e0b", description: "Mail, chat, and meetings.", order: 20 },
@@ -102,10 +98,6 @@ export function validateTimelineCategories(categories: readonly TimelineCategory
   }
 }
 
-/**
- * Deterministic presentation order: by `order`, then by id as the equal-order
- * tie-breaker, so two categories sharing an order never swap between runs.
- */
 export function sortTimelineCategories(categories: readonly TimelineCategory[]): TimelineCategory[] {
   return [...categories].sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }

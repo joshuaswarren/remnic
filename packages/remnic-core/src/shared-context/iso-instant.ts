@@ -12,7 +12,6 @@
  * provenance stamp share one validator instead of two copies.
  */
 
-// Linear ISO instant. No nested quantifiers.
 const ISO_INSTANT =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 

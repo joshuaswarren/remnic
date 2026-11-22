@@ -10,8 +10,6 @@
  */
 
 // ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
 
 export interface HermesClientOptions {
   /** Base URL of the Engram HTTP server (e.g. "http://127.0.0.1:4318") */
@@ -31,7 +29,6 @@ export interface HermesClientOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Response types
 // ---------------------------------------------------------------------------
 
 export interface EngramAccessHealthResponse {
@@ -171,7 +168,6 @@ export interface MemoryStoreRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Error types
 // ---------------------------------------------------------------------------
 
 export class HermesError extends Error {
@@ -190,7 +186,6 @@ function hasNonEmptyIdempotencyKey(value: unknown): value is string {
 }
 
 // ---------------------------------------------------------------------------
-// Client
 // ---------------------------------------------------------------------------
 
 export class HermesClient {
@@ -213,7 +208,6 @@ export class HermesClient {
   }
 
   // -----------------------------------------------------------------------
-  // Core methods
   // -----------------------------------------------------------------------
 
   async health(): Promise<EngramAccessHealthResponse> {
@@ -274,7 +268,6 @@ export class HermesClient {
   }
 
   // -----------------------------------------------------------------------
-  // Browse / read methods
   // -----------------------------------------------------------------------
 
   async getEntities(options?: {
@@ -364,7 +357,6 @@ export class HermesClient {
   }
 
   // -----------------------------------------------------------------------
-  // Internal helpers
   // -----------------------------------------------------------------------
 
   private queryString(params?: Record<string, unknown>): string {
@@ -379,8 +371,6 @@ export class HermesClient {
   }
 
   private async request<T>(method: string, path: string, body?: Record<string, unknown>, options?: { noRetry?: boolean }): Promise<T> {
-    // Skip retries for state-mutating writes to prevent duplicate side effects.
-    // Read-only POST endpoints (recall, lcm/search) are safe to retry.
     const isMutating = options?.noRetry === true;
     const maxAttempts = isMutating ? 1 : this.maxRetries + 1;
     let lastError: Error | null = null;
@@ -414,13 +404,11 @@ export class HermesClient {
         // body (issue #3534). It is cleared in the finally once this
         // attempt's body read — or its failure — settles.
 
-        // Success responses
         if (response.ok) {
           if (response.status === 204) return {} as T;
           return (await response.json()) as T;
         }
 
-        // Rate-limited — back off and retry
         if (response.status === 429) {
           const retryAfter = response.headers.get("retry-after");
           let waitMs = this.retryBaseDelayMs * 4;
@@ -429,9 +417,6 @@ export class HermesClient {
             const parsed = /^[0-9]+$/.test(trimmedRetryAfter)
               ? Number(trimmedRetryAfter)
               : Number.NaN;
-            // Only use the RFC seconds form when the entire header is digits.
-            // Date-like or malformed values such as "60 seconds" are ignored
-            // so parseInt() cannot turn a prefix into a long sleep.
             if (Number.isFinite(parsed) && parsed > 0) {
               waitMs = parsed * 1000;
             }
@@ -445,7 +430,6 @@ export class HermesClient {
           continue;
         }
 
-        // Client errors — do not retry
         if (response.status >= 400 && response.status < 500) {
           const error = await this.parseErrorResponse(response);
           throw new HermesError(
@@ -456,7 +440,6 @@ export class HermesClient {
           );
         }
 
-        // Server error — retry
         lastError = new Error(`HTTP ${response.status}`);
         continue;
       } catch (err) {
@@ -472,7 +455,6 @@ export class HermesClient {
       }
     }
 
-    // If we exhausted retries due to rate limiting, throw the preserved 429 error
     if (lastRateLimitError) throw lastRateLimitError;
     throw lastError ?? new Error("request failed after retries");
   }

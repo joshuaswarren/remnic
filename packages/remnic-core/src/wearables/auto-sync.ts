@@ -67,17 +67,9 @@ export function startWearablesAutoSync(
   let inFlight: Promise<void> | null = null;
   let stopped = false;
   let lastDeepDate: string | null = null;
-  // Aborting cancels the in-flight sync's provider fetches promptly on
-  // shutdown — without it, a slow tick would keep writing/reindexing
-  // after orchestrator.destroy() while a restarted host starts a
-  // second scheduler (Kilo review on PR #1464).
   const abortController = new AbortController();
 
   const tick = async (): Promise<void> => {
-    // Overlap guard: a slow provider or large deep window must never
-    // stack a second sync on top of a running one. The skipped call
-    // resolves immediately — it must NOT await the running tick, or a
-    // caller holding both promises could deadlock itself.
     if (inFlight || stopped) return;
     const run = (async () => {
       try {
@@ -86,18 +78,11 @@ export function startWearablesAutoSync(
         const deep = settings.deepDays > 0 && lastDeepDate !== today;
         const days = deep ? settings.deepDays : settings.days;
         await deps.sync({ days, signal: abortController.signal });
-        // Mark the deep pass done only AFTER it succeeded — a failed
-        // deep pass retries on the next tick instead of silently
-        // waiting for tomorrow (CLAUDE.md rule 25's "confirm before
-        // consuming the one-shot" shape).
         if (deep) lastDeepDate = today;
         deps.log.info(
           `wearables auto-sync: refreshed ${days}-day window${deep ? " (daily deep pass)" : ""}`,
         );
       } catch (err) {
-        // An abort raised by stop() is intentional shutdown, not a
-        // failure — warning about it would be noise in every clean
-        // shutdown log.
         if (!stopped) {
           deps.log.warn(
             `wearables auto-sync failed: ${describeErrorForOperator(err)} — retrying on the next tick`,
@@ -122,7 +107,6 @@ export function startWearablesAutoSync(
       stopped = true;
       clearInterval(timer);
       abortController.abort();
-      // tick() never rejects (all paths caught), so this only waits.
       if (inFlight) await inFlight;
     },
   };

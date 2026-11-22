@@ -1,10 +1,3 @@
-/**
- * Host-agnostic user-model contract for user-aware agents.
- *
- * This is intentionally separate from the existing `MemoryScope` type, which
- * still means extraction routing scope (`project` | `global`). User context
- * scopes describe where a model facet is safe and useful to apply.
- */
 
 export const USER_MODEL_CORE_QUESTION =
   "What does the agent need to understand about this user to act well right now?";

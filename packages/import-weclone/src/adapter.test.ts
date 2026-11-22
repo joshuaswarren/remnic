@@ -1,13 +1,10 @@
 // ---------------------------------------------------------------------------
-// Tests — WeClone bulk-import source adapter
-// ---------------------------------------------------------------------------
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { wecloneImportAdapter } from "./adapter.js";
 
 // ---------------------------------------------------------------------------
-// Tests
 // ---------------------------------------------------------------------------
 
 describe("wecloneImportAdapter", () => {

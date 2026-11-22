@@ -31,11 +31,6 @@ async function withMemoryDir(run: (dir: string) => Promise<void>): Promise<void>
   }
 }
 
-/**
- * Hold the migration's own cross-process lock (the exact file
- * migrateLegacyEntityCanonicalIds acquires via withHeldFileLock: poll 50ms,
- * stale 60s — a hold for the lifetime of one test). Returns the release.
- */
 async function gateMigration(dir: string): Promise<() => Promise<void>> {
   const lockPath = path.join(dir, MIGRATION_LOCK_FILE);
   await mkdir(path.dirname(lockPath), { recursive: true });
@@ -45,7 +40,6 @@ async function gateMigration(dir: string): Promise<() => Promise<void>> {
 
 async function journalComplete(dir: string): Promise<boolean> {
   try {
-    // SAFETY: the journal is written by this test fixture and carries an optional boolean `complete`.
     const state = JSON.parse(await readFile(path.join(dir, MIGRATION_JOURNAL_FILE), "utf8")) as {
       complete?: boolean;
     };
@@ -84,12 +78,10 @@ test("startup read readiness can defer the entity canonical-id migration", async
     } finally {
       await releaseGate();
     }
-    // The write-side ensure still runs the migration and awaits it.
     await readiness;
     await storage.ensureDirectories();
     if (failure !== undefined) throw failure;
     assert.equal(await journalComplete(dir), true);
-    // Normal entity writes still work after the deferred migration settles.
     await storage.writeEntity("Alice", "person", ["Alice works on Remnic"]);
   });
 });

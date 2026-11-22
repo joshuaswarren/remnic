@@ -1,10 +1,3 @@
-/**
- * Identity-continuity persistence extracted from StorageManager.
- *
- * The host keeps the public API while this store owns anchors, incidents,
- * audits, and improvement-loop files. Dependencies stay live through
- * `selfDeps`, preserving secure-store and catalog-write behavior.
- */
 
 import { readdir } from "node:fs/promises";
 import path from "node:path";

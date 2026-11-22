@@ -426,8 +426,6 @@ test("searchAcrossNamespaces preserves same path results from distinct namespace
 
   assert.deepEqual(results.map((result) => result.snippet), ["main", "shared"]);
   assert.deepEqual(results.map((result) => result.namespace), ["main", "shared"]);
-  // Same-relative-path hits from distinct namespaces resolve to distinct
-  // absolute paths (globally-unique identity); display surfaces relativize.
   assert.deepEqual(results.map((result) => result.path), [
     "/tmp/remnic/main/facts/a.md",
     "/tmp/remnic/shared/facts/a.md",
@@ -508,10 +506,6 @@ test("searchAcrossNamespaces still rejects when the caller aborts", async () => 
 });
 
 test("searchAcrossNamespaces with an already aborted caller leaves no unhandled backend rejection", async () => {
-  // The backend leg gets the aborted signal and rejects after the router has
-  // already returned its own rejection. Nothing may be left holding that
-  // second rejection: on the daemon it is an unhandled AbortError and the
-  // process exits (jarvis-ml, 12 Nov 2026).
   class AbortingBackend extends FakeBackend {
     override async search(): Promise<QmdSearchResult[]> {
       await setImmediate();
@@ -717,10 +711,6 @@ test("legacy default namespace root auto-creates its base collection (broad root
     signal: controller.signal,
   });
 
-  // The default namespace at the flat root targets the BASE collection (not a
-  // tokenized name) on both index and search sides, and that collection is now
-  // auto-created so recall has something to read. Skipping creation left a
-  // configured default namespace with maintenance "ran" but 0 results (#1929).
   assert.equal(state, "present");
   assert.deepEqual(backend.ensureSignals, [controller.signal]);
   assert.deepEqual(backend.ensureCollections, ["openclaw-engram"]);
@@ -736,17 +726,11 @@ test("legacy default namespace root auto-creates a missing base collection (#192
 
   const state = await router.ensureNamespaceCollection("main");
 
-  // A missing base collection is no longer left missing (the old fail-open path);
-  // it is created so a fresh install with a flat-root default namespace gets a
-  // working QMD collection instead of silently returning 0 results.
   assert.equal(state, "present");
   assert.deepEqual(backend.ensureCollections, ["openclaw-engram"]);
 });
 
 test("configured non-legacy default namespace still recalls from its flat-root base collection (#1929)", async () => {
-  // Reporter's config: defaultNamespace "geek", data at the flat root. The
-  // default record must search the SAME base collection the index side creates,
-  // so recall returns results instead of 0.
   const geekConfig = { ...config(), defaultNamespace: "geek" } as PluginConfig;
   const created: FakeBackend[] = [];
   const router = new NamespaceSearchRouter(
@@ -780,9 +764,6 @@ test("configured non-legacy default namespace still recalls from its flat-root b
 });
 
 test("configured non-legacy default namespace filters nested namespace files from its base collection (#1929)", async () => {
-  // The broad-root base collection also indexes nested `namespaces/` files; the
-  // default namespace search must strip them so auto-creation does not leak
-  // cross-namespace data into the default recall path.
   const geekConfig = { ...config(), defaultNamespace: "geek" } as PluginConfig;
   const backend = new FakeBackend(false, [
     { docid: "1", path: "facts/geek-fact.md", snippet: "geek", score: 2 },
@@ -1484,30 +1465,19 @@ test("legacy default namespace root overfetches before filtering nested namespac
 });
 
 test("normalizeQmdResultPath strips a real collection prefix but not a category dir (#2020)", () => {
-  // Genuine QMD collection prefix (qmd:// URI) is stripped.
   assert.equal(
     normalizeQmdResultPath("qmd://openclaw-engram/facts/a.md", "openclaw-engram"),
     "facts/a.md",
   );
-  // Plain relative hit is left untouched when its leading segment is a memory
-  // category dir that happens to equal the collection name (qmdCollection ==
-  // "facts"): stripping would corrupt "facts/a.md" -> "a.md" and break reads.
   assert.equal(normalizeQmdResultPath("facts/a.md", "facts"), "facts/a.md");
-  // A non-category collection prefix on a plain hit is still stripped.
   assert.equal(normalizeQmdResultPath("openclaw-engram/facts/a.md", "openclaw-engram"), "facts/a.md");
 });
 
-/**
- * Orama, LanceDB, Meilisearch and remote backends have no updateStrict or
- * updateCollectionStrict; their plain update() is fail-open. They report whether
- * an update ran through updateCompleted() (issue #3286).
- */
 class NonQmdBackend extends FakeBackend {
   completedCalls = 0;
 
   constructor(completed: boolean) {
     super(false);
-    // Instance properties shadow the QMD-only strict methods FakeBackend defines.
     Object.defineProperty(this, "updateStrict", { value: undefined });
     Object.defineProperty(this, "updateCollectionStrict", { value: undefined });
     Object.defineProperty(this, "updateCompleted", {

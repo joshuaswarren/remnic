@@ -6,16 +6,6 @@ import test from "node:test";
 
 import { runCommandWithTimeoutForTest } from "./qmd.js";
 
-// Regression for issue #2456: on timeout/abort the bounded qmd subprocess
-// launcher must be killed together with its descendants. The launcher runs
-// detached (own process group) so a negative-pid signal reaches grandchildren
-// the old child.kill("SIGKILL") left behind. POSIX only — Windows falls back
-// to a direct child kill by design.
-//
-// Real timers by design: this suite kills real OS processes, so the timeout
-// trigger and the exit polls run against the platform clock. Fake timers
-// cannot deliver signals to a spawned `sleep`. Every poll awaits a condition
-// (pid file exists, process gone), never a fixed sleep.
 const isPosix = process.platform !== "win32";
 
 function isAlive(pid: number): boolean {
@@ -40,7 +30,6 @@ async function setupFakeLauncher(): Promise<{ script: string; pidFile: string; d
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "remnic-qmd-kill-"));
   const script = path.join(dir, "fake-qmd");
   const pidFile = path.join(dir, "grandchild.pid");
-  // Launcher spawns a grandchild that outlives it, then hangs until killed.
   await fs.promises.writeFile(
     script,
     `#!/bin/sh\nsleep 30 &\necho $! > "${pidFile}"\nsleep 30\n`,

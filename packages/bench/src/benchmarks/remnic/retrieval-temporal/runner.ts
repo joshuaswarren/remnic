@@ -1,6 +1,3 @@
-/**
- * Deterministic temporal retrieval benchmark over the schema-tier corpus.
- */
 
 import { randomUUID } from "node:crypto";
 import type { SchemaTierPage } from "../../../fixtures/schema-tiers/index.js";

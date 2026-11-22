@@ -1,43 +1,8 @@
-// ---------------------------------------------------------------------------
-// lifecycle/tombstones.ts — Tombstone store + non-resurrection invariant
-// (issue #1579)
 //
-// A "tombstone" records that a fact has been retired (corrected, superseded,
-// or retracted) so that the SAME fact cannot silently come back to life through
-// any of the five resurrection paths:
 //
-//   1. Re-extraction (session replay, re-observation)
-//   2. Importers (capsule / import-* payloads)
-//   3. Consolidation merges
-//   4. Dreams (REM re-derivation)
-//   5. Pattern reinforcement (duplicate promotion)
 //
-// The invariant is enforced at the SINGLE storage persist path
-// (`StorageManager.writeMemory` — the same chokepoint that records catalog
-// writes, issue #1522). Every write path funnels through it, so paths (a)–(e)
-// are blocked WITHOUT per-path code.
 //
-// File-first / rebuildable (the repo's storage philosophy): the JSONL at
-// `<stateDir>/tombstones.jsonl` is a cache of truth. The authoritative sources
-// are the memory files themselves (status: superseded/retracted) and the
-// `corrections/` records. `rebuildTombstonesFromStorage` reconstructs the
-// JSONL from those sources.
 //
-// Design rules honored (issue #1579 design section):
-//   - Hash `rawContent` exactly as the dedup index does — one helper
-//     (`ContentHashIndex.computeHash` / `normalizeContent`), never a second
-//     (checklist §13; rule 23).
-//   - Append-only log — never rewrite history; a later `kind: "revocation"`
-//     entry re-allows (rule 25).
-//   - Instance-scoped, never module-level (rule 11).
-//   - Namespace-scoped — a tombstone in namespace A never blocks namespace B
-//     (rule 42).
-//   - Serialized appends with rejection recovery (rule 40).
-//   - Never silent drop — a blocked write lands as pending_review + blockedBy
-//     (rule 34).
-//   - Do NOT register a blocked fact as an active dedup/index entry (rule 44).
-//   - Off = pre-feature behavior for rollback safety (rule 30).
-//   - Semantic tier (4) ships dark, off by default (rule 48).
 // ---------------------------------------------------------------------------
 
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
@@ -350,8 +315,6 @@ export class TombstoneStore {
   }
 
   private async loadInternal(migrateLegacy = true): Promise<void> {
-    // Record the file mtime before reading so an ENOENT still records 0 and
-    // a successful load does not immediately trigger a staleness reload.
     this.recordFileMtime();
     let raw: string;
     try {
@@ -501,12 +464,6 @@ export class TombstoneStore {
       if (entry.revokes) this.revokedIds.add(entry.revokes);
       return;
     }
-    // Tombstone entries populate the lookup maps. The namespace is part of
-    // every discriminator key (issue #1579 thread Ocs-O): when two
-    // namespace-scoped stores share the same backing file, a later tombstone
-    // for namespace B with identical content must NOT evict namespace A's map
-    // entry — otherwise A's lookup finds B's id, rejects it on namespace
-    // mismatch, and misses its own still-active tombstone (resurrection).
     const ns = entry.namespace;
     if (entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION) {
       if (entry.contentHash) this.byHash.set(`${ns}\0${entry.contentHash}`, entry.id);
@@ -655,12 +612,6 @@ export class TombstoneStore {
 
   private serializeAppend(entry: TombstoneEntry): Promise<void> {
     const line = JSON.stringify(entry) + "\n";
-    // serializeMutations (in-process, rule 40 rejection recovery) wraps the
-    // cross-process lock: within one process appends are queued, and across
-    // processes the advisory lockfile serializes the read-merge-write so two
-    // Remnic processes appending concurrently cannot drop each other's entry
-    // (issue #1639). Under the lock we re-sync the in-memory index against
-    // disk first, so indexEntry builds on the peer's just-appended entries.
     return serializeMutations(`tombstone:${this.filePath}`, () =>
       this.withWriteLock(async () => {
         await this.ensureFreshAgainstDisk({ migrate: false });
@@ -730,18 +681,9 @@ export class TombstoneStore {
    * match. The store is per-namespace, so this is belt-and-suspenders.
    */
   lookup(query: TombstoneLookupQuery): TombstoneMatch | null {
-    // We intentionally do NOT await load() here — lookup is called from the
-    // hot write path. Callers MUST ensure the store is loaded before lookup
-    // (StorageManager does this in ensureTombstoneStoreLoaded). If not loaded,
-    // lookup returns null (fail-open: a missing tombstone check is preferable
-    // to crashing every write — see rule 34 / the "degrade gracefully" note).
     if (!this.options.enabled) return null;
     if (!this.loaded) return null;
 
-    // Tier 1: exact contentHash. Namespace is part of the map key (thread
-    // Ocs-O), so the lookup finds only this namespace's tombstone even when
-    // the backing file is shared. The namespace equality check below is kept
-    // as defense-in-depth.
     const ns = query.namespace;
     if (query.contentHash) {
       const id = this.byHash.get(`${ns}\0${query.contentHash}`);
@@ -752,7 +694,6 @@ export class TombstoneStore {
         }
       }
     }
-    // Tier 2: normalized text.
     if (query.normalizedText) {
       const id = this.byNormalized.get(`${ns}\0${query.normalizedText}`);
       if (id && !this.revokedIds.has(id)) {
@@ -762,13 +703,6 @@ export class TombstoneStore {
         }
       }
     }
-    // Tier 3: keyed (entityRef + supersessionKey). Issue #1579 thread
-    // Ociag/Oci-W: check EVERY supplied key, not just the first — emitters
-    // append one tombstone per matched supersession key, so the active block
-    // can live on any later key. The union of `supersessionKey` (singular,
-    // direct callers) and `supersessionKeys` (array, write chokepoint) is
-    // checked; the first active match wins (tiers are equality-based, so
-    // ordering across keys does not affect correctness).
     if (query.entityRef) {
       const keysToCheck: string[] = [];
       if (query.supersessionKey) keysToCheck.push(query.supersessionKey);
@@ -787,7 +721,6 @@ export class TombstoneStore {
         }
       }
     }
-    // Tier 4: semantic (off by default, rule 48).
     if (this.options.semanticMatch && this.options.semanticSimilarity && query.normalizedText) {
       const threshold = this.options.semanticThreshold;
       let best: { id: string; reason: TombstoneReason; score: number } | null = null;
@@ -862,34 +795,13 @@ export class TombstoneStore {
    * Returns the count of tombstone entries written.
    */
   async rebuild(retiredMemories: ReadonlyArray<RetiredMemoryRecord>): Promise<number> {
-    // The full read-merge-write runs UNDER the cross-process lock (issue #1639,
-    // cursor/codex review): we ensureFreshAgainstDisk() first so the in-memory
-    // index reflects any peer append/revoke that landed while we waited for the
-    // lock, THEN compute the payload. Rebuild rewrites the entire JSONL, so a
-    // payload built from a stale this.entries would overwrite a peer's just-
-    // written entry and resurrect a retired fact — the exact invariant this
-    // store exists to enforce. serializeMutations (in-process) wraps the
-    // cross-process lock; the key is unified with append/revoke so they cannot
-    // interleave in-process either.
     const rebuiltCount = await serializeMutations(`tombstone:${this.filePath}`, () =>
       this.withWriteLock(async () => {
         await this.ensureFreshAgainstDisk({ migrate: false });
-        // Preserve existing revocations (all namespaces — ids are globally
-        // unique) so a rebuild does not silently un-revoke.
         const existingRevocations = this.entries.filter((e) => e.kind === "revocation");
-        // Preserve tombstone entries from OTHER namespaces when the backing
-        // file is shared (issue #1579 thread Oc2MJ). rebuild rewrites the
-        // entire file; without preserving foreign entries, rebuilding
-        // namespace A would silently delete namespace B's tombstones, allowing
-        // resurrection in B.
         const foreignTombstones = this.entries.filter(
           (e) => e.kind === "tombstone" && e.namespace !== this.namespace,
         );
-        // Reuse existing tombstone ids for source-equivalent entries so a prior
-        // revocation (which references the tombstone id) survives rebuild —
-        // minting fresh ids would orphan the revocation and silently un-revoke.
-        // Issue #1579 thread Oci-T: key the reuse map by (sourceMemoryId,
-        // supersessionKey). See the append path above for the full rationale.
         const existingBySource = new Map<string, string>();
         for (const e of this.entries) {
           if (e.kind === "tombstone") {
@@ -900,25 +812,7 @@ export class TombstoneStore {
           const currentHash = this.options.hashContent(m.rawContent);
           const currentNormalizedText = this.options.normalizeText(m.rawContent);
           const persistedHash = m.contentHash;
-          // A persisted hash equal to the body's LEGACY hash only proves the
-          // record predates the Unicode normalizer when that legacy hash is
-          // unambiguous. When the legacy normalizer is lossy for this body
-          // (any body whose ASCII skeleton collides with a distinct
-          // contentHashSource), the equality cannot distinguish "old body
-          // hash" from "explicit source identity" — replacing the persisted
-          // hash would displace a live identity (issue #2367). Preserving
-          // keeps BOTH keys: contentHash stays the persisted identity and
-          // currentContentHashAlias still blocks the body.
 
-          // Repair only when the persisted hash provably identifies THIS
-          // body's stale legacy hash: either the unambiguous case (legacy and
-          // current normalizations agree), or the empty-skeleton case — every
-          // non-ASCII-only body normalizes to the empty legacy skeleton, so a
-          // persisted hash equal to hash("") is the shared non-identifying
-          // legacy body hash and publishing it on the exact tier would
-          // collide unrelated tombstones. Any OTHER persisted hash on an
-          // empty-skeleton body is a distinct explicit identity (e.g.
-          // contentHashSource) and must be preserved.
           const legacyBodyHash = computeLegacyContentHash(m.rawContent);
           const repairEmptySkeleton =
             normalizeLegacyContent(m.rawContent).length === 0 && persistedHash === legacyBodyHash;
@@ -945,7 +839,6 @@ export class TombstoneStore {
             createdBy: m.createdBy,
           };
         });
-        // Sort deterministically (rule 38): createdAt, then id for stability.
         rebuilt.sort((a, b) =>
           a.createdAt === b.createdAt
             ? a.id < b.id ? -1 : a.id > b.id ? 1 : 0
@@ -959,9 +852,6 @@ export class TombstoneStore {
         const serialized =
           all.map((e) => JSON.stringify(e)).join("\n") + (all.length > 0 ? "\n" : "");
         await this.io.write(this.filePath, serialized);
-        // Update the in-memory index under the same lock so it stays consistent
-        // with the file we just wrote (no window for a lookup to see a stale
-        // index that misses a just-rebuilt entry).
         this.resetIndex();
         for (const entry of all) this.indexEntry(entry);
         this.corruptedLines = 0;
@@ -1037,11 +927,6 @@ export function collectRetiredMemoriesForRebuild(
             structuredAttributes: m.frontmatter.structuredAttributes,
           })
         : [];
-    // Issue #1579 thread Ocgjz: emit one record per matched supersession key
-    // (not just keys[0]) so rebuild reproduces the same keyed tombstones as
-    // live temporal-supersession (which now appends one per key — thread ObteS).
-    // Without this, a rebuild would under-rebuild the JSONL and keyed-tier
-    // blocks would disappear until rediscovered.
     const keysToEmit = keys.length > 0 ? keys : [undefined];
     for (const key of keysToEmit) {
       retired.push({

@@ -37,8 +37,6 @@
 import type { CodingKnowledgeConfig, PluginConfig } from "../types.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Tagged-outcome types (rule 34 — #1536 pattern; rule 18 — object-not-null)
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Distinct failure codes for the structural-context port. Every code is
@@ -136,7 +134,6 @@ export interface StructuralContextProvider {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Degradation (shaped like SearchDegradation from search/port.ts — #1536)
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -150,11 +147,6 @@ export interface StructuralContextDegradation {
   readonly detail?: string;
 }
 
-/**
- * Coerce a {@link SymbolsForDiffErr} into the degradation record consumers
- * attach to recall snapshots / xray. Centralised so the `{ backend: ... }`
- * tag is set in one place (rule 22 spirit).
- */
 export function toStructuralContextDegradation(
   err: SymbolsForDiffErr,
 ): StructuralContextDegradation {
@@ -162,7 +154,6 @@ export function toStructuralContextDegradation(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Registry — instance-scoped via Symbol (rule 11; mirrors host-embedding)
 // ──────────────────────────────────────────────────────────────────────────
 
 const STRUCTURAL_PROVIDERS_KEY = Symbol.for(
@@ -224,7 +215,6 @@ export function clearStructuralContextProvidersForTest(): void {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Gate predicate — rule 39: ONE predicate, checked identically on every path
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -241,9 +231,6 @@ export function structuralProviderActive(config: PluginConfig): boolean {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Doctor / xray status — pure config-only summariser + renderer
-// (the live PROBE lives in structural-subprocess-provider.ts so this module
-//  stays free of subprocess / optional-package imports)
 // ──────────────────────────────────────────────────────────────────────────
 
 /**

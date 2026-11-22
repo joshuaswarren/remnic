@@ -9,11 +9,6 @@ export interface RecallAuthorityRenderOptions {
   untrustedOrigins: readonly string[];
 }
 
-/**
- * Fence recalled body text before it enters model-visible context (#1955).
- * X-ray and explain renderers are operator diagnostics, so they do not call
- * this helper and remain unfenced.
- */
 export function renderAuthorityBoundContent(
   content: string,
   rawOrigin: unknown,
@@ -80,13 +75,6 @@ export interface RenderedMemoryContextPrompt {
 
 export interface RenderMemoryContextPromptInput extends RecallContextComposition {
   maxChars: number;
-  /**
-   * Pre-rendered shallow form of every entry (#2972). When the full
-   * context exceeds budget, a fitting compact form is delivered instead
-   * of clipping the tail — breadth-complete-but-shallow over
-   * deep-but-amputated. Ignored unless strictly shorter than the full
-   * context and within budget.
-   */
   compactContext?: string;
 }
 
@@ -171,8 +159,6 @@ export function boundRecallContextComposition({
       };
     }
   }
-  // Footer truncation is fixed overhead, not lost memory content; the
-  // degradation contract covers the recall context only.
   const boundedFooter = footer.length > limit ? truncateToBudget(footer, limit) : footer;
   return {
     context,
@@ -186,13 +172,6 @@ export const MEMORY_CONTEXT_UNAVAILABLE_NOTE =
   "This means the memory backend could not be queried — it does not mean " +
   "no relevant memories exist.";
 
-/**
- * Missing state (#2972): a failed recall path composes this INSTEAD of an
- * empty or silently truncated context, so "backend failed" is never
- * indistinguishable from "no relevant memories" (the injection-side twin
- * of Review-Prevention rule 22). Replace the bounded composition with
- * this result on failure; do not run it back through bounding.
- */
 export function composeMissingMemoryContext(input: { detail?: string } = {}): RecallContextComposition {
   return {
     context: MEMORY_CONTEXT_UNAVAILABLE_NOTE,

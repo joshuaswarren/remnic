@@ -16,7 +16,6 @@ function setup() {
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-/** Write a claim body plus a sidecar whose identity matches the body. */
 function writeClaim(
   dir: string,
   n: number,

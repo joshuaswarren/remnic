@@ -58,8 +58,6 @@ import {
   type BulkImportBatchIngestResult,
 } from "../orchestrator.js";
 
-// The class lives in ../buffer-admission.js next to BufferAdmissionRefusedError;
-// re-exported here so existing importers keep their import path.
 import { ReplayAdmissionRefusedError, StorageTargetRequiredError } from "../buffer-admission.js";
 import { createTaskExit } from "./task-exit.js";
 export { ReplayAdmissionRefusedError, StorageTargetRequiredError };
@@ -136,14 +134,6 @@ export interface TurnIngestionOptions extends SourceConnectorProvenance {
   turnFingerprint?: string;
 }
 
-/**
- * Flush-plan recovery imports are compacted material the host already
- * summarized before appending it to the flush-plan file. Feeding those
- * turns through LCM observation again re-summarizes the same content
- * (issue #2457). The producer stamps both a dedicated `sourceLabel` and a
- * `:flush-plan[:chunk]`-shaped `sourceId`, so either marker identifies a
- * recovery turn; ordinary bulk-import turns never carry either.
- */
 function isFlushPlanRecoveryTurn(
   turn: Pick<BufferTurn, "importProvenance">,
 ): boolean {
@@ -187,11 +177,6 @@ export class TurnIngestionCoordinator {
           ? sessionKey
           : "default";
     const captureTimestamp = new Date().toISOString();
-    // Issue #1582 hygiene §2 — strip any echoed `[m:xxxx]` handle before the
-    // turn enters the extraction buffer so handles never become memory content
-    // or get QMD-indexed (rule 23). Gated on the feature flag: when handles are
-    // off none are ever injected, so there is nothing to strip and the buffer
-    // stays byte-identical to the pre-#1582 path.
     const bufferedContent = this.deps.config.recallMemoryHandles
       ? stripHandles(content)
       : content;
@@ -199,8 +184,6 @@ export class TurnIngestionCoordinator {
       role,
       content: bufferedContent,
       timestamp: captureTimestamp,
-      // #1578: anchor live-capture turns to wall-clock when bi-temporal is on;
-      // replay/import turns carry sourceValidAt explicitly (codex P1).
       ...(this.deps.config.temporalBiTemporal
         ? { sourceValidAt: captureTimestamp }
         : {}),
@@ -219,9 +202,6 @@ export class TurnIngestionCoordinator {
     if (outcome.decision === "keep_buffering") return;
     if (!outcome.extractionTurns) return;
     if (outcome.extractionTurns.some((turn) => turn.acceptedCapture === true)) {
-      // #3251: native triggers must not run mixed accepted scopes under one
-      // policy — each scope group drains through the shared execution
-      // boundary with its own pins.
       queueBufferedCaptureScopeGroups(this.deps.queueBufferedExtraction, outcome.extractionTurns, bufferKey, {});
       return;
     }
@@ -321,9 +301,6 @@ export class TurnIngestionCoordinator {
       bySession.set(key, list);
     }
 
-    // #3251: the buffered capture ignores pre-aborted signals — cancellation
-    // applies to extraction, never to durable admission. The abort pre-check
-    // below guards only the immediate (forced-queue) path.
     if (options.extractionMode === "buffered") {
       return ingestReplayBatchBuffered(this.deps, bySession, options);
     }
@@ -460,13 +437,6 @@ export class TurnIngestionCoordinator {
       };
     }
 
-    // Per-batch unique sessionKey keeps threading honest without matching
-    // typical prefix/map routing rules.  Combined with writeNamespaceOverride
-    // below, the storage target is independent of principal resolution.
-    // Uses crypto.randomBytes (not Math.random) so CodeQL does not flag a
-    // security-context insecure-randomness use even though this value never
-    // leaves the process; the bytes just need to be collision-resistant
-    // across concurrent bulk-import batches.
     const shouldUseStableBatchKey = turns.some(
       (turn) =>
         turn.persistProcessedFingerprint === true ||
@@ -527,9 +497,6 @@ export class TurnIngestionCoordinator {
       };
     }
 
-    // Skip LCM only when every turn is flush-plan recovery material; a mixed
-    // batch keeps the ordinary observe path (issue #2457). Extraction and
-    // persistence below are unaffected either way.
     const skipLcmObservation = sessionTurns.every(isFlushPlanRecoveryTurn);
     if (!skipLcmObservation && this.deps.lcmEngine?.enabled) {
       await this.deps.lcmEngine.observeMessages(
@@ -676,8 +643,6 @@ export class TurnIngestionCoordinator {
           `heartbeat observer trigger: session=${sessionKey} deltaBytes=${decision.deltaBytes} deltaTokens=${decision.deltaTokens}`,
         );
         if (turns.some((turn) => turn.acceptedCapture === true)) {
-          // #3251: heartbeat triggers must not run mixed accepted scopes
-          // under one policy — per-scope groups via the shared boundary.
           queueBufferedCaptureScopeGroups(this.deps.queueBufferedExtraction, turns, bufferKey, {});
           return;
         }
@@ -735,8 +700,6 @@ export class TurnIngestionCoordinator {
     } = {},
   ): Promise<void> {
     const bufferKey = options.bufferKey ?? turnsToExtract[0]?.sessionKey ?? "default";
-    // The execution context owns the gate's buffer view: a claim-backed task
-    // reads its own claim (never "claimed"), not the live buffer's gate.
     if (skipClaimedSession(options.execution?.buffer ?? this.deps.buffer, bufferKey, (result) => options.onTaskSettled?.(undefined, result))) return;
     if (
       !options.skipDedupeCheck &&
@@ -820,9 +783,6 @@ export class TurnIngestionCoordinator {
       automaticSnapshotSharingEligible(options) && turnsToExtract.length > 0
         ? this.snapshotSharing.admit(bufferKey, turnsToExtract)
         : undefined;
-    // Discriminated source so the task closure never captures the caller's
-    // snapshot array when sharing: a textual reference would retain every
-    // overlapping copy and defeat the bound.
     const queuedTurnsSource: { chain: SnapshotChain } | { direct: BufferTurn[] } =
       sharingNode ? { chain: sharingNode } : { direct: turnsToExtract };
     const accepted = this.deps.extractionQueueCoordinator.enqueue(async (preemptHandle) => {
@@ -838,23 +798,11 @@ export class TurnIngestionCoordinator {
         return;
       }
       clearQueueWaitTimer();
-      // Execution-time claim recheck (review round): the scheduler's
-      // async claim decision may complete while this LIVE task sits queued;
-      // its turns then belong to the claim runner, and extracting the stale
-      // snapshot here would persist duplicate outputs. The enqueue-time gate
-      // plus the key reservation only park the task until the decision
-      // settles. Isolated claim tasks (options.execution) read their own
-      // claim-backed buffer and bypass this gate by construction.
       if (
         options.execution === undefined &&
         skipClaimedSession(this.deps.buffer, bufferKey, (result) => settleTask(undefined, result))
       ) return;
       try {
-        // #3251 shared execution boundary for accepted captures (trigger and
-        // flush drains both converge here): re-read the live buffer so a
-        // concurrent drain that already took these turns skips the LLM work,
-        // and re-resolve a pinned plan against CURRENT config — revoke skips
-        // WITHOUT clearing, and the plan is never retargeted.
         let effectiveTurns =
           "chain" in queuedTurnsSource
             ? materializeChain(queuedTurnsSource.chain)
@@ -875,16 +823,9 @@ export class TurnIngestionCoordinator {
             return;
           }
           effectiveTurns = liveTurns;
-          // Pinned-namespace guard (#3251): if namespaces are now DISABLED, a
-          // non-default pinned namespace can no longer be honored as a
-          // separate store — skip + preserve rather than silently flattening
-          // the capture into the default store.
           const namespacesOn = resolveNamespaceCapabilities(this.deps.config).namespaces === true;
           const acceptedTurn = effectiveTurns.find((turn) => turn.acceptedCapture === true);
           const pinnedNamespace = acceptedTurn?.writeNamespaceOverride;
-          // #3251: policy-preserving skips reject when the caller demands
-          // failure (forceflush) so retained cleanup never deletes preserved
-          // captures; background triggers soft-skip and keep the data.
           const policySkipError = (reason: string): Error | undefined =>
             options.failOnExtractionFailure === true
               ? new Error(`accepted capture preserved: ${reason} (${bufferKey})`)
@@ -904,11 +845,6 @@ export class TurnIngestionCoordinator {
             });
             return;
           }
-          // Current-policy write re-auth for pinned namespaces (#3251): the
-          // grant at capture time may have been revoked. Project-derived
-          // namespaces honor native base-inheritance (never blanket
-          // canWriteNamespace on the combined name); explicit-policy and
-          // default pins re-check directly — default may be revoked too.
           const firstSessionKey = effectiveTurns[0]?.sessionKey ?? "";
           const principal =
             options.principalOverride !== undefined && options.principalOverride.length > 0
@@ -947,9 +883,6 @@ export class TurnIngestionCoordinator {
             }
           }
           if (effectiveScopePlan) {
-            // #3251: re-resolve with the ORIGINAL coding binding (stored
-            // natively on the turn) so project-scoped captures re-authorize
-            // against CURRENT policy without losing their project identity.
             const originalContext = acceptedTurn?.codingContext ?? null;
             const codingOverlay = originalContext
               ? resolveCodingNamespaceOverlay(
@@ -1055,7 +988,6 @@ export class TurnIngestionCoordinator {
       );
       if (corrections.length === 0) return;
 
-      // Replay/import: force queue-only mode even if config says auto.
       const effectiveMode = opts.isLiveSession ? mode : "queue";
       const captureConfig: PassiveCaptureConfig = {
         mode: effectiveMode,
@@ -1080,10 +1012,6 @@ export class TurnIngestionCoordinator {
           planCorrection: (req, planOpts) => service.plan(req, planOpts),
           applyCorrection: (planId, applyOpts) => service.apply(planId, applyOpts),
           storageDir: async (ns) => (await this.deps.getStorage(ns)).dir,
-          // Resolve `[m:xxxx]` handles to concrete memory ids via the single
-          // shared helper (#1582). Returns null on miss/ambiguity so the
-          // capture loop drops the handle and the planner falls back to text
-          // search (review: "memory handles not resolved").
           resolveHandle: (ref, sessionKey) => {
             try {
               return this.deps.resolveMemoryIdOrHandle(ref, sessionKey);
@@ -1095,7 +1023,6 @@ export class TurnIngestionCoordinator {
         this.deps.passiveCorrectionDedup,
       );
 
-      // Accumulate telemetry
       this.deps.passiveCorrectionTelemetry.detected += result.telemetry.detected;
       this.deps.passiveCorrectionTelemetry.queued += result.telemetry.queued;
       this.deps.passiveCorrectionTelemetry.autoApplied += result.telemetry.autoApplied;
@@ -1104,7 +1031,6 @@ export class TurnIngestionCoordinator {
           (this.deps.passiveCorrectionTelemetry.suppressedReasonCounts[reason] ?? 0) + count;
       }
     } catch (err) {
-      // Fail-open: passive capture never blocks extraction.
       log.debug(
         `passive-correction: capture failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
       );

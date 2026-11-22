@@ -25,7 +25,6 @@ import {
 import { GraphStore, nodeIdFor } from "./graph-store.js";
 import type { StoreFileIR, SymbolIR } from "./graph-store.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 // Fixture IR — synthetic code only (public-repo policy).
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -707,7 +706,6 @@ test("null/missing symbols is rejected as a contract violation, not silently pru
     dbPath: path.join(dir, "store.db"),
   });
   try {
-    // Seed the file with valid symbols so there is real state to wipe.
     const seeded = await store.upsertFileBatch([fileA]);
     assert.equal(seeded.ok, true, "seed ingest succeeds");
     assert.equal(
@@ -889,14 +887,11 @@ test("omitted edges field preserves prior edges, explicit [] wipes them (cursor 
     dbPath: path.join(dir, "store.db"),
   });
   try {
-    // Initial ingest with edges.
     const r1 = await store.upsertFileBatch([fileA]);
     assert.equal(r1.ok, true);
     if (!r1.ok) throw new Error("expected ok");
     assert.equal(r1.results[0]?.edgeCount, 1, "initial ingest stores 1 edge");
 
-    // Re-upsert the same file WITHOUT an edges field — a bare core
-    // ParseResult.ir has no edges. Prior edges MUST be preserved.
     const noEdges: StoreFileIR = {
       path: "src/a.ts",
       language: "typescript",
@@ -961,7 +956,6 @@ test("close blocks new writes before draining so a concurrent upsert is rejected
       "store_closed",
       "upsert during close-drain must return store_closed, not run against a closing DB",
     );
-    // Let the pending write + close finish.
     await firstWrite;
     await closeP;
   } finally {
@@ -1049,10 +1043,6 @@ test("invalid symbol spans are rejected before storing nodes (chatgpt-codex-conn
       );
     }
 
-    // Guard throws before the transaction opens, so every rejected
-    // attempt left the seeded nodes intact — a re-ingest is a no-op
-    // (nodeCount 0). The pre-fix path would have bound the bad span and
-    // reported nodeCount 1.
     const reingested = await store.upsertFileBatch([fileA]);
     assert.equal(reingested.ok, true, "store accepts a valid ingest after the rejections");
     assert.equal(
@@ -1061,8 +1051,6 @@ test("invalid symbol spans are rejected before storing nodes (chatgpt-codex-conn
       "fileA re-ingest is a no-op — seeded nodes survived every rejected bad-span attempt",
     );
 
-    // Boundary check: a zero-length half-open span [5, 5) is VALID
-    // (startByte <= endByte), so it must be accepted, not rejected.
     const zeroSpan = await store.upsertFileBatch([
       { ...fileA, symbols: [sym("a.zero", "zero", 5, 5)] },
     ]);
@@ -1082,9 +1070,6 @@ test("non-canonical file paths are rejected before persisting (chatgpt-codex-con
     const seeded = await store.upsertFileBatch([fileA]);
     assert.equal(seeded.ok, true, "seed ingest succeeds");
 
-    // Each case is a distinct aliasing hazard: the same repo file
-    // rendered two ways would hash to two files rows + node ids and
-    // leave duplicates the canonical ingest cannot match or prune.
     const cases: Array<{ label: string; path: string; re: RegExp }> = [
       { label: "backslash separator", path: "src\\a.ts", re: /forward slashes/ },
       { label: "leading ./", path: "./src/a.ts", re: /must be canonical/ },
@@ -1102,9 +1087,6 @@ test("non-canonical file paths are rejected before persisting (chatgpt-codex-con
       );
     }
 
-    // Canonical re-ingest is a no-op — the seeded file survived every
-    // rejected non-canonical attempt (the guard throws before the
-    // files row is touched).
     const reingested = await store.upsertFileBatch([fileA]);
     assert.equal(reingested.ok, true, "store accepts a canonical ingest after the rejections");
     assert.equal(
@@ -1120,17 +1102,14 @@ test("non-canonical file paths are rejected before persisting (chatgpt-codex-con
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// upsertEdges (issue #1554 codegraph ingest_traces persistence path)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("upsertEdges: persists a standalone HTTP_CALLS edge between indexed nodes (issue #1554 P1 persistence)", async () => {
   const { store, dir } = await tempStore();
   try {
-    // Seed two files so the nodes the trace edge references exist.
     const seeded = await store.upsertFileBatch([fileA, fileB]);
     assert.equal(seeded.ok, true);
 
-    // Persist a runtime HTTP call observation as a standalone edge.
     const result = await store.upsertEdges([
       {
         srcQualifiedName: "a.greet",
@@ -1145,8 +1124,6 @@ test("upsertEdges: persists a standalone HTTP_CALLS edge between indexed nodes (
     assert.equal(result.persisted, 1, "one edge persisted");
     assert.equal(result.skipped, 0, "no skipped edges");
 
-    // Re-open the store and verify the edge survived on disk (real
-    // persistence, not an in-memory stub — P1 acceptance criterion).
     await store.close();
     const reopened = await GraphStore.open({ dbPath: path.join(dir, "graph.sqlite") });
     const stats = reopened.schemaStats();
@@ -1168,7 +1145,6 @@ test("upsertEdges: skips edges whose endpoint does not resolve to an indexed nod
   try {
     await store.upsertFileBatch([fileA]);
 
-    // 'b.run' is not indexed (only fileA was ingested) → edge is skipped.
     const result = await store.upsertEdges([
       {
         srcQualifiedName: "a.greet",
@@ -1193,19 +1169,16 @@ test("upsertEdges: upgrades confidence on an existing (src,dst,type) edge (idemp
   try {
     await store.upsertFileBatch([fileA, fileB]);
 
-    // First trace: confidence 0.5.
     const first = await store.upsertEdges([
       { srcQualifiedName: "a.greet", dstQualifiedName: "b.run", type: "HTTP_CALLS", confidence: 0.5, provenance: "trace" },
     ]);
     assert.equal(first.ok && first.persisted, 1);
 
-    // Second trace, same endpoints: confidence upgraded to 0.9.
     const second = await store.upsertEdges([
       { srcQualifiedName: "a.greet", dstQualifiedName: "b.run", type: "HTTP_CALLS", confidence: 0.9, provenance: "trace" },
     ]);
     assert.equal(second.ok && second.persisted, 1, "upsert updates the existing edge row");
 
-    // Reopen + verify there is exactly ONE HTTP_CALLS edge (not two).
     await store.close();
     const reopened = await GraphStore.open({ dbPath: path.join(dir, "graph.sqlite") });
     const stats = reopened.schemaStats();
@@ -1221,8 +1194,6 @@ test("upsertEdges: rejects invalid provenance / out-of-range confidence at the b
   try {
     await store.upsertFileBatch([fileA]);
 
-    // Validation errors are fail-loud (matching upsertFileBatch's policy:
-    // a bad edge is a contract violation, not a tagged failure).
     await assert.rejects(
       store.upsertEdges([
         { srcQualifiedName: "a.greet", dstQualifiedName: "a.farewell", type: "HTTP_CALLS", confidence: 0.5, provenance: "bogus" as never },
@@ -1243,18 +1214,11 @@ test("upsertEdges: rejects invalid provenance / out-of-range confidence at the b
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// upsertEdges: node-id-keyed endpoints (issue #1677 — duplicate qualified-name
-// support). A SIMILAR_TO edge between two symbols that share a qualified name
-// across two files is persisted by node id, NOT dropped as ambiguous.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("upsertEdges: srcNodeId/dstNodeId persist an edge between same-qualified-name nodes (issue #1677)", async () => {
   const { store, dir } = await tempStore();
   try {
-    // Two files, each declaring a symbol with the SAME qualified name
-    // "dup.Foo" but a different file path → distinct deterministic node ids
-    // (identity is (qualifiedName, filePath, label)). The qualified-name
-    // fallback would be AMBIGUOUS here and drop the edge.
     const fileOne: StoreFileIR = {
       path: "src/one.ts",
       language: "typescript",
@@ -1273,7 +1237,6 @@ test("upsertEdges: srcNodeId/dstNodeId persist an edge between same-qualified-na
     const idTwo = nodeIdFor({ qualifiedName: "dup.Foo", filePath: "src/two.ts", label: "function" });
     assert.notEqual(idOne, idTwo, "two same-qname symbols in different files have distinct node ids");
 
-    // Edge keyed by node ids — the SIMILAR_TO pipeline shape.
     const result = await store.upsertEdges([
       {
         srcQualifiedName: "dup.Foo",
@@ -1290,7 +1253,6 @@ test("upsertEdges: srcNodeId/dstNodeId persist an edge between same-qualified-na
     assert.equal(result.persisted, 1, "node-id-keyed edge persisted despite duplicate qualified name");
     assert.equal(result.skipped, 0, "edge must NOT be dropped as ambiguous");
 
-    // The edge is traversable from either node by id.
     const t = store.traverse({ start: idOne, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
     assert.equal(t.ok, true);
     if (t.ok) {
@@ -1310,9 +1272,6 @@ test("upsertEdges: a node id that does not reference an indexed node is skipped 
   try {
     await store.upsertFileBatch([fileA]);
 
-    // srcNodeId resolves (a.greet exists) but dstNodeId points at a node
-    // that was never ingested → dangling, counted as skipped (consistent
-    // with the qname dangling-edge policy).
     const bogusDst = nodeIdFor({ qualifiedName: "ghost", filePath: "src/ghost.ts", label: "function" });
     const result = await store.upsertEdges([
       {
@@ -1338,7 +1297,6 @@ test("upsertEdges: a node id that does not reference an indexed node is skipped 
 test("upsertEdges: a node id whose qualified_name does not match is skipped (issue #1677, chatgpt-codex-connector P2)", async () => {
   const { store, dir } = await tempStore();
   try {
-    // Two files, same qname "dup.Foo" → two distinct node ids.
     const fileOne: StoreFileIR = {
       path: "src/one.ts",
       language: "typescript",
@@ -1355,7 +1313,6 @@ test("upsertEdges: a node id whose qualified_name does not match is skipped (iss
     const idOne = nodeIdFor({ qualifiedName: "dup.Foo", filePath: "src/one.ts", label: "function" });
     const idTwo = nodeIdFor({ qualifiedName: "dup.Foo", filePath: "src/two.ts", label: "function" });
 
-    // idOne exists and resolves "dup.Foo" — this edge is fine.
     const ok = await store.upsertEdges([
       {
         srcQualifiedName: "dup.Foo",
@@ -1369,10 +1326,6 @@ test("upsertEdges: a node id whose qualified_name does not match is skipped (iss
     ]);
     assert.equal(ok.ok && ok.persisted, 1, "correctly-paired id+qname persists");
 
-    // idOne is a REAL node id, but the edge claims its qname is "wrong.qname"
-    // — the id/qname pair is inconsistent and MUST be skipped rather than
-    // silently writing an edge from node idOne under a misleading name
-    // (chatgpt-codex-connector P2: id/qname consistency at the boundary).
     const bad = await store.upsertEdges([
       {
         srcQualifiedName: "wrong.qname",
@@ -1397,8 +1350,6 @@ test("upsertEdges: a node id whose qualified_name does not match is skipped (iss
 test("upsertEdges: edges without node ids still use the qname path (issue #1677 back-compat)", async () => {
   const { store, dir } = await tempStore();
   try {
-    // The existing trace/HTTP_CALLS path passes no node ids — it MUST keep
-    // resolving by qualified name exactly as before.
     await store.upsertFileBatch([fileA]);
     const result = await store.upsertEdges([
       {

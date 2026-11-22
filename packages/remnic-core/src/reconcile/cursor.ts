@@ -23,11 +23,6 @@ export interface ConvergeCursorState {
   pendingRefreshes?: ConvergeRefreshTarget[];
 }
 
-/**
- * Linear trailing-slash trim. `/\/+$/` backtracks quadratically on long
- * slash runs that do not end in a slash (CodeQL js/polynomial-redos); a
- * bounded character loop cannot.
- */
 function stripTrailingSlashes(value: string): string {
   let end = value.length;
   while (end > 0 && value[end - 1] === "/") end -= 1;
@@ -60,13 +55,6 @@ export function defaultConvergeCursorPath(memoryDir: string, peerUrl: string, na
   return path.join(path.resolve(memoryDir), ".remnic", "state", "converge-cursors", `${key}.json`);
 }
 
-/**
- * Persistent identity cache location for a (peerUrl, namespace) pair, next
- * to the cursor that governs the same pair. The cache stores the parsed
- * memory identity per path keyed by content sha, so a warm manifest build
- * skips the per-file read + frontmatter parse + content-hash identity work
- * entirely (the dominant boot-scale plan cost on both sides).
- */
 export function convergeIdentityCachePath(memoryDir: string, peerUrl: string, namespace: string): string {
   const key = hashPeerNamespace(peerUrl, namespace);
   return path.join(path.resolve(memoryDir), ".remnic", "state", "converge-identity", `identity-${key}.json`);

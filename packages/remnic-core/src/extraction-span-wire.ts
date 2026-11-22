@@ -19,7 +19,6 @@ export function applySpanMode(opts: {
   return parseSpanOffsets(opts.text, { start: opts.start, end: opts.end }, opts.enabled);
 }
 
-/** The parts of a JSON Schema node the extraction schema uses. */
 type SchemaNode = {
   type?: string;
   properties?: Record<string, SchemaNode>;
@@ -28,12 +27,6 @@ type SchemaNode = {
   additionalProperties?: boolean | SchemaNode;
 };
 
-/**
- * `io: "input"` leaves objects open (zod accepts extra input keys), but providers
- * must be told to emit no extra keys: zod-to-json-schema advertised
- * additionalProperties:false on every object. Close any object schema that
- * does not already state its own.
- */
 function closeObjectSchemas(node: SchemaNode): SchemaNode {
   if (node.type === "object" && node.properties && node.additionalProperties === undefined) {
     node.additionalProperties = false;
@@ -44,10 +37,6 @@ function closeObjectSchemas(node: SchemaNode): SchemaNode {
   return node;
 }
 
-// zod 4 ships toJSONSchema natively; zod-to-json-schema emits an empty
-// document for v4 schemas, so the dependency is dropped here. `io: "input"`
-// matches the old effectStrategy: "input" (advertise the input shape of
-// transforms/preprocess to providers).
 // SAFETY: z.toJSONSchema returns a JSON-Schema document — always an object at
 // the root; the record shape is what omitFactSpan walks.
 const EXTRACTION_PROVIDER_JSON_SCHEMA_WITH_SPAN: SchemaNode = closeObjectSchemas(

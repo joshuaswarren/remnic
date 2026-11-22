@@ -16,8 +16,6 @@ import {
 } from "./review-context.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// isReviewPrompt
-// ──────────────────────────────────────────────────────────────────────────
 
 test("isReviewPrompt: matches the #569 keyword list (case-insensitive)", () => {
   for (const prompt of [
@@ -48,7 +46,6 @@ test("isReviewPrompt: rejects non-review prompts", () => {
 });
 
 test("isReviewPrompt: `reviewer` (longer word) does NOT match `review`", () => {
-  // Whole-word boundary.
   assert.equal(isReviewPrompt("who is the reviewer on call?"), false);
 });
 
@@ -58,7 +55,6 @@ test("isReviewPrompt: null/undefined input returns false defensively", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// parseTouchedFiles
 // ──────────────────────────────────────────────────────────────────────────
 
 test("parseTouchedFiles: extracts paths from `diff --git` lines", () => {
@@ -87,7 +83,6 @@ test("parseTouchedFiles: extracts paths from --- / +++ headers when no `diff --g
 
 test("parseTouchedFiles: strips `a/` / `b/` prefixes exactly once", () => {
   const diff = "diff --git a/a/foo.ts b/a/foo.ts";
-  // Path "a/foo.ts" — not "foo.ts". Only the leading single-letter prefix is stripped.
   assert.deepEqual(parseTouchedFiles(diff), ["a/foo.ts"]);
 });
 
@@ -154,10 +149,6 @@ test("parseTouchedFiles: quoted `diff --git` paths with spaces are kept intact",
 });
 
 test("parseTouchedFiles: --- / +++ header alone (no diff --git prefix) handles quoted path", () => {
-  // Regression: the `--- / +++` header regex used `\S+`, which stops at the
-  // first internal whitespace. For quoted paths like `--- "a/foo bar.ts"`
-  // the path was silently truncated after `"a/foo`. Now the header path is
-  // extracted with an explicit tokenizer that respects quotes.
   const diff = [
     '--- "a/path with spaces.ts"',
     '+++ "b/path with spaces.ts"',
@@ -169,10 +160,6 @@ test("parseTouchedFiles: --- / +++ header alone (no diff --git prefix) handles q
 });
 
 test("parseTouchedFiles: quoted paths in --- / +++ headers (stripDiffPathPrefix order)", () => {
-  // Regression: `stripDiffPathPrefix` checked `a/` / `b/` BEFORE stripping
-  // quotes, so `"a/path with spaces.ts"` never matched the prefix, leaving
-  // a bogus `"a/path` entry. Quote-stripping must happen first so the
-  // prefix check sees the unquoted `a/path with spaces.ts`.
   const diff = [
     'diff --git "a/path with spaces.ts" "b/path with spaces.ts"',
     '--- "a/path with spaces.ts"',
@@ -183,8 +170,6 @@ test("parseTouchedFiles: quoted paths in --- / +++ headers (stripDiffPathPrefix 
 });
 
 test("parseTouchedFiles: unterminated quoted path does not crash or produce fragments", () => {
-  // Defensive: a malformed diff with an unclosed quote must not throw and
-  // must not emit garbage touched-file entries.
   const diff = 'diff --git "a/broken src/foo.ts\n';
   const out = parseTouchedFiles(diff);
   assert.deepEqual(out, []);
@@ -216,7 +201,6 @@ test("parseTouchedFiles: invalid C-quoted UTF-8 preserves raw token without path
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// rankReviewCandidates
 // ──────────────────────────────────────────────────────────────────────────
 
 function c(id: string, score: number, entityRefs?: string[]): ReviewCandidate {
@@ -236,8 +220,6 @@ test("rankReviewCandidates: no touched files → no boost; stable by (score desc
 });
 
 test("rankReviewCandidates: matched memory floats above same-score unmatched peer", () => {
-  // Two candidates with identical score; only one mentions a touched file.
-  // The match boost must break the tie and push the matched one first.
   const candidates = [
     c("same-unrelated", 0.3, ["lib/other.ts"]),
     c("same-matched", 0.3, ["src/foo.ts"]),
@@ -250,15 +232,12 @@ test("rankReviewCandidates: matched memory floats above same-score unmatched pee
 });
 
 test("rankReviewCandidates: boost narrows gap with stronger unmatched peer (0.1+boost vs 0.7)", () => {
-  // A boosted weak candidate does NOT beat a strong unmatched peer — the
-  // boost is a bias, not a filter. But it should at least close the gap.
   const candidates = [
     c("strong-unrelated", 0.7, ["lib/other.ts"]),
     c("weak-matched", 0.1, ["src/foo.ts"]),
   ];
   const out = rankReviewCandidates(candidates, ["src/foo.ts"]);
   assert.equal(out[0]!.id, "strong-unrelated", "0.7 still wins against 0.1 + 0.5 = 0.6");
-  // But the matched candidate now sits at 0.6 instead of 0.1.
   const matched = out.find((r) => r.id === "weak-matched");
   assert.ok(matched);
   assert.equal(matched!.score + matched!.boost, 0.6);
@@ -296,7 +275,6 @@ test("rankReviewCandidates: deterministic tie-break by id (rule 19 — comparato
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// packReviewContext end-to-end
 // ──────────────────────────────────────────────────────────────────────────
 
 test("packReviewContext: full path — diff → touched files + ranked recall", () => {

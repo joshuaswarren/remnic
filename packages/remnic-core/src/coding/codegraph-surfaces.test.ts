@@ -1,15 +1,3 @@
-/**
- * Codegraph parity surface tests (issue #1554).
- *
- * Covers the done-when criteria:
- *  - Gate matrix: tools/list byte-identical when gate off; all 14 present when on.
- *  - Per-tool contract: MCP surface dispatches through the boundary to
- *    service.codegraphTool, injecting the `tool` field from the operation name.
- *  - Rejection table: missing required args, invalid enum values, Cypher text.
- *  - Cross-tenant: principal scoping (resolveStore receives the principal).
- *  - manage_adr / decision-record identity: manage_adr delegates to codingDecision.
- *  - Registry fitness: all 14 operations resolve through the boundary.
- */
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -39,8 +27,6 @@ import {
 import type { DecisionSurfaceRequest, DecisionSurfaceResponse } from "./decision-surfaces.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Fixtures
-// ──────────────────────────────────────────────────────────────────────────
 
 const GATE_OFF_CONFIG: CodingKnowledgeConfig = {
   enabled: false,
@@ -68,7 +54,6 @@ const CODING_CONTEXT: CodingContext = {
 };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Tool name helpers
 // ──────────────────────────────────────────────────────────────────────────
 
 test("tool names: CODEGRAPH_TOOL_NAMES has exactly 14 entries", () => {
@@ -96,7 +81,6 @@ test("tool names: formatCodegraphToolNames lists all 14", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Gate predicate: handleCodegraphTool returns disabled when gate off
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeDisabledCtx(): CodegraphSurfaceContext {
@@ -125,7 +109,6 @@ function makeDisabledCtx(): CodegraphSurfaceContext {
   };
 }
 
-/** Minimal store stub — methods throw if called; rejection tests validate BEFORE store use. */
 const MOCK_STORE = {
   schemaVersion: () => 1,
   schemaStats: () => ({ ok: true, fileCount: 0, nodeCount: 0, edgeCount: 0, symbolKinds: {} }),
@@ -169,7 +152,6 @@ test("gate: handleCodegraphTool returns disabled response when gate off", async 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Per-tool contract: MCP dispatches through boundary to service.codegraphTool
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeMockService(
@@ -245,7 +227,6 @@ test("MCP surface: all 14 tools dispatch through service.codegraphTool", async (
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Gate matrix: tools/list visibility (rule 39 — byte-identical when off)
 // ──────────────────────────────────────────────────────────────────────────
 
 function extractToolNames(response: unknown): Set<string> {
@@ -304,7 +285,6 @@ test("tools/list gate: all 14 codegraph tools present when codegraphVisible on",
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Registry fitness: all 14 operations registered through the boundary
 // ──────────────────────────────────────────────────────────────────────────
 
 test("registry: all 14 codegraph operations registered through the boundary", () => {
@@ -317,7 +297,6 @@ test("registry: all 14 codegraph operations registered through the boundary", ()
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Rejection table (rule 51 — reject loudly, list valid options)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("rejection: search_graph missing query → input error", async () => {
@@ -448,7 +427,6 @@ test("rejection: limit must be positive integer", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Cross-tenant: principal scoping (rule 42)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("cross-tenant: resolveStore receives the context principal, not a caller-supplied override", async () => {
@@ -456,13 +434,10 @@ test("cross-tenant: resolveStore receives the context principal, not a caller-su
   const ctx = makeEnabledCtx({
     principal: "alice",
     resolveStore: async (req) => {
-      // The store resolver in access-service uses ctx.principal (from
-      // authenticated principal), never req.principal (caller-supplied).
       observedPrincipal = "alice"; // ctx.principal is fixed by the service
       throw new EngramAccessInputError("test-stub: store not opened");
     },
   });
-  // A caller tries to impersonate another principal via the request body
   await handleCodegraphTool(
     { tool: "search_graph", query: "x", principal: "bob" },
     ctx,
@@ -473,7 +448,6 @@ test("cross-tenant: resolveStore receives the context principal, not a caller-su
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// manage_adr / decision-record identity (issue #1554 done-when)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("identity: manage_adr record delegates to codingDecision (same store, same lifecycle)", async () => {
@@ -521,7 +495,6 @@ test("identity: manage_adr disabled when decision records gate off", async () =>
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Operation handler: tool field injected correctly via registry
 // ──────────────────────────────────────────────────────────────────────────
 
 test("operation handler: codegraph_index operation calls service.codegraphTool with tool='index'", async () => {
@@ -542,9 +515,6 @@ test("operation handler: codegraph_index operation calls service.codegraphTool w
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// P1: index / ingest_traces / index_status / detect_changes invoke the real
-// runtime delegates and surface their outcomes — never stub success. When a
-// delegate is absent the handler degrades with a clean code (issue #1554).
 // ──────────────────────────────────────────────────────────────────────────
 
 test("P1 index: invokes ctx.runReindex and surfaces the real reindex outcome (not stub success)", async () => {
@@ -582,7 +552,6 @@ test("P1 index: surfaces the executor failure (does not report ok:true on a fail
 });
 
 test("P1 index: degrades to runtime_unavailable when the delegate is absent (no stub success)", async () => {
-  // makeEnabledCtx with no runReindex override → delegate absent.
   const response = await handleCodegraphTool(
     { tool: "index", repoRoot: "/repo", mode: "auto" },
     makeEnabledCtx(),
@@ -665,7 +634,6 @@ test("P1 detect_changes: invokes ctx.detectChanges and surfaces affected symbols
 });
 
 test("search_code: respects the kind filter via per-kind label queries (issue #1554 review threads 0/6)", async () => {
-  // The store stub returns hits per-label; search_code must query each kind.
   const seenLabels: string[] = [];
   const store = {
     ...MOCK_STORE,
@@ -687,8 +655,6 @@ test("search_code: respects the kind filter via per-kind label queries (issue #1
     ctx,
   );
   assert.equal(response.ok, true);
-  // The handler must have queried function, class, AND method labels
-  // (proving the kind filter is real, not an ignored `kinds` key).
   assert.deepEqual(seenLabels.sort(), ["class", "function", "method"]);
   if (!response.ok) throw new Error("expected ok");
   const result = response.result as { hits: { nodeId: string }[] };
@@ -696,8 +662,6 @@ test("search_code: respects the kind filter via per-kind label queries (issue #1
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Thread 12 (cursor bugbot): read handlers propagate store { ok:false } →
-// surface ok:false (previously several handlers always returned ok:true).
 // ──────────────────────────────────────────────────────────────────────────
 
 test("read-failure propagation: get_schema surfaces store failure as ok:false (thread 12)", async () => {
@@ -775,13 +739,6 @@ test("read-failure propagation: query_graph surfaces structured-query failure as
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Project resolution chokepoint (issue #1554 review threads 7/9/11).
-// handleIndex no longer derives the project itself — it forwards repoRoot to
-// resolveStore, and the SHARED resolver (access-service.ts) derives root:<hex>
-// so every store-backed tool reopens the same DB. These tests pin the new
-// contract: handleIndex delegates, and deriveCodegraphProjectId is the single
-// deterministic derivation. The relative-root rejection (thread 12) is also
-// pinned at resolveCodegraphDbPath.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("index: forwards repoRoot to resolveStore without pre-setting project (chokepoint delegation)", async () => {
@@ -796,7 +753,6 @@ test("index: forwards repoRoot to resolveStore without pre-setting project (chok
   });
   const response = await handleCodegraphTool({ tool: "index", repoRoot: "/repos/my-repo" }, ctx);
   assert.equal(response.ok, true);
-  // handleIndex must NOT set project itself — the shared resolver owns derivation.
   assert.equal(observed.project, undefined, "handleIndex must not pre-derive project");
   assert.equal(observed.repoRoot, "/repos/my-repo", "repoRoot is forwarded for the resolver to derive from");
 });
@@ -880,9 +836,6 @@ test("resolveCodegraphDbPath: accepts an absolute codegraphDbDir", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// LSP Phase B wiring (issue #1917): handleIndex invokes runLspResolution
-// after a successful reindex iff codingKnowledge.lsp.enabled — and LSP
-// failure is non-fatal (heuristic edges stand).
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeLspCtx(

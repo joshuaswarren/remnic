@@ -1,14 +1,3 @@
-/**
- * Issue #1533 — Phase A contract test: public-surface enumeration.
- *
- * Phase A step 1: enumerate the public surface of storage.ts so the contract
- * suite has an explicit inventory. This test pins the exported symbols the 51+
- * importers depend on. When Phase B extracts seams, every entry here must still
- * resolve — either on storage.ts or on the storage/* module that absorbed it.
- *
- * This is NOT a behavior test; it is a surface-stability guard. It documents
- * what the MemoryStorage interface must cover.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";

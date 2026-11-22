@@ -175,8 +175,6 @@ export function buildCorpusSchedule(options: ScheduleOptions): CorpusSchedule {
 
     for (let epoch = 1; epoch <= options.epochs; epoch++) {
       const due = takeDueSupersessions(pending, epoch);
-      // Contradicted supersessions must land the very next epoch; when the
-      // due set exceeds the per-epoch budget, postpone drifting items first.
       due.sort((a, b) => {
         const aPriority = factById.get(a.factId)?.kind === "contradicted" ? 0 : 1;
         const bPriority = factById.get(b.factId)?.kind === "contradicted" ? 0 : 1;
@@ -207,10 +205,6 @@ export function buildCorpusSchedule(options: ScheduleOptions): CorpusSchedule {
       }
     }
 
-    // Record the realized lifecycle, not the scheduling intent: overflow can
-    // postpone a supersession past its intended epoch, and anything still
-    // pending after the horizon was never superseded at all. The validator
-    // enforces kind/timing consistency on this realized form.
     for (const fact of facts) {
       if (fact.supersededEpoch === null) {
         fact.kind = "stable";
@@ -433,8 +427,6 @@ function attachSingleFactProbes(
     if (fact.supersededEpoch !== null && fact.supersededBy !== null) {
       const successor = factById.get(fact.supersededBy);
       const afterEpoch = fact.supersededEpoch + 1;
-      // Historical/transition questions ask about the MOST RECENT change, so
-      // they are only valid while the successor itself is still current.
       const successorCurrentAtProbe =
         successor !== undefined &&
         (successor.supersededEpoch === null || successor.supersededEpoch > afterEpoch);

@@ -2,8 +2,6 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// #2513 load() of last_recall.json accepted arrays and proto keys.
-// Keep the reject-array + unsafe-key skip in the load path.
 
 export const LAST_RECALL_STATE_REL = path.join(
   "packages",

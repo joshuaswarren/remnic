@@ -53,7 +53,6 @@ export function resolveFirefliesApiKey(
   if (typeof configuredKey === "string" && configuredKey.trim().length > 0) {
     return configuredKey.trim();
   }
-  // REMNIC_* first, then the provider-conventional name.
   for (const name of ["REMNIC_FIREFLIES_API_KEY", "FIREFLIES_API_KEY"]) {
     const value = env[name];
     if (typeof value === "string" && value.trim().length > 0) {
@@ -66,10 +65,6 @@ export function resolveFirefliesApiKey(
 export function createFirefliesConnector(
   options: WearableConnectorFactoryOptions,
 ): WearableSourceConnector {
-  // Key resolution happens lazily at call time (not factory time) so
-  // `wearables status` works without credentials and env changes take
-  // effect without a restart; the client constructor throws the
-  // actionable missing-key message.
   let client: FirefliesClient | null = null;
   const getClient = (): FirefliesClient => {
     if (!client) {
@@ -103,8 +98,6 @@ export function createFirefliesConnector(
           // valid conversation start; drop it rather than emit an empty
           // startIso that would fail downstream parsing silently.
           .filter((conversation) => conversation.startIso !== ""),
-        // Advance the keyset by the raw page size (not the id-filtered count)
-        // while full pages keep coming, so dropped rows never truncate the day.
         nextCursor: page.hadFullPage ? String(skip + page.rawCount) : null,
       };
     },

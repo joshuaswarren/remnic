@@ -1,13 +1,3 @@
-/**
- * MCP tool-listing entries for the admin/maintenance operation surface
- * (capsules, governance, entity synthesis, procedure mining, pattern
- * reinforcement, procedural stats). Extracted from access-mcp.ts (#2136)
- * to keep the transport file under its structural-ratchet ceiling; the
- * dispatch name map and operation handlers stay in their existing homes.
- */
-/** Git-context schema props accepted-and-ignored by every tool (issue #569
- * compatibility surface) — defined here so the tool tables and the transport
- * share one copy without an import cycle. */
 export const MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED: Record<string, unknown> = {
   cwd: {
     type: "string",
@@ -154,9 +144,6 @@ export const MCP_ADMIN_OPS_TOOLS: Array<{
   },
 },
 {
-  // The canonical `remnic.procedural_stats` alias is added automatically
-  // by `withToolAliases` — the dual-naming invariant keeps both names
-  // alive for the legacy surface.
   name: "engram.procedural_stats",
   description:
     "Procedural memory stats (issue #567): counts by status, recent write activity, and the active procedural.* config. Read-only, namespace-scoped.",
@@ -197,13 +184,6 @@ export const MCP_ADMIN_OPS_TOOLS: Array<{
 },
 ];
 
-/**
- * Tool-name → operation-name entries contributed by this module, spread into
- * `MCP_MIGRATED_OPERATIONS` in access-mcp.ts. Declared here (rather than
- * inline in the transport) for the same structural-ratchet reason the tool
- * table above lives here. `remnic.*` aliases resolve by suffix, so only the
- * `engram.*` name is listed.
- */
 export const MCP_ADMIN_OPS_MIGRATED_OPERATIONS: Readonly<Record<string, string>> = {
   "engram.preference_drift_scan": "preference_drift_scan",
 };

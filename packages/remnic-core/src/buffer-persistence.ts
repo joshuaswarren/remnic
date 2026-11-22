@@ -70,10 +70,6 @@ export interface BufferPersistOptions {
 
 /** Approximate serialized size of one session file without stringifying it. */
 function estimateEntryBytes(entry: BufferEntryState): number {
-  // ~15% over content for JSON structure + string escaping (quotes, braces,
-  // key names, escape growth); the fixed per-turn overhead covers field names
-  // and metadata. Under-counting here biases against deferral — the exact
-  // case the floor exists for — so the estimate errs high.
   let bytes = 256;
   for (const turn of entry.turns) bytes += Math.ceil(turn.content.length * 1.15) + 128;
   for (const turn of entry.retainedTurns ?? [])
@@ -175,8 +171,6 @@ export class BufferSessionPersistence {
     for (const key of [...this.dirty]) {
       const entry = peekEntry(key);
       if (!entry) {
-        // A dirty key without state must not be written from a fabricated
-        // empty entry: treat it as a deletion instead.
         this.markDeleted(key);
         continue;
       }
@@ -186,8 +180,6 @@ export class BufferSessionPersistence {
           last !== undefined &&
           now() - last < this.deferIntervalMs &&
           estimateEntryBytes(entry) >= BUFFER_SESSION_DEFER_MIN_BYTES &&
-          // Fail closed: a backend that omits isBufferSessionClaimed cannot
-          // prove the session is unclaimed, so it never defers (PR 3481 review).
           storage.isBufferSessionClaimed?.(key) === false
         ) {
           deferred.push(key);
@@ -201,12 +193,7 @@ export class BufferSessionPersistence {
       const saveOutcome = await saveSession(key, entry);
       this.dirty.delete(key);
       this.lastPersistedAt.set(key, now());
-      // "handed_over": the entry moved into a drain claim. Content is durable
-      // in the claim, so this key's pending state is settled — the caller
-      // evicts the in-memory entry on its side.
       if (saveOutcome?.status === "handed_over") handedOver.push(key);
-      // A drain tombstone: the turns it extracted must leave this process's
-      // copy too, or the owner would extract them a second time.
       if (
         saveOutcome?.drainedTurns &&
         (saveOutcome.drainedTurns.turns.length > 0 || saveOutcome.drainedTurns.retainedTurns.length > 0)
@@ -215,9 +202,6 @@ export class BufferSessionPersistence {
       }
       if (saveOutcome?.status === "handed_over") this.lastPersistedAt.delete(key);
     }
-    // #3368: never persist admission keys while session bodies are still deferred —
-    // a crash after the key lands but before the deferred rewrite would make a
-    // same-key retry swallow the unwritten turns.
     if (this.admissionIdempotencyDirty && deferred.length === 0 && storage.saveBufferAdmissionIdempotency) {
       await storage.saveBufferAdmissionIdempotency(state);
       this.admissionIdempotencyDirty = false;

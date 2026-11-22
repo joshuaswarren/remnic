@@ -90,7 +90,6 @@ export async function readBenchStatus(filePath: string): Promise<BenchStatus | n
     if (!Array.isArray(obj.benchmarks)) return null;
     if (typeof obj.pid !== "number") return null;
     if (typeof obj.startedAt !== "string") return null;
-    // Validate each benchmark entry has required fields.
     for (const entry of obj.benchmarks as unknown[]) {
       if (typeof entry !== "object" || entry === null) return null;
       const e = entry as Record<string, unknown>;
@@ -108,7 +107,6 @@ export async function readBenchStatus(filePath: string): Promise<BenchStatus | n
   }
 }
 
-// Per-file serialized write queue to prevent concurrent writes from racing.
 const writeQueues = new Map<string, Promise<void>>();
 
 function serializedWrite(
@@ -127,7 +125,6 @@ function serializedWrite(
     // Swallow I/O errors so status file failures never crash the benchmark loop.
   });
   writeQueues.set(filePath, next);
-  // Prune completed entries to avoid unbounded map growth.
   void next.finally(() => {
     if (writeQueues.get(filePath) === next) {
       writeQueues.delete(filePath);

@@ -1,19 +1,3 @@
-/**
- * Daily Context Briefing (Issue #370)
- *
- * Produces a focused "here is what matters right now" briefing by
- * cross-referencing active entities, recent facts, open commitments,
- * LLM-generated follow-ups, and an optional calendar source.
- *
- * The module exposes:
- *   - `parseBriefingWindow(token)` — CLI-friendly window parser.
- *   - `buildBriefing(options)` — core builder that returns markdown + JSON.
- *   - `FileCalendarSource` — stub CalendarSource implementation that reads
- *     a local ICS or JSON file.
- *
- * ALL OpenAI usage in this module goes through the Responses API. Chat
- * Completions is never used.
- */
 
 import { readFile } from "node:fs/promises";
 import os from "node:os";
@@ -44,10 +28,7 @@ import type {
 } from "./types.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Window parsing
-// ──────────────────────────────────────────────────────────────────────────
 
-/** Allowed values for the briefing format flag/field. */
 export const BRIEFING_FORMAT_ALLOWED = ["markdown", "json"] as const;
 
 /**
@@ -69,23 +50,16 @@ export function validateBriefingFormat(value: string | undefined): string | null
   return `Invalid --format value: "${value}". Accepted: ${BRIEFING_FORMAT_ALLOWED.join(", ")}.`;
 }
 
-/** Parsed briefing lookback window. */
 export interface ParsedBriefingWindow {
   /** Start of the window (inclusive). */
   from: Date;
   /** End of the window (exclusive). */
   to: Date;
-  /** Human-readable label. */
   label: string;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Maximum allowed lookback offset in milliseconds (100 years).
- * Anything beyond this is almost certainly a typo or abuse — and would
- * overflow to `Invalid Date` for sufficiently large values anyway.
- */
 const MAX_WINDOW_MS = 100 * 365 * DAY_MS;
 
 /**
@@ -127,7 +101,6 @@ export function parseBriefingWindow(
   else if (unit === "d") ms = value * DAY_MS;
   else if (unit === "w") ms = value * 7 * DAY_MS;
   if (ms === 0) return null;
-  // Reject values that exceed the 100-year cap or would overflow to Invalid Date.
   if (ms > MAX_WINDOW_MS || !Number.isFinite(ms)) return null;
   const from = new Date(now.getTime() - ms);
   if (!Number.isFinite(from.getTime())) return null;
@@ -145,7 +118,6 @@ function startOfUtcDay(date: Date): Date {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Focus filter
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -175,20 +147,6 @@ export function parseBriefingFocus(token: string | undefined): BriefingFocus | n
   return { type: "topic", value: trimmed };
 }
 
-/**
- * Decide whether a memory/entity matches the given focus filter.
- * Purely deterministic — no LLM, case-insensitive substring match across
- * the most useful surfaces.
- *
- * For typed focus (`person:`, `project:`, `entity:`) we attribute via the
- * canonical-id path below to avoid the substring leak fixed in #682 PR 2/3
- * R-10 (`Alice-Test` substring-hitting `person-alice-test-a1`).
- *
- * For untyped (`topic`) focus there is no type to canonicalize against, so
- * we keep `entityRef` in the raw haystack — otherwise memories that link to
- * an entity only via `frontmatter.entityRef` (no body / tag mention) would
- * silently drop out of an untyped focus filter (codex P2 review on #695).
- */
 export function focusMatchesMemory(
   memory: MemoryFile,
   focus: BriefingFocus,
@@ -197,11 +155,6 @@ export function focusMatchesMemory(
   const needle = focus.value.toLowerCase();
   const entityRef = (memory.frontmatter.entityRef ?? "").toLowerCase();
 
-  // Raw substring match across content and tags.  For untyped (`topic`)
-  // focus, also include the entityRef so memories linked only via the
-  // frontmatter ref still match.  For typed focus we deliberately
-  // exclude entityRef here and route through the canonical-id path
-  // below (see comment above).
   const rawHaystackParts = [
     memory.content,
     ...(memory.frontmatter.tags ?? []),
@@ -212,29 +165,8 @@ export function focusMatchesMemory(
   const rawHaystack = rawHaystackParts.join(" ").toLowerCase();
   if (rawHaystack.includes(needle)) return true;
 
-  // Canonical-id match (#682 PR 2/3 R-10). Normalize BOTH sides through
-  // `normalizeEntityName` so:
-  //   - `entityRef === slug` exact comparison no longer fails when the
-  //     stored ref is in a non-canonical form (e.g. `person:Alice-Test`
-  //     vs. `person-alice-test`) — both normalize to the same canonical id.
-  //   - `entityRef.includes(slug)` substring matching is replaced by
-  //     equality, so similarly-prefixed entities like
-  //     `person-alice-test-a1` no longer match a focus on
-  //     `person:Alice-Test`.
-  // This also handles the type-prefix-in-name case the cursor reviewer
-  // flagged: `normalizeEntityName` strips a duplicate type prefix so
-  // `Project-Alpha` of type `project` canonicalizes to `project-alpha`,
-  // and a focus on `project:Project-Alpha` does the same.
   if (!entityRef) return false;
   const focusCanonical = normalizeEntityName(focus.value, focus.type, entityAliases);
-  // Strip a leading `<type><delimiter>` prefix from a non-canonical
-  // entityRef before normalizing — `normalizeEntityName` only strips
-  // `<type>-` so other valid verbatim formats (`person:Alice-Test`,
-  // `person/alice-test`, `person_alice_test`, `person Alice Test`)
-  // would otherwise double up the type prefix and miss the canonical
-  // comparison.  Codex P2 review on #695: memory writes persist
-  // entityRef strings as provided, so any non-alphanumeric delimiter
-  // after the type token must be tolerated here.
   let refForNormalize = entityRef;
   const typeDelimMatch = refForNormalize.match(
     new RegExp(`^${focus.type}[^a-z0-9]+`, "i"),
@@ -263,7 +195,6 @@ export function focusMatchesEntity(entity: EntityFile, focus: BriefingFocus): bo
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Calendar source
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -350,7 +281,6 @@ function parseIcsLine(line: string): IcsParsedLine | null {
   if (colonIdx <= 0) return null;
   const head = line.slice(0, colonIdx);
   const value = line.slice(colonIdx + 1).trim();
-  // Head is of the form `PROPERTY[;PARAM=val[;PARAM=val]]`.
   const headParts = head.split(";");
   const property = headParts[0]!.toUpperCase();
   if (!/^[A-Z0-9-]+$/.test(property)) return null;
@@ -431,7 +361,6 @@ export function parseIcsEvents(raw: string): CalendarEvent[] {
  *     the event still appears, but on the UTC date).
  */
 function normalizeIcsDate(value: string, params: Record<string, string> = {}): string {
-  // Date-time with explicit Z suffix (UTC).
   if (/^\d{8}T\d{6}Z$/.test(value)) {
     const y = value.slice(0, 4);
     const m = value.slice(4, 6);
@@ -441,7 +370,6 @@ function normalizeIcsDate(value: string, params: Record<string, string> = {}): s
     const ss = value.slice(13, 15);
     return `${y}-${m}-${d}T${hh}:${mm}:${ss}Z`;
   }
-  // Date-time without Z: may be floating or zoned via TZID.
   if (/^\d{8}T\d{6}$/.test(value)) {
     const y = value.slice(0, 4);
     const m = value.slice(4, 6);
@@ -482,7 +410,6 @@ function icsWallclockToUtc(local: string, tzid: string): string | null {
   const match = local.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/);
   if (!match) return null;
   const [, y, mo, d, hh, mm, ss] = match;
-  // Treat the wallclock as UTC for the first probe.
   const naiveUtcMs = Date.UTC(
     Number(y),
     Number(mo) - 1,
@@ -511,11 +438,8 @@ function icsWallclockToUtc(local: string, tzid: string): string | null {
 
   const zonedMs = zonedFormatToMs(formatter, new Date(naiveUtcMs));
   if (zonedMs === null) return null;
-  // Offset = naiveUtc − zonedAtNaiveUtc (positive for zones east of UTC).
   const offsetMs = naiveUtcMs - zonedMs;
-  // Apply the offset once to land on the real UTC instant.
   const realUtcMs = naiveUtcMs + offsetMs;
-  // Second pass: offsets can differ when the wallclock crosses a DST boundary.
   const zonedMs2 = zonedFormatToMs(formatter, new Date(realUtcMs));
   if (zonedMs2 !== null) {
     const offsetMs2 = realUtcMs - zonedMs2;
@@ -575,7 +499,6 @@ function isoToMs(isoStr: string): number | null {
   if (!isoStr) return null;
   let src = isoStr;
   if (!isoHasTimezone(src)) {
-    // Treat floating time as UTC for interval math (append Z).
     src = src + "Z";
   }
   const ms = new Date(src).getTime();
@@ -595,16 +518,6 @@ export function eventFallsOnDate(event: CalendarEvent, dateIso: string): boolean
   const startIsFloating = !isoHasTimezone(start);
 
   if (startIsFloating) {
-    // Validate the start timestamp with the same rigour applied to end:
-    //   1. Shape check — must match the ISO-8601 date or datetime pattern.
-    //   2. Real-date check — round-trip through UTC to reject impossible dates
-    //      like "2026-02-30" that JavaScript silently auto-corrects.
-    //   3. Time-component check — reject out-of-range hours/minutes/seconds
-    //      (e.g. "2026-04-11T25:99:00") that JavaScript rolls over to a
-    //      different day, which would cause the event to be matched against
-    //      unrelated calendar dates.
-    // If start fails any check we skip the event entirely — there is no usable
-    // start date to fall back on.
     const startShapeOk =
       typeof start === "string" &&
       /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?$/.test(start);
@@ -640,14 +553,8 @@ export function eventFallsOnDate(event: CalendarEvent, dateIso: string): boolean
     const startDate = startDateStr;
     const end = event.end;
 
-    // Point event (no end) — simple date prefix comparison.
     if (!end) return startDate === target;
 
-    // Validate that end is a recognisable ISO-8601 date/datetime string before
-    // slicing it for lexicographic comparison.  A malformed end (e.g. a JSON
-    // feed emitting "end": "invalid") would otherwise produce a non-date prefix
-    // from `end.slice(0, 10)` and cause the event to appear on unrelated days.
-    // Fallback: treat the event as a single-day event starting on startDate.
     const endIsValid =
       typeof end === "string" &&
       /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?$/.test(end);
@@ -655,16 +562,9 @@ export function eventFallsOnDate(event: CalendarEvent, dateIso: string): boolean
       log.warn(
         `briefing: event "${event.title}" has malformed end timestamp ${JSON.stringify(end)}; treating as single-day event at ${startDate}`,
       );
-      // Render the event but only on its start date.
       return startDate === target;
     }
 
-    // UhLh: Reject impossible calendar dates that pass the regex (e.g. "2026-99-99").
-    // The regex only validates the *shape* of the string — it accepts month 99 and
-    // day 99.  We must additionally verify the date is real by constructing a UTC
-    // Date and checking that the ISO round-trip matches the input prefix.  If the
-    // date is impossible, Date will auto-correct it (e.g. "2026-01-99" becomes some
-    // later date), so the round-trip will differ.  Fall back to single-day semantics.
     const endDate = end.slice(0, 10);
     const endDateProbe = new Date(endDate + "T00:00:00Z");
     if (
@@ -677,19 +577,11 @@ export function eventFallsOnDate(event: CalendarEvent, dateIso: string): boolean
       return startDate === target;
     }
 
-    // Validate the time components of the end timestamp when present.
-    // The regex above only checks the shape (e.g. two digits for hour) but does
-    // not enforce numeric ranges.  A value like "2026-04-11T25:99:99" passes the
-    // regex and the date-round-trip check above yet carries an impossible time.
-    // JavaScript's Date constructor silently rolls such values over to a later
-    // date, which would make the event bleed into unrelated days.  Extract the
-    // individual time fields and reject anything outside the valid range.
     const rawTime = end.indexOf("T") !== -1 ? end.slice(end.indexOf("T") + 1) : "";
     if (rawTime !== "") {
       const timeParts = rawTime.split(":").map(Number);
       const hh = timeParts[0] ?? 0;
       const mm = timeParts[1] ?? 0;
-      // Seconds may carry a fractional component; floor to get the integer part.
       const ss = Math.floor(timeParts[2] ?? 0);
       const timeIsValid = hh <= 23 && mm <= 59 && ss <= 59;
       if (!timeIsValid) {
@@ -700,37 +592,10 @@ export function eventFallsOnDate(event: CalendarEvent, dateIso: string): boolean
       }
     }
 
-    // Span event: include if [start, end) overlaps the target calendar day.
     //
-    // We can't use pure YYYY-MM-DD lexicographic comparison because a
-    // same-day event (`start=2026-04-11T14:30`, `end=2026-04-11T15:00`)
-    // has `startDate === endDate === "2026-04-11"`, and a `target < endDate`
-    // check would wrongly exclude it. A cross-day event ending at
-    // `2026-04-12T00:00:00` (exact midnight) also needs the end day to be
-    // treated as exclusive per half-open `[start, end)` semantics.
     //
-    // Decide whether the end day is still active on the end date by looking
-    // at the time portion: if the end time is strictly after midnight, the
-    // event is still running at the start of the end day and should include
-    // it; if the end time is exactly midnight, the event ends precisely at
-    // the boundary and the end day is excluded. Within-day spans always
-    // have a non-zero end time and so correctly include their own date.
     //
-    // UhLg: A date-only end value (no "T" separator) produces an empty
-    // endTime string.  The regex above does not match empty string, so
-    // endAtExactMidnight would be false and the event would incorrectly
-    // appear on the end date.  Date-only end values carry [start, end)
-    // semantics (the end date is exclusive), so we treat them as midnight.
     const endTime = end.slice(11); // "HH:MM", "HH:MM:SS", "HH:MM:SS.mmm", or "" (date-only)
-    // Treat any end time that is exactly midnight — or absent (date-only) — as
-    // day-exclusive per [start, end) semantics.
-    // Cases covered:
-    //   ""                    — date-only end (UhLg fix: exclusive like midnight)
-    //   "00:00"               — HH:MM form (valid floating-time ISO value, no seconds)
-    //   "00:00:00"            — HH:MM:SS form
-    //   "00:00:00.000..."     — with fractional seconds (any number of trailing zeros)
-    // A bare `>` string comparison incorrectly treats "00:00:00.000" as > "00:00:00"
-    // because the fractional suffix makes the string lexicographically longer.
     const endIsDateOnly = endTime === "";
     const endAtExactMidnight = endIsDateOnly || /^00(:00){1,2}(\.0+)?$/.test(endTime);
     const endActiveOnEndDay = !endAtExactMidnight;
@@ -740,16 +605,12 @@ export function eventFallsOnDate(event: CalendarEvent, dateIso: string): boolean
     return startDate <= target && target < endDate;
   }
 
-  // UTC or offset-aware ISO string: parse and normalise to UTC milliseconds,
-  // then check whether the event's [start, end) interval overlaps the target
-  // UTC day [dayStart, dayEnd).
   const startMs = isoToMs(start);
   if (startMs === null) {
     log.debug(`briefing: skipping calendar event with invalid start value: ${JSON.stringify(start)}`);
     return false;
   }
 
-  // Boundaries of the target UTC day (half-open: [dayStart, dayEnd)).
   const dayStart = Date.UTC(
     Number(target.slice(0, 4)),
     Number(target.slice(5, 7)) - 1,
@@ -759,29 +620,22 @@ export function eventFallsOnDate(event: CalendarEvent, dateIso: string): boolean
 
   const end = event.end;
   if (!end) {
-    // Point event: included iff start falls within [dayStart, dayEnd).
     return startMs >= dayStart && startMs < dayEnd;
   }
 
   const endMs = isoToMs(end);
   if (endMs === null) {
-    // Unparseable end — fall back to point-event semantics.
     return startMs >= dayStart && startMs < dayEnd;
   }
 
-  // Interval event: overlaps day iff start < dayEnd AND end > dayStart.
-  // Using strict > for end so that an event ending exactly at midnight
-  // (dayEnd of previous day) is NOT counted on the next day.
   return startMs < dayEnd && endMs > dayStart;
 }
 
 function cryptoRandomId(): string {
-  // Keep dependency-free: Math.random is fine for synthetic fixture IDs.
   return `evt-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// buildBriefing
 // ──────────────────────────────────────────────────────────────────────────
 
 /** Dependency-injection hook for LLM follow-up generation (used in tests). */
@@ -793,7 +647,6 @@ export type BriefingFollowupGenerator = (
   },
 ) => Promise<BriefingFollowup[]>;
 
-/** Options accepted by `buildBriefing`. */
 export interface BuildBriefingOptions {
   /** Workspace-scoped storage. Tests pass a temp dir. */
   storage: StorageManager;
@@ -903,8 +756,6 @@ async function buildBriefingWithSignal(options: BuildBriefingOptions, signal: Ab
     } catch (err) {
       const errMsg = stringifyError(err);
       const modelName = options.model ?? BRIEFING_FOLLOWUP_DEFAULT_MODEL;
-      // Detect "model not found / invalid" errors from the Responses API and
-      // produce a user-friendly message that surfaces the problematic identifier.
       if (
         /model/i.test(errMsg) &&
         (/not found/i.test(errMsg) || /does not exist/i.test(errMsg) || /invalid/i.test(errMsg))
@@ -924,9 +775,6 @@ async function buildBriefingWithSignal(options: BuildBriefingOptions, signal: Ab
     suggestedFollowups: followups,
   };
 
-  // Drain auto-applied passive-correction notifications (issue #1581): cleared on read,
-  // so each surfaces in exactly one briefing. Fail-open except cancellation, which must
-  // not consume notifications nobody receives.
   throwIfAborted(signal, "briefing aborted");
   let correctionNotifications: BriefingResult["correctionNotifications"];
   try {
@@ -1005,17 +853,7 @@ export function filterMemoriesByWindow(memories: MemoryFile[], window: ParsedBri
   const fromMs = window.from.getTime();
   const toMs = window.to.getTime();
   return memories.filter((m) => {
-    // Exclude explicitly retired statuses so commitments overridden within the
-    // window don't appear as open. In addition to `superseded` / `archived`
-    // (temporal retirement), also exclude `rejected` and `quarantined`, which
-    // come from governance/disposition workflows: those memories have been
-    // explicitly marked unsafe or invalid and must NOT flow into active
-    // threads, open commitments, or follow-up generation, even if they
-    // fall within the briefing window. Surfacing them would reintroduce
-    // quarantined content into downstream automation as actionable context.
     //
-    // `pending_review` memories are awaiting human review — not invalidated —
-    // and must be included so reviewers see them in the briefing.
     const status = m.frontmatter.status;
     if (
       status === "superseded" ||
@@ -1043,8 +881,6 @@ export function buildActiveThreads(memories: MemoryFile[]): BriefingActiveThread
         id: threadKey,
         title: summarizeContentTitle(memory),
         updatedAt,
-        // Always derive reason from the newest memory so the description
-        // reflects the most-recent activity type, not the first memory seen.
         reason: describeReason(memory),
       });
     }
@@ -1053,9 +889,6 @@ export function buildActiveThreads(memories: MemoryFile[]): BriefingActiveThread
     .sort((a, b) => {
       if (a.updatedAt > b.updatedAt) return -1;
       if (a.updatedAt < b.updatedAt) return 1;
-      // Tiebreaker: lexicographic order by id ensures a deterministic, stable
-      // result when multiple threads share the same updatedAt timestamp (e.g.
-      // after a batch extraction run).
       return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     })
     .slice(0, MAX_ACTIVE_THREADS);
@@ -1148,7 +981,6 @@ export function buildOpenCommitments(memories: MemoryFile[]): BriefingOpenCommit
 
   return commitments
     .sort((a, b) => {
-      // Missing timestamps sort last (highest comparator value).
       if (!a.createdAt && !b.createdAt) return 0;
       if (!a.createdAt) return 1;
       if (!b.createdAt) return -1;
@@ -1172,15 +1004,10 @@ async function loadTodayCalendar(
   try {
     const dateIso = now.toISOString().slice(0, 10);
     const events = await source.eventsForDate(dateIso);
-    // Return the events array (possibly empty for a legitimately empty calendar).
-    // An empty array is distinct from `undefined`: empty means "source responded
-    // with no events today"; undefined means "source failed".
     return { events, error: undefined };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.warn(`briefing: calendar source error (${sourceLabel}): ${message}`);
-    // Return undefined events (not []) to signal an error so callers can
-    // distinguish "no events today" from "the calendar source threw".
     return {
       events: undefined,
       error: { source: sourceLabel, error: message },
@@ -1189,7 +1016,6 @@ async function loadTodayCalendar(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Follow-ups (Responses API)
 // ──────────────────────────────────────────────────────────────────────────
 
 function buildOpenAiFollowupGenerator(cfg: {
@@ -1198,7 +1024,6 @@ function buildOpenAiFollowupGenerator(cfg: {
   baseURL?: string;
 }): BriefingFollowupGenerator {
   return async ({ sections, windowLabel, maxFollowups }) => {
-    // Lazy import keeps the module dependency-free when LLM path is unused.
     const { OpenAI } = (await import("openai")) as {
       OpenAI: new (opts: { apiKey: string; baseURL?: string }) => unknown;
     };
@@ -1321,9 +1146,6 @@ function buildFollowupPrompt(
 }
 
 function parseFollowupResponse(raw: string, max: number): BriefingFollowup[] {
-  // JSON.parse throws on invalid JSON — let the caller catch it so the outer
-  // try/catch in buildBriefing can set followupsUnavailableReason rather than
-  // silently returning an empty array that masks the parse failure.
   const candidates = extractJsonCandidates(raw);
   let lastError: unknown;
   for (const candidate of candidates) {
@@ -1363,7 +1185,6 @@ function stringifyError(err: unknown): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Markdown rendering
 // ──────────────────────────────────────────────────────────────────────────
 
 interface RenderContext {
@@ -1373,7 +1194,6 @@ interface RenderContext {
   followupsUnavailableReason?: string;
   generatedAt: Date;
   namespace?: string;
-  /** Auto-applied passive corrections drained for this briefing (#1581). */
   correctionNotifications?: BriefingResult["correctionNotifications"];
 }
 
@@ -1460,7 +1280,6 @@ export function renderBriefingMarkdown(ctx: RenderContext): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Save helpers
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -1487,7 +1306,6 @@ export function resolveBriefingSaveDir(
   return path.join(home, ".remnic", "briefings");
 }
 
-/** Format the dated filename for a given briefing. */
 export function briefingFilename(date: Date, format: "markdown" | "json" = "markdown"): string {
   const day = date.toISOString().slice(0, 10);
   return format === "json" ? `${day}.json` : `${day}.md`;

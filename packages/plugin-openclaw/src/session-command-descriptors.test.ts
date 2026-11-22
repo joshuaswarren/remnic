@@ -125,8 +125,6 @@ test("top-level descriptor satisfies OpenClaw registerCommand validator and disp
     }) => Promise<{ text: string }>;
   };
 
-  // Shape required by openclaw's validatePluginCommandDefinition
-  // (see openclaw/dist/command-registration:*).
   assert.equal(typeof descriptor.handler, "function");
   assert.equal(typeof descriptor.description, "string");
   assert.ok(descriptor.description.trim().length > 0);
@@ -154,7 +152,6 @@ test("top-level descriptor satisfies OpenClaw registerCommand validator and disp
   });
   assert.match(unknownReply.text, /Unknown Remnic subcommand "bogus"/);
 
-  // No args => defaults to status.
   const defaultReply = await descriptor.handler({
     sessionKey: "session-b",
     agentId: "main",

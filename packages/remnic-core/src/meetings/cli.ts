@@ -1,13 +1,3 @@
-/**
- * Meetings CLI runner (issue #1900) — one implementation shared by every CLI
- * host (`remnic meetings ...` and `openclaw engram meetings ...`) so the
- * surfaces never fork (same rule as the wearables/recall-explain runners).
- *
- * Flag validation is strict: value-taking flags require a value, unknown flags
- * error with the valid list, malformed dates/ids reject loudly, and a missing
- * record is a caller error — all `MeetingsInputError` → exit code 1 (CLAUDE.md
- * rules 14 + 51). Backend faults bubble to the host's 500 handler.
- */
 
 import { isValidTranscriptDate } from "../wearables/day-store.js";
 import type { MeetingsBuilder, MeetingsDayBuildSummary } from "./build.js";
@@ -20,17 +10,9 @@ export interface MeetingsCliIo {
   stderr: { write(chunk: string): unknown };
 }
 
-/** Everything the runner drives. Injected so tests wire a store + builder over
- *  synthetic fixtures with no real filesystem. */
 export interface MeetingsCliDeps {
   store: MeetingRecordStore;
   builder: MeetingsBuilder;
-  /**
-   * Meetings config, so list/show honor `meetings.enabled`. The runner reads the
-   * store directly (not through an enabled-aware service), so without this gate a
-   * disabled subsystem would still expose stored records via list/show even
-   * though `build` refuses. Disabled => no exposure (issue #1900).
-   */
   config: MeetingsConfig;
 }
 
@@ -126,7 +108,6 @@ function renderBuildSummary(summary: MeetingsDayBuildSummary): string {
   return lines.join("\n");
 }
 
-/** Run a meetings CLI command. Returns a process exit code; all output via `io`. */
 export async function runMeetingsCliCommand(
   deps: MeetingsCliDeps,
   args: string[],
@@ -145,9 +126,6 @@ export async function runMeetingsCliCommand(
         const parsed = parseFlags(rest);
         const json = parsed.flags.has("--json");
         const dateFlag = parsed.flags.get("--date");
-        // Validate --date regardless of enabled state: a malformed --date is a
-        // caller error on every path, so it must reject before the disabled
-        // list short-circuit returns an empty result.
         if (typeof dateFlag === "string" && !isValidTranscriptDate(dateFlag)) {
           throw new MeetingsInputError(`--date must be a real YYYY-MM-DD; got '${dateFlag}'`);
         }
@@ -205,9 +183,6 @@ export async function runMeetingsCliCommand(
         if (date === null) {
           throw new MeetingsInputError(`invalid meeting id '${id}' — expected mtg-YYYY-MM-DD-<hash>`);
         }
-        // meetingIdDate matches the id's SHAPE; a syntactically valid but
-        // impossible calendar date (e.g. mtg-2026-13-40-...) must surface as a
-        // clean input error, not a 500 from the store's path validator.
         if (!isValidTranscriptDate(date)) {
           throw new MeetingsInputError(`invalid meeting id '${id}' — '${date}' is not a real calendar date`);
         }

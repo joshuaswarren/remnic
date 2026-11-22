@@ -1,9 +1,3 @@
-/**
- * Config-layer coercion. Every helper THROWS on an unrecognized value (never
- * silently defaults); callers apply defaults only when a field is absent.
- * Boolean-ish strings coerce per the shared connector convention:
- * true/1/yes/on and false/0/no/off.
- */
 
 import { CaptureConfigError } from "./errors.js";
 import { describeValue } from "./util.js";

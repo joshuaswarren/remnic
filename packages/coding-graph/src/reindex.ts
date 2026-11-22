@@ -54,8 +54,6 @@ import {
 } from "./heuristic-resolution.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Public types — the planner's input and output
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * The persisted index state the planner reasons about.
@@ -90,7 +88,6 @@ export interface ReindexGitFacts {
   readonly changedFiles: readonly NameStatusEntry[];
 }
 
-/** What the planner decided to do. */
 export type ReindexPlan =
   | { readonly mode: "full"; readonly reason: string }
   | { readonly mode: "noop"; readonly reason: string }
@@ -102,7 +99,6 @@ export type ReindexPlan =
       readonly mismatchedPaths: readonly string[];
     };
 
-/** Result of executing a reindex plan. */
 export type ReindexResult =
   | {
       readonly ok: true;
@@ -126,25 +122,14 @@ export type ReindexResult =
     };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Meta-table keys — the store's `meta` table is a simple key/value store.
 // ──────────────────────────────────────────────────────────────────────────
 
 export const META_KEY_LAST_HEAD = "last_indexed_head" as const;
 
-/**
- * Meta key holding a JSON array of repo-relative paths that failed to
- * parse on the last run (rule 44: files that fail to parse do not update
- * their stored content hash and MUST retry on the next run). Because a
- * HEAD-unchanged run would otherwise plan `noop` and skip them, the
- * executor consults this set at the top of every run and re-ingests any
- * pending paths even when the plan is noop (cursor Bugbot: 'Parse skips
- * block future reindex').
- */
 export const META_KEY_PENDING_PARSE_FAILURES =
   "pending_parse_failures" as const;
 
 // ──────────────────────────────────────────────────────────────────────────
-// Pure planner — unit-testable without git or SQLite
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -164,17 +149,14 @@ export function planReindex(
   lastState: ReindexState,
   facts: ReindexGitFacts,
 ): ReindexPlan {
-  // Case 1: no HEAD at all — nothing to do.
   if (facts.currentHead === null) {
     return { mode: "noop", reason: "repo has no commits (HEAD is null)" };
   }
 
-  // Case 2: never indexed → full.
   if (lastState.lastHead === null) {
     return { mode: "full", reason: "no prior last_indexed_head — first index" };
   }
 
-  // Case 3: HEAD unchanged → noop. No writes, no parse.
   if (lastState.lastHead === facts.currentHead) {
     return { mode: "noop", reason: "HEAD unchanged since last index" };
   }
@@ -186,12 +168,10 @@ export function planReindex(
     return {
       mode: "hash_scan",
       reason: `last_indexed_head ${lastState.lastHead.slice(0, 12)} is unreachable (rebase/force-push)`,
-      // mismatchedPaths is filled by the executor (needs to read files).
       mismatchedPaths: [],
     };
   }
 
-  // Case 5: incremental. The diff is trustworthy; re-parse changed files.
   const changedPaths: string[] = [];
   for (const entry of facts.changedFiles) {
     // `D` = deleted → include so executor prunes the file.
@@ -206,7 +186,6 @@ export function planReindex(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Executor — parses files, drives the store, updates meta
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -293,15 +272,12 @@ async function probeRead(
         ? (e as { code?: unknown }).code
         : undefined;
     if (code === "ENOENT") return { kind: "missing" };
-    // Transient error — the file may still exist. Do not prune.
     return { kind: "unknown" };
   }
 }
 
-/** Resolve a repo-relative forward-slash path to an absolute OS path. */
 function resolveRepoPath(repoRoot: string, relPath: string): string {
   // Split on forward slashes and re-join with the platform separator so
-  // Windows backslash-in-relPath is never accidentally treated as escape.
   return path.resolve(repoRoot, ...relPath.split("/"));
 }
 
@@ -328,11 +304,9 @@ async function symlinkEscapesRoot(repoRoot: string, absPath: string): Promise<bo
   }
 }
 
-/** Default file reader: reads from disk via node:fs/promises. */
 async function defaultReadFile(absPath: string): Promise<Uint8Array> {
   const buf = await fsReadFile(absPath);
   // Return a Uint8Array view over the same buffer (Buffer IS a
-  // Uint8Array subclass; this copy-free view satisfies the FileIR contract).
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 }
 
@@ -376,7 +350,6 @@ export async function executeReindex(options: {
   const { store, git, repoRoot, parseFile } = options;
   const readFile = options.readFile ?? defaultReadFile;
 
-  // Serialize concurrent runs against the same store end-to-end.
   const prev = reindexLocks.get(store) ?? Promise.resolve();
   let release!: () => void;
   const next = new Promise<void>((resolve) => {
@@ -391,7 +364,6 @@ export async function executeReindex(options: {
   }
 }
 
-/** Inner reindex body — runs under the per-store serialization lock. */
 async function runReindex(
   store: GraphStore,
   git: CodingGitInvoker,
@@ -403,12 +375,9 @@ async function runReindex(
   },
 ): Promise<ReindexResult> {
 
-  // ── Gather git facts ──────────────────────────────────────────────────
   // readMeta now returns a tagged result (rule 22): a backend failure must
   // NOT be conflated with "never indexed" (null), which would send the
   // planner down a full-reindex path against a store it cannot read. Bail
-  // before any mutation (cursor Bugbot: 'readMeta conflates absent key
-  // with db failure').
   const lastHeadRead = readLastIndexedHead(store);
   if (!lastHeadRead.ok) {
     return {
@@ -440,7 +409,6 @@ async function runReindex(
       `${lastHead}..${headResult.head}`,
     );
     if (!diffResult.ok) {
-      // Diff failed but heads were "reachable" — degrade to hash_scan.
       reachable = false;
     } else {
       changedFiles = [...diffResult.entries];
@@ -452,13 +420,10 @@ async function runReindex(
     lastHeadReachable: reachable,
     changedFiles,
   };
-  // Read the file-hash snapshot ONCE. A backend failure here must NOT be
   // treated as an empty index — that would either skip pruning while head
-  // advances, or prune against a falsely-empty set. Bail before any mutation
   // (rule 22; cursor Bugbot HIGH: 'readFileHashes conflates error with
   // empty'). The same snapshot is reused for every prune decision below:
   // nothing mutates the store between here and the ingest, so a fresh read
-  // at each site would only re-introduce the error/empty conflation.
   const fileHashesRead = readFileHashes(store);
   if (!fileHashesRead.ok) {
     return {
@@ -478,8 +443,6 @@ async function runReindex(
 
   // ── Pending parse-failure retry (rule 44) ─────────────────────────────
   // Paths that failed to parse on a prior run must be retried even when
-  // HEAD is unchanged (a noop plan would otherwise skip them). Read once;
-  // we rewrite this set after every run with the CURRENT run's failures.
   const pendingRetryRead = readPendingParseFailures(store);
   if (!pendingRetryRead.ok) {
     return {
@@ -490,15 +453,12 @@ async function runReindex(
   }
   const pendingRetry = pendingRetryRead.paths;
 
-  // ── Execute the plan ──────────────────────────────────────────────────
   switch (plan.mode) {
     case "noop": {
       if (pendingRetry.length === 0) {
         return { ok: true, mode: "noop", filesIngested: 0, head: lastHead };
       }
-      // HEAD unchanged but some files still need a parse retry. Re-ingest
       // ONLY the pending set (no diff, no deletes). Clears paths that now
-      // parse; keeps failures for the next run.
       const ingestResult = await ingestFiles(
         store,
         repoRoot,
@@ -508,7 +468,6 @@ async function runReindex(
       );
       if (!ingestResult.ok) return ingestResult;
       // Persist the updated pending set BEFORE any head write (rule 25:
-      // meta updates after the data transaction commits).
       store.writeMeta(
         META_KEY_PENDING_PARSE_FAILURES,
         JSON.stringify(ingestResult.parseFailedPaths),
@@ -527,7 +486,6 @@ async function runReindex(
       // pruning or head advancement (cursor Bugbot HIGH: 'Empty candidate list
       // prunes graph'). Require a non-empty list to treat candidates as
       // authoritative. The genuine empty-repo case (no candidates, no retries)
-      // is handled below as a noop.
       const candidatesProvided =
         options.candidatePaths !== undefined && options.candidatePaths.length > 0;
       const candidates = options.candidatePaths ?? [];
@@ -539,22 +497,16 @@ async function runReindex(
         // (cursor Bugbot: 'Empty full run marks indexed'.)
         return { ok: true, mode: "noop", filesIngested: 0, head: lastHead };
       }
-      // Dedup: a path can appear in both candidates and pendingRetry;
       // upsertFileBatch rejects duplicate paths in one batch (cursor
       // Bugbot: 'Full reindex duplicate ingest paths').
       const toIngest = [...new Set([...candidates, ...pendingRetry])];
       // Prune stored files that are absent from the candidate set so a
       // full reindex against a pre-existing store (v1 store, or a crash
-      // before the first meta write) does not leave deleted-file symbols
       // behind while marking the index current (chatgpt-codex-connector:
-      // 'Prune absent files during full reindex').
-      // Only prune when the caller supplied an AUTHORITATIVE candidate list.
       // Without candidatePaths (e.g. a retry-only resume) we cannot know which
-      // stored files are truly absent; pruning against a retry-only set would
       // destructively delete every successfully-indexed file. Likewise we must
       // not advance last_indexed_head in that case, since a partial (retry-only)
       // pass has not re-verified the whole tree (chatgpt-codex-connector: 'Do
-      // not prune full indexes when candidates are absent').
       let fullDelete: string[] = [];
       if (candidatesProvided) {
         const fullCandidateSet = new Set(toIngest);
@@ -600,34 +552,27 @@ async function runReindex(
       // diff). Use a Set for dynamic runtime membership tracking.
       const seen = new Set<string>();
       for (const p2 of plan.changedPaths) seen.add(p2);
-      // Pending parse-failures from a prior run are also candidates.
       for (const p2 of pendingRetry) seen.add(p2);
 
       // Determine which paths still exist on disk vs are deleted. Use a
       // probe that distinguishes a confirmed deletion (ENOENT) from a
-      // transient I/O error (which must NOT prune the file).
       const knownFiles = fileHashes;
       const toDelete: string[] = [];
       const toIngest: string[] = [];
       // New candidate paths that probe missing on disk (sparse checkout /
       // partial worktree / list-vs-disk race): retained in pending so a later
-      // run indexes them instead of advancing head as if done.
       const missingNew: string[] = [];
       for (const p2 of seen) {
         const probe = await probeRead(repoRoot, p2, readFile);
         if (probe.kind === "skip") {
           // A previously-indexed path that is now non-canonical or an escaping
-          // symlink (probe skip) is no longer a readable repo file — prune its
-          // stale nodes rather than leaving them while head advances
           // (chatgpt-codex-connector: 'Retain skipped symlink paths before
-          // advancing').
           if (knownFiles.has(p2)) toDelete.push(p2);
           continue;
         }
         if (probe.kind === "exists" || probe.kind === "unknown") {
           // exists → re-ingest; unknown (transient error) → route to
           // ingest so ingestFiles records it as a pending retry if the
-          // read still fails, WITHOUT deleting the existing nodes.
           toIngest.push(p2);
         } else if (probe.kind === "missing") {
           // Confirmed deletion → prune if known; a NEW absent path → retain in
@@ -674,7 +619,6 @@ async function runReindex(
     case "hash_scan": {
       // Hash every candidate, re-parse only mismatches. This path is
       // taken when last_head is unreachable (rebase/force-push) or when
-      // the incremental diff itself failed.
       // Union caller-supplied candidates WITH the previously-indexed
       // files AND pending retries. Omitting stored files would miss
       // newly-deleted files (their symbols would linger while head
@@ -691,7 +635,6 @@ async function runReindex(
         ...pendingRetry,
       ]);
       // Hash every candidate via the canonical+ENOENT-aware probe. A
-      // transient read error must NOT be treated as a deletion.
       const knownFiles = fileHashes;
       const toDelete: string[] = [];
       const toIngest: string[] = [];
@@ -699,29 +642,24 @@ async function runReindex(
       for (const candidatePath of candidateSet) {
         const probe = await probeRead(repoRoot, candidatePath, readFile);
         if (probe.kind === "skip") {
-          // Previously-indexed path now non-canonical / escaping symlink →
-          // prune stale nodes rather than leave them while head advances.
           if (knownFiles.has(candidatePath)) toDelete.push(candidatePath);
           continue;
         }
         if (probe.kind === "missing") {
           // Confirmed deletion of a known file → prune. A NEW candidate absent
           // on disk (sparse checkout / list-vs-disk race) → retain in pending so
-          // a later run indexes it rather than advancing head as if done
           // (cursor Bugbot: 'Missing new paths skip pending').
           if (knownFiles.has(candidatePath)) toDelete.push(candidatePath);
           else hashScanRetry.push(candidatePath);
           continue;
         }
         if (probe.kind === "unknown") {
-          // Transient read error — keep the stored entry, do not prune,
           // and record the path for a pending retry so it is re-tried on
           // the next run even when HEAD is unchanged (chatgpt-codex-
           // connector: 'Retain hash-scan read failures for retry').
           hashScanRetry.push(candidatePath);
           continue;
         }
-        // exists — compare content hash.
         const currentHash = hashContent(probe.content);
         const storedHash = lastState.fileHashes.get(candidatePath);
         if (storedHash !== currentHash) {
@@ -792,7 +730,6 @@ function readPendingParseFailures(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Helpers
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -843,14 +780,6 @@ type IngestResult =
       readonly parseFailedPaths: string[];
     }
   | { readonly ok: false; readonly code: "store_error"; readonly message: string };
-/**
- * Parse + ingest a list of files. Returns the count ingested or a tagged
- * failure. Files that fail to parse do NOT update their stored content
- * hash (rule 44 — they must retry next run). The caller records them in
- * the `pending_parse_failures` meta key so the NEXT run re-ingests them
- * even when HEAD is unchanged (a noop plan would otherwise skip them —
- * cursor Bugbot: 'Parse skips block future reindex').
- */
 async function ingestFiles(
   store: GraphStore,
   repoRoot: string,
@@ -878,7 +807,6 @@ async function ingestFiles(
     } catch {
       // File unreadable (deleted between plan and execution, or a
       // transient I/O error). Record it for retry so a transient read
-      // failure does not silently drop a path that was never ingested
       // (cursor Bugbot: 'Read errors drop pending retries'). A truly
       // deleted file is pruned via deletePaths when the caller detected
       // the deletion; here we only keep it retrying.
@@ -888,7 +816,6 @@ async function ingestFiles(
     const parseResult = await parseFile({ path: relPath, content });
     if (!parseResult.ok) {
       // Rule 44: record unparseable files so they retry next run; do
-      // not fail the batch.
       parseFailedPaths.push(relPath);
       continue;
     }
@@ -906,7 +833,6 @@ async function ingestFiles(
   }));
   // Even when batch is empty we must run the upsert so deletePaths are
   // pruned atomically (the store's transaction wraps both). A zero-file,
-  // zero-delete call is a cheap no-op.
   const upsertResult = await store.upsertFileBatch(batch, deletePaths);
   if (!upsertResult.ok) {
     return {

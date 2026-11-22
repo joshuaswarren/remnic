@@ -1,16 +1,3 @@
-/**
- * materialize-skills.ts — the `skills/` section of the Codex materializer
- * (issue #2369).
- *
- * Extracted from codex-materialize.ts (which sits at its structural LOC cap)
- * so the skill staging / commit / prune rules live in one small module. Format
- * and slug rules stay in the host-agnostic `procedural/skill-projection.ts`;
- * this module only decides what lands on disk.
- *
- * Ownership rule: Remnic removes ONLY the slugs a previous run recorded in the
- * sentinel's `projected_skills`. A skill folder a user (or another tool)
- * created is never in that list, so it is never a removal candidate.
- */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -48,8 +35,6 @@ export function planSkillFiles(
   const files: SkillFile[] = [];
   const seen = new Set<string>();
   for (const bundle of bundles ?? []) {
-    // Invalid or duplicate slugs are dropped so two bundles can never target
-    // one folder and leave the second rename with no source (§37).
     if (!isValidSkillSlug(bundle.slug) || seen.has(bundle.slug)) continue;
     seen.add(bundle.slug);
     files.push({ slug: bundle.slug, body: renderSkillBundle(bundle) });
@@ -80,7 +65,6 @@ export function retiredSkillsAlreadyRemoved(memoriesDir: string, retiredSlugs: r
   return retiredSlugs.every((slug) => !fs.existsSync(path.join(memoriesDir, SKILLS_SUBDIR, slug)));
 }
 
-/** Render bundles into the per-run staging directory. */
 export function stageSkillFiles(tmpDir: string, files: readonly SkillFile[]): void {
   for (const file of files) {
     const stagedDir = path.join(tmpDir, SKILLS_SUBDIR, file.slug);
@@ -89,11 +73,6 @@ export function stageSkillFiles(tmpDir: string, files: readonly SkillFile[]): vo
   }
 }
 
-/**
- * Remove retired folders, then rename each staged SKILL.md into place. Per-file
- * renames (never directory renames) so an existing folder cannot cause
- * ENOTEMPTY and so Codex never observes a half-written file.
- */
 export function commitSkillFiles(memoriesDir: string, tmpDir: string, plan: SkillPlan): void {
   if (!plan.supplied) return;
   if (plan.files.length === 0 && plan.retiredSlugs.length === 0) return;

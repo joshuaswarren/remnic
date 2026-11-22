@@ -57,9 +57,6 @@ test("an in-flight fill does not publish a stale cache after the ledger advances
         const callIndex = h.collectCalls + 1;
         h.collectCalls = callIndex;
         if (callIndex === 1) {
-          // First fill stalls while a peer retires a legacy memory; the
-          // generation is bound at call entry so the stall cannot upgrade
-          // it to the fresh revision.
           await h.gateCollect;
         }
         return generations[Math.min(callIndex - 1, generations.length - 1)]!;
@@ -73,17 +70,11 @@ test("an in-flight fill does not publish a stale cache after the ledger advances
       storedContentIdentityCandidates: (content: string) => [content],
     });
 
-    // The first callback requests an id whose path exists only in the new
-    // ledger revision, so a stale snapshot would miss it entirely.
     const first = sourceContents(["new-a"]);
-    // Advance the ledger mtime so a later callback drops both caches while
-    // the first fill is still awaiting its (stale) path snapshot.
     await utimes(h.ledgerPath, new Date(), new Date(Date.now() + 5000));
     const second = sourceContents(["old-a"]);
     h.releaseCollect();
 
-    // Without the revision guard, the first callback would miss on the
-    // stale snapshot, publish a full map built from it, and resolve empty.
     const firstResult = await first;
     assert.deepEqual([...firstResult.keys()], ["new-a"]);
     const secondResult = await second;

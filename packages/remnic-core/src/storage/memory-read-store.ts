@@ -1,13 +1,3 @@
-/**
- * Memory read store (extracted from storage.ts StorageManager; god-file
- * decomposition, #1526 playbook: verbatim move + live selfDeps wiring).
- *
- * Owns the bulk/windowed read surfaces of the storage layer: active
- * memory path collection, windowed and cold reads, path-addressed reads,
- * cached artifact index reads, questions, buffer-surprise ledger
- * read/append, compression-guideline state, and wearable transcript-day
- * listing.
- */
 
 import type { Dirent, Stats } from "node:fs";
 import { lstat, readdir, stat } from "node:fs/promises";
@@ -167,9 +157,6 @@ export class MemoryReadStore {
         try {
           const entries = await readdir(dir, { withFileTypes: true });
           for (const entry of entries) {
-            // Per-entry, so a tree of any shape has a checkpoint: this scan has no
-            // in-flight dedup, so every abandoned recall used to start another
-            // full walk of it (issue #2307).
             checkCorpusReadAbort(options);
             if (isMacOsReplicationJunkBasename(entry.name)) continue;
             const fullPath = path.join(dir, entry.name);
@@ -183,8 +170,6 @@ export class MemoryReadStore {
             artifacts.push(memory);
           }
         } catch (err) {
-          // A cancelled scan must surface, not be swallowed as "directory doesn't
-          // exist yet" — otherwise a partial walk would be cached as complete.
           if (isAbortError(err)) throw err;
           // Directory doesn't exist yet
         }
@@ -201,8 +186,6 @@ export class MemoryReadStore {
       const artifacts = await scanArtifacts();
       const versionAfter = this.deps.getArtifactWriteVersion();
       latestArtifacts = artifacts;
-      // A signal that fired during the last file read of the walk would otherwise
-      // publish this scan and return it as if uncancelled (issue #2307 review).
       checkCorpusReadAbort(options);
       if (versionAfter === versionBefore) {
         this.deps.artifactIndexCache = { memories: artifacts, loadedAtMs: Date.now(), writeVersion: versionAfter };
@@ -210,8 +193,6 @@ export class MemoryReadStore {
       }
     }
 
-    // Highly concurrent writer churn; keep cache invalid so next read retries a clean rebuild.
-    // Return best-effort latest scan instead of an empty set to avoid dropping recall entirely.
     this.deps.artifactIndexCache = null;
     return latestArtifacts;
   }
@@ -243,8 +224,6 @@ export class MemoryReadStore {
       },
       options?.abortSignal,
     );
-    // A signal that fired during the last directory read would otherwise return a
-    // truncated path list as if it were the whole corpus (issue #2307 review).
     checkCorpusReadAbort(options);
     return filePaths;
   }
@@ -252,32 +231,6 @@ export class MemoryReadStore {
   async collectActiveMemoryPaths(
     options?: { propagateReadErrors?: boolean } & CorpusReadOptions,
   ): Promise<string[]> {
-    // Scan EVERY supported memory category directory, not just the legacy four
-    // (facts/procedures/reasoning-traces/corrections). Issue #1497: the QMD
-    // filesystem-fallback recall path (orchestrator `recent_scan` ->
-    // readAllMemoriesForNamespaces -> readAllMemories -> here) must read every
-    // recall category dir so on-disk memories in preferences/decisions/moments/
-    // commitments/principles/rules/skills/relationships are not missed when QMD
-    // is disabled, missing, or unhealthy. RECALL_FALLBACK_DIRS is the single
-    // source of truth derived from ALL_CATEGORY_DIRS (shared with
-    // ensureDirectories() and the write routing in utils/category-dir.ts).
-    // These paths resolve identically to the legacy this.deps.factsDir /
-    // this.deps.correctionsDir / this.deps.proceduresDir / this.deps.reasoningTracesDir
-    // getters (all `path.join(this.deps.baseDir, <dir>)`), so the scan stays
-    // namespace-aware: this.deps.baseDir is per-namespace, set by the storage router.
-    // Deliberately EXCLUDED (issue #1497 + PR #1503 review): the non-category
-    // content dirs that ensureDirectories() also creates — entities/, state/,
-    // artifacts/, identity/, config/ — plus the root profile.md, AND the
-    // questions/ queue dir. questions/ holds operational question-QUEUE items
-    // written by writeQuestion() (frontmatter `{ id, created, priority,
-    // resolved }`), read only via readQuestions() and surfaced through the
-    // dedicated, disabled-by-default `injectQuestions` recall-pipeline stage —
-    // never as standard recall memories. The QMD primary recall corpus does not
-    // include them, so the fallback must not either (corpus parity; CLAUDE.md
-    // rule #39). Were questions/ scanned here, parseFrontmatter() would accept
-    // those files (they have a `---` frontmatter block) and leak queue items
-    // into recall. None of these excluded dirs are in RECALL_FALLBACK_DIRS; the
-    // exclusion is asserted by tests in storage-fallback-category-dirs.test.ts.
     return this.collectContainedMarkdownPaths(
       RECALL_FALLBACK_DIRS.map((dir) => path.join(this.deps.baseDir, dir)),
       options?.propagateReadErrors ?? false,
@@ -333,7 +286,6 @@ export class MemoryReadStore {
     const selectedPaths: string[] = [];
 
     for (let i = 0; i < sortedPaths.length; i += normalizedBatchSize) {
-      // Per batch: an abandoned caller must not keep the scan running (#3139).
       checkCorpusReadAbort(readOptions);
       if (
         maxMemories !== undefined
@@ -371,47 +323,13 @@ export class MemoryReadStore {
     return { memories, filePaths: selectedPaths };
   }
 
-  /**
-   * Read all memories from the cold tier by scanning the entire cold/ root
-   * tree.  Previously this only scanned cold/facts/ and cold/corrections/, but
-   * structuredAttributes can appear on any MemoryCategory (preference, decision,
-   * entity, etc.).  buildTierMemoryPath now routes each category to its own
-   * cold/<dir>/ subtree via the shared categoryDirName() chokepoint (issue
-   * #1546), so cold decisions/preferences/... live outside cold/facts/.
-   * Scanning the full coldRoot covers every category dir and guards against
-   * files placed in unexpected subdirectories during manual operations or future
-   * refactors.
-   *
-   * Broadened in PR #402 round-6 (Finding UTsP): scanning only facts/ and
-   * corrections/ was a narrower-than-necessary subset of the cold directory
-   * tree.  Correctness trumps the minor performance difference — cold scans
-   * already happen at most once per supersession write.
-   *
-   * Used by applyTemporalSupersession so that memories already demoted to
-   * cold/ can still be marked superseded when a newer hot fact arrives.
-   *
-   * Cached with a TTL (Finding UOGi, PR #402 round-6): back-to-back
-   * structured-attribute writes in the same burst reuse the cached result
-   * instead of re-scanning the cold tree on every call.  The cache is
-   * invalidated whenever a write calls invalidateAllMemoriesCache() (which
-   * covers any hot→cold demotion that changes cold-tier contents) and
-   * expires after COLD_SCAN_CACHE_TTL_MS as a safety net.
-   */
   async readAllColdMemories(options?: CorpusReadOptions): Promise<MemoryFile[]> {
     checkCorpusReadAbort(options);
     const retainRaw = options?.retainRaw !== false;
     const coldRoot = this.deps.resolveTierRootDir("cold");
 
-    // Read the on-disk cold-version sentinel BEFORE checking the cache so that
-    // writes made by other processes (gateway + CLI) are detected immediately.
-    // Finding UvUy (PR #402 round-11): without this check the cache served
-    // stale data for up to 30s when another process wrote a new cold memory.
     const currentColdVersion = this.deps.readColdWriteVersion();
 
-    // Return cached result if still valid by TTL, sentinel version, AND the
-    // secure-store key identity (issue #1902). readParsedMemoriesFromPaths
-    // decrypts per this manager's key, so a differently-keyed manager must not
-    // read a cold corpus another instance decrypted for the same coldRoot.
     const keyId = this.deps.hotCacheKeyId();
     const cached = retainRaw ? this.deps.storageManagerClass.coldMemoriesCache.get(coldRoot) : undefined;
     if (
@@ -446,17 +364,9 @@ export class MemoryReadStore {
       }
     };
 
-    // Scan the entire cold root so that memories in any subdirectory (facts/,
-    // corrections/, artifacts/, or any future category-specific subdirectory)
-    // are included.  This is broader than the previous facts/+corrections/ scan
-    // and ensures that any memory with structuredAttributes is found regardless
-    // of which category it was written with.
     await collectPaths(coldRoot);
     const memories = await this.deps.readParsedMemoriesFromPaths(filePaths, 50, options);
 
-    // Store in cache with the sentinel version captured above so that any
-    // subsequent cold-version bump (by this or another process) invalidates it.
-    // A raw-free read stays out of the cache so it cannot evict the raw copy.
     if (retainRaw) {
       this.deps.storageManagerClass.coldMemoriesCache.set(coldRoot, { memories, loadedAt: Date.now(), coldVersion: currentColdVersion, keyId });
     }
@@ -467,17 +377,9 @@ export class MemoryReadStore {
   async readMemoryByPath(filePath: string): Promise<MemoryFile | null> {
     try {
       const raw = await readMaybeEncryptedFile(filePath, this.deps._secureStoreKey, this.deps.baseDir);
-      // Entity bodies with text but no name heading stay out of recall,
-      // including contextual QMD hits. An empty body still resolves through
-      // frontmatter and the canonical filename. A missing type line is still
-      // an entity. QMD query behavior is unchanged. Classification is
-      // relative to this store root: an absolute path that merely contains
-      // an `entities` segment is still an ordinary fact.
       if (isStoreEntityMarkdown(this.deps.baseDir, filePath) && isPopulatedUnnamedEntityRecord(raw)) {
         return null;
       }
-      // Note: the outer catch intentionally swallows most errors (ENOENT etc.)
-      // but SecureStoreLockedError must propagate — see re-throw below.
       const parsed = parseFrontmatter(raw);
       if (parsed) {
         return rememberRawFrontmatter({
@@ -491,20 +393,10 @@ export class MemoryReadStore {
         }, raw);
       }
 
-      // Entity files use a `# Name` + `**Type:** ...` markdown format rather than
-      // YAML frontmatter. Build a synthetic MemoryFile so entity files returned by
-      // the direct retrieval agent participate in boostSearchResults and last-recall
-      // tracking rather than being silently dropped.
       if (isStoreEntityMarkdown(this.deps.baseDir, filePath)) {
         const entity = parseEntityFile(raw, this.deps.entitySchemas);
         if (!entity.name) return null;
         const nameWithoutExt = path.basename(filePath, ".md");
-        // Fall back to file mtime rather than new Date() so that entities without
-        // an explicit Updated: timestamp are not treated as freshly created on every
-        // read. Using new Date() would inflate boostSearchResults recency scores for
-        // every entity that lacks a timestamp.
-        // Use epoch as the last-resort fallback so that entities without a
-        // parseable timestamp don't appear as "freshly created" and inflate scores.
         const fileMtime = entity.updated
           || await stat(filePath).then((s) => s.mtime.toISOString()).catch(() => new Date(0).toISOString());
         return {
@@ -525,10 +417,6 @@ export class MemoryReadStore {
 
       return null;
     } catch (err) {
-      // Re-throw store-locked errors — callers need to distinguish "locked"
-      // from "file not found / parse error". Swallowing a locked error here
-      // would silently return null and leave the daemon appearing to work
-      // while returning no memories (subtle data loss).
       if (err instanceof SecureStoreLockedError) throw err;
       return null;
     }
@@ -612,13 +500,6 @@ export class MemoryReadStore {
       throw err;
     }
 
-    // Resolve the effective limit up front. Any non-finite / non-positive
-    // value returns no rows — callers who want "everything" should OMIT
-    // the `limit` key (treated as "no bound" below). We intentionally
-    // reject `Infinity` too, because the slice math `events.slice(-Inf)`
-    // is surprising and ambiguous; omit the key instead. Fractional
-    // values <1 floor to 0, which would make `slice(-0)` return the
-    // entire file — guard against that too.
     let effectiveLimit: number | null = null;
     if (options.limit !== undefined) {
       if (
@@ -653,10 +534,6 @@ export class MemoryReadStore {
     );
 
     if (effectiveLimit === null) return events;
-    // Slice over VALID rows, not raw lines, so malformed tails cannot
-    // mask good data above them. Sort by event timestamp before slicing
-    // so concurrent probe completion order cannot make an older scored
-    // turn look newer than a later scored turn.
     return events.slice(-effectiveLimit);
   }
 
@@ -781,8 +658,6 @@ export class MemoryReadStore {
     const cacheKey = this.deps.questionsDir;
     const cached = this.deps.storageManagerClass.questionsCache.get(cacheKey);
     if (cached && Date.now() - cached.loadedAt < this.deps.storageManagerClass.QUESTIONS_CACHE_TTL_MS) {
-      // Check dir mtime for cross-process invalidation — if another process
-      // wrote/resolved a question, the directory mtime will be newer than loadedAt.
       try {
         const dirStat = await stat(this.deps.questionsDir);
         if (dirStat.mtimeMs <= cached.loadedAt) {

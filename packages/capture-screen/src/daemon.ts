@@ -1,18 +1,3 @@
-/**
- * Loopback-only HTTP daemon. Serves the spool over three read-only routes:
- *
- *   GET /v1/health     → liveness + capture status + AX/OCR availability
- *   GET /v1/snapshots  → snapshots for a local day (keyset paged; wire shape
- *                        consumed by @remnic/core's ActivityHttpSourceClient)
- *   GET /v1/stats      → per-app time attribution for a local day
- *
- * Security: capture-screen serves PLAIN HTTP and has no TLS contract, so it
- * refuses to bind a non-loopback host — captured screen text must never cross
- * the network in cleartext. Every request MUST carry `Authorization: Bearer
- * <token>` matching the daemon token, even on loopback, so another local user
- * cannot read snapshots off 127.0.0.1. Input errors are 400; anything
- * unexpected is 500 with no foreign text.
- */
 
 import http from "node:http";
 import { Buffer } from "node:buffer";

@@ -676,10 +676,6 @@ function filterGroundedFact(
   anchors: readonly QuoteAnchor[],
   sourceHas: TokenPool,
 ): ExtractionResult["facts"][number] | undefined {
-  // Span-materialized content (issue #2333) is "frame: verbatim slice". The
-  // frame is generated deixis, so full-content gating would drop a verbatim
-  // fact. Only on-mode facts whose content is that materialized shape may
-  // fall back to the slice. Shadow stays zero-diff with off.
   const quote = typeof fact.quote === "string" ? fact.quote : "";
   const materializedPrefix = quote.length > 0 && fact.content.endsWith(quote) && fact.content !== quote
     ? fact.content.slice(0, fact.content.length - quote.length)
@@ -732,8 +728,6 @@ function filterGroundedFact(
   const groundedFactEventTime = factEventTime === undefined
     ? undefined
     : eventTimeNormalizer?.(factEventTime) ?? factEventTime;
-  // A quote-anchored claim is reworded from the quote and its turn, so no single
-  // sentence grounds it; the anchor window is the support for its sub-fields.
   const factSupportingSentences = quoteAnchored ? [] : sourceSentences(factContext.assertionSource ?? factContext.source).filter(
     (sentence) =>
     isGroundedCandidate(

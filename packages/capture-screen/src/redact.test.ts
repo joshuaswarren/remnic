@@ -12,7 +12,6 @@ test("US SSNs are redacted", () => {
 test("Luhn-valid payment cards are redacted; non-Luhn digit runs are left", () => {
   assert.equal(redactText("card 4242 4242 4242 4242 end").includes(REDACTION_PLACEHOLDER), true);
   assert.equal(redactText("card 4242-4242-4242-4242 end").includes(REDACTION_PLACEHOLDER), true);
-  // Sixteen 1s is not Luhn-valid — must not be redacted (avoids nuking IDs/counts).
   assert.equal(redactText("ref 1111 1111 1111 1111 end"), "ref 1111 1111 1111 1111 end");
 });
 
@@ -25,7 +24,6 @@ test("user redaction patterns are applied in addition to the built-ins", () => {
 test("a global user pattern redacts every occurrence and is reusable", () => {
   const patterns = compileRedactionPatterns(["\\bpw\\b"]);
   assert.equal(redactText("pw here pw there", patterns), "[REDACTED] here [REDACTED] there");
-  // Reusing the same compiled pattern must not skip matches (lastIndex reset).
   assert.equal(redactText("pw again", patterns), "[REDACTED] again");
 });
 

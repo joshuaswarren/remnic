@@ -4,7 +4,6 @@ import { test } from "node:test";
 import type { ReittiPlaceVisitSummary, ReittiTimelineEntry } from "./client.js";
 import { timelineObservations, visitSummaryObservations } from "./normalize.js";
 
-/** 2026-08-17 UTC day window. */
 const WINDOW = { startUtc: "2026-08-17T00:00:00.000Z", endUtc: "2026-08-18T00:00:00.000Z" };
 
 function visit(
@@ -95,11 +94,8 @@ test("a non-HOME/WORK place type maps to poi", () => {
 
 test("entries spilling across the window boundary clamp into the window", () => {
   const entries = [
-    // Started the previous day, ends inside the window: one observation at its end.
     visit("v1", "2026-08-16T23:00:00Z", "2026-08-17T01:00:00Z", HOME),
-    // Entirely outside the window: dropped.
     visit("v2", "2026-08-18T05:00:00Z", "2026-08-18T06:00:00Z", HOME),
-    // Spans the whole day: observations at the window edges.
     visit("v3", "2026-08-16T12:00:00Z", "2026-08-18T12:00:00Z", OFFICE),
   ];
   const observations = timelineObservations(entries, WINDOW);

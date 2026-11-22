@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 // WeClone preprocessed export parser
 // ---------------------------------------------------------------------------
 
@@ -68,11 +67,6 @@ type NormalizedParseOptions = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Hints used to detect bot/AI senders.  Each hint is matched as a whole word
- * (`\b` boundary) so that short tokens like "ai" don't false-positive on
- * human names such as "Aidan", "Craig", or "Caitlin".
- */
 const AI_SENDER_HINTS: readonly string[] = [
   "bot",
   "assistant",
@@ -84,7 +78,6 @@ const AI_SENDER_HINTS: readonly string[] = [
   "llama",
 ];
 
-/** Pre-compiled word-boundary regexps (one per hint). */
 const AI_SENDER_PATTERNS: readonly RegExp[] = AI_SENDER_HINTS.map(
   (hint) => new RegExp(`\\b${hint}\\b`, "i"),
 );
@@ -187,7 +180,6 @@ export function parseWeCloneExport(
   const parseOptions = normalizeParseOptions(options);
   const strict = parseOptions.strict;
 
-  // Accept raw array or object-with-messages
   let rawMessages: unknown[];
   let platformStr: string | undefined;
   let exportDate: string | undefined;
@@ -214,13 +206,11 @@ export function parseWeCloneExport(
     throw new Error("WeClone import: messages array must not be empty");
   }
 
-  // Resolve platform
   const platform: WeClonePlatform = resolvePlatform(
     parseOptions.platform,
     platformStr,
   );
 
-  // Determine self sender.  When caller omits `selfSender`, infer it from
   // the first valid message sender that does NOT look like a bot and is
   // not explicitly listed in `assistantSenders`.  Falling back to the
   // very first sender would misclassify bot greetings (e.g. "ChatGPT Bot")
@@ -245,7 +235,6 @@ export function parseWeCloneExport(
   }
   const selfSender = parseOptions.selfSender ?? inferredSelfSender;
 
-  // Map messages to WeCloneImportTurn[]
   const turns: WeCloneImportTurn[] = [];
   const warnings: string[] = [];
 
@@ -270,7 +259,6 @@ export function parseWeCloneExport(
       ...(raw.message_id != null ? { messageId: raw.message_id } : {}),
     };
 
-    // Validate the turn using core's validator
     const issues = validateImportTurn(turn, i);
     if (issues.length > 0) {
       const detail = issues.map((iss) => iss.message).join("; ");
@@ -294,7 +282,6 @@ export function parseWeCloneExport(
     );
   }
 
-  // Log warnings (non-strict mode)
   if (warnings.length > 0) {
     for (const w of warnings) {
       // eslint-disable-next-line no-console
@@ -302,7 +289,6 @@ export function parseWeCloneExport(
     }
   }
 
-  // Build metadata
   const timestamps = turns
     .map((t) => parseIsoTimestamp(t.timestamp))
     .filter((ts): ts is number => ts !== null);
@@ -352,6 +338,5 @@ function resolvePlatform(
     }
     return exportPlatform as WeClonePlatform;
   }
-  // Default to telegram when neither options nor export specify a platform
   return "telegram";
 }

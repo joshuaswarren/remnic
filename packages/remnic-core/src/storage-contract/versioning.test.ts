@@ -1,16 +1,3 @@
-/**
- * Issue #1533 — Phase A contract test: page versioning snapshots.
- *
- * When versioning is enabled, overwriting a FIXED-PATH file produces a numbered
- * snapshot in the `.versions/` sidecar. Revert restores a prior version.
- * This pins the versioning contract the consolidation/provenance paths rely on.
- *
- * NOTE: `writeMemory` generates a unique path per id, so the first write to a
- * path never has pre-existing content to snapshot. The versioning integration
- * is exercised through `writeProfile` — a fixed-path write that calls
- * `snapshotBeforeWrite` before overwriting. The direct `createVersion`/
- * `revertToVersion` API is tested separately.
- */
 
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, readFile, writeFile, chmod, unlink } from "node:fs/promises";
@@ -52,7 +39,6 @@ test("versioning: overwrite of a fixed-path file (writeProfile) produces a numbe
     const profilePath = path.join(dir, "profile.md");
     await storage.writeProfile("first version of profile");
 
-    // Overwrite the same fixed path → snapshotBeforeWrite fires
     await storage.writeProfile("second version of profile");
 
     const versions = await listVersions(profilePath, VERSIONING_CONFIG);
@@ -82,7 +68,6 @@ test("versioning: snapshot captures the PRE-overwrite content", async () => {
     const versions = await listVersions(profilePath, VERSIONING_CONFIG);
     assert.ok(versions.versions.length >= 1);
 
-    // Read the snapshot — it must contain the ORIGINAL, not the replacement
     const snapshot = await getVersion(profilePath, versions.versions[0].versionId, VERSIONING_CONFIG);
     assert.ok(snapshot, "snapshot content must be readable");
     assert.ok(
@@ -94,7 +79,6 @@ test("versioning: snapshot captures the PRE-overwrite content", async () => {
       "the snapshot must NOT contain the replacement content",
     );
 
-    // The live file has the replacement
     const live = await readFile(profilePath, "utf-8");
     assert.ok(live.includes("REPLACEMENT PROFILE"));
   } finally {
@@ -109,7 +93,6 @@ test("versioning: disabled by default — no snapshots created", async () => {
     resetStaticCaches();
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
-    // Do NOT call setVersioningConfig — default is disabled
     await storage.writeProfile("v1");
     await storage.writeProfile("v2");
 
@@ -146,11 +129,6 @@ test("versioning: createVersion → revertToVersion round-trip restores content"
 });
 
 test("versioning: a final prune counts only COMMITTED snapshots — a staged writer's entry is never traded away (round N+15 B)", async () => {
-  // Two concurrent merges stage their pre-merge snapshots (deferPrune)
-  // before either compare-and-swap commits. Writer A commits and finalizes
-  // the prune while writer B is still pending: counting B's uncommitted
-  // snapshot would remove one MORE valid rollback point than the cap
-  // requires, and B's later abort would leave history short of the cap.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-ver-pending-"));
   try {
     const pagePath = path.join(dir, "facts", "deploy-notes.md");
@@ -167,7 +145,6 @@ test("versioning: a final prune counts only COMMITTED snapshots — a staged wri
     const stagedA = await createVersion(pagePath, "body v3", "semantic-merge", config, undefined, undefined, dir, { deferPrune: true });
     const stagedB = await createVersion(pagePath, "body v3", "semantic-merge", config, undefined, undefined, dir, { deferPrune: true });
 
-    // Writer A's guarded write commits and finalizes; writer B is still pending.
     await pruneVersions(pagePath, config, undefined, dir, { committedVersionId: stagedA.versionId });
 
     const history = await listVersions(pagePath, config, dir);
@@ -197,8 +174,6 @@ test("versioning: a final prune counts only COMMITTED snapshots — a staged wri
       "v1 is the one rollback point removed",
     );
 
-    // Writer B's attempt then aborts (lost compare-and-swap): its entry
-    // leaves history without taking any committed rollback point with it.
     await removeVersion(pagePath, stagedB.versionId, config, undefined, dir);
     const after = await listVersions(pagePath, config, dir);
     assert.deepEqual(
@@ -211,12 +186,6 @@ test("versioning: a final prune counts only COMMITTED snapshots — a staged wri
 });
 
 test("versioning: a failed finalization is reconciled by the next successful one — history stays within maxVersionsPerPage (round N+22)", async () => {
-  // A finalization whose merge had ALREADY committed can fail transiently
-  // (manifest lock timeout, unreadable manifest). Pre-fix, the catch only
-  // logged: the staged entry stayed `pending` forever, pruneExcessVersions
-  // excludes pending entries, and every such failure stranded one
-  // unprunable snapshot beyond the cap. The next successful finalization
-  // must reconcile the stranded entry so the prune bounds history again.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-ver-strand-"));
   try {
     const pagePath = path.join(dir, "facts", "strand-notes.md");
@@ -231,10 +200,6 @@ test("versioning: a failed finalization is reconciled by the next successful one
       await createVersion(pagePath, `body v${index}`, "write", config, undefined, undefined, dir);
     }
 
-    // Merge 1: stage the rollback snapshot, commit the merged body, then the
-    // finalizing prune FAILS — here via a transiently unreadable manifest
-    // (the lock-timeout production shape: pruneVersions throws, the catch is
-    // best-effort, the entry stays pending).
     const staged1 = await createVersion(
       pagePath,
       "body v3",
@@ -264,9 +229,6 @@ test("versioning: a failed finalization is reconciled by the next successful one
       "the failed finalization left the committed merge's snapshot pending",
     );
 
-    // Merge 2: stage, commit, and finalize SUCCESSFULLY. It must clear its
-    // own flag AND reconcile merge 1's stranded entry, so the committed set
-    // {v1, v2, v3, staged1, staged2} prunes back to the cap.
     const staged2 = await createVersion(
       pagePath,
       "body merged 1",
@@ -301,11 +263,6 @@ test("versioning: a failed finalization is reconciled by the next successful one
 });
 
 test("versioning: stale stranded-commit ids — gone or already-committed entries — are no-ops (round N+22)", async () => {
-  // The marker is append-only and never rewritten, so it accumulates ids
-  // whose entry was later removed (aborted writer's id reused path) or
-  // already cleared by an earlier reconciliation. Reading them must neither
-  // throw, clear a still-pending concurrent writer's entry, nor remove any
-  // extra committed snapshot.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-ver-stale-"));
   try {
     const pagePath = path.join(dir, "facts", "stale-notes.md");
@@ -319,12 +276,6 @@ test("versioning: stale stranded-commit ids — gone or already-committed entrie
       await writeFile(pagePath, `body v${index}`, "utf8");
       await createVersion(pagePath, `body v${index}`, "write", config, undefined, undefined, dir);
     }
-    // A still-pending concurrent writer plus stale marker ids: one for an
-    // entry that does not exist (999) and one for an already-committed
-    // entry ("1"). Neither resolves to a clearable pending entry, and the
-    // still-pending writer's entry has NO marker record — only a writer's
-    // OWN failed finalization can record its id — so reconciliation must
-    // leave it pending and touch nothing else.
     const pendingWriter = await createVersion(
       pagePath,
       "body v3",
@@ -357,15 +308,6 @@ test("versioning: stale stranded-commit ids — gone or already-committed entrie
   }
 });
 
-// ── Final round (A): publish-before-cleanup ordering ────────────────────────
-// An aborted merge's removeVersion, a cap prune, and a fresh stage all used to
-// unlink/drop snapshot state BEFORE the manifest publication that records it.
-// When the publication then failed (transient I/O, full disk), the on-disk
-// manifest kept referencing a now-missing snapshot — a dangling reference that
-// getVersion/revert fail on and prune never cleans. The invariant under test:
-// after ANY publication failure, every manifest entry's snapshot stays
-// readable, and the manifest either reflects the mutation or does not — never
-// half of it.
 
 test("versioning: a failed manifest publication during abort cleanup never leaves a dangling snapshot reference (final A)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-ver-dangling-"));
@@ -391,9 +333,6 @@ test("versioning: a failed manifest publication during abort cleanup never leave
     );
     await writeFile(pagePath, "body merged", "utf8");
 
-    // Transient publication failure: the manifest file itself is read-only,
-    // so a non-atomic overwrite fails while snapshot unlinks (directory
-    // permission) still succeed — the exact pre-fix dangling shape.
     const manifestFile = path.join(
       dir,
       ".versions",
@@ -483,12 +422,6 @@ test("versioning: a failed manifest publication during a cap prune never leaves 
   }
 });
 
-// ── Final round (B): ownership revalidation before destructive writes ───────
-// The lock's mtime heartbeat is a timer; a section paused past the 30s stale
-// window (CPU-bound pause, suspended process) cannot heartbeat, so a peer can
-// break the lock and commit its own mutation. Every destructive write must
-// revalidate ownership immediately before it lands and abort on loss — the
-// same pattern the graph JSONL lock adopted (GraphWriteLockSection).
 
 function fakeManifestEntries(count: number): string {
   const versions = Array.from({ length: count }, (_, index) => ({
@@ -519,13 +452,10 @@ test("versioning: removeVersion whose manifest lock was stale-broken aborts inst
     const manifestFile = path.join(sidecarPageDir, "manifest.json");
     const lockPath = `${manifestFile}.lock`;
     await mkdir(sidecarPageDir, { recursive: true });
-    // Our process's stale-but-current view: two versions.
     await writeFile(manifestFile, fakeManifestEntries(2), "utf8");
     await writeFile(path.join(sidecarPageDir, "1.md"), "body v1", "utf8");
     await writeFile(path.join(sidecarPageDir, "2.md"), "body v2", "utf8");
 
-    // The peer: stale-breaks our lock mid-section, takes ownership, and
-    // commits a newer mutation (version 3) under its own lock.
     const breakAsPeer = (async () => {
       while (!existsSync(lockPath)) await new Promise<void>((resolve) => setImmediate(resolve));
       await unlink(lockPath).catch(() => undefined);
@@ -585,7 +515,6 @@ test("versioning: pruneVersions and createVersion whose manifest lock was stale-
       await writeFile(lockPath, `${process.pid} peer-${randomUUID()} ${new Date().toISOString()}\n`, "utf8");
     })();
 
-    // The prune (over-cap by one) must refuse to publish on a broken lock.
     let pruneAborted = false;
     try {
       await pruneVersions(pagePath, config, undefined, dir);
@@ -601,12 +530,8 @@ test("versioning: pruneVersions and createVersion whose manifest lock was stale-
       ["1", "2", "3"],
       "the peer's manifest is untouched by the refused prune",
     );
-    // The fake peer never releases its lock; clear it so the stage below
-    // acquires fresh and the SECOND break lands mid-section, not as a busy
-    // 10s acquire timeout against a live-looking peer.
     await unlink(lockPath).catch(() => undefined);
 
-    // Same contract for staging a new version.
     const breakAsPeer2 = (async () => {
       while (!existsSync(lockPath)) await new Promise<void>((resolve) => setImmediate(resolve));
       await unlink(lockPath).catch(() => undefined);

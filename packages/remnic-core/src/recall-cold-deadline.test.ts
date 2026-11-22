@@ -36,10 +36,6 @@ async function coldConfig() {
   return { memoryDir, config };
 }
 
-/**
- * Minimal dependencies for the query-aware fallback. QMD is unavailable, so
- * the cold-QMD branch is skipped and the injected fallback step is observed.
- */
 function coldDeps(
   config: PluginConfig,
   searchQueryAwareFallback: RecallSearchPipelineDeps["searchQueryAwareFallback"],
@@ -97,10 +93,6 @@ test("#1907: query-aware fallback deadline aborts the injected step signal, retu
       "a task-level deadline must NOT abort the request-level signal",
     );
 
-    // The abandoned task's LATE completion has no observable side effect: a
-    // cooperative worker sees its injected signal aborted and performs no write.
-    // Deterministic — we await the abandoned task's own settlement, not a bare
-    // microtask flush.
     stuck.resolve([{ docid: "late", path: "/facts/late.md", snippet: "late", score: 1 }]);
     await abandonedTaskSettled.promise;
     assert.deepEqual(

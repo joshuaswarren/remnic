@@ -151,7 +151,6 @@ test("stop() aborts the in-flight sync and awaits its settlement", async () => {
   const handle = startWearablesAutoSync(SETTINGS, {
     sync: async (options) => {
       sawSignal = options.signal;
-      // Hang until the shutdown abort arrives, like a slow provider.
       await new Promise<void>((_resolve, reject) => {
         options.signal!.addEventListener("abort", () =>
           reject(new Error("aborted")),

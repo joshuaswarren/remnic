@@ -1,10 +1,3 @@
-/**
- * passive-capture.test.ts — pipeline tests for passive correction capture
- * (issue #1581 PR 2–3).
- *
- * Tests: queue mode, auto mode + all guards, dedup, notifications, telemetry.
- * Uses mock deps — no real CorrectionService or storage.
- */
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
@@ -31,8 +24,6 @@ import {
   drainPassiveCorrectionNotifications,
 } from "./passive-correction-notifications.js";
 
-// ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
 function makeCorrection(overrides: Partial<PassiveCorrection> = {}): PassiveCorrection {
@@ -108,7 +99,6 @@ const LIVE_CTX: PassiveCaptureContext = {
 };
 
 // ---------------------------------------------------------------------------
-// Queue mode
 // ---------------------------------------------------------------------------
 
 test("queue mode: plans corrections and leaves them pending", async () => {
@@ -136,7 +126,6 @@ test("queue mode: does not auto-apply", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Dedup
 // ---------------------------------------------------------------------------
 
 test("dedup: same correction, two flushes → one plan", async () => {
@@ -225,7 +214,6 @@ test("#2206 auto mode counts a plan left pending when cancellation lands at comm
 });
 
 // ---------------------------------------------------------------------------
-// Auto mode + guards
 // ---------------------------------------------------------------------------
 
 test("auto mode: applies when all guards pass", async () => {
@@ -413,7 +401,6 @@ test("auto mode: partial outcome queues instead of counting as applied (review: 
 });
 
 // ---------------------------------------------------------------------------
-// evaluateAutoApplyGuards — direct unit tests
 // ---------------------------------------------------------------------------
 
 test("guards: returns null when all pass", () => {
@@ -456,7 +443,6 @@ test("guards: disallowed_action_kind for redaction_rule", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Notifications — drain-once semantics
 // ---------------------------------------------------------------------------
 
 test("notifications: drains once then returns empty", async () => {
@@ -501,7 +487,6 @@ test("notifications: returns empty when no file exists", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Telemetry
 // ---------------------------------------------------------------------------
 
 test("telemetry: emptyTelemetry returns zeroed counters", () => {
@@ -513,14 +498,9 @@ test("telemetry: emptyTelemetry returns zeroed counters", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Review fixes (cursor threads)
 // ---------------------------------------------------------------------------
 
 test("handle resolution: resolveHandle dep converts [m:xxxx] to memory ids (review)", async () => {
-  // The planner resolveTargetMemories expects concrete memory ids, not raw
-  // [m:xxxx] tokens. The capture loop must resolve handles via the resolveHandle
-  // dep before building the CorrectionRequest; unresolvable handles are dropped
-  // so the planner falls back to text search.
   let capturedTargetIds: string[] | undefined;
   const deps: PassiveCaptureDeps = {
     ...mockDeps(makePlan()),
@@ -571,8 +551,6 @@ test("handle resolution: unresolvable handle is dropped (planner falls back to t
 });
 
 test("dedup: failed plan can be retried on a later flush (review)", async () => {
-  // The fingerprint is recorded only AFTER a successful plan, so a transient
-  // planning failure does not permanently block the correction.
   let attempts = 0;
   const deps: PassiveCaptureDeps = {
     ...mockDeps(makePlan()),
@@ -584,10 +562,8 @@ test("dedup: failed plan can be retried on a later flush (review)", async () => 
   };
   const dedup = new Set<string>();
   const correction = makeCorrection();
-  // First flush: planning throws — fingerprint NOT recorded.
   const r1 = await capturePassiveCorrections([correction], LIVE_CTX, QUEUE_CONFIG, deps, dedup);
   assert.strictEqual(r1.telemetry.queued, 0, "failed plan must not count as queued");
-  // Second flush: same correction, retry succeeds.
   const r2 = await capturePassiveCorrections([correction], LIVE_CTX, QUEUE_CONFIG, deps, dedup);
   assert.strictEqual(r2.telemetry.queued, 1, "failed plan must be retriable");
   assert.strictEqual(attempts, 2);

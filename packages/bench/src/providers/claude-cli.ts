@@ -76,21 +76,6 @@ const CLAUDE_CLI_VERSION_TIMEOUT_MS = 5_000;
  * judge" invocation. */
 export const DEFAULT_CLAUDE_CLI_MODEL_ALIAS = "opus";
 
-/**
- * Runtime env keys forwarded to the `claude` child process. Deliberately
- * does NOT include ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL by default: this
- * provider exists specifically to run `claude -p` against the operator's
- * Claude Max subscription (OAuth/keychain auth), which is free under the
- * plan's usage caps. Leaking an ambient ANTHROPIC_API_KEY into the child
- * would silently switch it to metered API billing instead. HOME is kept
- * pointed at the real user home (not redirected) so the CLI can still find
- * its OAuth session — isolation from CLAUDE.md / project settings is
- * achieved via `--safe-mode` plus a freshly created empty cwd instead, see
- * `buildClaudeCliArgs`. CLAUDE_CODE_OAUTH_TOKEN IS forwarded: it is the
- * subscription OAuth token (free under the Max plan) used to authenticate
- * headless/CI runs that have no interactive keychain login — unlike
- * ANTHROPIC_API_KEY it does not switch the child to metered API billing.
- */
 const CLAUDE_CLI_RUNTIME_ENV_ALLOWLIST = new Set([
   "ALL_PROXY",
   "APPDATA",
@@ -148,18 +133,6 @@ const USAGE_LIMIT_MAX_STEP_MS = 10 * 60 * 1000;
 const activeClaudeCliChildPids = new Set<number>();
 let claudeCliParentCleanupInstalled = false;
 
-/** Serializes `.complete()` calls so the harness never fires concurrent
- * `claude -p` invocations against the operator's shared Claude Max quota.
- * Defaults to 1 (fully serialized); `config.concurrency` can raise this for
- * local testing but should stay at 1 for real benchmark runs.
- *
- * IMPORTANT: this gate must be shared process-wide (see
- * `getSharedClaudeCliGate` below), not one-per-`ClaudeCliProvider`. A
- * benchmark run constructs separate `claude-cli` provider instances for the
- * responder and the judge; if each held its own gate, a responder call and a
- * judge call could still run `claude -p` concurrently against the same
- * Claude Max session, defeating the whole point of serializing (PR #1735
- * review). */
 class ClaudeCliConcurrencyGate {
   private active = 0;
   private limit: number;
@@ -223,24 +196,6 @@ function normalizeGateLimit(limit: number): number {
   return Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 1;
 }
 
-/** Process-wide `claude -p` concurrency gate, shared by every
- * `ClaudeCliProvider` instance in this process (see `ClaudeCliConcurrencyGate`
- * doc for why a per-instance gate is unsafe). Lazily created on first use
- * with limit 1.
- *
- * Concurrency-sharing policy when instances disagree: the gate is a true
- * singleton, and its limit only ever goes UP, never down — each
- * `ClaudeCliProvider` constructor call passes its own `config.concurrency`
- * (default 1) here, and the shared gate's limit becomes the MAX of every
- * value seen so far. This is deliberate: 1 is the only limit that is safe
- * for a real benchmark run sharing the operator's Claude Max session, so any
- * single instance opting into a higher number is assumed to be an explicit,
- * deliberate local-testing choice — and per the finding this fixes, that
- * higher shared budget is intentionally what every other `claude-cli`
- * instance in the same process (e.g. both the responder and the judge) gets
- * too, since they all draw on the same underlying quota regardless of which
- * instance raised the limit. Do not reach for a per-instance override here:
- * that would silently reintroduce the concurrent-subprocess bug this fixes. */
 let sharedClaudeCliGate: ClaudeCliConcurrencyGate | undefined;
 
 function getSharedClaudeCliGate(requestedLimit: number): ClaudeCliConcurrencyGate {
@@ -287,14 +242,6 @@ class ClaudeCliProvider implements LlmProvider {
     prompt: string,
     opts: CompletionOpts,
   ): Promise<CompletionResult> {
-    // Runs AFTER the shared concurrency gate has been acquired (see
-    // `complete()` -> `gate.run`), so the per-attempt timeout armed inside
-    // `runClaudeCliCommand` only starts counting once this call is actually
-    // active, never while it was queued. A caller-provided `opts.signal`
-    // (e.g. a harness phase/trial timeout) is owned by the caller and does
-    // keep counting while queued; the provider can't extend it, but it MUST
-    // NOT spawn a doomed `claude -p` for a call whose signal already fired
-    // while it waited in the gate — fail fast here instead.
     if (opts.signal?.aborted) {
       throw claudeCliAbortError(opts.signal);
     }
@@ -303,11 +250,6 @@ class ClaudeCliProvider implements LlmProvider {
     const usageLimitBudgetMs = normalizeUsageLimitMaxWaitMs(this.config.retryOptions?.max429WaitMs);
     const loopStartedAt = performance.now();
 
-    // These two retry mechanisms are INDEPENDENT and must not share a counter:
-    // usage-limit backoff is budget-bounded (deliberately bypasses maxAttempts),
-    // while transient-failure retries are count-bounded by maxAttempts. A single
-    // shared counter let usage-limit cycles prematurely exhaust the transient
-    // budget (and inflated each mechanism's backoff exponent). (#1735 review)
     let transientAttempt = 1;
     let usageLimitAttempt = 1;
     while (true) {
@@ -317,13 +259,6 @@ class ClaudeCliProvider implements LlmProvider {
         const request = this.buildRunRequest(prompt, opts, tempDir);
         const result = await this.runClaudeCli(request);
 
-        // Parse the stdout envelope BEFORE gating on the exit status. Claude
-        // Code can exit non-zero for reasons unrelated to the completion
-        // itself (a failing user hook, a teardown race) while still emitting
-        // a complete zero-error result envelope — the dominant source of
-        // spuriously 0-scored tasks in the 2026-07-08 bounded trials (~8%
-        // of tasks). A parseable payload with `is_error` unset and
-        // non-empty result text is a successful completion regardless of
         const payload = parseClaudeCliJsonResult(result.stdout);
         const salvageableDespiteExit =
           !result.stderr.includes("Claude CLI timed out") &&
@@ -333,10 +268,6 @@ class ClaudeCliProvider implements LlmProvider {
           typeof payload.result === "string" &&
           payload.result.trim().length > 0;
         if (result.status !== 0 && !salvageableDespiteExit) {
-          // Usage-limit detection is deliberately restricted to FAILURE
-          // paths (non-zero exits here, is_error payloads below). A
-          // successful benchmark answer that merely mentions "rate limit"
-          // or "429" must never trigger backoff.
           if (isClaudeUsageLimitSignal(`${result.stderr}\n${result.stdout}`)) {
             await sleepBeforeUsageLimitRetry({
               attempt: usageLimitAttempt,
@@ -349,12 +280,6 @@ class ClaudeCliProvider implements LlmProvider {
             continue;
           }
           const exitLabel = result.signal ? `signal ${result.signal}` : `exit ${result.status ?? "unknown"}`;
-          // Diagnostics: the envelope's identifying fields live at the HEAD
-          // of stdout (type/subtype/is_error/result), but the summary tails
-          // it — include the head explicitly so deterministic per-task
-          // failures are classifiable from the run log alone (live 2026-07-13
-          // full-run triage: ~8% of tasks failed with a parseable envelope
-          // that was not salvageable, invisible from the tail).
           const stdoutHead = result.stdout.trim().slice(0, 300);
           const error = new Error(
             `Claude CLI completion failed (${exitLabel}): ${
@@ -375,10 +300,6 @@ class ClaudeCliProvider implements LlmProvider {
           throw error;
         }
 
-        // A timed-out or aborted completion is never salvageable, regardless of
-        // exit status — a child that catches SIGTERM can exit 0 with a partial
-        // envelope in stdout. The salvage guard above catches status!=0; this
-        // catches the status==0 edge (codex P2).
         if (
           result.stderr.includes("Claude CLI timed out") ||
           result.stderr.includes("Claude CLI aborted by benchmark timeout")
@@ -413,11 +334,6 @@ class ClaudeCliProvider implements LlmProvider {
           );
         }
 
-        // `result` is `as`-cast from untrusted CLI JSON, so it may be a
-        // non-string (number/boolean/object/array). Coerce anything that
-        // isn't a string to empty so `.trim()` can't throw a TypeError — a
-        // non-string result falls into the same controlled "no result text" /
-        // usage-limit path below as an empty answer.
         const text = typeof payload.result === "string" ? payload.result.trim() : "";
         if (text.length === 0) {
           // A zero-exit, empty-result payload whose quota text lives only on
@@ -650,9 +566,6 @@ function buildIsolatedClaudeEnv(config: ClaudeCliProviderConfig, maxTokens?: num
     }
   }
 
-  // Opt-in only: forwarding an ambient ANTHROPIC_API_KEY by default would
-  // silently switch the child from free subscription auth to metered API
-  // billing. Only set it when the caller explicitly configured one.
   if (config.apiKey && config.apiKey.trim().length > 0) {
     env.ANTHROPIC_API_KEY = config.apiKey.trim();
   }
@@ -732,8 +645,6 @@ function parseClaudeCliJsonResult(stdout: string): ClaudeCliJsonResult {
         // keep scanning
       }
     }
-    // Fall back to treating raw stdout as an error blob — a non-JSON
-    // response from `--output-format json` is itself an anomaly.
     return { is_error: true, error: trimmed.slice(-1_000) };
   }
 }
@@ -742,15 +653,6 @@ function nonNegativeInt(value: number | undefined): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
 }
 
-/**
- * Strict boolean check for the CLI's `is_error` flag (PR #1735 review,
- * finding 2). `parseClaudeCliJsonResult` casts parsed JSON straight to
- * `ClaudeCliJsonResult` with `as`, so the declared `is_error?: boolean` type
- * is not actually enforced at runtime — a malformed or unexpected payload
- * could carry `is_error: "false"` (a non-empty, therefore truthy, string) or
- * any other truthy non-boolean value. A plain `if (payload.is_error)` would
- * treat that as an error. Only a real boolean `true` counts.
- */
 function isClaudeCliErrorFlagSet(value: unknown): boolean {
   return value === true;
 }
@@ -825,12 +727,6 @@ function normalizeUsageLimitMaxWaitMs(value: number | undefined): number {
   return value;
 }
 
-/**
- * Backoff for detected usage-limit/rate-limit failures. Gives up (throws)
- * when the NEXT required backoff step no longer fits in the remaining
- * wall-clock budget — sleeping a truncated sliver and immediately hammering
- * a capped Claude Max session again would only burn quota.
- */
 async function sleepBeforeUsageLimitRetry(options: {
   attempt: number;
   loopStartedAt: number;

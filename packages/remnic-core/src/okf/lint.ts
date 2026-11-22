@@ -17,8 +17,6 @@ export interface OkfLintResult {
 }
 
 function isEncryptedBlob(raw: string): boolean {
-  // secure-store writes a binary envelope starting with MAGIC_BYTES at offset
-  // 0 — match that fixed position, never a substring anywhere in the file.
   return raw.startsWith(MAGIC_BYTES.toString("ascii"));
 }
 

@@ -1,21 +1,10 @@
-// ---------------------------------------------------------------------------
-// lossless-claw → Remnic LCM importer (orchestration)
 //
 // Streams rows from a lossless-claw SQLite export into a Remnic LCM
 // SQLite database opened by the caller. The Remnic database must already
 // have its schema applied (use openLcmDatabase() from @remnic/core).
 //
-// Idempotency: messages are keyed on (session_id, turn_index) — the same
-// natural key Remnic's own indexer uses. Summary nodes are keyed on the
-// preserved primary id.
 //
-// FTS sync: lcm_messages_fts and lcm_summaries_fts are external-content
-// FTS5 tables, so every insert must be mirrored. We do this in the same
-// transaction as the row write to keep the index consistent on crash.
 //
-// Compaction-event boundary: per-session, we insert one row into
-// lcm_compaction_events with tokens_before == tokens_after, marking the
-// post-import state from which Remnic's own compaction will operate.
 // ---------------------------------------------------------------------------
 
 import type Database from "better-sqlite3";
@@ -93,12 +82,6 @@ export function importLosslessClaw(
 ): ImportLosslessClawResult {
   const { sourceDb, destDb } = options;
   const dryRun = options.dryRun ?? false;
-  // Normalise sessionFilter: an empty Set is truthy in JavaScript, so a
-  // raw `sessionFilter && !sessionFilter.has(session)` guard would skip
-  // every session if a caller passed `new Set()` expecting "import all"
-  // (the documented contract on the option). Treat empty-Set the same
-  // as undefined here so every guard below is correct (Cursor Bugbot
-  // review on PR #797).
   const sessionFilter =
     options.sessionFilter && options.sessionFilter.size > 0
       ? options.sessionFilter
@@ -123,7 +106,6 @@ export function importLosslessClaw(
     dryRun,
   };
 
-  // ── Pre-resolve session ids per conversation + per message id ──────────
   const conversations = listConversations(sourceDb);
   result.conversationsScanned = conversations.length;
 
@@ -134,8 +116,6 @@ export function importLosslessClaw(
     sessionByConvId.set(c.conversation_id, resolveSessionId(c));
   }
 
-  // Materialize messages once per conversation; reused for the write pass
-  // and (via sessionByMessageId) for summary mapping.
   const messagesByConv = new Map<
     string,
     ReturnType<typeof listMessagesForConversation>
@@ -150,12 +130,6 @@ export function importLosslessClaw(
     }
   }
 
-  // Build a per-session list of (conversation, message) pairs and sort
-  // by message.created_at. This handles interleaved conversations
-  // correctly: if conv-A has messages at t=0 and t=10 and conv-B has
-  // messages at t=5 and t=6, turn_index ends up as t=0, t=5, t=6,
-  // t=10 (chronological), not t=0, t=10, t=5, t=6 (which a per-
-  // conversation pre-sort produces — Codex P1 follow-up review).
   type SessionEntry = {
     conv: LosslessClawConversation;
     msg: LosslessClawMessage;
@@ -178,9 +152,6 @@ export function importLosslessClaw(
       if (a.msg.created_at !== b.msg.created_at) {
         return a.msg.created_at < b.msg.created_at ? -1 : 1;
       }
-      // Stable tie-breaker chain when timestamps collide: conversation
-      // id, then per-conversation seq (preserves intra-conversation
-      // order even on identical timestamps).
       const cidCmp = a.conv.conversation_id.localeCompare(
         b.conv.conversation_id,
       );
@@ -189,16 +160,7 @@ export function importLosslessClaw(
     });
   }
 
-  // ── Insert messages ────────────────────────────────────────────────────
-  // Dedup uses source identity (`metadata.conversation_id` +
-  // `metadata.source_seq`) rather than `(session_id, turn_index)` so two
-  // source conversations sharing one session can both contribute messages
-  // without one's `seq=N` masking the other's `seq=N` (Codex P1 review).
   //
-  // To avoid the O(n²) behavior of a per-row `json_extract` lookup with
-  // no covering index (Codex P2 review), pre-fetch existing source
-  // identities once per affected session into an in-memory Map. The
-  // import loop then does O(1) Map lookups for dedup.
   const insertMessageStmt = destDb.prepare(
     "INSERT INTO lcm_messages (session_id, turn_index, role, content, token_count, created_at, metadata) " +
       "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -213,13 +175,10 @@ export function importLosslessClaw(
       "FROM lcm_messages WHERE session_id = ?",
   );
 
-  // session → "convId|seq" → destination row identity. Lookup is
-  // O(1) Map membership instead of a per-row JSON-extract scan.
   const existingBySession = new Map<
     string,
     Map<string, { turnIndex: number; rowId: number }>
   >();
-  // session → max(turn_index) currently in dest (so new rows append).
   const maxTurnBySession = new Map<string, number>();
   for (const session of sessionMessages.keys()) {
     if (sessionFilter && !sessionFilter.has(session)) continue;
@@ -264,9 +223,6 @@ export function importLosslessClaw(
   }
 
   const sessionsTouched = new Set<string>();
-  // Mapping from source message_id → assigned (or pre-existing)
-  // turn_index. Populated for both inserted rows and dedup-skipped rows
-  // so summary mapping (msg_start/msg_end) reflects real turn indices.
   const turnIndexByMessageId = new Map<string, number>();
   const destRowIdByMessageId = new Map<string, number>();
 
@@ -292,9 +248,6 @@ export function importLosslessClaw(
         }
         const ti = nextTurn++;
         turnIndexByMessageId.set(msg.message_id, ti);
-        // Update the in-memory dedup map so duplicates within this
-        // run also count as skips on subsequent passes (defensive;
-        // shouldn't happen with valid source data).
         existing.set(key, { turnIndex: ti, rowId: -1 });
         if (forWrite) {
           const mapped = mapMessage(conv, msg, ti);
@@ -325,12 +278,9 @@ export function importLosslessClaw(
     const writeMessages = destDb.transaction(() => assignTurnIndices(true));
     writeMessages();
   } else {
-    // Dry run: walk the same iteration to populate counters and
-    // turnIndexByMessageId without mutating either DB.
     assignTurnIndices(false);
   }
 
-  // ── Insert message parts ────────────────────────────────────────────────
   const messageParts = listMessageParts(sourceDb);
   const destHasMessageParts = sqliteTableExists(destDb, "lcm_message_parts");
   const existingPartsStmt = destHasMessageParts
@@ -410,7 +360,6 @@ export function importLosslessClaw(
     processMessageParts(false);
   }
 
-  // ── Insert summaries ───────────────────────────────────────────────────
   const summaries = listSummaries(sourceDb);
   const summaryMessages = listSummaryMessages(sourceDb);
   const summaryParents = listSummaryParents(sourceDb);
@@ -448,9 +397,6 @@ export function importLosslessClaw(
     }
   }
 
-  // Single shared loop body for both write and dry-run paths so summary
-  // filter conditions (skip-no-messages, multi-session, dedup, etc.)
-  // can never silently diverge between modes (Cursor Bugbot review).
   function processSummaries(forWrite: boolean): void {
     for (const summary of summaries) {
       const derivation = derivations.get(summary.summary_id);
@@ -561,23 +507,7 @@ export function importLosslessClaw(
     processSummaries(false);
   }
 
-  // ── Compaction-event boundary ──────────────────────────────────────────
-  // Insert one marker row per session that gained data. tokens_before
-  // equals tokens_after to encode "this is an import boundary, not a real
-  // compaction event"; any consumer that needs the distinction can detect
-  // the equality.
   //
-  // Token totals are queried from the destination at boundary-write time
-  // rather than accumulated from this run's newly-inserted rows. That
-  // way a session whose only new rows are summaries (e.g. partial retry
-  // after a crash between message and summary transactions) still gets
-  // a correct anchor reflecting the messages already in the destination
-  // (Cursor Bugbot review on PR #797).
-  // Always count what compaction events WOULD be written so dry-run
-  // output matches the rest of the counters (Cursor Bugbot review on
-  // PR #797: dry-run was reporting `Messages inserted: N` but
-  // `Compaction events written: 0` despite the documented "count what
-  // would be imported" contract). Skip the actual INSERTs in dry-run.
   const insertEventStmt = destDb.prepare(
     "INSERT INTO lcm_compaction_events (session_id, fired_at, msg_before, tokens_before, tokens_after) " +
       "VALUES (?, ?, ?, ?, ?)",

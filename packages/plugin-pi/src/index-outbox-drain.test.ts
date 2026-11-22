@@ -15,12 +15,6 @@ import { drainObserveOutbox, settleObserveOutboxDrain } from "./observe-flow.js"
 import { ObserveOutbox } from "./outbox.js";
 
 // ---------------------------------------------------------------------------
-// The outbox drain runs AFTER a successful live observe and must never hold up
-// the live hook or turn its own failures into a failed live observe (review of
-// #3380: a refused replay with retry-after made a live observe take 14 s, and a
-// locked outbox file produced an "observe failed" error after both POSTs
-// returned 200 and re-queued turns that were already delivered).
-// ---------------------------------------------------------------------------
 
 function drainTestConfig(outboxPath: string): RemnicPiConfig {
   return {
@@ -84,10 +78,6 @@ test("a live observe returns without waiting for a refused queued replay", async
     const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ content?: string }> };
     if (body.messages?.[0]?.content === "live turn") return new Response(JSON.stringify({ ok: true }), { status: 200 });
     replayAttempts += 1;
-    // The first replay is held open until the test's assertions are done: the
-    // live hook cannot wait even on a replay that never answers. Releasing it
-    // answers 401 so the drain stops on a blocked refusal — a 503 would park on
-    // its unref'd retry sleep and leave this test awaiting an empty event loop.
     if (replayAttempts === 1) await releaseReplay.promise;
     return new Response(JSON.stringify({ error: "token rejected" }), { status: 401 });
   };
@@ -110,9 +100,6 @@ test("a live observe returns without waiting for a refused queued replay", async
   assert.ok(!notifications.some((n) => n.level === "error"), "no error for a successful live observe");
   assert.ok(replayAttempts <= 4, "the background drain stays bounded");
 
-  // Finish the background drain under this test's own mock before fetch is
-  // restored (#3381 item 9): the released attempt's 401 stops the drain on the
-  // blocked path, which keeps the queue and does not sleep.
   releaseReplay.resolve();
   await settleObserveOutboxDrain(outbox);
   assert.equal(await outbox.size(), 1, "a blocked refusal keeps the capture queued");
@@ -122,7 +109,6 @@ test("a live observe returns without waiting for a refused queued replay", async
 test("a drain failure never reports the delivered live turn as failed or re-queues it", async (t) => {
   const outboxPath = tmpOutboxPath();
   const config = drainTestConfig(outboxPath);
-  // The drain's remove() will wait at most 150 ms for the file lock.
   const outbox = new ObserveOutbox(outboxPath, { lockMaxWaitMs: 150 });
   await outbox.enqueue(queuedEntry);
 
@@ -138,7 +124,6 @@ test("a drain failure never reports the delivered live turn as failed or re-queu
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   };
 
-  // Another pi process holds the outbox lock for the whole drain.
   const acquired = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const holder = withHeldFileLock(`${outboxPath}.lock`, { staleMs: 60_000, maxWaitMs: 1000 }, async (got) => {
@@ -192,7 +177,6 @@ test("session start survives a locked outbox: no rejection, bounded, and the sta
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   };
 
-  // Another pi process holds the outbox lock for longer than the whole test.
   const acquired = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const holder = withHeldFileLock(`${outboxPath}.lock`, { staleMs: 60_000, maxWaitMs: 1000 }, async (got) => {
@@ -238,7 +222,6 @@ test("session start survives a locked outbox: no rejection, bounded, and the sta
 
   assert.ok(elapsed < 4500, `session start stays bounded while the outbox is locked (took ${elapsed} ms)`);
   assert.ok(!notifications.some((n) => n.level === "error"), "no error notification");
-  // The startup probe chain runs in the background after the drain step.
   const deadline = Date.now() + 2000;
   while (!urls.some((url) => !url.endsWith("/engram/v1/observe")) && Date.now() < deadline) {
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
@@ -280,8 +263,6 @@ test("#3381: a replay stopped by rejected credentials names the credentials, not
 
 test("replay sends the queued entry's principal, not the draining process's", async (t) => {
   const outboxPath = tmpOutboxPath();
-  // The draining process resolves its own pane identity; the queued entry was
-  // written by a different pane and must keep its own label (#3461 review).
   const config = { ...drainTestConfig(outboxPath), principal: "wD6:p1@drainer-host" };
   const outbox = new ObserveOutbox(outboxPath);
   await outbox.enqueue({ ...queuedEntry, principal: "w7P:p2@writer-host" });
@@ -332,20 +313,13 @@ test("#3381: a foreign session's delivered entry updates that session's state, n
     (key) => (key === "other-session" ? writerState : undefined),
   );
 
-  // The writer's own live session state learns what was delivered under its
-  // identity, so its shutdown replay does not send the same turns twice.
   assert.ok(writerState.observedHashes.has("hash-queued-earlier"));
   assert.equal(writerState.liveObservedReplayKeys.size, 1);
-  // And the drainer's dedup state is not polluted with foreign identities -
-  // not by the live writer's entry nor by an entry whose session is gone.
   assert.equal(drainerHashes.size, 0);
   assert.equal(drainerReplayKeys.size, 0);
 });
 
 test("a lost-response replay keeps the live attempt's idempotency key even when rawContent is bounded out", async (t) => {
-  // #3381 review: the daemon dedupes on the idempotency key, which is hashed
-  // over the exact body. Bounding rawContent only at enqueue makes the replay
-  // body differ from the live body — a lost-response replay then ingests twice.
   const outboxPath = tmpOutboxPath();
   const config = drainTestConfig(outboxPath);
   const outbox = new ObserveOutbox(outboxPath);
@@ -375,18 +349,12 @@ test("a lost-response replay keeps the live attempt's idempotency key even when 
 });
 
 test("a queued entry bound to another daemon does not suppress the live capture for this one", async (t) => {
-  // #3504 CodeRabbit: pendingHashes must be destination-aware — an entry bound
-  // to daemon-a is never delivered to this daemon, so its hash cannot skip the
-  // live send here.
   const outboxPath = tmpOutboxPath();
   const config = drainTestConfig(outboxPath); // remnicDaemonUrl http://127.0.0.1:4318
   const outbox = new ObserveOutbox(outboxPath);
   const raw = { id: "l-1", role: "user", content: "shared capture" };
   const message = toObserveMessage(raw);
   assert.ok(message);
-  // Both fixture values derive from the ctx the live path gets: the outbox
-  // hash only suppresses when it is computed over the SAME session key
-  // ("pi:live-session", not "live-session") the live observe resolves.
   const ctx = liveCtx(() => {});
   const liveSessionKey = sessionKeyFromContext(ctx);
   await outbox.enqueue({

@@ -75,10 +75,6 @@ export function createBeeConnector(
   const getClient = (): BeeClient => {
     if (!client) {
       const baseUrl = options.settings.baseUrl ?? BEE_DEFAULT_BASE_URL;
-      // The local proxy is unauthenticated by design — never attach a
-      // Bearer header there, even when a direct-mode token sits in the
-      // environment (it would 401 proxy requests for users who keep
-      // BEE_API_TOKEN exported for occasional direct use).
       const token = isLocalProxyUrl(baseUrl)
         ? undefined
         : resolveBeeToken(options.settings.apiKey);
@@ -118,8 +114,6 @@ export function createBeeConnector(
         conversations.push(conversationToWearable(detail));
       }
 
-      // Stop paginating once an entire (newest-first) page predates the
-      // requested day; anything deeper is older still.
       const nextCursor = sawOnlyOlder ? null : page.nextCursor;
       return { conversations, nextCursor };
     },

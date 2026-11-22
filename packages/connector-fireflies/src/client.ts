@@ -212,9 +212,6 @@ export class FirefliesClient {
     } catch {
       throw new FirefliesApiError("Fireflies API returned a non-JSON body");
     }
-    // GraphQL returns 200 with an `errors` array on failure. That is a
-    // backend failure, not an empty result (AGENTS.md §22): surface it so
-    // an expired token never reads as a quiet day.
     const errors = isRecord(body) ? body.errors : undefined;
     if (Array.isArray(errors) && errors.length > 0) {
       throw graphqlError(errors[0]);

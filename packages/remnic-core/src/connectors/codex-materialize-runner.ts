@@ -26,7 +26,6 @@ import {
   type RolloutSummaryInput,
 } from "./codex-materialize.js";
 
-/** Options accepted by the shared post-consolidation materialize helper. */
 export interface PostConsolidationMaterializeOptions {
   config: PluginConfig;
   namespace?: string;
@@ -37,7 +36,6 @@ export interface PostConsolidationMaterializeOptions {
   now?: Date;
 }
 
-/** Options accepted by the runner. */
 export interface RunMaterializeOptions {
   /** Remnic config — we only read the `codexMaterialize*` fields. */
   config: PluginConfig;
@@ -49,7 +47,6 @@ export interface RunMaterializeOptions {
   codexHome?: string;
   /** Optional pre-loaded memories (bypasses disk read — used in tests). */
   memories?: MemoryFile[];
-  /** Optional rollout summaries supplied by the caller. */
   rolloutSummaries?: RolloutSummaryInput[];
   /** Current time injection for deterministic runs. */
   now?: Date;
@@ -114,7 +111,6 @@ export async function runCodexMaterialize(
   // Skill projection (issue #2369). Gated on `procedural.enabled` AND
   // `procedural.skillProjection.enabled`; `maxSkills: 0` disables it too.
   // Passing `undefined` leaves `skills/` untouched, so a disabled gate never
-  // deletes a folder the user curated.
   const skillProjection = cfg.procedural?.skillProjection;
   const skills =
     cfg.procedural?.enabled === true && skillProjection?.enabled === true
@@ -127,10 +123,7 @@ export async function runCodexMaterialize(
   // Intentionally NOT catching here: per the JSDoc contract above,
   // schema-validation and I/O errors from `materializeForNamespace` must
   // surface to callers so they can exit non-zero (CLI) or log + recover
-  // (consolidation post-hook, which has its own narrower try/catch).
   // Catching everything would make a broken MEMORY.md render look like a
-  // successful skip, and invisible failures are strictly worse than loud
-  // ones for a feature that writes to `~/.codex/memories`.
   const result = materializeForNamespace(namespace, {
     memories,
     codexHome,

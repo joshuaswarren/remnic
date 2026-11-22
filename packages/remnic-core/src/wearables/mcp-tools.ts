@@ -1,12 +1,3 @@
-/**
- * Wearables MCP tool definitions (issue #1900 / #2123) — the five
- * `engram.wearables_*` / `engram.transcript_*` tool-def objects, extracted from
- * access-mcp.ts so the surface file stays under its structural ceiling. Spread
- * back into `this.tools` (`...WEARABLES_MCP_TOOLS`); tools/list is verified at
- * runtime. MCP_MIGRATED_OPERATIONS + callTool dispatch stay inline in
- * access-mcp.ts. Each schema carries `namespace` + `sessionKey` so the MCP
- * scope-override injects the caller namespace (caller-derived symmetry, #2123).
- */
 
 import type { McpTool } from "../access-mcp.js";
 

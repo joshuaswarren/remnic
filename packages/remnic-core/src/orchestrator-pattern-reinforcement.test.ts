@@ -1,10 +1,3 @@
-/**
- * Unit tests for `Orchestrator.runPatternReinforcement` (issue #687
- * PR 2/4) focused on the gate semantics — specifically that
- * `force: true` only bypasses the cadence floor and NEVER bypasses
- * the master `patternReinforcementEnabled` flag (PR #730 review
- * feedback, Cursor Medium).
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -27,8 +20,6 @@ function makeOrchestratorStub(config: OrchestratorStubConfig): PatternReinforcem
   let storageReadCalls = 0;
   orchestrator.config = config;
   orchestrator.lastPatternReinforcementAtByNs = new Map<string, number>();
-  // Minimal storage stub so that if the gate is (incorrectly) bypassed
-  // we still observe a side effect we can assert against.
   orchestrator.storage = {
     readAllMemories: async () => {
       storageReadCalls += 1;
@@ -36,8 +27,6 @@ function makeOrchestratorStub(config: OrchestratorStubConfig): PatternReinforcem
     },
     writeMemoryFrontmatter: async () => true,
   };
-  // Test should never reach the per-namespace storage path; if it
-  // does, fail loudly.
   orchestrator.getStorage = async () => {
     throw new Error("getStorage should not be invoked in single-tenant test paths");
   };
@@ -61,11 +50,6 @@ test("runPatternReinforcement: force=false on disabled feature returns disabled"
 });
 
 test("runPatternReinforcement: force=true does NOT bypass disabled feature gate (Cursor Medium)", async () => {
-  // The fix: a disabled feature must remain disabled regardless of
-  // force=true.  The MCP tool description and PR description both
-  // state `force` only relaxes the cadence floor.  Operators who
-  // have explicitly turned the feature off (the default) must not
-  // see corpus mutations from a tool call.
   const harness = makeOrchestratorStub({
     patternReinforcementEnabled: false,
     patternReinforcementCadenceMs: 0,
@@ -75,7 +59,6 @@ test("runPatternReinforcement: force=true does NOT bypass disabled feature gate 
   const result = await harness.orchestrator.runPatternReinforcement({ force: true });
   assert.equal(result.ran, false, "must not run when disabled, even with force=true");
   assert.equal(result.skippedReason, "disabled");
-  // Corpus must not have been touched.
   assert.equal(
     harness.getStorageReadCalls(),
     0,
@@ -90,7 +73,6 @@ test("runPatternReinforcement: enabled + cadence not yet elapsed + force=false s
     patternReinforcementCategories: ["preference"],
     patternReinforcementMinCount: 3,
   });
-  // Pretend a run just happened.
   harness.orchestrator.lastPatternReinforcementAtByNs.set("", Date.now());
   const result = await harness.orchestrator.runPatternReinforcement({});
   assert.equal(result.ran, false);
@@ -104,7 +86,6 @@ test("runPatternReinforcement: enabled + force=true bypasses cadence (the only l
     patternReinforcementCategories: ["preference"],
     patternReinforcementMinCount: 3,
   });
-  // Pretend a run just happened — cadence would normally block.
   harness.orchestrator.lastPatternReinforcementAtByNs.set("", Date.now());
   const result = await harness.orchestrator.runPatternReinforcement({ force: true });
   assert.equal(result.ran, true, "force=true must bypass cadence when feature is enabled");
@@ -121,7 +102,6 @@ test("runPatternReinforcement: enabled + cadence elapsed runs without force", as
     patternReinforcementCategories: ["preference"],
     patternReinforcementMinCount: 3,
   });
-  // Last run was a long time ago.
   harness.orchestrator.lastPatternReinforcementAtByNs.set("", 0);
   const result = await harness.orchestrator.runPatternReinforcement({});
   assert.equal(result.ran, true);

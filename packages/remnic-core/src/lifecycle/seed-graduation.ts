@@ -35,8 +35,6 @@ import type { MemoryFile, MemoryFrontmatter, MemoryStatus } from "../types.js";
 import type { SeedGraduationConfig } from "./seed-graduation-config-types.js";
 
 // ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
 
 // Canonical definitions live in seed-graduation-config-types.ts (a leaf) so
 // types.ts can consume them without this module's storage.js import cycle.
@@ -100,7 +98,6 @@ export function parseSeedGraduationConfig(raw: unknown): SeedGraduationConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Gate
 // ---------------------------------------------------------------------------
 
 /**
@@ -164,7 +161,6 @@ function isIndependentProvenance(seed: MemoryFile, evidence: MemoryFile): boolea
   return evidence.frontmatter.source !== seed.frontmatter.source;
 }
 
-/** Reads the token coverage of `seed`'s tokens inside `evidence`'s body. */
 function coverageOf(seedTokens: ReadonlySet<string>, evidence: MemoryFile): number {
   return tokenCoverageOf(
     seedTokens,
@@ -184,8 +180,6 @@ function tokenCoverageOf(
   return matches / seedTokens.size;
 }
 
-// Contradiction detection shares the dedup detector's negation vocabulary
-// (NEGATION_WORDS) — one vocabulary source, never a per-consumer copy.
 
 /** Word shapes that keep contractions ("don't") as single negation words. */
 const NEGATION_WORD_SPLIT = /[^\p{L}\p{M}\p{N}']+/u;
@@ -278,19 +272,12 @@ export function evaluateSeedGraduation(
 
   for (const candidate of evidence) {
     if (candidate.frontmatter.id === seed.frontmatter.id) continue;
-    // Only LATER evidence graduates a seed — anything written at or before
-    // the seed's creation is contemporaneous, not corroborating.
     const candidateCreated = createdMs(candidate);
     if (!Number.isFinite(seedCreated) || !Number.isFinite(candidateCreated)) continue;
     if (candidateCreated <= seedCreated) continue;
     if (!isGraduationEvidence(candidate)) continue;
     const candidateText = stripAttributesSuffix(candidate.content);
     if (hasNegationWord(candidateText) !== seedNegated) {
-      // Polarity-flipped restatement of the seed's core content is a
-      // contradiction, never a corroboration. The same independence rules
-      // apply, but recall echo does NOT suppress a contradiction: an
-      // independent consumer denying a recalled seed is a correction, not
-      // manufactured confirmation.
       if (seedCoreTokens.size >= MIN_SEED_TOKENS && isIndependentProvenance(seed, candidate)) {
         const coreTokens = new Set(normalizeRecallTokens(stripNegationWords(candidateText)));
         if (tokenCoverageOf(seedCoreTokens, coreTokens) >= SEED_CORROBORATION_COVERAGE) {
@@ -316,7 +303,6 @@ export function evaluateSeedGraduation(
         .recalledBySession(evidenceSession)
         .some((recalledIds) => recalledIds.includes(seed.frontmatter.id))
     ) {
-      // The store's own recalled content quoted back never counts.
       echoSuppressedCount += 1;
       continue;
     }
@@ -325,10 +311,6 @@ export function evaluateSeedGraduation(
 
   if (echoSuppressedCount > 0) reasons.push(`echo-suppressed:${echoSuppressedCount}`);
   if (contradicting.length > 0) {
-    // A contradiction observed during the corroboration window vetoes
-    // graduation no matter how many corroborations also landed: promoting a
-    // disputed fact is never automatic. Demotion/supersession stays with the
-    // reviewer via the existing contradiction-resolution verbs.
     reasons.push(`contradiction-observed:${contradicting.length}`);
     return {
       decision: "hold",
@@ -361,7 +343,6 @@ export function evaluateSeedGraduation(
 }
 
 // ---------------------------------------------------------------------------
-// Pass
 // ---------------------------------------------------------------------------
 
 /**
@@ -378,7 +359,6 @@ export interface SeedGraduationStorage {
 }
 
 export interface SeedGraduationPassInput {
-  /** Full memory corpus for the namespace being swept (same input the lifecycle policy pass takes). */
   memories: readonly MemoryFile[];
   storage: SeedGraduationStorage;
   config?: SeedGraduationConfig;
@@ -432,8 +412,6 @@ export async function runSeedGraduationPass(
   for (const seed of corpus) {
     if (seed.frontmatter.status !== "pending_review") continue;
     if (seed.frontmatter.verificationState === "disputed") continue;
-    // Tombstone-blocked rows need revokeTombstone first; the promotion
-    // method refuses them anyway, so skip before evaluating.
     if (seed.frontmatter.blockedBy !== undefined) continue;
     evaluated += 1;
 
@@ -448,8 +426,6 @@ export async function runSeedGraduationPass(
       if (evaluation.contradicting.length > 0) contradictionHeld += 1;
       continue;
     }
-    // A concurrent review resolution wins: promoteWearableMemory returns
-    // false when the row is no longer pending_review.
     const wrote = await input.storage.promoteWearableMemory(
       seed.frontmatter.id,
       graduationAttributes(evaluation),

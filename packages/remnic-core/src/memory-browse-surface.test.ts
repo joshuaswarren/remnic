@@ -81,7 +81,6 @@ async function browseFixture(options: { namespaces?: boolean } = {}): Promise<Br
 
 async function makeStorage(dir: string): Promise<StorageManager> {
   const storage = new StorageManager(dir);
-  // Await: a fire-and-forget ensureDirectories can recreate dirs while the
   // test's rm cleanup is mid-delete (ENOTEMPTY flake).
   await storage.ensureDirectories();
   return storage;
@@ -128,7 +127,6 @@ test("ls/tree/find over the default namespace: counts, descriptions, nesting", a
     assert.equal(lsRoot.entries?.[0]?.count, 1);
     assert.equal(lsRoot.entries?.[1]?.count, 1);
 
-    // Facts use the dated layout: facts/<date>/<id>.md, so ls facts lists
     // the date dir and ls the date dir lists the memory files.
     const lsFacts = JSON.parse(
       extractJson(((await call("engram.memory_ls", { path: "facts" })) as { result?: { content?: Array<{ text?: string }> } }).result?.content?.[0]?.text ?? ""),
@@ -163,7 +161,6 @@ test("ls/tree/find over the default namespace: counts, descriptions, nesting", a
     const findBySubstring = JSON.parse(
       extractJson(((await call("engram.memory_find", { pattern: "rate" })) as { result?: { content?: Array<{ text?: string }> } }).result?.content?.[0]?.text ?? ""),
     ) as { ok: boolean; entries?: Array<{ description: string }>; total: number };
-    // Substring matches the PATH/name, not content: "rate" is in the preview
     // but not the filename, so zero hits proves find is deterministic
     // name/path matching, not search.
     assert.equal(findBySubstring.total, 0);
@@ -178,7 +175,6 @@ test("derived stores are invisible: artifacts/, meetings records, state/, questi
   try {
     const storage = f.storages.default!;
     await storage.writeMemory("fact", "Visible recallable fact.");
-    // Derived / non-recall stores written straight to disk the way their
     // dedicated writers lay them out.
     const root = storage.dir;
     await mkdir(path.join(root, "artifacts"), { recursive: true });
@@ -203,13 +199,11 @@ test("derived stores are invisible: artifacts/, meetings records, state/, questi
       assert.ok(!listed.has(excluded), `root ls must not list ${excluded}/`);
     }
 
-    // Direct ls of a derived store is not_found — indistinguishable from a
     // missing path, so existence never leaks.
     const lsArtifacts = (await payload(await call("engram.memory_ls", { path: "artifacts" }))) as { ok: boolean; error?: string };
     assert.equal(lsArtifacts.ok, false);
     assert.equal(lsArtifacts.error, "not_found");
 
-    // find cannot surface derived paths even with a wildcard that matches.
     const findHidden = (await payload(await call("engram.memory_find", { pattern: "*.md" }))) as {
       entries?: Array<{ path: string }>;
     };
@@ -229,7 +223,6 @@ test("deterministic ordering: code-point sort, stable across duplicate calls", a
   const f = await browseFixture();
   try {
     const storage = f.storages.default!;
-    // Names whose locale collation differs from code-point order: uppercase
     // sorts before lowercase in code-point order; "10" before "2".
     await mkdir(path.join(storage.dir, "facts", "2026-08-24"), { recursive: true });
     for (const name of ["zeta.md", "Alpha.md", "alpha.md", "10-x.md", "2-x.md"]) {
@@ -284,7 +277,6 @@ test("namespace isolation: browse from one namespace never lists another's paths
     assert.ok(!alicePaths.includes("Bob-private"), "bob content must not appear in alice's ls");
     assert.ok(!alicePaths.includes("ns_bob"), "bob namespace paths must not appear");
 
-    // The wildcard find from alice must not reach bob's namespace either.
     const aliceFind = await fetch(`http://127.0.0.1:${status.port}/engram/v1/memory/find`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer operator-token", "x-engram-principal": "alice" },
@@ -294,11 +286,9 @@ test("namespace isolation: browse from one namespace never lists another's paths
     assert.equal(findBody.ok, true);
     assert.ok(!JSON.stringify(findBody.entries ?? []).includes("Bob-private"), "find must not cross namespaces");
 
-    // ACL: bob's principal cannot read ns_alice — the read ACL throws.
     const bobProbe = await post({ namespace: "ns_alice" }, "bob");
     assert.equal(bobProbe.status, 400, "namespace not readable by principal is a 400 input error");
 
-    // Unauthenticated caller: namespaces enabled + no principal fails closed.
     const anonProbe = await fetch(`http://127.0.0.1:${status.port}/engram/v1/memory/ls`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer operator-token" },
@@ -412,7 +402,6 @@ test("sanitizeBrowsePath and browsePatternMatches: unit edges", () => {
   assert.equal(browsePatternMatches("zzz", "facts/a.md"), false);
 });
 
-/** Stub commander that records registered actions, like the navigation suite. */
 function stubCommander(): { cmd: CliCommand; actions: Map<string, (...args: unknown[]) => Promise<void> | void> } {
   const actions = new Map<string, (...args: unknown[]) => Promise<void> | void>();
   const cmd: CliCommand = {
@@ -483,7 +472,6 @@ test("CLI browse ls/tree/find register and share the service implementation", as
       await tree("facts", { depth: 2, json: true });
       const treePayload = JSON.parse(lines.join("\n")) as { ok: boolean; entries?: Array<{ kind: string; depth: number }> };
       assert.equal(treePayload.ok, true);
-      // Rooted at facts: the dated dir is depth 0 and its files depth 1.
       assert.ok((treePayload.entries ?? []).some((entry) => entry.kind === "file" && entry.depth === 1));
 
       lines.length = 0;

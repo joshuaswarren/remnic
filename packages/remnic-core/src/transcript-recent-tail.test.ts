@@ -1,11 +1,3 @@
-/**
- * Unscoped `readRecent(hours)` (MCP recalls carry no sessionKey) parsed every
- * line of every daily file in the window plus one day of margin: ~614 MB on the
- * production store, ~7 s of main-thread work per recall (COS-666b). Appended
- * files hold entries in write order, so the recent window is a file's tail and a
- * file not modified since the window began holds nothing in it. These tests pin
- * that the result is unchanged and that the cost is bounded to the window.
- */
 
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
@@ -60,7 +52,6 @@ test("a file not modified since before the window (less an hour of skew) is not 
     const hours = 6;
     const start = now - hours * HOUR;
     const day = today(now);
-    // Violates the append invariant on purpose (in-window entry, stale mtime) to pin the bound.
     await writeFileOf(path.join(root, "session/stale", `${day}.jsonl`), [entry("stale", now - 2 * HOUR)], start - 2 * HOUR);
     await writeFileOf(path.join(root, "session/skew", `${day}.jsonl`), [entry("skew", now - 2 * HOUR)], start - 30 * MIN);
     await writeFileOf(path.join(root, "session/live", `${day}.jsonl`), [entry("live", now - 1 * HOUR)], now);
@@ -75,7 +66,6 @@ test("a large file is read from its tail: same entries as the full scan, a fract
   await withStore(async ({ root, manager, now }) => {
     const hours = 6;
     const start = now - hours * HOUR;
-    // 3000 lines x ~2 KB = ~6 MB across several 1 MiB tail chunks; the last 40 are in the window.
     const lines: TranscriptEntry[] = [];
     for (let i = 0; i < 3000; i++) lines.push(entry(`t${i}`, i < 2960 ? start - 20 * HOUR + i * (19 * HOUR / 2960) : start + 10 * MIN + (i - 2960) * 5 * MIN, PAD));
     await writeFileOf(path.join(root, "session/big", `${today(now)}.jsonl`), lines, now);
@@ -95,7 +85,6 @@ test("tail read tolerates out-of-order timestamps within the skew margin", async
     const start = now - hours * HOUR;
     const lines: TranscriptEntry[] = [];
     for (let i = 0; i < 2500; i++) lines.push(entry(`o${i}`, start - 10 * HOUR + i * (9 * HOUR / 2500), PAD));
-    // Out-of-order tail: an in-window entry written before an older out-of-window one.
     lines.push(entry("late-in", start + 5 * MIN, PAD), entry("early-out", start - 20 * MIN, PAD), entry("tail", now - 10 * MIN, PAD));
     await writeFileOf(path.join(root, "session/jitter", `${today(now)}.jsonl`), lines, now);
     const full = await manager.readRange(new Date(start).toISOString(), new Date(now + 1).toISOString(), undefined);
@@ -118,7 +107,6 @@ test("a file smaller than one chunk, with a line spanning it, and malformed line
 
 async function seedManySessions(root: string, now: number): Promise<void> {
   const day = today(now);
-  // 40 sessions x 600 lines x ~2 KB = ~48 MB. Each file's last entry is stamped at its mtime (the append invariant).
   for (let s = 0; s < 40; s++) {
     const mtime = now - (40 - s) * 10 * MIN;
     const lines: TranscriptEntry[] = [];
@@ -158,7 +146,6 @@ test("bad lines among a file's newest do not shrink the newest-N result", async 
     lines.splice(58, 0, "not json");
     lines.push(JSON.stringify({ sessionKey: "k", turnId: "no-ts", role: "user", content: "x" }));
     lines.push(JSON.stringify(entry("future", now + 2 * HOUR)));
-    // A torn, unterminated final append.
     await writeFile(file, `${lines.join("\n")}\n{"sessionKey":"agent:a:main","turnId":"torn","ti`, "utf-8");
     for (const n of [1, 50]) {
       const want = (await manager.readRecent(12)).slice(-n).map((e) => e.turnId);
@@ -174,7 +161,6 @@ test("newest-N does not read a file modified too long ago to hold a newer entry"
     const recent: TranscriptEntry[] = [];
     for (let i = 0; i < 60; i++) recent.push(entry(`r${i}`, now - (61 - i) * MIN));
     await writeFileOf(path.join(root, "session/live", `${today(now)}.jsonl`), recent, now);
-    // Violates the append invariant on purpose (newer than its own mtime) to pin the stop rule.
     await writeFileOf(path.join(root, "session/stale", `${today(now)}.jsonl`), [entry("stale-newer", now - 30_000)], now - 5 * HOUR);
     const ids = (await manager.readRecent(12, undefined, 50)).map((e) => e.turnId);
     assert.equal(ids.length, 50);
@@ -186,7 +172,6 @@ const ids = (entries: TranscriptEntry[]): string[] => entries.map((e) => e.turnI
 
 test("blank lines among a file's newest do not shrink the newest-N result", async () => {
   await withStore(async ({ root, manager, now }) => {
-    // 200 x ~40 KB: each 256 KiB tail chunk holds only a few lines, so the stop rule runs often.
     const lines: string[] = [];
     for (let i = 0; i < 200; i++) {
       lines.push(JSON.stringify(entry(`t${i}`, now - 10 * HOUR + i * 2 * MIN, "y".repeat(40_000))));
@@ -203,8 +188,6 @@ test("blank lines among a file's newest do not shrink the newest-N result", asyn
 
 test("a tail chunk holding exactly N lines is not mistaken for the whole window", async () => {
   await withStore(async ({ root, manager, now }) => {
-    // Every line is 5300 bytes, so the final 256 KiB chunk holds exactly 50 newlines: the partial first
-    // line plus 49 complete lines. Stopping there (`>=` instead of `>`) would return 49.
     const lineBytes = 5300;
     const lines: string[] = [];
     for (let i = 0; i < 100; i++) {
@@ -252,7 +235,6 @@ test("a short read skips that file rather than returning a gap", async (t) => {
     t.mock.method(fsp, "open", async (...args: Parameters<typeof fsp.open>) => {
       const fh = await realOpen(...args);
       if (!String(args[0]).includes("/short/")) return fh;
-      // Report one byte fewer than were read: the data is intact, only the count is short.
       const realRead = fh.read.bind(fh);
       Object.defineProperty(fh, "read", {
         value: async (buffer: Buffer, offset: number, length: number, position: number) => {
@@ -284,9 +266,7 @@ test("unreadable and unstatable files do not hide the readable ones", async () =
   await withStore(async ({ root, manager, now }) => {
     const day = today(now);
     await writeFileOf(path.join(root, "session/good", `${day}.jsonl`), [entry("g1", now - HOUR)], now);
-    // A directory named like a daily file: stat works, reading it fails.
     await mkdir(path.join(root, "session/isdir", `${day}.jsonl`), { recursive: true });
-    // A dangling symlink: listed by name, stat fails.
     await mkdir(path.join(root, "session/dangling"), { recursive: true });
     await symlink(path.join(root, "nowhere"), path.join(root, "session/dangling", `${day}.jsonl`));
     assert.deepEqual(ids(await manager.readRecent(6, undefined, 50)), ["g1"]);
@@ -314,8 +294,6 @@ test("an unreadable channel or channel-type directory is skipped", { skip: proce
 
 test("blank lines at the end of a file do not shrink the newest-N result", async () => {
   await withStore(async ({ root, manager, now }) => {
-    // 100 lines of exactly 5300 bytes, then four blank lines: the last 256 KiB chunk holds 50 entry
-    // terminators plus the blanks, so the stop rule counts blanks that trim() would later drop.
     const lines: string[] = [];
     for (let i = 0; i < 100; i++) {
       const id = `f${String(i).padStart(4, "0")}`;
@@ -333,8 +311,6 @@ test("blank lines at the end of a file do not shrink the newest-N result", async
 
 test("a row with a null timestamp at a chunk boundary does not stop the tail scan early", async () => {
   await withStore(async ({ root, manager, now }) => {
-    // 100 lines of exactly 5300 bytes: line 51 is the first complete line of the last 256 KiB chunk. new Date(null)
-    // is the epoch, so treating it as a cutoff sentinel would stop before the earlier valid entries.
     const lines: string[] = [];
     for (let i = 0; i < 100; i++) {
       const id = `f${String(i).padStart(4, "0")}`;

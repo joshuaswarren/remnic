@@ -17,7 +17,6 @@ test("hashString produces a stable lowercase SHA-256 hex digest", () => {
   const digest = hashString("remnic-integrity");
   assert.equal(digest.length, 64);
   assert.match(digest, /^[0-9a-f]{64}$/u);
-  // Stable across calls.
   assert.equal(hashString("remnic-integrity"), digest);
 });
 
@@ -100,7 +99,6 @@ test("loadSealKeyFromEnv returns null when the variable is unset", () => {
 });
 
 test("loadSealKeyFromEnv rejects wrong-length base64 inputs", () => {
-  // 16 bytes of base64 is 24 chars — outside the strict 43/44-char pattern.
   process.env.REMNIC_TEST_BAD_SEAL_KEY = Buffer.alloc(16).toString("base64");
   try {
     assert.throws(

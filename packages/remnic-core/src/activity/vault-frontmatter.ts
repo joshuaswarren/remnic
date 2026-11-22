@@ -57,16 +57,9 @@ export const VAULT_PROPERTY_SCALAR_MAX_CHARS = 200;
 export const VAULT_PROPERTY_LIST_MAX_ITEMS = 20;
 export const VAULT_PROPERTY_TOTAL_MAX_CHARS = 2_000;
 
-// C0 controls, DEL, and C1 controls. Covers \n, \r, \t — a newline is the
-// frontmatter-injection primitive (`v\ninjected: yes` becomes a new key).
 const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
-// Characters that make the first character a YAML indicator. `-`, `?`,
-// and `:` only indicate when followed by a space, so `-5` stays a plain
-// scalar while `- 5` does not.
 const INDICATOR_CHARS = ",[]{}#&*!|>'\"%@`";
 const INJECTION_RE = /: | #/;
-// Flow-collection delimiters. Lists render as `[a, b]`; a bare delimiter
-// inside an item splits or closes the sequence on re-read.
 const FLOW_ITEM_DELIM_RE = /[[\]{},]/;
 
 export type ValidateVaultPropertyResult = { ok: true } | { ok: false; reason: string };
@@ -148,8 +141,6 @@ export function validateVaultProperties(
         }
         const scalar = validateScalar(item, `property ${key} list item`);
         if (!scalar.ok) return scalar;
-        // Lists render in flow form `[a, b]`; a bare delimiter inside an
-        // item would split or close the sequence on re-read.
         if (FLOW_ITEM_DELIM_RE.test(item)) {
           return {
             ok: false,

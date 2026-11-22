@@ -1,9 +1,4 @@
 #!/usr/bin/env node
-/**
- * Decide which same-head AI Review Gate runs a newer success may clear.
- * A later positive verdict on the SAME head means an older cancelled or
- * failed suite is dead infra, not a product defect.
- */
 export function supersededGateRuns(newestSuccess, siblings) {
   if (!newestSuccess || newestSuccess.conclusion !== "success") return [];
   const newestStarted = Date.parse(newestSuccess.run_started_at || newestSuccess.created_at || "");

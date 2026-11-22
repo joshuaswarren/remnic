@@ -17,12 +17,6 @@ after(async () => {
   for (const s of spools) s.close();
 });
 
-/**
- * Faithful re-implementation of @remnic/core's ActivityHttpSourceClient wire
- * parser (packages/remnic-core/src/activity/source-client.ts). capture-screen
- * is standalone (no @remnic/core dep), so we assert the served page satisfies
- * that parser here instead of importing it. Throws exactly where core would.
- */
 function assertCoreWouldAccept(page: unknown): void {
   assert.ok(page !== null && typeof page === "object" && Array.isArray((page as { snapshots?: unknown }).snapshots));
   const body = page as { snapshots: unknown[]; nextCursor?: unknown };
@@ -120,7 +114,6 @@ test("replayed snapshots serve a page ActivityHttpSourceClient would accept", as
   assert.equal(body.snapshots.length, 3);
   assert.equal(body.snapshots[0].app, "Safari");
   assert.ok(body.snapshots.every((s) => s.textSource === "ax"));
-  // Deny + secure-field guarantees: no dropped/secret content reaches the wire.
   const allText = body.snapshots.map((s) => String(s.text)).join("\n");
   assert.doesNotMatch(allText, /topsecretpassword/);
   assert.doesNotMatch(allText, /vault contents/);

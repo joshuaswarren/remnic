@@ -1,9 +1,3 @@
-// Server behavioral test: a REAL loopback OpenAI-compatible model boundary is
-// up BEFORE daemon boot; persisted backlog (seeded through the real public
-// Orchestrator buffer API before startServer) is claimed, extracted by the
-// REAL engine/renderer/queue, and durably written — no extraction seam swap,
-// no fake result shapes. The boundary records every chat completion body so
-// the ACTUAL prompt is asserted, not a stub's bookkeeping.
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -25,7 +19,6 @@ const EXTRACTION_JSON = JSON.stringify({
   profileUpdates: [],
 });
 
-/** Loopback OpenAI-compatible boundary: records every completion body. */
 async function startModelBoundary(): Promise<{
   url: string;
   bodies: string[];
@@ -58,7 +51,6 @@ async function startModelBoundary(): Promise<{
 }
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 45_000): Promise<boolean> {
-  // Waits on the daemon's real poll interval + real pipeline — platform clock.
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     if (await predicate()) return true;
@@ -119,7 +111,6 @@ test("a booted daemon drains persisted backlog through the real pipeline (actual
     "utf8"
   );
 
-  // Seed BEFORE boot through the real public buffer API (native persistence).
   const seeder = new Orchestrator(parseConfig(remnic));
   try {
     await seeder.buffer.addTurn("seeded", {

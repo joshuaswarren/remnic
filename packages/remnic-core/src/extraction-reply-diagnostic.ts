@@ -9,18 +9,11 @@ const MAX_TOP_LEVEL_KEYS = 8;
 
 export type JsonValue = z.infer<ReturnType<typeof z.json>>;
 
-/** True when a parsed JSON value is an object carrying at least one extraction-result key. */
 export function looksLikeExtractionResultPayload(parsed: JsonValue): boolean {
   const object = JsonObject.safeParse(parsed);
   return object.success && PAYLOAD_KEYS.some((key) => key in object.data);
 }
 
-/**
- * Identifier-shaped top-level key names of a parsed object, in insertion order,
- * capped at MAX_TOP_LEVEL_KEYS. Keys failing the identifier shape (emails,
- * long strings, anything that could carry or point at content) are dropped, so
- * the array is safe to log by construction.
- */
 function safeTopLevelKeys(parsed: JsonValue): string[] {
   const object = JsonObject.safeParse(parsed);
   const keys: string[] = [];

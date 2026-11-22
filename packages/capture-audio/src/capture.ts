@@ -86,9 +86,6 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
       }));
 
   const rawBase = path.resolve(outDir);
-  // Resolve symlinks so a symlinked chunk path can't escape the raw dir; fall
-  // back to the lexical path when the target doesn't exist yet (tests, or a
-  // chunk whose WAV was already removed).
   const realOrResolved = (p: string): string => {
     try {
       return realpathSync(path.resolve(p));
@@ -107,7 +104,6 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
       // Retention 0 = keep no raw audio: delete the WAV once its chunk is
       // durably persisted. A positive retention leaves it for the janitor.
       if (config.rawRetentionHours > 0) return;
-      // event.path is helper-supplied; never delete anything outside the raw dir.
       if (!withinRawDir(event.path)) return;
       await rm(path.resolve(event.path), { force: true });
     });
@@ -117,9 +113,6 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
     ...(options.makeConversationId ? { makeId: options.makeConversationId } : {}),
   });
 
-  // Diarization is active only when an embedder is wired (production: the
-  // sherpa speaker-id model from the native layer; tests inject a fake). Seed
-  // the clusterer from persisted clusters so speaker ids survive restarts.
   const diarizer = options.embed
     ? new SpeakerClusterer(config.diarization.similarityThreshold, spool.readSpeakerClusters())
     : undefined;
@@ -130,12 +123,6 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
     resolveModel,
     transcribe,
     cleanupRawAudio,
-    // Cross-channel arrival skew: hold each transcribed chunk until the
-    // watermark passes it, so a delayed system chunk still assembles into the
-    // conversation it belongs to (issue #2145).
-    // Only "both" has two independent chunk streams to interleave. A single
-    // channel is already ordered, so buffering would add latency and widen the
-    // crash window for nothing (issue #2145).
     reorderWindowMs: config.captureChannel === "both" ? config.reorderWindowSeconds * 1000 : 0,
     ...(options.detectSpeech ? { detectSpeech: options.detectSpeech } : {}),
     ...(options.embed ? { embed: options.embed } : {}),
@@ -154,9 +141,6 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
     channel: config.captureChannel,
     device: config.devices.mic,
     onChunk: (event) => {
-      // Reject a helper-supplied path that escapes the raw capture dir BEFORE it
-      // is read for transcription — resolving symlinks, so a symlink under the
-      // dir can't point the transcriber at an arbitrary file.
       if (!withinRawDir(event.path)) {
         options.onError?.(new CaptureInputError(`native helper chunk path escapes the capture directory: ${event.path}`));
         return;

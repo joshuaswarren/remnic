@@ -454,8 +454,6 @@ async function loadCliPluginConfig(configPath?: string): Promise<OperatorConfigL
   const resolvedPath = resolveConfigPath(configPath);
   try {
     const raw = JSON.parse(await readFile(resolvedPath, "utf-8")) as Record<string, unknown>;
-    // Delegate slot → canonical → legacy resolution to the generic helper so
-    // all config loaders stay in sync (#403).
     const entry = resolveOpenClawRemnicPluginEntry(raw);
     const parsedConfig = parseConfig(
       entry && typeof entry === "object"
@@ -924,8 +922,6 @@ async function buildOperatorConfigReviewReport(input: {
   config: PluginConfig;
 }): Promise<OperatorConfigReviewReport> {
   const { now, configStatus, config } = input;
-  // Resolve recall-operation gates once so this diagnostic reads capabilities,
-  // not scattered config flags (#1566 Cluster C — rerank is a mixed-op flag).
   const caps = resolveCapabilities(config);
   const findings: OperatorConfigReviewFinding[] = [];
   const searchBackend = config.searchBackend ?? "qmd";
@@ -1277,13 +1273,6 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
     details: meta,
   });
 
-  // Extraction resilience (extraction hot-loop hardening). Surfaces the
-  // persisted per-fingerprint retry/backoff state so an operator can see when
-  // the extraction provider is failing without tailing logs. auth/config
-  // failures are an error (misconfigured provider, will not self-heal at the
-  // current cadence); transient backoff is a warn; a clean state is ok. Reads
-  // the already-loaded meta — no extra I/O, cross-process safe (the in-memory
-  // breaker lives in the daemon; this derives from durable state).
   const retryEntries = meta.extractionRetryState ?? [];
   const authConfigFailures = retryEntries.filter((entry) => entry.lastFailureClass === "auth_config");
   const nowMs = Date.now();
@@ -1291,12 +1280,6 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
     const eligibleAt = Date.parse(entry.nextEligibleAt);
     return Number.isFinite(eligibleAt) && eligibleAt > nowMs;
   });
-  // The in-memory breaker opens only after extractionBreakerFailureThreshold
-  // CONSECUTIVE provider failures, each of which parks a fingerprint — so
-  // doctor infers "likely open" only when the parked transient count reaches
-  // that threshold. A single parked fingerprint is ordinary backoff, not a
-  // suspended-extraction signal (cursor review: don't overclaim). The breaker
-  // itself is per-process (daemon-only), hence the durable-signal inference.
   const providerRetryableParked = parkedFingerprints.filter(
     (entry) => entry.lastFailureClass === "provider_retryable",
   );
@@ -1330,14 +1313,8 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
     },
   });
 
-  // Memory projection health (issue #1829). Surfaces a present-but-unopenable
-  // projection (wrong ABI / corrupt) that previously degraded every memory
-  // list to a silent full-corpus scan. Absent and openable are both "ok".
   checks.push(summarizeProjectionHealth(config));
 
-  // Provenance coverage (issue #1575 PR 3). Operators need to see the
-  // verified/unverified/none distribution grow as extraction backfills.
-  // Best-effort: a read failure surfaces as a warn, not an error.
   let provenanceCoverage: ReturnType<typeof summarizeProvenanceCoverage> = {
     counts: { verified: 0, unverified: 0, none: 0 },
     total: 0,
@@ -1345,11 +1322,6 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   let provenanceReadOk = true;
   let provenancePartialTiers: string[] = [];
   try {
-    // Include all tiers so cold-migrated and archived memories are counted
-    // (codex thread PRRT_kwDORJXyws6Ojqz8 — readAllMemories is hot-only).
-    // Use allSettled so a real read failure (e.g. locked encrypted store)
-    // is surfaced as a partial-read warning, not silently swallowed
-    // (codex thread PRRT_kwDORJXyws6OjygQ).
     const [hot, archived, cold] = await Promise.allSettled([
       storage.readAllMemories(),
       storage.readArchivedMemories(),
@@ -1425,9 +1397,6 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   });
 
   const agentAccessEnabled = config.agentAccessHttp?.enabled === true;
-  // A SecretRef object counts as "configured" (issue #757) — resolution
-  // happens at service-start time, not at doctor-time.  We only check that
-  // *something* is set; we never log the resolved value.
   const rawAuthToken = config.agentAccessHttp?.authToken;
   const authTokenConfigured =
     (typeof rawAuthToken === "string" && rawAuthToken.length > 0) ||
@@ -1463,65 +1432,25 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
     : [];
   checks.push(summarizeHygieneWarnings(warnings, config.fileHygiene));
 
-  // Memory Worth legacy counter audit (issue #560 PR 1).
-  // Memories written before #560 have no `mw_success` / `mw_fail` frontmatter
-  // fields. That is fully supported — readers treat the absence as a uniform
-  // Beta(1,1) prior — but surfacing the count helps operators understand how
-  // much history will bootstrap the scoring pipeline landed in later PRs.
-  // This is an informational check, never an error.
   checks.push(await summarizeMemoryWorthLegacyCounters(storage));
 
-  // Buffer surprise telemetry distribution (issue #563 PR 3).
-  // Surfaces recent surprise scores so operators can calibrate the
-  // `bufferSurpriseThreshold` from real traffic. Never an error — an empty
-  // ledger is the expected state until the flag is turned on.
   checks.push(
     await summarizeBufferSurpriseDistribution(storage, config),
   );
 
-  // Consolidation provenance integrity (issue #561 PR 4).
-  // Validates that every `derived_from` entry resolves to an on-disk
-  // page-version snapshot and every `derived_via` is a known operator.
-  // Broken provenance emits warnings with the offending file path — the
-  // check is informational (never an error) because a missing snapshot
-  // can legitimately occur after log pruning or versioning being disabled
-  // retroactively; operators need visibility, not a hard fail.  Review
-  // feedback (PR #634): the summarizer threads the configured
-  // `versioningSidecarDir` into the scan so deployments that override
-  // the default `.versions` directory get accurate results instead of
-  // false-missing warnings.
   checks.push(await summarizeConsolidationProvenance(storage, config));
 
-  // Graph-edge decay maintenance status (issue #681 PR 2/3).
-  // Reports whether the periodic decay job has run and surfaces last-run
-  // counts. Disabled is "ok" with a note; enabled-but-never-run is "warn".
   checks.push(await summarizeGraphEdgeDecayStatus(config));
 
-  // Tier distribution (issue #686 retention-completion).
   checks.push(await summarizeTierDistribution(options.orchestrator.storage));
   checks.push(await summarizeDreamsPhases(config, storage, meta));
   const extractionWatermark = await readAggregateExtractionWatermark({ config, rootStorage: storage, rootMeta: meta, storageForNamespace: (ns, rootDir) => options.orchestrator.getStorage?.(ns) ?? new StorageManager(rootDir) });
   checks.push(await summarizeExtractionLiveness(config, extractionWatermark, options.orchestrator.buffer));
   checks.push(...(await summarizeCorpusAndReplica(config, (d) => new StorageManager(d), options.resolveSecretRef)));
-  // Security mitigation status (issue #565).
-  // Reports whether the cross-namespace budget and anomaly detection
-  // mitigations are enabled and surfaces config values for operator review.
   checks.push(summarizeSecurityMitigations(config));
 
-  // Observation throughput + judge acceptance rate (issue #685).
-  // Surfaces the total verdict count, accept/reject/defer breakdown, and the
-  // most recent `observedAt` timestamp from the extraction-judge telemetry
-  // ledger.  This closes the *(future)* item deferred in
-  // `docs/trace-to-primitive.md`.  The check is purely informational — it
-  // always resolves to `ok`; an empty ledger is the expected cold-install
-  // state and is never an error.
   checks.push(await summarizeObservationThroughput(config.memoryDir));
 
-  // Namespace maintenance fanout status (issue #1500).
-  // Reports per-job+namespace maintenance outcomes (ran/skipped/failed) so
-  // operators can verify that dynamic project/team namespaces are being
-  // maintained. Informational: never errors on its own — a namespace that has
-  // never been maintained is the expected cold-install state.
   const namespaceMaintenanceHealth = await summarizeNamespaceMaintenanceHealth(config);
   checks.push({
     key: "namespace_maintenance",
@@ -1541,10 +1470,6 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
     details: namespaceMaintenanceHealth,
   });
 
-  // Tombstone non-resurrection invariant (issue #1579). Reports active
-  // tombstone count, last append, corrupted-line count, and rebuild
-  // staleness so operators can verify the invariant is enforced and know
-  // when a rebuild is warranted. Informational: never errors on its own.
   checks.push(await summarizeTombstoneStatus(options.orchestrator.storage));
 
   const summary = checks.reduce(
@@ -1735,7 +1660,6 @@ async function summarizeGraphEdgeDecayStatus(
     "memoryDir" | "graphEdgeDecayEnabled" | "graphEdgeDecayCadenceMs"
   >,
 ): Promise<OperatorDoctorCheck> {
-  // Lazy import to keep the doctor fast when the feature is disabled.
   const { readGraphEdgeDecayStatus } = await import("./maintenance/graph-edge-decay.js");
   const { graphEdgeDecayEnabled } = config;
   const enabled = graphEdgeDecayEnabled === true;
@@ -1805,7 +1729,6 @@ export async function summarizeTierDistribution(
     const { summarizeTiers } = await import("./maintenance/tier-stats.js");
     const summary = await summarizeTiers(storage);
 
-    // Read recent migration journal entries (last 7 days)
     const storageDir = (storage as unknown as { dir?: string }).dir ?? "";
     const journalPath = storageDir.length > 0
       ? path.join(storageDir, "state", "tier-migration-journal.jsonl")
@@ -1907,8 +1830,6 @@ export async function summarizeDreamsPhases(
   let deepSleepLastRun: string | null = null;
   let deepSleepLastRunWarning: string | null = null;
   try {
-    // Read the latest governance run's manifest from the real on-disk format
-    // rather than treating every failure as "no runs yet".
     const runsDir = path.join(config.memoryDir, "state", "memory-governance", "runs");
     const runIds = (await readdir(runsDir)).sort().reverse();
     if (runIds.length > 0) {
@@ -1930,7 +1851,6 @@ export async function summarizeDreamsPhases(
     }
   }
 
-  // Build per-phase summary lines for the human-readable `summary` field.
   const phaseLines: string[] = [
     `lightSleep: enabled=${phases.lightSleep.enabled}, cadenceMs=${phases.lightSleep.cadenceMs}, promoteHeat=${phases.lightSleep.promoteHeatThreshold}, staleDecay=${phases.lightSleep.staleDecayThreshold}, archiveDecay=${phases.lightSleep.archiveDecayThreshold}, filterStale=${phases.lightSleep.filterStaleEnabled}, lastRun=${meta.lastExtractionAt ?? "never"}`,
     `rem: enabled=${phases.rem.enabled}, cadenceMs=${phases.rem.cadenceMs}, similarity=${phases.rem.similarityThreshold}, minCluster=${phases.rem.minClusterSize}, maxPerRun=${phases.rem.maxPerRun}, minIntervalMs=${phases.rem.minIntervalMs}, lastRun=${meta.lastConsolidationAt ?? "never"}`,
@@ -1990,7 +1910,6 @@ function summarizeSecurityMitigations(
     | "recallAuditAnomalyRapidFireLimit" | "recallSingleFlightEnabled"
   >,
 ): OperatorDoctorCheck {
-  // Resolve access-setup gates once (#1566 Cluster B).
   const accessCaps = resolveAccessSetupCapabilities(config);
   const budgetEnabled = accessCaps.recallCrossNamespaceBudget;
   const anomalyEnabled = accessCaps.recallAuditAnomalyDetection;
@@ -2174,10 +2093,6 @@ export async function summarizeConsolidationProvenance(
     report = await runConsolidationProvenanceCheck({
       storage,
       memoryDir: config.memoryDir,
-      // Honor the configured sidecar directory (PR #634 review): when an
-      // operator overrides `versioningSidecarDir`, the default `.versions`
-      // would point at the wrong location and every entry would report as
-      // missing.  Undefined falls back to the helper's default.
       sidecarDir: config.versioningSidecarDir,
     });
   } catch (err) {
@@ -2297,12 +2212,6 @@ export async function runOperatorInventory(options: OperatorInventoryOptions): P
   let rejected = 0;
 
   for (const entry of uniqueRootEntries.values()) {
-    // Disable the hot-memories cache for these transient, one-shot inventory
-    // reads (issue #1902, Codex Medium). Each namespace root is read exactly once
-    // here; caching gives no benefit and would warm+RETAIN the full corpus under
-    // the process-wide gate/TTL (this path bypasses NamespaceStorageRouter, so
-    // the root is never registered in the per-dir maps). Disabling sidesteps both
-    // the cross-namespace gate/TTL inheritance and the retained-memory footprint.
     const storage = new StorageManager(entry.rootDir, undefined, false);
     const memories = await storage.readAllMemories();
     const entities = await storage.readAllEntityFiles();
@@ -2481,7 +2390,6 @@ export async function runOperatorRepair(options: OperatorRepairOptions): Promise
   const sessionRepairApply = await applySessionRepair({
     plan: sessionRepairPlan,
   });
-  // Resolve graph-construction gates once for this diagnostic (#1566 Cluster A).
   const graphCaps = resolveGraphConstructionCapabilities(options.config);
   const graphHealth = await analyzeGraphHealth(options.config.memoryDir, {
     entityGraphEnabled: graphCaps.entityGraph,

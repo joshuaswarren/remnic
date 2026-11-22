@@ -1,10 +1,3 @@
-/**
- * Meetings MCP tool definitions (issue #1900) — the three `engram.meetings_*`
- * tool-def objects, extracted from access-mcp.ts so the surface file stays under
- * its structural ceiling. Spread back into `this.tools` (`...MEETINGS_MCP_TOOLS`);
- * tools/list is verified at runtime. MCP_MIGRATED_OPERATIONS + callTool dispatch
- * stay inline in access-mcp.ts.
- */
 
 import type { McpTool } from "../access-mcp.js";
 

@@ -54,7 +54,6 @@ test("runner measures both modes and evaluates the gate on the measured numbers"
   assert.equal(comparison.model, "deterministic-fake-provider (synthetic; no real model runs)");
   assert.equal(comparison.seed, 0);
 
-  // Gate verdict is internally consistent with the reported measurements.
   assert.equal(comparison.gate.verdict.pass, comparison.gate.verdict.failed.length === 0);
   assert.equal(
     comparison.gate.verdict.conditions.wallClockReduction,
@@ -72,7 +71,6 @@ test("runner measures both modes and evaluates the gate on the measured numbers"
   // decode constant both modes) — the cost model is not independent noise.
   assert.ok(Math.abs(comparison.wallClockReductionPct - comparison.outputTokenReductionPct) < 1e-9);
 
-  // Memory entry counts match between modes (same model, same facts).
   assert.equal(
     comparison.perConversation.memoryEntriesCurrent,
     comparison.perConversation.memoryEntriesSpan,

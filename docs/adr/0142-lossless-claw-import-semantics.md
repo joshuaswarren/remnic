@@ -1,0 +1,107 @@
+# Lossless-claw imports key rows on natural and source identity and keep every write transactionally consistent
+
+Status: accepted
+
+## Context
+The lossless-claw importer copies an external database into Remnic's LCM store. Source sessions can contain multiple conversations whose per-conversation sequence numbers collide; source ids are UUID-like and can sort opposite to chronology; the destination's FTS5 tables are external-content and must mirror every row; dry-run must predict what write would do; crashes can land between the message and summary transactions; summaries can cover tens of thousands of messages; and callers pass filters whose empty values are easy to misread.
+
+## Decision
+Keying, ordering, and dedup: messages key on `(session_id, turn_index)` — the same natural key Remnic's own indexer uses; summary nodes key on the preserved primary id. `turn_index` is assigned by sorting all (conversation, message) pairs of a session by `created_at`, so interleaved conversations interleave chronologically, with a stable tie-breaker chain of conversation id then per-conversation seq. Never sort or order by `conversation_id` — ids can sort opposite to chronology. Dedup keys on source identity (`metadata.conversation_id` + `metadata.source_seq`), not `(session_id, turn_index)`, so two source conversations sharing one session both contribute; duplicates seen within one run also count as skips. Existing source identities are pre-fetched once per affected session into an in-memory Map so the import loop does O(1) lookups instead of O(n²) `json_extract` calls. The message_id-to-turn_index map is populated for inserted and dedup-skipped rows alike, so summary `msg_start`/`msg_end` always reference real turn indices.
+
+Write consistency: every insert is mirrored into the external-content FTS tables (`lcm_messages_fts`, `lcm_summaries_fts`) in the same transaction as the row write. Per session that gained data, exactly one boundary row goes into `lcm_compaction_events` with `tokens_before == tokens_after`, encoding "import boundary, not a real compaction"; token totals for that anchor are queried from the destination at write time, so a partial retry that only adds summaries still anchors correctly. Dry-run shares the write path's loop body (summary filters can never diverge between modes) and reports "would insert" counts for every counter including compaction events, skipping only the actual INSERTs.
+
+Filters and transforms: an empty `sessionFilter` Set means "import all", same as `undefined` — an empty Set is truthy in JavaScript. Transforms stay side-effect-free so they unit-test without SQLite; session ids prefer the explicit `session_id` field and fall back to conversation id; multi-parent DAG rows collapse to a canonical parent id; min/max over summary coverage is computed iteratively because spread-based `Math.min(...arr)` throws RangeError on huge summaries; summary-to-message indexes are prebuilt to avoid N+1 queries.
+
+Scope: only source tables with a clean Remnic-LCM analog are surfaced (`conversations`, `messages`, summaries and their link tables); `large_files`, compaction telemetry/maintenance, and migration state are never imported — they would be dead data. The test destination builds the exact inline Remnic LCM schema so schema drift fails loudly instead of passing vacuously.
+
+## Consequences
+Re-running an import is idempotent and crash-resumable, and dry-run output is trustworthy. The costs: four coordinated invariants (natural key, source-identity dedup, same-transaction FTS, boundary markers) must move together if any changes; the per-session prefetch adds one query; and any new source table requires an explicit decision to map it or exclude it.
+
+## Origin comments
+- `packages/import-lossless-claw/src/importer.test.ts:216` — "/** * Build a destination database with the EXACT Remnic LCM schema (kept * inline here so the test fails loudly if t..."
+- `packages/import-lossless-claw/src/importer.test.ts:700` — "// Cursor low-sev: Messages/Summaries inserted are reported as"
+- `packages/import-lossless-claw/src/importer.test.ts:701` — "// 'would insert' counts in dry-run; compactionEventsInserted must"
+- `packages/import-lossless-claw/src/importer.test.ts:702` — "// follow the same contract for output consistency."
+- `packages/import-lossless-claw/src/importer.test.ts:1027` — "// Two conversations under one session, both starting at seq=0."
+- `packages/import-lossless-claw/src/importer.test.ts:1028` — "// Naive (session_id, turn_index) dedup would silently drop the"
+- `packages/import-lossless-claw/src/importer.test.ts:1029` — "// second conversation's seq=0,1 as 'already present'. The fix"
+- `packages/import-lossless-claw/src/importer.test.ts:1030` — "// assigns session-global turn_index and dedupes on"
+- `packages/import-lossless-claw/src/importer.test.ts:1031` — "// metadata.{conversation_id, source_seq}."
+- `packages/import-lossless-claw/src/importer.test.ts:1174` — "// UUID-like ids that sort the OPPOSITE direction of chronology."
+- `packages/import-lossless-claw/src/importer.test.ts:1175` — "// 'aaaa-conv-id' < 'zzzz-conv-id' lexicographically, but 'zzzz' is"
+- `packages/import-lossless-claw/src/importer.test.ts:1176` — "// chronologically earlier. A conversation_id sort would give the"
+- `packages/import-lossless-claw/src/importer.test.ts:1177` — "// wrong session timeline."
+- `packages/import-lossless-claw/src/importer.ts:8` — "// Idempotency: messages are keyed on (session_id, turn_index) — the same"
+- `packages/import-lossless-claw/src/importer.ts:9` — "// natural key Remnic's own indexer uses. Summary nodes are keyed on the"
+- `packages/import-lossless-claw/src/importer.ts:10` — "// preserved primary id."
+- `packages/import-lossless-claw/src/importer.ts:12` — "// FTS sync: lcm_messages_fts and lcm_summaries_fts are external-content"
+- `packages/import-lossless-claw/src/importer.ts:13` — "// FTS5 tables, so every insert must be mirrored. We do this in the same"
+- `packages/import-lossless-claw/src/importer.ts:14` — "// transaction as the row write to keep the index consistent on crash."
+- `packages/import-lossless-claw/src/importer.ts:16` — "// Compaction-event boundary: per-session, we insert one row into"
+- `packages/import-lossless-claw/src/importer.ts:17` — "// lcm_compaction_events with tokens_before == tokens_after, marking the"
+- `packages/import-lossless-claw/src/importer.ts:18` — "// post-import state from which Remnic's own compaction will operate."
+- `packages/import-lossless-claw/src/importer.ts:96` — "// Normalise sessionFilter: an empty Set is truthy in JavaScript, so a"
+- `packages/import-lossless-claw/src/importer.ts:97` — "// raw `sessionFilter && !sessionFilter.has(session)` guard would skip"
+- `packages/import-lossless-claw/src/importer.ts:98` — "// every session if a caller passed `new Set()` expecting "import all""
+- `packages/import-lossless-claw/src/importer.ts:99` — "// (the documented contract on the option). Treat empty-Set the same"
+- `packages/import-lossless-claw/src/importer.ts:100` — "// as undefined here so every guard below is correct (Cursor Bugbot"
+- `packages/import-lossless-claw/src/importer.ts:101` — "// review on PR #797)."
+- `packages/import-lossless-claw/src/importer.ts:153` — "// Build a per-session list of (conversation, message) pairs and sort"
+- `packages/import-lossless-claw/src/importer.ts:154` — "// by message.created_at. This handles interleaved conversations"
+- `packages/import-lossless-claw/src/importer.ts:155` — "// correctly: if conv-A has messages at t=0 and t=10 and conv-B has"
+- `packages/import-lossless-claw/src/importer.ts:156` — "// messages at t=5 and t=6, turn_index ends up as t=0, t=5, t=6,"
+- `packages/import-lossless-claw/src/importer.ts:157` — "// t=10 (chronological), not t=0, t=10, t=5, t=6 (which a per-"
+- `packages/import-lossless-claw/src/importer.ts:158` — "// conversation pre-sort produces — Codex P1 follow-up review)."
+- `packages/import-lossless-claw/src/importer.ts:181` — "// Stable tie-breaker chain when timestamps collide: conversation"
+- `packages/import-lossless-claw/src/importer.ts:182` — "// id, then per-conversation seq (preserves intra-conversation"
+- `packages/import-lossless-claw/src/importer.ts:183` — "// order even on identical timestamps)."
+- `packages/import-lossless-claw/src/importer.ts:193` — "// Dedup uses source identity (`metadata.conversation_id` +"
+- `packages/import-lossless-claw/src/importer.ts:194` — "// `metadata.source_seq`) rather than `(session_id, turn_index)` so two"
+- `packages/import-lossless-claw/src/importer.ts:195` — "// source conversations sharing one session can both contribute messages"
+- `packages/import-lossless-claw/src/importer.ts:196` — "// without one's `seq=N` masking the other's `seq=N` (Codex P1 review)."
+- `packages/import-lossless-claw/src/importer.ts:198` — "// To avoid the O(n²) behavior of a per-row `json_extract` lookup with"
+- `packages/import-lossless-claw/src/importer.ts:199` — "// no covering index (Codex P2 review), pre-fetch existing source"
+- `packages/import-lossless-claw/src/importer.ts:200` — "// identities once per affected session into an in-memory Map. The"
+- `packages/import-lossless-claw/src/importer.ts:201` — "// import loop then does O(1) Map lookups for dedup."
+- `packages/import-lossless-claw/src/importer.ts:267` — "// Mapping from source message_id → assigned (or pre-existing)"
+- `packages/import-lossless-claw/src/importer.ts:268` — "// turn_index. Populated for both inserted rows and dedup-skipped rows"
+- `packages/import-lossless-claw/src/importer.ts:269` — "// so summary mapping (msg_start/msg_end) reflects real turn indices."
+- `packages/import-lossless-claw/src/importer.ts:295` — "// Update the in-memory dedup map so duplicates within this"
+- `packages/import-lossless-claw/src/importer.ts:296` — "// run also count as skips on subsequent passes (defensive;"
+- `packages/import-lossless-claw/src/importer.ts:297` — "// shouldn't happen with valid source data)."
+- `packages/import-lossless-claw/src/importer.ts:451` — "// Single shared loop body for both write and dry-run paths so summary"
+- `packages/import-lossless-claw/src/importer.ts:452` — "// filter conditions (skip-no-messages, multi-session, dedup, etc.)"
+- `packages/import-lossless-claw/src/importer.ts:453` — "// can never silently diverge between modes (Cursor Bugbot review)."
+- `packages/import-lossless-claw/src/importer.ts:565` — "// Insert one marker row per session that gained data. tokens_before"
+- `packages/import-lossless-claw/src/importer.ts:566` — "// equals tokens_after to encode "this is an import boundary, not a real"
+- `packages/import-lossless-claw/src/importer.ts:567` — "// compaction event"; any consumer that needs the distinction can detect"
+- `packages/import-lossless-claw/src/importer.ts:568` — "// the equality."
+- `packages/import-lossless-claw/src/importer.ts:570` — "// Token totals are queried from the destination at boundary-write time"
+- `packages/import-lossless-claw/src/importer.ts:571` — "// rather than accumulated from this run's newly-inserted rows. That"
+- `packages/import-lossless-claw/src/importer.ts:572` — "// way a session whose only new rows are summaries (e.g. partial retry"
+- `packages/import-lossless-claw/src/importer.ts:573` — "// after a crash between message and summary transactions) still gets"
+- `packages/import-lossless-claw/src/importer.ts:574` — "// a correct anchor reflecting the messages already in the destination"
+- `packages/import-lossless-claw/src/importer.ts:575` — "// (Cursor Bugbot review on PR #797)."
+- `packages/import-lossless-claw/src/importer.ts:576` — "// Always count what compaction events WOULD be written so dry-run"
+- `packages/import-lossless-claw/src/importer.ts:577` — "// output matches the rest of the counters (Cursor Bugbot review on"
+- `packages/import-lossless-claw/src/importer.ts:578` — "// PR #797: dry-run was reporting `Messages inserted: N` but"
+- `packages/import-lossless-claw/src/importer.ts:579` — "// `Compaction events written: 0` despite the documented "count what"
+- `packages/import-lossless-claw/src/importer.ts:580` — "// would be imported" contract). Skip the actual INSERTs in dry-run."
+- `packages/import-lossless-claw/src/source.ts:4` — "// Reads the schema produced by github.com/martian-engineering/lossless-claw"
+- `packages/import-lossless-claw/src/source.ts:5` — "// (default location ~/.openclaw/lcm.db). Only the subset of tables that has"
+- `packages/import-lossless-claw/src/source.ts:6` — "// a clean Remnic-LCM analog is surfaced:"
+- `packages/import-lossless-claw/src/source.ts:14` — "// Tables intentionally NOT read: large_files,"
+- `packages/import-lossless-claw/src/source.ts:15` — "// conversation_compaction_telemetry, conversation_compaction_maintenance,"
+- `packages/import-lossless-claw/src/source.ts:16` — "// lcm_migration_state. None have a Remnic LCM analog and importing them"
+- `packages/import-lossless-claw/src/source.ts:17` — "// would create dead data."
+- `packages/import-lossless-claw/src/transform.ts:4` — "// Kept side-effect-free so they can be unit-tested without SQLite in the"
+- `packages/import-lossless-claw/src/transform.ts:5` — "// loop. The orchestration in importer.ts handles I/O."
+- `packages/import-lossless-claw/src/transform.ts:41` — "/** * Resolve a conversation row to a Remnic session_id. Prefer the explicit * session_id field; fall back to conversa"
+- `packages/import-lossless-claw/src/transform.ts:84` — "/** * Map a source message to a Remnic LCM row. `turnIndex` is supplied by the * caller (importer.ts) which assigns a "
+- `packages/import-lossless-claw/src/transform.ts:111` — "/** * Pick the canonical parent id from a multi-parent DAG row. lossless-claw * supports many-to-many parent edges; Re"
+- `packages/import-lossless-claw/src/transform.ts:145` — "// Iterative min/max — `Math.min(...arr)` / `Math.max(...arr)` push every"
+- `packages/import-lossless-claw/src/transform.ts:146` — "// element onto the call stack via spread and throw `RangeError: Maximum"
+- `packages/import-lossless-claw/src/transform.ts:147` — "// call stack size exceeded` on summaries that cover tens of thousands of"
+- `packages/import-lossless-claw/src/transform.ts:148` — "// messages (Cursor Bugbot review on PR #797)."
+- `packages/import-lossless-claw/src/transform.ts:178` — "/** * Resolve the (probable) single session for a summary by looking at the * messages it covers. lossless-claw summar"
+- `packages/import-lossless-claw/src/transform.ts:206` — "/** * Index summary_messages and messages so we can emit per-summary message-id * lists and seq lists without N+1 quer"

@@ -1,6 +1,3 @@
-/**
- * @remnic/bench — Phase 1 benchmark engine types
- */
 
 import type { BenchmarkIntegrityMeta, BenchmarkSplitType } from "./integrity/types.js";
 

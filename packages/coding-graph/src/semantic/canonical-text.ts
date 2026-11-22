@@ -91,14 +91,12 @@ function splitSignatureBody(normalized: string): { readonly signature: string; r
   // Find the body-open marker. `{` is the universal one (functions,
   // classes, blocks). When there is no `{` we fall back to the arrow
   // form so braceless arrow functions (`const f = (x) => x + 1`) split
-  // at the arrow instead of collapsing to an empty body.
   //
   // collapseWhitespace's punctuation-spacer turns `=>` into `= >`, so
   // the raw `=>` marker NEVER appears in the normalized text — search
   // the normalized form (`= >`) or this whole branch is dead and
   // braceless arrows lose their body (cursor Bugbot: 'Arrow bodies lost
   // in canonical text'). Embeddings, cache hashes, and MinHash inputs
-  // then omitted arrow-function logic.
   const braceIdx = normalized.indexOf("{");
   if (braceIdx >= 0) {
     const signature = normalized.slice(0, braceIdx + 1).trim();

@@ -32,7 +32,6 @@ test("cursor round-trips over (capturedAtUtc, id) and rejects malformed tokens",
   assert.equal(decodeCursor(null), null);
   assert.equal(decodeCursor(""), null);
   assert.throws(() => decodeCursor("!!!not-base64!!!"), CaptureInputError);
-  // A non-integer / non-instant tuple is rejected.
   assert.throws(() => decodeCursor(Buffer.from(JSON.stringify(["x", 1]), "utf8").toString("base64url")), CaptureInputError);
   assert.throws(
     () => decodeCursor(Buffer.from(JSON.stringify(["2026-07-20T10:00:00.000Z", "1"]), "utf8").toString("base64url")),

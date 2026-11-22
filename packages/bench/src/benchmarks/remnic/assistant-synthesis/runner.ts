@@ -1,10 +1,3 @@
-/**
- * Assistant bench: multi-document synthesis with stance.
- *
- * "What does the brain think about X?" — the agent must integrate across
- * multiple memory items and reflect the user's previously-expressed stance,
- * rather than regurgitating the single top-k chunk.
- */
 
 import type {
   BenchmarkDefinition,

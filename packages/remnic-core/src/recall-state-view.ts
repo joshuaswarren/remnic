@@ -56,7 +56,6 @@ const CHANGE_WORD_RE = new RegExp(`\\b(?:${CHANGE_WORDS.join("|")})\\b`);
 // Bare "before"/"after" are ordinary sequencing ("before lunch",
 // "after install"). They carry change intent only when they point at a
 // specific event through a determiner ("before the move", "after the
-// cutover").
 const EVENT_POINTER_RE = /\b(?:before|after)\s+(?:the|a|an|this|that|these|those)\b/;
 
 export function parseRecallStateViews(raw: unknown): boolean {
@@ -83,12 +82,6 @@ export function resultStateViewId(result: StateViewResult): string {
   return result.id ?? result.docid ?? "";
 }
 
-/**
- * #2859 — namespace-qualified chain identity. Namespace fanout can surface
- * the same id from two namespaces; every successor/admission match runs on
- * `namespace\0id` keys so a row in one namespace can never anchor (or be
- * anchored by) an identically-named row in another.
- */
 export function stateViewKey(namespace: string | undefined, id: string): string {
   return `${typeof namespace === "string" ? namespace : ""}\u0000${id}`;
 }
@@ -104,12 +97,6 @@ function stateViewIdFromKey(key: string): string {
   return sep === -1 ? key : key.slice(sep + 1);
 }
 
-/**
- * predecessorKey → successorKey, namespace-qualified. Precedence: explicit
- * chains, then successor rows' `supersedes` back-pointers (#2859 — derives
- * the reverse chain when the predecessor lacks `supersededBy`), then the
- * predecessor's own `supersededBy` (authoritative when present).
- */
 function buildSuccessorMap(
   results: readonly StateViewResult[],
   chains: readonly StateViewChain[],
@@ -267,14 +254,6 @@ export function annotateStateView<T extends StateViewResult>(
   });
 }
 
-/**
- * #2859 — drop superseded rows whose successor is not in the pool BEFORE
- * the user cap/MMR runs, so post-cap orphan removal can never underfill
- * the result set. Reconciles to a fixpoint (a dropped successor orphans
- * its own predecessors). Rows with no successor links pass through in
- * order. ponytail: repeated full-pool passes are O(n²) on one long chain;
- * recall pools stay small, memoize per-key if pools ever grow.
- */
 export function reconcileStateViewPairs<T extends StateViewResult>(results: readonly T[]): T[] {
   const byPred = buildSuccessorMap(results, []);
   let kept = results.slice();
@@ -306,7 +285,6 @@ export function stateViewPacketKeys<T extends StateViewResult>(
   ordered: readonly T[],
 ): string[] {
   const byPred = buildSuccessorMap(ordered, []);
-  // Union-find over row keys; blank-key rows become per-index singletons.
   const parent = new Map<string, string>();
   const root = (key: string): string => {
     let current = key;
@@ -327,7 +305,6 @@ export function stateViewPacketKeys<T extends StateViewResult>(
   const keys: string[] = [];
   const keyToIndex = new Map<string, number>();
   for (let i = 0; i < ordered.length; i += 1) {
-    // ponytail: blank-key rows must stay distinct singletons; index-keyed.
     const key = resultStateViewKey(ordered[i]!) || `#idx${i}`;
     keys.push(key);
     if (!parent.has(key)) parent.set(key, key);
@@ -343,14 +320,6 @@ export function stateViewPacketKeys<T extends StateViewResult>(
   return keys.map((key) => root(key));
 }
 
-/**
- * #2859 — packet-counting cap. A predecessor/successor chain admitted
- * together is ONE complete evidence packet: it consumes a single slot of
- * the user cap, and the slice never splits a packet at the boundary (no
- * underfill from post-cap orphan removal). Rows keep their incoming
- * (MMR) order; packets are ordered by first appearance. Call
- * reconcileStateViewPairs first so orphans never consume a slot.
- */
 export function capStateViewPackets<T extends StateViewResult>(
   ordered: readonly T[],
   limit: number,
@@ -361,7 +330,6 @@ export function capStateViewPackets<T extends StateViewResult>(
   if (ordered.length === 0) return [];
 
   const keys = stateViewPacketKeys(ordered);
-  // Packets ordered by first appearance; admit whole packets until the cap.
   const selectedRoots = new Set<string>();
   for (let i = 0; i < ordered.length && selectedRoots.size < safeLimit; i += 1) {
     selectedRoots.add(keys[i]!);

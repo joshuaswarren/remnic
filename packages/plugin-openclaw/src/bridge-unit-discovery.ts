@@ -42,7 +42,6 @@ const SYSTEMD_UNIT_NAMES = ["remnic.service", "engram.service"] as const;
  * like a per-user one, so omitting those directories hid the daemon's endpoint
  * from detection entirely.
  */
-/** Preserve order, drop repeats — the XDG default and its override can agree. */
 function dedupe(entries: readonly string[]): string[] {
   return [...new Set(entries)];
 }
@@ -153,14 +152,12 @@ function readUnitDropIns(dropInDirs: readonly string[]): string[] {
   return [...byName.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, body]) => body);
 }
 
-/** Enough to resolve a unit's EFFECTIVE contents again, later. */
 export interface DaemonUnitSource {
   unitPath: string;
   dropInDirs: readonly string[];
   userScoped: boolean;
 }
 
-/** A unit's effective text: base plus every applicable drop-in, merged. */
 function readUnitText(source: DaemonUnitSource): string | undefined {
   if (!fileExists(source.unitPath)) return undefined;
   let unit: string;
@@ -175,22 +172,10 @@ function readUnitText(source: DaemonUnitSource): string | undefined {
   return [unit, ...readUnitDropIns(source.dropInDirs)].join("\n");
 }
 
-/**
- * A unit's credential, read FRESH.
- *
- * Delegate requests call this per request rather than reusing the value
- * detection succeeded with: an administrator who rotates the token in the
- * unit (or its drop-in, or its `EnvironmentFile=`) and restarts the daemon
- * would otherwise 401 every delegated route until the gateway restarted too.
- */
 export function readUnitAuthToken(
   source: DaemonUnitSource,
 ): { readable: true; token: string | undefined } | { readable: false } {
   const unit = readUnitText(source);
-  // The two outcomes are NOT the same. A unit this process can no longer read
-  // proves nothing, so the caller keeps the credential that last worked. A
-  // readable unit that supplies no token is a deliberate removal: the daemon
-  // has fallen back to its config or token store, and so must the caller.
   if (unit === undefined) return { readable: false };
   return {
     readable: true,
@@ -201,14 +186,6 @@ export function readUnitAuthToken(
   };
 }
 
-/**
- * Every installed unit's endpoint hints, in discovery order.
- *
- * `exists` is injectable for the same reason `resolveSystemUnitSources` takes
- * it: the SYSTEM unit directories are absolute, so a test that redirects `HOME`
- * still sees the real host's installed daemon and cannot exercise the
- * lower-precedence config candidates at all.
- */
 export function readServiceEndpoints(
   exists: (candidate: string) => boolean = fileExists,
 ): Array<{
@@ -242,9 +219,6 @@ export function readServiceEndpoints(
       (source) => ({ ...source, userScoped: false }),
     ),
   ];
-  // EVERY distinct unit, not the first: canonical and legacy units coexist
-  // during migration, and the inactive one can sort first. Stopping there
-  // would hide the running daemon's endpoint from the candidate walk.
   const endpoints: Array<{
     configPath?: string;
     host?: string;
@@ -271,19 +245,9 @@ export function readServiceEndpoints(
         entry.host === resolved.host &&
         entry.port === resolved.port &&
         entry.authToken === resolved.authToken &&
-        // The UNIT is part of the identity now that credentials are re-read
-        // from it per request. Canonical and legacy units can start out
-        // identical while either is the active service; dropping the second
-        // would pin refresh to a unit that may never change again while the
-        // active one rotates its token.
         entry.authTokenUnit?.unitPath === source.unitPath,
     );
     if (!seen) {
-      // The unit is remembered for EVERY endpoint it describes, not just one
-      // that names a token today: an administrator who later adds
-      // `REMNIC_AUTH_TOKEN` to the unit (or a drop-in) needs a source to
-      // re-read, or delegated requests keep sending the old config credential
-      // until the gateway restarts.
       endpoints.push({
         ...resolved,
         authTokenUnit: { ...source, dropInDirs: [...source.dropInDirs] },
@@ -293,7 +257,6 @@ export function readServiceEndpoints(
   return endpoints;
 }
 
-/** Whether ANY daemon service unit is installed for this account or host. */
 export function isDaemonServiceConfigured(): boolean {
   const homeDir = resolveHomeDir();
   for (const segments of LAUNCHD_SERVICE_PATHS) {

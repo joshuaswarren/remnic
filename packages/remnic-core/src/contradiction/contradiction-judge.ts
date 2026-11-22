@@ -1,15 +1,3 @@
-/**
- * Contradiction Judge — LLM-as-judge for semantic contradiction detection (issue #520).
- *
- * Pairs semantically-similar memories and classifies their relationship.
- * Reuses the extraction-judge adapter pattern but with a contradiction-specific
- * prompt and verdict taxonomy.
- *
- * Design constraints:
- *   - Default verdict on any failure is "needs-user" (rule 48: least-privileged default).
- *   - Never auto-resolve; all verdicts enter the review queue.
- *   - Content-hash caching avoids redundant LLM calls across runs.
- */
 
 import { createHash } from "node:crypto";
 import { log } from "../logger.js";
@@ -18,7 +6,6 @@ import type { LocalLlmClient } from "../local-llm.js";
 import type { FallbackLlmClient } from "../fallback-llm.js";
 import { extractJsonCandidates } from "../json-extract.js";
 
-// ── Types ──────────────────────────────────────────────────────────────────────
 
 export type ContradictionVerdict =
   | "contradicts"
@@ -27,27 +14,18 @@ export type ContradictionVerdict =
   | "needs-user";
 
 export interface ContradictionJudgeInput {
-  /** Memory ID of the first fact. */
   memoryIdA: string;
-  /** Memory ID of the second fact. */
   memoryIdB: string;
-  /** Content text of the first fact. */
   textA: string;
-  /** Content text of the second fact. */
   textB: string;
-  /** Category of the first fact (optional context). */
   categoryA?: string;
-  /** Category of the second fact (optional context). */
   categoryB?: string;
 }
 
 export interface ContradictionJudgeResult {
-  /** Memory IDs of the pair. */
   memoryIdA: string;
   memoryIdB: string;
-  /** Verdict from the judge. */
   verdict: ContradictionVerdict;
-  /** Human-readable rationale. */
   rationale: string;
   /** Confidence in [0, 1]. */
   confidence: number;
@@ -56,15 +34,12 @@ export interface ContradictionJudgeResult {
 export interface ContradictionJudgeBatchResult {
   /** Results keyed by pair key ("idA:idB"). */
   results: Map<string, ContradictionJudgeResult>;
-  /** Number served from cache. */
   cached: number;
-  /** Number produced by LLM call. */
   judged: number;
   /** Total wall-clock time in ms. */
   elapsed: number;
 }
 
-// ── Prompt ─────────────────────────────────────────────────────────────────────
 
 const CONTRADICTION_JUDGE_PROMPT = `You are a memory contradiction classifier. You will receive pairs of stored memories and must classify their semantic relationship.
 
@@ -86,9 +61,7 @@ IMPORTANT:
 - Temporal changes ("Joshua uses pnpm" vs "Joshua switched to npm") ARE contradictions.
 - Different aspects of the same entity ("Joshua uses pnpm" vs "Joshua works on Remnic") are "independent".`;
 
-// ── Cache ──────────────────────────────────────────────────────────────────────
 
-/** Module-level fallback cache — only used when caller does not supply one. */
 let defaultVerdictCache: Map<string, ContradictionJudgeResult> = new Map();
 const CACHE_MAX = 10_000;
 
@@ -98,7 +71,6 @@ function pairKey(idA: string, idB: string): string {
 }
 
 function contentHash(a: ContradictionJudgeInput): string {
-  // Sort each side pair to be order-independent (matching pairKey behavior)
   const sides = [
     { text: a.textA.trim(), category: (a.categoryA ?? "").trim() },
     { text: a.textB.trim(), category: (a.categoryB ?? "").trim() },
@@ -123,7 +95,6 @@ export function verdictCacheSize(): number {
   return defaultVerdictCache.size;
 }
 
-// ── Public API ──────────────────────────────────────────────────────────────────
 
 /**
  * Judge a batch of memory pairs for contradiction.
@@ -144,7 +115,6 @@ export async function judgeContradictionPairs(
   let cached = 0;
   let judged = 0;
 
-  // Partition into cached vs needs-judging
   const toJudge: ContradictionJudgeInput[] = [];
   for (const pair of pairs) {
     const key = pairKey(pair.memoryIdA, pair.memoryIdB);
@@ -162,7 +132,6 @@ export async function judgeContradictionPairs(
     return { results, cached, judged, elapsed: Date.now() - startTime };
   }
 
-  // Build the prompt with all pairs
   const pairDescriptions = toJudge.map((p, i) => {
     const pk = pairKey(p.memoryIdA, p.memoryIdB);
     const catA = p.categoryA ? ` [${p.categoryA}]` : "";
@@ -172,7 +141,6 @@ export async function judgeContradictionPairs(
 
   const userMessage = `Classify these ${toJudge.length} memory pair(s):\n\n${pairDescriptions.join("\n\n")}`;
 
-  // Try LLM call
   let llmResponse: string | null = null;
 
   if (localLlm) {
@@ -191,7 +159,6 @@ export async function judgeContradictionPairs(
     }
   }
 
-  // Parse response or default to needs-user
   if (llmResponse) {
     const candidates = extractJsonCandidates(llmResponse);
     const parsed = parseJudgeResponse(candidates, toJudge);
@@ -200,7 +167,6 @@ export async function judgeContradictionPairs(
       const key = pairKey(result.memoryIdA, result.memoryIdB);
       results.set(key, result);
 
-      // Update cache
       const input = toJudge.find(
         (p) => pairKey(p.memoryIdA, p.memoryIdB) === key,
       );
@@ -215,7 +181,6 @@ export async function judgeContradictionPairs(
       judged++;
     }
   } else {
-    // All unresolved → needs-user (rule 48)
     for (const pair of toJudge) {
       const key = pairKey(pair.memoryIdA, pair.memoryIdB);
       const result: ContradictionJudgeResult = {
@@ -233,7 +198,6 @@ export async function judgeContradictionPairs(
   return { results, cached, judged, elapsed: Date.now() - startTime };
 }
 
-// ── Internals ──────────────────────────────────────────────────────────────────
 
 async function callLlm(
   client: LocalLlmClient | FallbackLlmClient,
@@ -252,7 +216,6 @@ async function callLlm(
     });
     return result?.content ?? "";
   }
-  // FallbackLlmClient — try OpenAI-compatible chat completions
   if ("complete" in client && typeof (client as Record<string, unknown>).complete === "function") {
     const result = await (client as { complete: (msg: Array<{ role: string; content: string }>) => Promise<{ content: string }> }).complete(messages);
     return result.content ?? "";
@@ -305,7 +268,6 @@ function parseJudgeResponse(
         });
       }
 
-      // Backfill any inputs the LLM omitted with needs-user
       for (const inp of inputs) {
         const key = pairKey(inp.memoryIdA, inp.memoryIdB);
         if (!matchedKeys.has(key)) {
@@ -330,7 +292,6 @@ function parseJudgeResponse(
 
   if (conservativeFallback !== null) return conservativeFallback;
 
-  // All parse attempts failed → needs-user for every input
   return inputs.map((p) => ({
     memoryIdA: p.memoryIdA,
     memoryIdB: p.memoryIdB,

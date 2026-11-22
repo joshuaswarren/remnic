@@ -26,9 +26,6 @@ import {
   sessionBelongsToPrincipal,
 } from "./chat-session.js";
 
-/**
- * Read all of stdin to a UTF-8 string (non-TTY / scripting mode).
- */
 async function readAllStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
@@ -44,11 +41,8 @@ export interface ChatCliOptions {
   principal?: string;
   namespace?: string;
   sessionKey?: string;
-  /** Existing chat session id to resume. */
   sessionId?: string;
-  /** Run a single message and exit (non-TTY / scripting mode). */
   once?: boolean;
-  /** Input text for --once mode. */
   input?: string;
 }
 
@@ -77,8 +71,6 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
 
   // Resolve the session up front so the banner and --once output print a
   // stable session id.  Each turn then routes through processChatMessage,
-  // which reloads the session from disk — persisted state markers
-  // (pending plan/promotion) stay authoritative across turns.
   let session;
   if (opts.sessionId) {
     session = await loadChatSession(opts.memoryDir, opts.sessionId);
@@ -108,9 +100,7 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
       principal: opts.principal,
     });
 
-  // ── Non-TTY / --once mode ───────────────────────────────────────────
   if (opts.once) {
-    // Read stdin here (not in cli.ts) so the god-file wiring stays thin.
     const message = opts.input ?? await readAllStdin();
     if (!message.trim()) {
       process.stdout.write("[error] No input provided.\n");
@@ -122,7 +112,6 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
     return;
   }
 
-  // ── Interactive mode ────────────────────────────────────────────────
   console.log(`Remnic Chat — session ${session.id}`);
   console.log("Type your message. Type 'exit' or Ctrl-C to quit.\n");
 
@@ -145,8 +134,6 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
       rl.close();
       return;
     }
-    // Serialize turns: a second line waits for the first to finish so
-    // transcript updates and engine state don't race on the same session.
     inFlight = inFlight.then(async () => {
     const result = await processTurn(message);
 

@@ -1,10 +1,3 @@
-/**
- * @remnic/core — Live Connectors Registry (issue #683 PR 1/N)
- *
- * Pure in-memory registry. No I/O. Concrete connectors register themselves at
- * orchestrator boot (later PRs); the maintenance scheduler asks the registry
- * for the active set when running due syncs.
- */
 
 import { isValidConnectorId, type LiveConnector } from "./framework.js";
 
@@ -28,14 +21,6 @@ export class LiveConnectorRegistryError extends Error {
 export class LiveConnectorRegistry {
   private readonly connectors = new Map<string, LiveConnector>();
 
-  /**
-   * Register a connector. Throws `LiveConnectorRegistryError` if the id is
-   * malformed or already registered.
-   *
-   * Re-registration is rejected (rather than silently overwriting) because
-   * silent overwrites mask plugin loading bugs in development and could let
-   * a malicious extension shadow a built-in connector.
-   */
   register(connector: LiveConnector): void {
     if (!connector || typeof connector !== "object") {
       throw new LiveConnectorRegistryError(
@@ -70,9 +55,6 @@ export class LiveConnectorRegistry {
     this.connectors.set(connector.id, connector);
   }
 
-  /**
-   * Look up a connector by id. Returns `undefined` if not registered.
-   */
   get(id: string): LiveConnector | undefined {
     return this.connectors.get(id);
   }
@@ -94,9 +76,6 @@ export class LiveConnectorRegistry {
     return this.connectors.delete(id);
   }
 
-  /**
-   * Number of registered connectors. Cheap; safe to call frequently.
-   */
   size(): number {
     return this.connectors.size;
   }

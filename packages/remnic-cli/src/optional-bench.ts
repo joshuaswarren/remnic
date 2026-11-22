@@ -1,15 +1,4 @@
-// Lazy loader for the optional @remnic/bench package.
 //
-// Remnic's CLI is installed à la carte: users who only need memory features
-// should not have to install benchmark tooling, so @remnic/bench is an
-// optional peer dependency, not a bundled dependency. Any command that
-// actually needs benchmark code calls loadBenchModule() lazily; the loader
-// either returns the module or throws a user-facing install hint.
-//
-// The specifier is computed so the bundler leaves the dynamic import as a
-// runtime call (see also core/cli.ts:ensureBuiltInBulkImportAdapters for the
-// same pattern). Mirrors CLAUDE.md invariant: "CLI and plugins MUST load
-// optional workspace packages via computed-specifier dynamic imports."
 
 import type * as BenchPackage from "@remnic/bench";
 import type {
@@ -110,10 +99,6 @@ async function tryImportBench(): Promise<BenchLoadResult | null> {
     if (localSource) {
       return localSource;
     }
-    // Only swallow "this package isn't installed" errors. Syntax
-    // errors, init throws, or ERR_MODULE_NOT_FOUND from a transitive
-    // miss inside @remnic/bench must all surface so broken releases
-    // are diagnosable instead of producing a misleading install hint.
     if (isSpecifierNotFoundError(err, SPECIFIER)) {
       return null;
     }

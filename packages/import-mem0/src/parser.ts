@@ -1,18 +1,7 @@
 // ---------------------------------------------------------------------------
-// mem0 parser (issue #568 slice 5)
-// ---------------------------------------------------------------------------
 //
-// Unlike the file-based importers, mem0 pulls data directly from an API. The
-// "parse" step therefore either:
 //
-//   1. Accepts an already-fetched `Mem0Memory[]` (the adapter's primary path,
-//      after the API client pulls everything down).
-//   2. Accepts a JSON string / parsed object for record/replay fixtures so
-//      tests and offline flows don't need network access.
 //
-// Non-object entries are dropped in non-strict mode (CLAUDE.md rule 51
-// applies only to user-facing CLI inputs; parser leniency here protects
-// against server-side schema drift without crashing the import).
 
 import type { Mem0Memory } from "./client.js";
 
@@ -56,8 +45,6 @@ export function parseMem0Export(
         appendMemories(memories, v, options);
       }
     }
-    // `pages`: an array of page responses (replay fixture for multi-page
-    // pulls). We flatten each page's `results` / `memories`.
     const pages = obj.pages;
     if (Array.isArray(pages)) {
       recognizedTopLevelShape = true;
@@ -134,7 +121,6 @@ function describePayloadType(value: unknown): string {
   return typeof value;
 }
 
-/** Extract the memory body, preferring explicit `memory` then `content` then `text`. */
 export function extractMemoryBody(entry: Mem0Memory): string | undefined {
   for (const candidate of [entry.memory, entry.content, entry.text]) {
     if (typeof candidate === "string") {

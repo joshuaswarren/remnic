@@ -18,11 +18,6 @@ export interface StateViewAnchorFrontmatter {
   supersededBy?: string;
 }
 
-/**
- * #2859 — pair reconciliation and packet-counting caps apply only WITHOUT
- * a historical pin: under asOf the validity filter legitimately orphans
- * predecessors (see annotateStateView's asOf mode).
- */
 export function stateViewPacketActive(stateViewActive: boolean | undefined, asOfMs: number | undefined): boolean {
   return stateViewActive === true && !(typeof asOfMs === "number" && Number.isFinite(asOfMs));
 }
@@ -152,12 +147,8 @@ export function filterRecentScanMemories(
       if (stateViewAnchors?.has(deps.namespaceOf(m.path), m.frontmatter)) {
         return true;
       }
-      // Include superseded memory only if the canonical gate says
-      // NOT to filter it (kill switch off or audit mode on).
       return !shouldFilterSupersededFromRecall(m.frontmatter, deps.supersessionOptions);
     }
-    // Other non-active statuses (archived, retired, etc.) are
-    // excluded from the recent-scan path by default.
     return false;
   });
 }

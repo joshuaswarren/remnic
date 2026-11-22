@@ -1,24 +1,3 @@
-/**
- * Deterministic synthetic repo generator (issue #1557 design (a)).
- *
- * Produces {@link GeneratedRepo} — a set of synthetic StoreFileIR-shaped
- * files with symbols and CALLS edges. The generator is parameterized:
- * files × functions × call-density × language. Same seed + same params
- * always yields byte-identical output (rule 38 — generator determinism).
- *
- * The generator emits IR directly (not source code) because:
- *   1. The benchmark measures the GRAPH STORE, not the parser. Parser
- *      benchmarks are a separate concern (the parser has its own test
- *      suite in packages/coding-graph/src/engine/).
- *   2. Emitting IR avoids coupling the store benchmark to grammar
- *      availability, which varies by platform (rule 30).
- *   3. Synthetic IR is deterministic by construction — no parsing
- *      nondeterminism can leak into the benchmark.
- *
- * Public-repo policy: fixtures are synthetic only. No real source code
- * is committed or fetched by this generator. Pinned OSS repos are a
- * separate prepare step (issue step 4 — not this PR).
- */
 
 import { createHash } from "node:crypto";
 
@@ -30,10 +9,6 @@ import type {
   SyntheticSymbol,
 } from "./types.js";
 
-// ---------------------------------------------------------------------------
-// Seeded PRNG — mulberry32. Deterministic, zero dependencies, sufficient
-// quality for synthetic fixture generation (not crypto — rule 38 just needs
-// reproducibility).
 // ---------------------------------------------------------------------------
 
 /**
@@ -52,7 +27,6 @@ export function createSeededRng(seed: number): () => number {
 }
 
 // ---------------------------------------------------------------------------
-// Symbol-kind distribution — mirrors the mix in a typical codebase.
 // ---------------------------------------------------------------------------
 
 const SYMBOL_KINDS = [
@@ -75,9 +49,6 @@ const EDGE_TYPE_WEIGHTS: ReadonlyArray<[string, number]> = [
 const PROVENANCE_VALUES = ["heuristic", "heuristic", "heuristic", "trace"] as const;
 
 // ---------------------------------------------------------------------------
-// Approximate LOC — the generator doesn't produce source, but the report
-// needs a LOC figure for the LOC/s metric. We compute it from symbol spans:
-// each symbol's byte span / ~40 bytes per line gives a plausible LOC.
 // ---------------------------------------------------------------------------
 
 const AVG_BYTES_PER_LINE = 40;
@@ -96,15 +67,9 @@ function hashContent(input: string): string {
 export function generateSyntheticRepo(config: SyntheticRepoConfig): GeneratedRepo {
   const rng = createSeededRng(config.seed);
   const files: SyntheticFileIR[] = [];
-  // Mutable per-file edge accumulator — edges are generated in phase 2
-  // after all symbols exist, so we collect them here and assign at the end.
   const edgesByFile: SyntheticEdge[][] = [];
   let totalLoc = 0;
 
-  // Phase 1: generate all symbols across all files. We materialize the
-  // full symbol list first so cross-file edges can reference any symbol
-  // in the repo (not just symbols in earlier files — that would bias the
-  // call graph toward early files).
   const allSymbols: Array<{
     fileIndex: number;
     qualifiedName: string;
@@ -122,7 +87,6 @@ export function generateSyntheticRepo(config: SyntheticRepoConfig): GeneratedRep
       const name = `${kind}_${f}_${s}`;
       const qualifiedName = `module_${f}.${name}`;
 
-      // Symbol span — deterministic byte range. ~5-15 lines per symbol.
       const spanLines = 5 + Math.floor(rng() * 11);
       const spanBytes = spanLines * AVG_BYTES_PER_LINE;
       const startByte = byteCursor;
@@ -153,17 +117,12 @@ export function generateSyntheticRepo(config: SyntheticRepoConfig): GeneratedRep
     });
   }
 
-  // Phase 2: generate edges. For each symbol, with probability callDensity,
-  // create an edge to another symbol. Edge targets are drawn from the
-  // entire symbol pool so cross-file edges occur naturally.
   let edgeCount = 0;
   for (let i = 0; i < allSymbols.length; i++) {
     const src = allSymbols[i];
-    // Each symbol generates 0-N edges based on callDensity.
     const edgeRolls = Math.ceil(config.callDensity * 3); // up to 3 potential edges
     for (let e = 0; e < edgeRolls; e++) {
       if (rng() > config.callDensity) continue;
-      // Pick a target — not the same symbol.
       const targetIdx = Math.floor(rng() * allSymbols.length);
       if (targetIdx === i) continue;
       const dst = allSymbols[targetIdx];

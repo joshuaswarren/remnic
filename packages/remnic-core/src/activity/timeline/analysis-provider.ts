@@ -57,7 +57,6 @@ export class TimelineAnalysisProviderError extends Error {
   }
 }
 
-/** The provider id that routes to the local LLM client. */
 export const TIMELINE_ANALYSIS_LOCAL_PROVIDER_ID = "local";
 
 const RATE_LIMIT_MESSAGE = /rate limit|too many requests/i;

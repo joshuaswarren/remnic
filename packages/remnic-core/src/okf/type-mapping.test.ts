@@ -75,9 +75,7 @@ test("lintOkfDir reports missing type and skips only real encrypted envelopes", 
       path.join(dir, "facts", "2026-08-18", "fact-bare.md"),
       "---\nid: fact-bare\ncategory: fact\n---\n\nno type\n",
     );
-    // Binary secure-store envelope: starts with the REMNIC-ENC magic header.
     await writeFile(path.join(dir, "secret.md"), "REMNIC-ENC\x00\x01cipher-bytes");
-    // Plaintext that merely mentions an encryption marker is NOT skipped.
     await writeFile(
       path.join(dir, "mentions-enc.md"),
       "---\nid: mentions-enc\ncategory: fact\n---\n\ndiscusses enc:v1 in prose\n",
@@ -147,11 +145,9 @@ test("sweep handles CRLF frontmatter the same as LF", async () => {
   }
 });
 test("profile OKF frontmatter strip tolerates CRLF-rewritten files", () => {
-  // A CRLF-rewriting editor converts the whole stamped file, OKF block included.
   const crlfStamped =
     "---\r\ntype: Profile\r\ntitle: User Profile\r\ntimestamp: 2026-08-18T00:00:00.000Z\r\n---\r\n# User\r\n\r\nPrefers short answers.\r\n";
   assert.equal(stripOkfProfileFrontmatter(crlfStamped), "# User\r\n\r\nPrefers short answers.\r\n");
-  // Hand-written CRLF frontmatter without the marker round-trips untouched.
   const handWritten = "---\r\ntitle: mine\r\n---\r\n\r\nbody\r\n";
   assert.equal(stripOkfProfileFrontmatter(handWritten), handWritten);
 });
@@ -202,9 +198,7 @@ test("serializeEntityFile okfType gate omits type when off, emits one when on", 
   const entity = parseEntityFile(raw);
   const off = serializeEntityFile(entity, undefined, false);
   const on = serializeEntityFile(entity, undefined, true);
-  // Gate off: no type metadata is emitted (matches the questions-path gate).
   assert.doesNotMatch(off, /^type:/m);
-  // Gate on: exactly one type, recomputed from the entity kind.
   assert.equal(on.split("\n").filter((line) => line.startsWith("type:")).length, 1);
   assert.match(on, /^type: Person$/m);
 });

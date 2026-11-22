@@ -376,18 +376,15 @@ test("loadConfig derives turnRequestTimeoutMs from requestTimeoutMs when unset (
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-turn-derive-"));
   const configPath = path.join(root, "remnic.config.json");
   try {
-    // Existing install that lowered requestTimeoutMs below the 20s turn default.
     fs.writeFileSync(configPath, JSON.stringify({ requestTimeoutMs: 5000 }));
     const cfg = loadConfig({ configPath, env: {} });
     assert.equal(cfg.requestTimeoutMs, 5000);
     assert.equal(cfg.turnRequestTimeoutMs, 5000, "turn budget tracks the lowered request timeout, not the 20s default");
 
-    // Default requestTimeoutMs (60000) keeps the 20s turn default.
     fs.writeFileSync(configPath, JSON.stringify({}));
     const def = loadConfig({ configPath, env: {} });
     assert.equal(def.turnRequestTimeoutMs, 20000, "default turn budget stays 20s when request timeout is default");
 
-    // An explicit turnRequestTimeoutMs always wins.
     fs.writeFileSync(configPath, JSON.stringify({ requestTimeoutMs: 5000, turnRequestTimeoutMs: 8000 }));
     const explicit = loadConfig({ configPath, env: {} });
     assert.equal(explicit.turnRequestTimeoutMs, 8000, "explicit turn budget is honored over the derived fallback");
@@ -404,7 +401,6 @@ test("loadConfig accepts observeMaxRetries: 0 to disable retries (review codex)"
     const cfg = loadConfig({ configPath, env: {} });
     assert.equal(cfg.observeMaxRetries, 0, "zero is a valid 'disable retries' value");
 
-    // A negative value is still rejected.
     fs.writeFileSync(configPath, JSON.stringify({ observeMaxRetries: -1 }));
     assert.throws(
       () => loadConfig({ configPath, env: {} }),

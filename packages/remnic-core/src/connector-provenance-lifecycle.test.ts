@@ -1,10 +1,3 @@
-/**
- * Provenance lifecycle tests — scenario matrix from the provenance design doc.
- *
- * Covers: deriveSourceConnector mixed-batch attribution, buffer fingerprint
- * dedupe, replay ingestion connector preservation, frontmatter YAML injection
- * guard, and end-to-end extraction→persistExtraction wiring.
- */
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -32,8 +25,6 @@ import { handleCodingDecision } from "./coding/decision-surfaces.js";
 import type { DecisionSurfaceContext } from "./coding/decision-surfaces.js";
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function makeMinimalConfig(): PluginConfig {
   return {
@@ -59,7 +50,6 @@ function makeTurn(overrides: Partial<BufferTurn> = {}): BufferTurn {
 }
 
 // ---------------------------------------------------------------------------
-// deriveSourceConnector tests (scenarios 1-4)
 // ---------------------------------------------------------------------------
 
 test("deriveSourceConnector: all turns same connector → returns that connector", () => {
@@ -86,7 +76,6 @@ test("deriveSourceConnector: all untagged → undefined", () => {
 });
 
 // ---------------------------------------------------------------------------
-// bufferTurnsEqual via clearAfterExtraction (scenario 11)
 // ---------------------------------------------------------------------------
 
 test("bufferTurnsEqual via clearAfterExtraction: different fingerprint → turn NOT cleared", async () => {
@@ -99,18 +88,11 @@ test("bufferTurnsEqual via clearAfterExtraction: different fingerprint → turn 
     const buffer = new SmartBuffer(config, storage);
     await buffer.load();
 
-    // Buffer contains turnB (fingerprint fp-B). An extraction snapshot
-    // claims turnA (same content/timestamp, different fingerprint fp-A)
-    // was extracted. Without the turnFingerprint comparison in
-    // bufferTurnsEqual, turnA would match turnB and clear it — a live
-    // turn that was NOT part of the extraction snapshot.
     const turnA = makeTurn({ content: "hello", turnFingerprint: "fp-A" });
     const turnB = makeTurn({ content: "hello", turnFingerprint: "fp-B" });
     await buffer.addTurn("default", turnB);
     assert.equal(buffer.getTurns("default").length, 1);
 
-    // Pass turnA (not in buffer) as the extraction snapshot.
-    // clearAfterExtraction must NOT clear turnB because fingerprints differ.
     await buffer.clearAfterExtraction("default", [turnA]);
     const remaining = buffer.getTurns("default");
     assert.equal(remaining.length, 1, "turnB must survive — its fingerprint differs from the extraction snapshot");
@@ -122,7 +104,6 @@ test("bufferTurnsEqual via clearAfterExtraction: different fingerprint → turn 
 });
 
 // ---------------------------------------------------------------------------
-// StorageManager frontmatter serialization (scenarios 12-13)
 // ---------------------------------------------------------------------------
 
 test("StorageManager.writeMemory: connector ID with newline → quoted, no frontmatter injection", async () => {
@@ -171,7 +152,6 @@ test("StorageManager.writeMemory: valid connector IDs round-trip correctly", asy
 });
 
 // ---------------------------------------------------------------------------
-// ingestReplayBatch sourceConnector preservation (scenario 5)
 // ---------------------------------------------------------------------------
 
 test("ingestReplayBatch: sourceConnector preserved through replay ingestion", async () => {
@@ -261,7 +241,6 @@ test("ingestReplayBatch: sourceConnector preserved through replay ingestion", as
 });
 
 // ---------------------------------------------------------------------------
-// runExtraction end-to-end: deriveSourceConnector → persistExtraction (scenario 3)
 // ---------------------------------------------------------------------------
 
 test("runExtraction: mixed tagged+untagged turns → persistExtraction receives sourceConnector=undefined", async () => {
@@ -327,7 +306,6 @@ test("runExtraction: mixed tagged+untagged turns → persistExtraction receives 
       };
     }
 
-    // Mixed batch: one tagged + one untagged → sourceConnector must be undefined
     let mixedConnector: string | undefined = "SENTINEL";
     const coord1 = new ExtractionRunCoordinator(
       makeDeps((ctx) => {
@@ -343,7 +321,6 @@ test("runExtraction: mixed tagged+untagged turns → persistExtraction receives 
     );
     assert.equal(mixedConnector, undefined, "mixed batch must produce sourceConnector=undefined");
 
-    // All-same connector batch → sourceConnector must be "chatgpt"
     let sameConnector: string | undefined = "SENTINEL";
     const coord2 = new ExtractionRunCoordinator(
       makeDeps((ctx) => {
@@ -365,10 +342,6 @@ test("runExtraction: mixed tagged+untagged turns → persistExtraction receives 
 });
 
 test("runExtraction: context-only turns without sourceConnector do not affect attribution", async () => {
-  // QMnY3: deriveSourceConnector was called on the full turns array including
-  // extractionContextOnly turns. Context-only turns without sourceConnector
-  // caused deriveSourceConnector to return undefined (mixed tagged+untagged)
-  // even when every contributing turn shared one connector.
   StorageManager.clearAllStaticCaches();
   const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-ctx-"));
   try {
@@ -428,9 +401,6 @@ test("runExtraction: context-only turns without sourceConnector do not affect at
       recordProcessedExtractionFingerprint: async () => {},
     });
 
-    // Two real turns with the same connector, plus one context-only turn
-    // without sourceConnector. Before the fix, deriveSourceConnector saw
-    // the context-only turn as "untagged" and returned undefined.
     await coordinator.runExtraction(
       [
         makeTurn({ content: "hello from chatgpt", sourceConnector: "chatgpt" }),
@@ -454,8 +424,6 @@ test("runExtraction: context-only turns without sourceConnector do not affect at
 });
 
 test("StorageManager.writeChunk: sourceConnector preserved on chunk memories", async () => {
-  // QMo7g: chunked writes must carry sourceConnector so independently
-  // surfaced chunks preserve provenance.
   StorageManager.clearAllStaticCaches();
   const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-chunk-"));
   try {
@@ -484,10 +452,6 @@ test("StorageManager.writeChunk: sourceConnector preserved on chunk memories", a
 });
 
 test("StorageManager.writeMemory: sourceConnector preserved for inline capture path", async () => {
-  // QMo7i: OpenClaw inline captures call persistExplicitCapture /
-  // queueExplicitCaptureForReview, which both call writeMemory.
-  // This test verifies writeMemory accepts and preserves sourceConnector
-  // when called with the "openclaw" connector (as the inline capture path does).
   StorageManager.clearAllStaticCaches();
   const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-inline-"));
   try {
@@ -512,9 +476,6 @@ test("StorageManager.writeMemory: sourceConnector preserved for inline capture p
 });
 
 test("hashAccessIdempotencyPayload: different sourceConnector yields different fingerprint", () => {
-  // QMx3S: two writes with identical content but different sourceConnector
-  // must produce different idempotency fingerprints so they are not
-  // treated as duplicates.
   const base = {
     operation: "memory_store",
     request: {
@@ -541,7 +502,6 @@ test("hashAccessIdempotencyPayload: different sourceConnector yields different f
   assert.notEqual(hashChatgpt, hashNone, "connector vs no-connector must yield different fingerprints");
   assert.notEqual(hashCodex, hashNone, "connector vs no-connector must yield different fingerprints");
 
-  // Same connector + key order must be stable (stableStringify sorts keys)
   const withChatgptReordered = {
     request: { ...base.request, sourceConnector: "chatgpt" },
     operation: "memory_store",
@@ -603,8 +563,6 @@ test("handleCodingDecision: sourceConnector='chatgpt' reaches stored frontmatter
 });
 
 test("codegraph_manage_adr operation: ctx.sourceConnector forwarded to codegraphTool", async () => {
-  // Tests the operation handler directly — no MCP server needed.
-  // Proves ctx.sourceConnector reaches service.codegraphTool as the 3rd arg.
   const { codegraphManageAdrOperation } = await import("./access-operations.js");
   let capturedConnector: string | undefined = "SENTINEL";
   const result = await codegraphManageAdrOperation.spec.handler(
@@ -628,9 +586,6 @@ test("codegraph_manage_adr operation: ctx.sourceConnector forwarded to codegraph
 });
 
 test("runExtraction: the Source agent header connector equals the persisted sourceConnector (boundary-drop case)", async () => {
-  // One derivation over boundedTurns: a work-layer-dropped UNTAGGED assistant
-  // turn must not suppress the connector the model effectively saw, and the
-  // value rendered in the header must be the same value persisted.
   StorageManager.clearAllStaticCaches();
   const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-one-"));
   try {
@@ -683,8 +638,6 @@ test("runExtraction: the Source agent header connector equals the persisted sour
       [
         makeTurn({ content: "Use the search tool.", sourceConnector: "pi" }),
         makeTurn({ role: "assistant", content: "Found it.", sourceConnector: "pi" }),
-        // UNTAGGED assistant turn that is entirely work-layer context -> dropped
-        // by the work-layer boundary, so it is absent from boundedTurns.
         makeTurn({
           role: "assistant",
           content: "[WORK_LAYER_CONTEXT link_to_memory=false]\ninternal scratch\n[/WORK_LAYER_CONTEXT]",

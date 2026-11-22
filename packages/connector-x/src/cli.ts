@@ -1,14 +1,4 @@
 #!/usr/bin/env node
-/**
- * `remnic-x` — standalone CLI for the X connector.
- *
- *   remnic-x status [--config <path>] [--json]
- *   remnic-x sync   [--config <path>] [--json]
- *
- * The config file is JSON: either the `xConnector` block itself or a
- * document with an `xConnector` key. Default path: $REMNIC_X_CONFIG or
- * ~/.config/remnic/x-connector.json.
- */
 
 import { readFile } from "node:fs/promises";
 import { exit } from "node:process";
@@ -115,7 +105,6 @@ async function main(): Promise<number> {
     sink: createFileSink({ stateDir: config.stateDir, mode: config.memoryMode }),
   });
   printHuman(args.json ? JSON.stringify(report, null, 2) : renderReport(report));
-  // Skips are expected degradation (credits, caps), not failures.
   return report.sinkFailures > 0 ? 1 : 0;
 }
 

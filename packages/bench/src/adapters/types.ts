@@ -1,6 +1,3 @@
-/**
- * Shared adapter contract for benchmarks running against Remnic memory systems.
- */
 
 import type { TaskAttributionWitness } from "../types.js";
 
@@ -61,12 +58,6 @@ export type BenchRecallSupportStatus =
   | "unavailable"
   | "backend_failure";
 
-/**
- * Answer-time support signal for the exact recall text supplied to the
- * responder. `weak` is intentionally explicit: callers must not infer it from
- * a zero-hit auxiliary search when `recalledText` contains evidence from other
- * retrieval tiers.
- */
 export interface BenchRecallSupportAssessment {
   status: BenchRecallSupportStatus;
   reason?: string;
@@ -137,12 +128,6 @@ export interface BenchJudge {
     expected: string,
     control?: BenchPhaseControl,
   ): Promise<BenchJudgeResult>;
-  /**
-   * Run a benchmark-supplied yes/no judging prompt directly and return a
-   * normalized 0/1 score. Published benchmarks such as LongMemEval define
-   * their own evaluator prompt; routing those through the scalar generic
-   * judge prompt would change the metric contract.
-   */
   scoreBinaryPrompt?(
     prompt: string,
     control?: BenchPhaseControl,
@@ -185,11 +170,6 @@ export interface BenchMemoryAdapter {
     goldMemories: string[];
     retrievals: BenchAttributionRetrieval[];
   }): Promise<TaskAttributionWitness | undefined>;
-  /**
-   * Optionally assess support using the exact, final recall context that will
-   * be sent to the responder. Implementations may return `weak` only from
-   * explicit evidence-confidence signals derived from that context.
-   */
   assessRecallSupport?(
     request: BenchRecallSupportRequest,
     control?: BenchPhaseControl,
@@ -256,7 +236,6 @@ export interface BenchRecallTraceSection extends BenchRecallTraceRange {
     | "evidence-pack"
     | "lcm-summary"
     | "raw-row";
-  /** Character offset where this section's leading separator starts. */
   separatorStart: number;
   /** Character offset where content starts after the optional `\n\n` separator. */
   contentStart: number;

@@ -1,8 +1,3 @@
-/**
- * Shared-item envelope actor parse (issue #1957 leftover).
- *
- * Pure. Empty is missing_actor. Newline is invalid_actor.
- */
 
 export type ParseEnvelopeActorResult =
   | { ok: true; actor: string }

@@ -1,7 +1,3 @@
-/**
- * Unit tests for the ConsolidationOperator vocabulary and derived_from
- * validator introduced in issue #561 PR 1.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -16,7 +12,6 @@ import {
   type SemanticConsolidationLlmOperator,
 } from "./semantic-consolidation.js";
 import type { MemoryCategory, MemoryFile } from "./types.js";
-// The standalone module is the source of truth; semantic-consolidation.ts
 // re-exports it.  This test import proves both surfaces work.
 import {
   CONSOLIDATION_OPERATORS as CONSOLIDATION_OPERATORS_DIRECT,
@@ -84,7 +79,6 @@ test("isValidDerivedFromEntry rejects malformed entries", () => {
   assert.equal(isValidDerivedFromEntry("facts/a.md:1.5"), false, "fractional version");
   assert.equal(isValidDerivedFromEntry(":3"), false, "empty path");
   assert.equal(isValidDerivedFromEntry("   :3"), false, "whitespace-only path");
-  // Memory-id form must reject leading non-alphanumeric characters
   // (so it cannot accidentally swallow a malformed snapshot like
   // `_-bad`).
   assert.equal(isValidDerivedFromEntry("-not-an-id"), false, "leading hyphen");
@@ -100,7 +94,6 @@ test("isValidDerivedFromEntry accepts memory-id-shaped entries (issue #687 PR 2/
   assert.equal(isValidDerivedFromEntry("m-1"), true);
   assert.equal(isValidDerivedFromEntry("alpha"), true);
   assert.equal(isValidDerivedFromEntry("Mem_Underscored-Allowed"), true);
-  // Common bare-id form used by extraction.
   assert.equal(isValidDerivedFromEntry("fact-abc-123"), true);
 });
 
@@ -137,7 +130,6 @@ test("isValidDerivedFromEntry: snapshot-vs-id disambiguation handles ambiguous t
   // `graph-retrieval.ts`.
   assert.equal(isValidDerivedFromEntry("path/file.md:42"), true, "valid snapshot reference");
   assert.equal(isValidDerivedFromEntry("global:42"), true, "valid memory id with numeric tail");
-  // A memory id with no colon and no path characters is also valid.
   assert.equal(isValidDerivedFromEntry("fact-abc-123"), true, "bare memory id");
 });
 
@@ -150,7 +142,6 @@ test("isValidDerivedFromEntry rejects non-string values", () => {
 });
 
 test("ConsolidationOperator type includes split/merge/update/pattern-reinforcement", () => {
-  // Compile-time-only: ensure every literal is assignable to the type.
   const split: ConsolidationOperator = "split";
   const merge: ConsolidationOperator = "merge";
   const update: ConsolidationOperator = "update";
@@ -164,7 +155,6 @@ test("isSemanticConsolidationLlmOperator rejects pattern-reinforcement (Cursor B
   // would otherwise stamp misleading provenance on a
   // semantic-consolidation memory.
   assert.equal(isSemanticConsolidationLlmOperator("pattern-reinforcement"), false);
-  // Legacy operators stay valid.
   assert.equal(isSemanticConsolidationLlmOperator("split"), true);
   assert.equal(isSemanticConsolidationLlmOperator("merge"), true);
   assert.equal(isSemanticConsolidationLlmOperator("update"), true);

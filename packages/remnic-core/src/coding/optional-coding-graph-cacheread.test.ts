@@ -47,13 +47,10 @@ test("loadCodingGraphEngineFactory throws install hint when package absent", asy
 test("after a successful load, tryLoadCodingGraphModule returns the same module (cache fast-path)", async () => {
   const installed = await isCodingGraphInstalled();
   if (!installed) return;
-  // Seed the success cache by calling loadCodingGraphEngineFactory.
   const factory = await loadCodingGraphEngineFactory();
   assert.equal(typeof factory, "function");
-  // A fresh probe call should return the cached module reference.
   const probeResult = await tryLoadCodingGraphModule();
   assert.ok(probeResult !== null);
-  // Invoking the factory throws the placeholder (PR1 contract).
   assert.throws(() => factory(), (err: unknown) => {
     if (!err || typeof err !== "object") return false;
     const e = err as { name?: unknown; code?: unknown };
@@ -62,8 +59,6 @@ test("after a successful load, tryLoadCodingGraphModule returns the same module 
 });
 
 test("loader fresh-attempts after the package is detected as missing", async () => {
-  // If present, loader returns a factory.
-  // If absent, loader throws the install hint.
   try {
     const factory = await loadCodingGraphEngineFactory();
     assert.equal(typeof factory, "function");

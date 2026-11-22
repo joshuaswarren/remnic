@@ -1,17 +1,3 @@
-/**
- * Action-site failure gate (issue #2382, slice 1 — core contract).
- *
- * The H6 study (#1963) measured that a failure memory delivered in the prompt
- * preamble barely changes behaviour, while the same memory delivered at the
- * moment the agent proposes the matched action removes the repeated failure.
- * This module productionises that delivery point: `ActionGateService` wraps the
- * experimental `PreActionFailureGate` primitive, adds failure-class memory
- * candidates, a per-turn budget, cross-channel suppression, and telemetry.
- *
- * Scope, per the study's honest limit: the gate removes a known failure mode.
- * It does not improve task completion. It is advisory only — it never blocks an
- * action, never outruns its deadline, and fails open on every error path.
- */
 import type { ActionIntent, ActionStrategyId } from "../causal-trajectory.js";
 import { coerceBool, coerceNumber } from "../connectors/coerce.js";
 import type { CodingContext, MemoryFile } from "../types.js";
@@ -23,16 +9,11 @@ import {
 } from "./pre-action-gate.js";
 
 export const ACTION_GATE_DEFAULT_MAX_ADVISORIES_PER_TURN = 3;
-/** Bound on a single advisory payload, above the primitive's citation bound. */
 const MAX_ADVISORY_CHARS = 400;
-/** Bounded lexical matching: terms considered from one proposed action. */
 const MAX_ACTION_TERMS = 24;
 const MIN_TERM_CHARS = 3;
-/** Fraction of action terms a failure memory must mention to be a candidate. */
 const MIN_TERM_OVERLAP_RATIO = 0.6;
-/** Sessions tracked for suppression before the oldest is evicted. */
 const MAX_TRACKED_SESSIONS = 200;
-/** Memory ids remembered per session for cross-channel suppression. */
 const MAX_TRACKED_IDS_PER_SESSION = 200;
 
 export interface ActionGateConfig {
@@ -77,7 +58,6 @@ export function parseActionGateConfig(raw: unknown): ActionGateConfig {
       ? Math.min(5000, Math.max(1, Math.floor(rawTimeout)))
       : ACTION_GATE_DEFAULTS.timeoutMs;
   const rawMax = coerceNumber(block.maxAdvisoriesPerTurn);
-  // Zero-limit semantics are a compatibility contract: `0` stays `0`.
   const maxAdvisoriesPerTurn =
     rawMax !== undefined && Number.isFinite(rawMax)
       ? Math.min(20, Math.max(0, Math.floor(rawMax)))
@@ -295,7 +275,6 @@ export function createTrajectoryCandidateSource(gate: PreActionFailureGate): Act
         candidates: [
           {
             memoryId: result.matchedTrajectoryId,
-            // Trajectory matches are exact fingerprint hits: rank above lexical ones.
             score: Number.MAX_SAFE_INTEGER,
             advisoryText: result.advisoryText,
           },
@@ -307,7 +286,6 @@ export function createTrajectoryCandidateSource(gate: PreActionFailureGate): Act
 
 interface SessionSuppression {
   turnId: string;
-  /** Ids the gate delivered during `turnId`. */
   deliveredThisTurn: Set<string>;
   /** Ids the gate delivered anywhere in the session; turn-start must skip them. */
   deliveredByGate: Set<string>;
@@ -515,7 +493,6 @@ export class ActionGateService {
         degradations: result.degradations,
         reason: result.reason,
       };
-      // Telemetry must never break the action it observes.
       void Promise.resolve()
         .then(() => this.audit?.(record))
         .catch(() => undefined);

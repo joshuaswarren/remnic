@@ -25,7 +25,6 @@ export function checkVaultJournalPrerequisites(input: {
 }): VaultJournalPrereqResult {
   const missing: VaultJournalPrerequisite[] = [];
   if (input.vaultEnabled !== true) missing.push("vault.enabled");
-  // Exact values are validated: trim() only detects blankness, never rewrites.
   if (typeof input.dailyNotePath !== "string" || input.dailyNotePath.trim().length === 0) {
     missing.push("vault.dailyNotePath");
   }

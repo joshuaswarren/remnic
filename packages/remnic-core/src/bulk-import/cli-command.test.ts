@@ -13,8 +13,6 @@ import {
 import type { BulkImportSourceAdapter, BulkImportSource } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function nullStream(): Writable {
   return new Writable({ write(_chunk, _enc, cb) { cb(); } });
@@ -45,7 +43,6 @@ function makeDummyAdapter(name: string): BulkImportSourceAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
 // ---------------------------------------------------------------------------
 
 describe("runBulkImportCliCommand", () => {
@@ -176,7 +173,6 @@ describe("runBulkImportCliCommand", () => {
       },
     });
 
-    // verbose=true, strict not set — strict should NOT be true
     await runBulkImportCliCommand({
       memoryDir: tmpDir,
       source: "spy-source",
@@ -188,7 +184,6 @@ describe("runBulkImportCliCommand", () => {
     });
     assert.equal(capturedOptions?.strict, false);
 
-    // strict=true, verbose=false — strict should be true
     await runBulkImportCliCommand({
       memoryDir: tmpDir,
       source: "spy-source",

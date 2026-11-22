@@ -1,20 +1,3 @@
-/**
- * Bounded-memory-contracts benchmark runner (issue #1708).
- *
- * Drives all four conditions (C0 no-memory, C1 raw-transcript, C2 typed-
- * contract, C3 typed-plus-skills) over the deterministic synthetic fixture.
- * Quick mode is fully offline — no LLM, no network. When `outputDir` is
- * supplied the runner writes the issue's full per-run artifact tree:
- *
- *   conditions/<cond>/        prompt packs + retrieval logs, per task
- *   scores/per-task.csv       one row per (task, condition)
- *   scores/aggregate.json     per-condition headline bundles
- *   report.md                 human-readable comparison
- *
- * The BenchmarkResult carries the per-condition bundles + skill-trigger log in
- * `config.benchmarkOptions` (the headline numbers) and the per-pair TaskResults
- * in `results.tasks`.
- */
 
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -76,7 +59,6 @@ interface ConditionTaskResult {
   latencyMs: number;
 }
 
-/** Resolve which skills the C3 trigger classifier injects for a task. */
 function resolveInjectedSkills(task: BoundedMemoryTask): FixtureSkill[] {
   const injected: FixtureSkill[] = [];
   for (const skill of task.skills) {
@@ -88,13 +70,6 @@ function resolveInjectedSkills(task: BoundedMemoryTask): FixtureSkill[] {
   return injected;
 }
 
-/**
- * Resolve the outcome of a (task, skill) pair given whether the skill was
- * ACTUALLY injected (i.e. landed in the pack). Expected-but-missed skills on
- * skill-positive tasks count as "harmed" (false negatives), and unexpected
- * injections count as "harmed" (false positives) — so precision/recall reflect
- * the packed reality, not just the classifier.
- */
 function skillOutcome(
   task: BoundedMemoryTask,
   skill: FixtureSkill,
@@ -118,10 +93,6 @@ export async function runBoundedMemoryContractsBenchmark(
   const fixtureSource =
     options.mode === "quick" ? BOUNDED_MEMORY_SMOKE_FIXTURE : BOUNDED_MEMORY_FIXTURE;
 
-  // Quick mode always runs the FULL smoke subset (one task per family) so the
-  // documented `remnic bench run --quick` exercises every code path — the CLI
-  // maps --quick to an implicit limit:1, which must NOT truncate the smoke set.
-  // Full mode honors a strictly-positive --limit (limit <= 0 means no cap).
   const tasks: BoundedMemoryTask[] =
     options.mode === "full" &&
     typeof options.limit === "number" && options.limit > 0 && Number.isFinite(options.limit)
@@ -130,11 +101,8 @@ export async function runBoundedMemoryContractsBenchmark(
 
   const seed = typeof options.seed === "number" ? options.seed : 0;
 
-  // One TaskResult is emitted per (task × condition) pair; the progress
-  // callback total is the full pair count, not the running emitted count.
   const totalPairs = tasks.length * BOUNDED_MEMORY_CONDITIONS.length;
 
-  // Run every condition over the task set.
   const byCondition = new Map<BoundedMemoryConditionId, ConditionTaskResult[]>();
   for (const condition of BOUNDED_MEMORY_CONDITIONS) {
     const results: ConditionTaskResult[] = [];
@@ -143,10 +111,6 @@ export async function runBoundedMemoryContractsBenchmark(
         condition === "typed-plus-skills" ? resolveInjectedSkills(task) : [];
       const started = performance.now();
       const pack = assemblePack(task, condition, BOUNDED_MEMORY_CONTRACT, resolvedSkills);
-      // The agent may only use skills that actually fit in the pack —
-      // assemblePack can drop a skill when the shared budget is full, so
-      // reconcile against the triggered_skills slot rather than handing the
-      // full resolved set to the simulator.
       const packedSkillIds = new Set(
         pack.slots.find((slot) => slot.id === "triggered_skills")?.items.map((it) => it.itemId) ?? [],
       );
@@ -158,7 +122,6 @@ export async function runBoundedMemoryContractsBenchmark(
     byCondition.set(condition, results);
   }
 
-  // Build the TaskResult stream: one entry per (task, condition).
   const taskResults: TaskResult[] = [];
   const conditionAggregates: Record<string, BoundedMemoryConditionAggregate> = {};
   const scoredByCondition: Record<string, Array<{ task: BoundedMemoryTask; scores: BoundedMemoryTaskScores }>> = {};
@@ -172,11 +135,6 @@ export async function runBoundedMemoryContractsBenchmark(
     });
     scoredByCondition[condition] = scoredPairs.map(({ task, scores }) => ({ task, scores }));
 
-    // Build the skill-trigger log from PACKED reality: a skill is "injected"
-    // only if it landed in this condition's triggered_skills slot (C3 only;
-    // C0/C1/C2 pack no skills). This keeps the log, precision/recall, and
-    // helped/harmed counts consistent with the prompt pack + retrieval artifact
-    // even when the budget drops a classifier-approved skill.
     let skillLog: SkillTriggerLogEntry[] = [];
     if (condition === "typed-plus-skills") {
       skillLog = scoredPairs.flatMap(({ task, pack }) => {
@@ -226,15 +184,12 @@ export async function runBoundedMemoryContractsBenchmark(
     }
   }
 
-  // Headline cross-condition view (required by the result type). The per-
-  // condition truth lives in config.benchmarkOptions.conditions.
   const aggregates = aggregateTaskScores(taskResults.map((t) => t.scores));
 
   const remnicVersion = await getRemnicVersion();
   const totalLatencyMs = taskResults.reduce((sum, t) => sum + t.latencyMs, 0);
   const totalMemoryTokens = taskResults.reduce((sum, t) => sum + t.tokens.input, 0);
 
-  // Write the per-run artifact tree when an output directory is supplied.
   let artifactReport: string | null = null;
   if (options.outputDir) {
     artifactReport = await writeArtifacts(options.outputDir, byCondition, conditionAggregates, tasks);
@@ -297,8 +252,6 @@ export async function runBoundedMemoryContractsBenchmark(
 }
 
 // ---------------------------------------------------------------------------
-// Artifact emission (issue #1708 "Required artifacts per run")
-// ---------------------------------------------------------------------------
 
 async function writeArtifacts(
   outputDir: string,
@@ -324,13 +277,11 @@ async function writeArtifacts(
     for (const { task, pack, decision } of results) {
       const scores = scoreTaskPair(task, pack, decision);
 
-      // Prompt pack (markdown).
       const promptMd = renderPromptPack(task, condition, pack);
       const promptPath = path.join(root, "prompts", `${task.id}.${condition}.md`);
       await mkdir(path.dirname(promptPath), { recursive: true });
       await writeFile(promptPath, promptMd, "utf8");
 
-      // Retrieval artifact (json).
       const retrievalJson = `${JSON.stringify(
         {
           taskId: task.id,
@@ -375,7 +326,6 @@ async function writeArtifacts(
       );
     }
 
-    // Per-condition summary under conditions/<cond>/.
     await writeFile(
       path.join(condDir, "summary.json"),
       `${JSON.stringify(conditionAggregates[condition], null, 2)}\n`,

@@ -25,7 +25,6 @@ import { log } from "./logger.js";
 import { writeFileAtomically } from "./maintenance/atomic-file.js";
 import type { AgentPersonaModelConfig, GatewayConfig, PluginConfig } from "./types.js";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface CalibrationRule {
   id: string;
@@ -45,15 +44,9 @@ export interface CalibrationIndex {
   rules: CalibrationRule[];
   updatedAt: string;
   totalCorrectionsAnalyzed: number;
-  /**
-   * Weeks whose rule reinforcement is already committed. A retry of any of
-   * these weeks must not increment `evidenceCount` again. Older indexes
-   * persisted a single `appliedWeekId`; reads fold it into this list.
-   */
   appliedWeekIds?: string[];
 }
 
-// ─── Storage ─────────────────────────────────────────────────────────────────
 
 function calibrationDir(memoryDir: string): string {
   return path.join(memoryDir, "state", "calibration");
@@ -101,12 +94,6 @@ function normalizeAppliedWeekIds(list: unknown, additional: unknown): string[] {
   return weeks;
 }
 
-/**
- * Attach the week stamp to the index that will be written with the reinforced
- * rules. The stamp and the evidence increment commit together. Every
- * previously applied week stays in the list so an out-of-order retry of an
- * older week is still recognized as already applied.
- */
 export function withAppliedCalibrationWeek(
   index: CalibrationIndex,
   idempotencyKey: string | undefined,
@@ -133,7 +120,6 @@ async function writeCalibrationIndex(memoryDir: string, index: CalibrationIndex)
   await writeFileAtomically(calibrationIndexPath(memoryDir), JSON.stringify(stamped, null, 2));
 }
 
-// ─── Correction Reading ──────────────────────────────────────────────────────
 
 export interface CorrectionMemory {
   id: string;
@@ -167,12 +153,6 @@ function nonEmptyString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * Exported for entity-contamination R-11 regression coverage (#682
- * PR 2/3 — codex review).  Tests can drive the real correction-reading
- * path instead of duplicating the regex inline, so calibration parser
- * regressions surface via the contamination suite.
- */
 export async function readCalibrationCorrections(memoryDir: string): Promise<CorrectionMemory[]> {
   return readCorrectionsImpl(memoryDir);
 }
@@ -184,11 +164,9 @@ async function readCorrections(memoryDir: string): Promise<CorrectionMemory[]> {
 async function readCorrectionsImpl(memoryDir: string): Promise<CorrectionMemory[]> {
   const correctionsDir = path.join(memoryDir, "corrections");
   const files = await listJsonFiles(correctionsDir).catch(() => {
-    // Corrections might be in facts/ directories too
     return [] as string[];
   });
 
-  // Also scan facts directories for correction-category files
   const factsDir = path.join(memoryDir, "facts");
   try {
     const { readdir } = await import("node:fs/promises");
@@ -204,7 +182,6 @@ async function readCorrectionsImpl(memoryDir: string): Promise<CorrectionMemory[
     // facts dir might not exist
   }
 
-  // Also check the dedicated corrections directory
   try {
     const { readdir } = await import("node:fs/promises");
     const corrFiles = (await readdir(correctionsDir))
@@ -222,14 +199,12 @@ async function readCorrectionsImpl(memoryDir: string): Promise<CorrectionMemory[
     try {
       const raw = await readFile(filePath, "utf8");
 
-      // Parse frontmatter
       const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
       if (!fmMatch) continue;
 
       const content = fmMatch[2].trim();
       if (!content || content.length < 10) continue;
 
-      // Extract id from frontmatter
       const idMatch = fmMatch[1].match(/^id:\s*(.+)$/m);
       const id = idMatch?.[1]?.trim() ?? path.basename(filePath, ".md");
 
@@ -251,7 +226,6 @@ async function readCorrectionsImpl(memoryDir: string): Promise<CorrectionMemory[
   return corrections;
 }
 
-// ─── LLM-Assisted Clustering and Replay ──────────────────────────────────────
 
 export const CLUSTER_PROMPT = `You are analyzing user corrections to an AI assistant. Each correction represents a moment where the assistant's prediction of what the user wanted was WRONG.
 
@@ -299,7 +273,6 @@ interface CalibrationLlmOptions {
   gatewayAgentId?: string;
   modelChain?: AgentPersonaModelConfig;
   workspaceDir?: string;
-  /** Plugin config. Supplies `localLlm*` settings when the gateway chain is empty. */
   pluginConfig?: PluginConfig;
 }
 
@@ -336,7 +309,6 @@ export async function synthesizeCalibrationRules(
 ): Promise<CalibrationRule[]> {
   if (corrections.length < 2) return [];
 
-  // Format corrections for the LLM
   const correctionText = corrections
     .slice(0, 50) // limit to avoid huge prompts
     .map((c, i) => `[${c.id}] ${c.content}`)
@@ -414,7 +386,6 @@ export async function synthesizeCalibrationRules(
   }
 }
 
-// ─── Recall Section ──────────────────────────────────────────────────────────
 
 /**
  * Lexical similarity score in `[0, 1]` between a query and a calibration
@@ -462,13 +433,6 @@ export function rankCalibrationRulesForQuery(
     .map((entry) => entry.rule);
 }
 
-/**
- * Build a recall section from calibration rules relevant to the current query.
- * Rules are similarity-ranked against the query before `maxRules` and
- * `maxChars` caps apply, so relevant rules win the budget instead of
- * whichever happen to sit earliest in the index. When nothing matches
- * the query the index order is preserved — the include-all fallback.
- */
 export function buildCalibrationRecallSection(
   rules: CalibrationRule[],
   query: string,
@@ -502,7 +466,6 @@ export function buildCalibrationRecallSection(
   return lines.join("\n");
 }
 
-// ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
  * Options weekly compounding passes into calibration. Gateway agent and task
@@ -528,13 +491,6 @@ export function calibrationConsolidationInput(config: PluginConfig): {
   };
 }
 
-/**
- * Run the full calibration pipeline:
- * 1. Read all corrections
- * 2. Send to LLM for clustering and rule synthesis
- * 3. Merge with existing rules
- * 4. Write updated index
- */
 export async function runCalibrationConsolidation(options: {
   memoryDir: string;
   gatewayConfig?: GatewayConfig;
@@ -542,11 +498,6 @@ export async function runCalibrationConsolidation(options: {
   modelChain?: AgentPersonaModelConfig;
   workspaceDir?: string;
   pluginConfig?: PluginConfig;
-  /**
-   * When set, a week whose reinforcement is already in the index is returned
-   * as-is. Weekly synthesis passes the ISO week id so a retry after a later
-   * artifact failure does not count the same corrections twice.
-   */
   idempotencyKey?: string;
 }): Promise<CalibrationRule[]> {
   try {
@@ -578,11 +529,9 @@ export async function runCalibrationConsolidation(options: {
       return existingIndex.rules;
     }
 
-    // Merge: keep existing rules, add new ones (deduplicate by id)
     const ruleMap = new Map(existingIndex.rules.map((r) => [r.id, r]));
     for (const rule of newRules) {
       if (ruleMap.has(rule.id)) {
-        // Reinforce existing rule
         const existing = ruleMap.get(rule.id)!;
         existing.lastReinforcedAt = new Date().toISOString();
         existing.evidenceCount += rule.evidenceCount;
@@ -610,13 +559,6 @@ export async function runCalibrationConsolidation(options: {
   }
 }
 
-/**
- * Standalone entry point for calibration consolidation that can be called
- * independently of weekly compounding. The compounding engine's
- * `synthesizeWeekly()` is one trigger, but orchestrators or periodic
- * maintenance jobs should call this directly so calibration is not gated
- * on weekly compounding being enabled.
- */
 export async function runCalibrationIfEnabled(options: {
   memoryDir: string;
   calibrationEnabled: boolean;
@@ -639,10 +581,6 @@ export async function runCalibrationIfEnabled(options: {
   });
 }
 
-/**
- * Get calibration rules for recall injection.
- * Reads the pre-computed calibration index.
- */
 export async function getCalibrationRulesForRecall(
   memoryDir: string,
 ): Promise<CalibrationRule[]> {

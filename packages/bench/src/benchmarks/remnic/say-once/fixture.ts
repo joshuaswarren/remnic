@@ -1,21 +1,7 @@
-/**
- * Synthetic fixture cases for the say-once (extraction -> recall) benchmark.
- *
- * Each case seeds a preference phrase at a vagueness tier, then defines probe
- * prompts that should surface it. All text is synthetic and obviously invented
- * for public-repo safety.
- *
- * Vagueness tiers:
- * - explicit: "I prefer dark mode" — direct statement
- * - casual: "dark mode is easier on my eyes" — implied preference
- * - buried-mid-task: "can you switch this to dark mode? much better" — preference
- *   stated as a side remark during a task
- */
 
 export type VaguenessTier = "explicit" | "casual" | "buried-mid-task";
 
 export interface SayOnceProbe {
-  /** Prompt a user would send in a later session. */
   prompt: string;
   /** Substring expected in the recall context if the preference was extracted. */
   expectInRecall: string;
@@ -24,18 +10,14 @@ export interface SayOnceProbe {
 export interface SayOnceCase {
   id: string;
   tier: VaguenessTier;
-  /** The seed conversation: user message containing the preference. */
   seedUserMessage: string;
-  /** The assistant response — realistic but synthetic. */
   seedAssistantMessage: string;
   /** The preference as a fact statement (what extraction should produce). */
   preference: string;
-  /** Probe prompts that should trigger recall of this preference. */
   probes: SayOnceProbe[];
 }
 
 export const SAY_ONCE_CASES: SayOnceCase[] = [
-  // ─── Explicit ───────────────────────────────────────────────────────────
   {
     id: "explicit-dark-mode",
     tier: "explicit",
@@ -64,7 +46,6 @@ export const SAY_ONCE_CASES: SayOnceCase[] = [
       },
     ],
   },
-  // ─── Casual ─────────────────────────────────────────────────────────────
   {
     id: "casual-concise",
     tier: "casual",
@@ -91,7 +72,6 @@ export const SAY_ONCE_CASES: SayOnceCase[] = [
       },
     ],
   },
-  // ─── Buried mid-task ────────────────────────────────────────────────────
   {
     id: "buried-timezone",
     tier: "buried-mid-task",
@@ -124,7 +104,6 @@ export const SAY_ONCE_CASES: SayOnceCase[] = [
   },
 ];
 
-/** Smoke subset — one from each tier. */
 export const SAY_ONCE_SMOKE_FIXTURE: SayOnceCase[] = [
   SAY_ONCE_CASES.find((c) => c.id === "explicit-dark-mode")!,
   SAY_ONCE_CASES.find((c) => c.id === "casual-concise")!,

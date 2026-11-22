@@ -137,7 +137,6 @@ test("400 rejecting json_schema triggers exactly one retry without the format", 
     assert.equal(server.requests.length, 2, "exactly one strip-and-retry");
     assert.deepEqual(server.requests[0].body.response_format, responseFormat);
     assert.equal(server.requests[1].body.response_format, undefined);
-    // headers/model/deadline preserved on the retry
     assert.equal(server.requests[1].headers["x-test"], "yes");
     assert.equal(server.requests[1].body.model, "test-local-model");
     assert.equal(attempts[0].signal, attempts[1].signal, "retry shares the attempt deadline and caller abort");
@@ -314,18 +313,6 @@ test("request without response_format is unchanged", async () => {
   }
 });
 
-// ── Schema-validation rejections (the provider parses our json_schema) ──────
-//
-// Production signature (2026-11-05, MiniMax-M3.1-Flash via local proxy): a
-// 400 "invalid params — Mismatch type string with value array" quoting a
-// schema fragment like `"episodeTitle": {"type": ["string","null"]}`. The
-// provider accepts structured output in principle but its strict parser
-// rejects our draft-7 nullable type unions. Unlike capability rejections
-// these errors never name response_format, so nothing stripped the format,
-// every drain attempt re-sent the identical payload, and the 400 breaker
-// opened. The zod draft-7 schema legitimately contains `type` arrays
-// (nullable fields), so the provider dialect, not our request, is the
-// constraint: degrade to the pre-schema request shape and remember it.
 
 const schemaValidationRejection = {
   error: {
@@ -451,8 +438,6 @@ test("an expired registry rejection is re-probed instead of honored forever", as
   try {
     const registry = new ModelRegistry(memoryDir);
     registry.setStructuredOutput("test-local-model", "none");
-    // Age the entry past the 7-day registry TTL, as a long-lived deployment
-    // would: the learned rejection must not be honored forever.
     const registryPath = join(memoryDir, ".registry", "model-capabilities.json");
     // SAFETY: we wrote model-capabilities.json through ModelRegistry above; the
     // document is an object keyed by normalized model id.
@@ -471,7 +456,6 @@ test("an expired registry rejection is re-probed instead of honored forever", as
     });
     assert.equal(result?.content, "done");
     assert.ok(server.requests[0].body.response_format, "expired rejection is re-probed with the schema");
-    // The provider accepts it this time: the native record refreshes.
     // SAFETY: the file above was written by ModelRegistry's own persistence;
     // the document is an object keyed by normalized model id.
     const refreshed = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
@@ -508,8 +492,6 @@ test("an expired structuredOutput decision is not renewed by a capability refres
   try {
     const registry = new ModelRegistry(memoryDir);
     registry.setStructuredOutput("test-local-model", "none");
-    // Age the learned decision past the registry TTL exactly as a long-lived
-    // deployment would.
     const registryPath = join(memoryDir, ".registry", "model-capabilities.json");
     // SAFETY: we wrote model-capabilities.json through ModelRegistry above; the
     // document is an object keyed by normalized model id.
@@ -545,7 +527,6 @@ test("a stale in-flight schema success does not overwrite a current rejection", 
   try {
     const registry = new ModelRegistry(memoryDir);
     const gate = new NativeSchemaGate(() => registry);
-    // Two schema-bearing requests attach before either settles.
     const body: LocalLlmChatRequestBody = {
       model: "test-local-model",
       messages: [{ role: "user", content: "hello" }],
@@ -554,13 +535,9 @@ test("a stale in-flight schema success does not overwrite a current rejection", 
       stream: false,
     };
     gate.attach(body, { responseFormat }, "test-local-model");
-    // The rejection settles first: "none" is the newest evidence.
     gate.rememberRejection("test-local-model");
-    // The older in-flight success settles last: it must not flip the
-    // decision back, or later requests re-send the rejected schema.
     gate.recordSuccess(body, "test-local-model");
     assert.equal(registry.getStructuredOutput("test-local-model"), "none");
-    // A fresh success with no rejection standing still records native.
     const otherBody: LocalLlmChatRequestBody = { ...body, model: "other-model" };
     const freshGate = new NativeSchemaGate(() => registry);
     freshGate.attach(otherBody, { responseFormat }, "other-model");

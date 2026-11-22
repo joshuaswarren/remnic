@@ -73,8 +73,6 @@ export function parseDriftDetectionConfig(raw: unknown): DriftDetectionConfig {
   }
   const src = raw as Record<string, unknown>;
 
-  // `0` disables the scan and MUST survive as zero — the documented disable
-  // value, never coerced up to a minimum (§33).
   const rawMax = src.maxCandidatesPerRun;
   let maxCandidatesPerRun = DRIFT_DETECTION_DEFAULTS.maxCandidatesPerRun;
   if (rawMax !== undefined && rawMax !== null) {
@@ -87,9 +85,6 @@ export function parseDriftDetectionConfig(raw: unknown): DriftDetectionConfig {
     maxCandidatesPerRun = coerced;
   }
 
-  // stalePenalty is a multiplier in (0, 1]. `1` is the documented no-op; `0`
-  // would erase a memory's rank entirely and is rejected rather than accepted
-  // as a silent "delete from recall".
   const rawPenalty = src.stalePenalty;
   let stalePenalty = DRIFT_DETECTION_DEFAULTS.stalePenalty;
   if (rawPenalty !== undefined && rawPenalty !== null) {

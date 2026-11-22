@@ -50,8 +50,6 @@ test("two merges into one target coalesce to one harmonic entry: final body, uni
     ["atlas release workflow", "Atlas PostgreSQL"],
     "cue anchors UNION across merges",
   );
-  // End-to-end contract: the derived episode holds exactly one body per
-  // target (the final committed one) and anchors from BOTH merges survive.
   const records = deriveHarmonicRecords({
     sessionKey: "session-coalesce",
     recordedAt: "2026-08-22T11:00:00.000Z",
@@ -74,13 +72,6 @@ test("two merges into one target coalesce to one harmonic entry: final body, uni
 });
 
 test("a merged target's harmonic entry carries the committed record's entityRef and tags (#2807)", async () => {
-  // The parity gate lets an incoming fact with NO entityRef merge into a
-  // target that HAS one (only a differing non-undefined incoming entity
-  // refuses), and incoming tags are a subset of the target's. The enqueue
-  // used to stamp the incoming fact's fields onto the merged entry, so the
-  // episode held the cumulative body while missing the target's committed
-  // entity association and extra tags — and deriveHarmonicRecords skipped
-  // the deterministic entity cue/topic linkage for the merged claims.
   const MERGED_BODY = "Billing service deploys run on Tuesdays at 09:00 UTC.";
   const committed: MemoryFile = {
     path: "/tmp/remnic-harmonic-merged/facts/2026-08-22/fact-target.md",
@@ -149,8 +140,6 @@ test("a merged target's harmonic entry carries the committed record's entityRef 
     "the deterministic entity anchor references the topic node",
   );
 
-  // Control: a reread that no longer matches the merged body (the record
-  // advanced mid-flight) falls back to the incoming fact's own fields.
   const advancedStore = {
     dir: "/tmp/remnic-harmonic-advanced",
     getMemoryByIdIncludingArchived: async () => ({

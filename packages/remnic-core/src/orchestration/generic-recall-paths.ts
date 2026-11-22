@@ -149,13 +149,6 @@ export function isSearchExcludedPath(
   return false;
 }
 
-/**
- * Derived compounding reports sit at `<root>/compounding/` and
- * `namespaces/<namespace>/compounding/`. Generic recall must not return them:
- * a root report can quote another namespace, and injection already has a
- * filtered compounding section. A namespace literally named `compounding`,
- * and an ordinary memory nested under a category, stay searchable.
- */
 function isCompoundingReportPath(candidate: string, memoryDir?: string): boolean {
   let relative = candidate.replace(/\\/g, "/");
   if (memoryDir && memoryDir.length > 0) {
@@ -174,16 +167,6 @@ function isCompoundingReportPath(candidate: string, memoryDir?: string): boolean
   return relative === "compounding" || relative.startsWith("compounding/");
 }
 
-/**
- * The activity check, applied against the NAMESPACE root a hit came from.
- *
- * `isActivityDigestPath` is root-aware — the digest must sit directly under
- * the root it is given — but a namespaced search rewrites hits to absolute
- * paths beneath `…/namespaces/<ns>/`, and only the global `memoryDir` is
- * available here. Measured against that root, a real digest at
- * `<memoryDir>/namespaces/team/activity/<date>.md` reads as nested and is
- * served. Re-measuring against the namespace's own root closes that.
- */
 function isNamespacedActivityDigestPath(candidate: string, memoryDir?: string): boolean {
   if (isActivityDigestPath(candidate, memoryDir)) return true;
   if (memoryDir === undefined || memoryDir.length === 0) return false;
@@ -193,12 +176,6 @@ function isNamespacedActivityDigestPath(candidate: string, memoryDir?: string): 
   return isActivityDigestPath(namespaced[2] ?? "", memoryDir);
 }
 
-/**
- * The location day-file check, applied against the NAMESPACE root a hit came
- * from — same rationale as `isNamespacedActivityDigestPath`: a namespaced
- * search rewrites hits to absolute paths beneath `…/namespaces/<ns>/`, so the
- * root-aware predicate is re-measured against the namespace's own root.
- */
 function isNamespacedLocationDayPath(candidate: string, memoryDir?: string): boolean {
   if (isLocationDayPath(candidate, memoryDir)) return true;
   if (memoryDir === undefined || memoryDir.length === 0) return false;
@@ -217,7 +194,6 @@ function isNamespacedJournalDayPath(candidate: string, memoryDir?: string): bool
   return isJournalDayPath(namespaced[2] ?? "", memoryDir);
 }
 
-/** A path as given, plus its form with a leading COLLECTION segment removed. */
 function collectionSpellings(
   filePath: string,
   policy: GenericRecallPathPolicy,
@@ -239,7 +215,6 @@ function collectionSpellings(
   );
   const stripped = stripQmdCollectionPrefix(filePath, policy, source);
   const spellings = [stripped];
-  // If the AUTHORITATIVE strip already fired — the prefix matched a configured
   // collection — stop. Removing a second segment would take a real directory
   // with it: `memories/projects/activity/<date>.md` would become
   // `activity/<date>.md` and an ordinary nested memory would read as a

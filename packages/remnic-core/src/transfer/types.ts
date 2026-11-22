@@ -32,13 +32,7 @@ export const ExportBundleV1Schema = z.object({
 export type ExportBundleV1 = z.infer<typeof ExportBundleV1Schema>;
 
 // ---------------------------------------------------------------------------
-// V2 capsule manifest (issue #676 PR 1/6)
-// ---------------------------------------------------------------------------
 //
-// The V2 manifest extends V1 with a `capsule` block describing a reusable,
-// shareable bundle of memory state ("capsule"). This PR introduces ONLY the
-// schema and a backward-compatible reader. Actual export/import pipelines and
-// CLI surfaces are deferred to subsequent PRs (2/6 through 6/6).
 
 /**
  * Allowed pattern for a user-chosen capsule id.
@@ -218,7 +212,6 @@ export const ExportBundleV2Schema = z.object({
 export type ExportBundleV2 = z.infer<typeof ExportBundleV2Schema>;
 
 // ---------------------------------------------------------------------------
-// Backward-compatible reader
 // ---------------------------------------------------------------------------
 
 export type AnyExportManifest = ExportManifestV1 | ExportManifestV2;
@@ -263,8 +256,6 @@ export function parseExportManifest(input: unknown): NormalizedExportManifest {
     return { capsuleVersion: 1, manifest, capsule: null };
   }
 
-  // Unknown / missing schemaVersion: try V1 then V2 so the reader stays
-  // forgiving for hand-authored payloads but still produces a clear error.
   const v1 = ExportManifestV1Schema.safeParse(input);
   if (v1.success) {
     return { capsuleVersion: 1, manifest: v1.data, capsule: null };
@@ -277,8 +268,6 @@ export function parseExportManifest(input: unknown): NormalizedExportManifest {
       capsule: v2.data.capsule,
     };
   }
-  // Surface the V2 error since callers introducing capsules likely care most
-  // about that branch's diagnostics.
   throw v2.error;
 }
 
@@ -292,7 +281,6 @@ export function parseExportBundle(input: unknown): {
   capsule: CapsuleBlock | null;
 } {
   if (typeof input !== "object" || input === null) {
-    // Defer to V1 schema so the user sees a familiar zod error.
     ExportBundleV1Schema.parse(input);
     throw new Error("unreachable");
   }

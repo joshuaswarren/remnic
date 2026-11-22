@@ -1,39 +1,3 @@
-/**
- * Recall-audit anomaly detector (issue #565 PR 5/5).
- *
- * Given a sequence of `RecallAuditEntry` records for a single principal /
- * session, classify the series and emit `AnomalyFlag`s for suspicious
- * patterns. Intended to run on both:
- *
- * 1. The MCP / HTTP access layers — every `recall` / `memory_search` /
- *    `memory_timeline` call appends an audit entry and the detector is
- *    invoked against the tail of the series (streaming mode).
- * 2. The existing Openclaw hook (already writes `transcripts/*.jsonl`) —
- *    the detector can be invoked out-of-band over the same entries.
- *
- * See the threat model §5 (gap: recall-audit was only on the Openclaw
- * hook) and §6.3 (anomaly signals) for the patterns below.
- *
- * The module is pure: no I/O, no clock. Callers pass the entries +
- * configured thresholds; the detector returns a deterministic classification.
- *
- * Patterns detected:
- *
- * - `repeat-query` — the same normalized query text issued more than N
- *   times in the window. Covers the ADAM "exploitation" phase where the
- *   attacker re-queries a high-signal token until it plateaus.
- * - `namespace-walk` — the same principal's queries visit more than N
- *   distinct candidate memory namespaces in the window. Suggests the
- *   attacker is enumerating the namespace tree for leaks.
- * - `high-cardinality-return` — a single recall surfaced more than N
- *   candidate memory IDs in one response. Covers the "one query, dump
- *   everything" exfiltration path.
- * - `rapid-fire` — more than N recalls in the window irrespective of
- *   content. Blunt instrument; useful when nothing else fires.
- *
- * Each flag carries the entry indices that support it so an audit UI can
- * highlight the underlying evidence.
- */
 
 import type { RecallAuditEntry } from "./recall-audit.js";
 
@@ -50,7 +14,6 @@ export interface AnomalyFlag {
   severity: AnomalySeverity;
   /** Human-readable rationale, e.g. `"query 'alex' repeated 12 times in 60s"`. */
   message: string;
-  /** Indices into the supplied `entries` array that triggered the flag. */
   entryIndices: number[];
   /**
    * Optional extra signal the caller can use to key metrics. For
@@ -109,11 +72,8 @@ export interface AnomalyDetectorInput {
 }
 
 export interface AnomalyDetectorResult {
-  /** All flags ordered by descending severity then kind. */
   flags: AnomalyFlag[];
-  /** Number of entries inside the active window (after filtering). */
   windowEntryCount: number;
-  /** Window size actually used, in ms. */
   windowMs: number;
 }
 
@@ -140,18 +100,12 @@ function effectiveConfig(
     const v = raw[key];
     if (typeof v === "number" && Number.isFinite(v) && v > 0) {
       const floored = Math.floor(v);
-      // Guard against fractional inputs (e.g. 0.5) that floor to 0 and
-      // turn every detector into a flood-on-anything trigger.
       out[key] = floored >= 1 ? floored : base[key];
     }
   }
   return out;
 }
 
-/**
- * Normalize query text so cosmetic variation doesn't defeat the
- * repeat-query detector. Lowercase, collapse whitespace, trim.
- */
 export function normalizeQueryText(raw: string): string {
   if (typeof raw !== "string") return "";
   return raw.toLowerCase().replace(/\s+/g, " ").trim();
@@ -178,8 +132,6 @@ export function detectRecallAnomalies(
   const cfg = effectiveConfig(input.config);
   const cutoff = input.now - cfg.windowMs;
 
-  // Filter to the active window, preserving original indices so flags
-  // can reference the caller's entries array directly.
   const windowed: { entry: RecallAuditEntry; index: number }[] = [];
   for (let i = 0; i < input.entries.length; i++) {
     const entry = input.entries[i]!;
@@ -196,7 +148,6 @@ export function detectRecallAnomalies(
 
   const flags: AnomalyFlag[] = [];
 
-  // 1) repeat-query: bucket by normalized queryText.
   {
     const byQuery = new Map<string, number[]>();
     for (const { entry, index } of windowed) {
@@ -219,16 +170,6 @@ export function detectRecallAnomalies(
     }
   }
 
-  // 2) namespace-walk: distinct namespaces extracted from candidateMemoryIds.
-  //    Candidate IDs that begin with `<namespace>/` disclose the namespace
-  //    directly. IDs without a slash prefix (e.g. bare filenames) do not
-  //    disclose a namespace, but a recall whose result list mixes
-  //    prefixed AND unprefixed IDs is itself suspicious — it suggests
-  //    the backend leaked memories from both the caller's own namespace
-  //    and named tenants. We track unprefixed IDs under a reserved
-  //    sentinel namespace so they still contribute to the count when a
-  //    trail is all-unprefixed (common for older audit entries sourced
-  //    from filenames).
   {
     const namespaces = new Set<string>();
     const indices: number[] = [];
@@ -258,7 +199,6 @@ export function detectRecallAnomalies(
     }
   }
 
-  // 3) high-cardinality-return: one entry's candidateMemoryIds > limit.
   {
     for (const { entry, index } of windowed) {
       const ids = Array.isArray(entry.candidateMemoryIds)
@@ -276,7 +216,6 @@ export function detectRecallAnomalies(
     }
   }
 
-  // 4) rapid-fire: windowed count alone.
   if (windowed.length > cfg.rapidFireLimit) {
     flags.push({
       kind: "rapid-fire",

@@ -42,24 +42,10 @@ import {
   runLongMemEvalBenchmark,
 } from "../../packages/bench/src/benchmarks/published/longmemeval/runner.js";
 
-// Tolerance for each metric. Issue #566 spec: fail if score drops > 5%
-// vs committed baseline. This is a RELATIVE drop: a metric regresses
-// when `(baseline - current) / |baseline| > tolerance`. Using a
-// relative tolerance means the same 5% threshold is meaningful for
-// both small-scale metrics (`f1` in [0, 1]) and larger unbounded
-// metrics (`search_hits`, token counts) — an absolute 0.05 drop would
-// be a silent no-op for a metric whose baseline is 100.
-// When the baseline value is exactly 0 we fall back to an absolute
-// delta threshold of `tolerance` to avoid divide-by-zero.
 const REGRESSION_TOLERANCE = 0.05;
 
 interface SmokeBaseline {
   schemaVersion: 1;
-  /**
-   * Baseline metrics keyed by benchmark ID. Intentionally carries NO
-   * timestamp so the committed file is stable across runs — CI
-   * compares the current metrics against these numbers.
-   */
   benchmarks: Record<
     string,
     {
@@ -75,11 +61,6 @@ interface CliArgs {
   tolerance: number;
 }
 
-/**
- * Consume the argument that follows a flag, rejecting option-looking
- * tokens (`--foo`, `-x`). This prevents `--baseline --update-baseline`
- * from silently swallowing the next flag as a path (CLAUDE.md rule 14).
- */
 function requireFlagValue(argv: readonly string[], index: number, flag: string, kind: string): string {
   const value = argv[index + 1];
   if (value === undefined || value.length === 0) {
@@ -161,14 +142,11 @@ function printUsage(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Deterministic adapter + responder + judge
-// ---------------------------------------------------------------------------
 
 export function createDeterministicAdapter(): BenchMemoryAdapter {
   const store = new Map<string, Message[]>();
   const responder: BenchResponder = {
     async respond(_question, recalledText) {
-      // Echo the recalled text verbatim so scoring is deterministic.
       return {
         text: recalledText,
         model: "smoke-responder",
@@ -261,7 +239,6 @@ export async function runSmokeBenchmarks(
 }
 
 // ---------------------------------------------------------------------------
-// Main
 // ---------------------------------------------------------------------------
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -296,7 +273,6 @@ async function main(argv: readonly string[]): Promise<number> {
   try {
     const raw = await readFile(args.baselinePath, "utf8");
     const parsed: unknown = JSON.parse(raw);
-    // CLAUDE.md rule 18: JSON.parse("null") succeeds but is not a
     // valid config. Validate shape before trusting it.
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("baseline JSON must be a non-null object");
@@ -334,7 +310,6 @@ async function main(argv: readonly string[]): Promise<number> {
   const regressions: string[] = [];
   const missing: string[] = [];
 
-  // 1) Compare every current metric against the baseline. Log deltas.
   for (const [benchmarkId, bench] of Object.entries(current.benchmarks)) {
     const baselineMetrics = baseline.benchmarks[benchmarkId]?.metrics ?? {};
     for (const [metric, value] of Object.entries(bench.metrics)) {
@@ -344,10 +319,6 @@ async function main(argv: readonly string[]): Promise<number> {
         continue;
       }
       const delta = value - baselineValue;
-      // Relative drop: `(baseline - current) / |baseline|`. Fall back
-      // to an absolute threshold when baseline === 0 to avoid
-      // divide-by-zero; a 0-baseline metric regresses only if it
-      // goes negative by more than `tolerance` in absolute terms.
       const denom = Math.abs(baselineValue);
       const relativeDrop = denom === 0 ? -delta : (baselineValue - value) / denom;
       const regressed = relativeDrop > args.tolerance;
@@ -364,9 +335,6 @@ async function main(argv: readonly string[]): Promise<number> {
     }
   }
 
-  // 2) Verify every baseline benchmark + metric still exists in the
-  // current run. A silently vanished metric (e.g. scorer bug drops
-  // `f1`) must fail the gate instead of passing quietly.
   for (const [benchmarkId, benchBaseline] of Object.entries(baseline.benchmarks)) {
     const currentBench = current.benchmarks[benchmarkId];
     if (!currentBench) {

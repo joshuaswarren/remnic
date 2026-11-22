@@ -83,7 +83,6 @@ function buildUserPrompt(
   return sections.join("\n");
 }
 
-/** Strip a wrapping markdown code fence, if present. */
 function stripCodeFence(text: string): string {
   const trimmed = text.trim();
   if (!trimmed.startsWith("```")) return trimmed;

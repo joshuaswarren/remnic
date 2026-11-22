@@ -5,8 +5,6 @@ import { parseConfig } from "./config.js";
 import { ExtractionEngine } from "./extraction.js";
 import type { BufferTurn } from "./types.js";
 
-// Follow-up to #3266: the trigger drain drops a chunk after N failures, but not for an outage. Whether a local-model failure
-// is the chunk's fault is decided here, by what the local endpoint did.
 const TURNS: BufferTurn[] = [
   { role: "user", content: "I keep my backups on the NAS in the garage.", timestamp: "2026-10-30T01:00:00.000Z" },
   { role: "assistant", content: "Noted.", timestamp: "2026-10-30T01:00:05.000Z" },

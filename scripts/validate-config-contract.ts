@@ -253,8 +253,6 @@ function main() {
   }
 
   // Resolve the PluginConfig TYPE (not just its own AST members) so keys
-  // contributed by `extends` heritage — e.g. BoundedJsonlStateConfig, extracted
-  // to a sibling module for the god-file ratchets (#1910/#1995) — are counted.
   let pluginConfigType: ts.Type | undefined;
   for (const stmt of typesSf.statements) {
     if (ts.isInterfaceDeclaration(stmt) && stmt.name.text === "PluginConfig") {
@@ -276,26 +274,19 @@ function main() {
     "providerApiKeyResolver",
     "runtimeAuthForModelResolver",
     // Derived from memoryInjectionDefenseMode at parse time (#1962); a schema
-    // property would be a dead control — no config input is ever read.
     "injectionScreenProfile",
   ]);
   const expectedSchemaExtra = new Set([
     "dreams",
-    // OpenClaw delegate preflight lifecycle config is parsed by the plugin.
     "bridgeHealthTimeoutMs",
     // Adapter-owned OpenClaw runtime gate. It is exposed in the plugin manifest
-    // UI but intentionally parsed in src/index.ts instead of core PluginConfig.
     "openclawFlushPlanProcessingEnabled",
     // Nested INPUT forms (issue #1990): parsed with nested-wins semantics into
-    // the flat PluginConfig fields (correctionEnabled, correctionCaptureMode,
-    // …), so the schema exposes them without a same-named interface key.
     "correction",
     "correctionCapture",
     "openclawHostEmbeddingProviderEnabled",
     "openclawHostEmbeddingProviderId",
     "openclawHostEmbeddingProviderModel",
-    // Input-only path: parseConfig reads the generated Hermes client JSON into
-    // backgroundGeneration and does not keep this path on PluginConfig.
     "llmBridgeClientConfigPath",
   ]);
   const expectedParseMissing = new Set<string>(["providerApiKeyResolver", "runtimeAuthForModelResolver"]);
@@ -322,13 +313,6 @@ function main() {
 
   failures.push(...collectUnknownPluginConfigObjectKeys(program, pluginConfigType, pluginConfigKeys));
 
-  // v2 (issue #1990): parser-derived key paths vs manifests/docs, gated by
-  // the grandfather manifest (decision C — the manifest may only shrink;
-  // stale entries are failures, not comfort).
-  //
-  // Fixture repos (the validator's own test harness) carry neither package
-  // manifest — skip v2 with a NOTICE there. A repo with exactly ONE manifest
-  // is drift, not a fixture: fail loudly rather than skip.
   const v2ManifestPaths = [
     path.join(repoRoot, "packages", "plugin-openclaw", "openclaw.plugin.json"),
     path.join(repoRoot, "packages", "shim-openclaw-engram", "openclaw.plugin.json"),
@@ -357,10 +341,7 @@ function main() {
     });
   }
 
-  // §33 disable-value check (issue #2070): a property documented "0 disables"
   // must have schema minimum 0 and a parser that short-circuits on 0. Its own
-  // shrink-only manifest (disable-value-grandfathered.json) — the shared v2
-  // grandfathered.json rejects foreign violation kinds.
   const disableValue = runDisableValueCheck({ repoRoot });
   for (const violation of disableValue.violations) {
     failures.push({

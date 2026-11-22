@@ -8,18 +8,6 @@ import { StorageManager, type PluginConfig } from "../index.js";
 import { CompoundingEngine, type CompoundingPromotionReport } from "./engine.js";
 import { isSealedMemoryEnvelope, type SealedMemoryEnvelope } from "../write-envelope.js";
 
-/**
- * Issue #1645 — a tombstone-blocked promotion write lands pending_review (no
- * active copy). promoteCandidate must divert blocked ids to a distinct
- * `tombstoneBlocked` report field and NEVER report them as promoted — mirroring
- * the postWriteGuard consumption pattern in the orchestrator extraction path.
- *
- * The tombstone chokepoint currently gates on category === "fact", so a
- * rule/principle/preference promotion cannot be blocked by a real tombstone
- * today. The defensive consumption is still correct (the gate may widen), so
- * this test exercises the diversion logic with a storage double that returns
- * tombstoneBlocked: true — pinning the CALLER contract, not the gate.
- */
 test("#1645: tombstone-blocked promotion is diverted, not reported as promoted", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-compounding-"));
   try {
@@ -59,8 +47,6 @@ test("#1645: tombstone-blocked promotion is diverted, not reported as promoted",
     } as unknown as PluginConfig;
     const engine = new CompoundingEngine(config, new StorageManager(dir));
 
-    // Storage double: writeMemory reports tombstoneBlocked (simulating the
-    // chokepoint downgrading the promotion to pending_review).
     let writeCallCount = 0;
     const blockedStorage = {
       dir,
@@ -69,7 +55,6 @@ test("#1645: tombstone-blocked promotion is diverted, not reported as promoted",
       },
       async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: Record<string, unknown>) {
         writeCallCount += 1;
-        // §21 mock fidelity: assert the production-shaped arguments arrive.
         assert.equal(isSealedMemoryEnvelope(envelope), true, "promotion must pass a sealed envelope");
         assert.equal(extras.memoryKind, "note", "promotion extras must carry memoryKind");
         return { id: "blocked-promo-1", tombstoneBlocked: true, blockedBy: "tomb-1" };

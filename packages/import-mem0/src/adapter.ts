@@ -1,6 +1,4 @@
 // ---------------------------------------------------------------------------
-// mem0 importer adapter (issue #568 slice 5)
-// ---------------------------------------------------------------------------
 //
 // The mem0 adapter is API-driven rather than file-driven. Two call patterns
 // are supported:
@@ -14,9 +12,6 @@
 //      a pre-fetched `Mem0Memory[]` directly via parse. In this mode no
 //      network I/O happens.
 //
-// Adapters are pure by contract (parse MUST NOT call the orchestrator), so
-// the API fetch lives in `parse`. This mirrors the file-reading importers
-// where parse does the I/O of decoding JSON — here it's HTTP instead.
 
 import type {
   ImportedMemory,
@@ -57,7 +52,6 @@ export const adapter: ImporterAdapter<ParsedMem0Export> = {
     input: unknown,
     options?: ImporterParseOptions,
   ): Promise<ParsedMem0Export> {
-    // Replay / in-memory path: caller supplied JSON or an array already.
     if (input !== undefined && input !== null) {
       return parseMem0Export(input, {
         ...(options?.strict !== undefined ? { strict: options.strict } : {}),
@@ -67,7 +61,6 @@ export const adapter: ImporterAdapter<ParsedMem0Export> = {
       });
     }
 
-    // Live path: pull from the API.
     const apiKey = overrideClientOptionsForTesting?.apiKey ?? process.env.MEM0_API_KEY;
     if (!apiKey) {
       throw new Error(
@@ -77,9 +70,6 @@ export const adapter: ImporterAdapter<ParsedMem0Export> = {
     }
     const baseUrl =
       overrideClientOptionsForTesting?.baseUrl ?? process.env.MEM0_BASE_URL;
-    // Self-hosted mem0-oss exposes `/memories/` without the `/v1` prefix.
-    // Let operators override via MEM0_LIST_PATH so those deployments work
-    // without patching. Codex review on PR #602.
     const listPath =
       overrideClientOptionsForTesting?.listPath ?? process.env.MEM0_LIST_PATH;
     const legacyGet =
@@ -88,10 +78,6 @@ export const adapter: ImporterAdapter<ParsedMem0Export> = {
     const filters =
       overrideClientOptionsForTesting?.filters ?? parseJsonObjectEnv("MEM0_FILTERS", process.env.MEM0_FILTERS);
     const importedFromPath = baseUrl ?? "https://api.mem0.ai";
-    // Forward the validated CLI `--rate-limit` (now carried through
-    // ImporterParseOptions.rateLimit by runImporter) into the fetch client
-    // so `remnic import --adapter mem0 --rate-limit 2` actually throttles.
-    // Cursor review on PR #602 — the original wiring silently ignored it.
     const rateLimit =
       typeof options?.rateLimit === "number" ? options.rateLimit : undefined;
     const memories = await fetchAllMem0Memories({

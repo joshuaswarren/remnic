@@ -122,8 +122,6 @@ test("LoCoMo composes a recalled bridge fact without category or answer leakage"
     expected: "Northstar Observatory",
     recalledBySession: [direct, linked, unrelated],
     requiredContext: [direct, linked],
-    // Deliberately not the LoCoMo multi-hop category: composition must be
-    // query/evidence driven rather than category-label driven.
     category: 1,
   });
 

@@ -56,7 +56,6 @@ export function assembleCompressedHistoryWithTrace(
   const selectedNodes: SummaryNode[] = [];
   let usedChars = 0;
 
-  // Collect nodes covering the "old" portion (before fresh tail)
   if (freshTailStart > 0) {
     const oldNodes = selectBestCoverage(allNodes, 0, freshTailStart - 1);
     for (const node of oldNodes) {
@@ -69,10 +68,6 @@ export function assembleCompressedHistoryWithTrace(
     }
   }
 
-  // Collect leaf nodes that overlap with the fresh tail region.
-  // The old section uses deep nodes (depth > 0), so leaf nodes included here
-  // won't duplicate old-section content. Use msg_end >= freshTailStart to
-  // include straddling leaf nodes that partially cover the fresh region.
   const freshNodes = allNodes
     .filter(
       (n) => n.depth === 0 && n.msg_end >= freshTailStart && n.msg_end <= maxTurn,
@@ -118,22 +113,17 @@ function selectBestCoverage(
   fromTurn: number,
   toTurn: number,
 ): SummaryNode[] {
-  // Filter to nodes fully contained in the requested range. Straddling nodes
-  // would duplicate protected fresh-tail turns while still emitting their full
-  // summary text and range label.
   const candidates = allNodes.filter(
     (n) => n.msg_start >= fromTurn && n.msg_end <= toTurn,
   );
 
   if (candidates.length === 0) return [];
 
-  // Sort by msg_start ascending, then depth descending (prefer deeper at same position)
   candidates.sort((a, b) => {
     if (a.msg_start !== b.msg_start) return a.msg_start - b.msg_start;
     return b.depth - a.depth;
   });
 
-  // Greedily select non-overlapping nodes, preferring deeper coverage.
   const selected: SummaryNode[] = [];
   let coveredUpTo = fromTurn - 1;
 
@@ -145,7 +135,6 @@ function selectBestCoverage(
     }
   }
 
-  // Re-sort selected by msg_start for chronological output
   selected.sort((a, b) => a.msg_start - b.msg_start);
   return selected;
 }

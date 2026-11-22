@@ -80,13 +80,6 @@ function errorEmbedsPeerPath(message: string): boolean {
   return false;
 }
 
-/**
- * A peer request that never produced an HTTP status. One timeout or
- * connection failure used to reject the cycle; treating it as a per-namespace
- * exclusion would wait out that timeout once per namespace.
- * An HTTP status, including a namespace refusal, is not a transport failure.
- * Marker text inside a peer path is not a transport failure either.
- */
 export function isPeerTransportCensusFailure(error: unknown): boolean {
   const seen = new Set<unknown>();
   let current: unknown = error;
@@ -101,15 +94,6 @@ export function isPeerTransportCensusFailure(error: unknown): boolean {
   return false;
 }
 
-/**
- * Record one namespace census failure.
- *
- * An aborted planning signal is not a census failure: the operator asked the
- * whole cycle to stop, and a partial plan must not be returned in its place.
- * A peer transport failure (timeout, connection loss) also rejects the cycle.
- * The peer did not answer for this namespace, and repeating the wait for
- * every remaining namespace stalls the watch. An HTTP refusal stays isolated.
- */
 export function recordNamespaceCensusFailure(
   excluded: Map<string, ConvergeNamespaceFailure>,
   namespace: string,
@@ -123,10 +107,6 @@ export function recordNamespaceCensusFailure(
   excluded.set(namespace, { namespace, side, error: message, cause: error });
 }
 
-/**
- * A shared physical root is one census. Dropping only the representative
- * leaves the other names to be planned with an empty local side.
- */
 export function excludeNamespaceGroup(
   excluded: Map<string, ConvergeNamespaceFailure>,
   namespaces: readonly string[],
@@ -185,23 +165,12 @@ export function listNamespaceExclusions(
     .sort(compareNamespaceSide);
 }
 
-/**
- * Fail the cycle only when no namespace remains to plan. One rejection keeps
- * its original message, with terminal controls removed, and the original
- * rejection as cause. Several rejections are joined so the log names every
- * namespace.
- */
 export interface ConvergeApplyExclusionInput {
   converged: boolean;
   status: "converged" | "applied" | "partial" | "stopped_unresolved_conflicts" | "dry_run";
   transfers: { failed: number };
 }
 
-/**
- * A cycle that excluded a namespace is not fully converged. Transfer failures,
- * unresolved conflicts, and dry runs keep their own status; everything else
- * is `partial` so the log does not claim the pair agreed.
- */
 export function finishConvergeApplyResult<T extends ConvergeApplyExclusionInput>(
   result: T,
   excludedNamespaces: readonly ConvergeNamespaceExclusion[]
@@ -227,8 +196,6 @@ export function throwIfEveryNamespaceCensusFailed(
   if (failures.length === 1 && only) {
     const message = only.error.length > 0 ? only.error : String(only.cause);
     const cleaned = singleLine(message);
-    // Keep the original rejection as cause so transport classification still
-    // sees it. The message is what stderr prints.
     throw new Error(cleaned.length > 0 ? cleaned : "namespace census failed", { cause: only.cause });
   }
   throw new Error(`converge: every namespace census failed: ${failures.map(loggedCensusFailure).join("; ")}`);

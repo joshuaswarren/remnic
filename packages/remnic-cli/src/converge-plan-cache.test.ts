@@ -16,28 +16,11 @@ import {
 } from "./converge-plan-cache.js";
 import { computeConvergePlan, type ConvergePlanProgressEvent } from "./converge.js";
 
-/**
- * Issue #2803: resumable streamed manifest planning. A transient failure
- * late in a boot-scale plan must not discard the namespaces that already
- * completed; a retry resumes at the first incomplete namespace and only
- * recomputes what actually changed.
- *
- * Fixtures use a namespaces-enabled memory dir (every namespace under
- * `namespaces/<ns>`, nothing legacy at the memoryDir top level, so the
- * default namespace root migrates under `namespaces/` and the per-namespace
- * census walks are disjoint) plus a mock peer transport, so each scenario
- * exercises the live census + peer fetch paths end to end.
- */
 
 const PEER_URL = "https://peer.example.test";
 const PEER_TOKEN = "sekrit-peertoken-do-not-leak";
 /** Namespaces a namespaces-enabled config discovers (sorted iteration order). */
 const NAMESPACES = ["alpha", "beta", "default", "shared"];
-/**
- * "shared" is not a safe route namespace name, so its storage root is the
- * hex-tokenized form the router resolves — the census walk requires that
- * directory to exist even though the corpus is empty.
- */
 const SHARED_ROOT_DIR_NAME = `ns-${Buffer.from("shared", "utf8").toString("hex")}`;
 
 function memoryFileBody(body: string): string {
@@ -53,9 +36,7 @@ function memoryFileBody(body: string): string {
 }
 
 interface FixtureFile {
-  /** Path relative to the namespace root. */
   path: string;
-  /** Rendered file content (frontmatter + body). */
   content: string;
 }
 
@@ -88,11 +69,9 @@ async function writeLocalCorpus(memoryDir: string, corpus: Map<string, FixtureFi
 
 interface PeerMock {
   fetchImpl: typeof fetch;
-  /** Namespaces whose manifest-stream was fetched (in order). */
   manifestStreamNamespaces: string[];
   snapshotNamespaces: string[];
   contentPaths: string[];
-  /** Paths fetched through the legacy per-file content route (in order). */
   fileContentPaths: string[];
   failManifestFor: Set<string>;
   manifestStream: boolean;
@@ -249,9 +228,7 @@ test("converge plan: one namespace manifest failure is excluded and a retry reco
     const plan = await convergedPlan(memoryDir, resuming, { onProgress: (event) => events.push(event) });
     assert.equal(plan.converged, true, JSON.stringify(plan.byNamespace));
     assert.equal(plan.excludedNamespaces, undefined);
-    // Only the namespace that never completed refetches its manifest.
     assert.deepEqual(resuming.manifestStreamNamespaces, ["default"]);
-    // Snapshots are always fetched — they ARE the cache-validity check.
     assert.deepEqual(resuming.snapshotNamespaces.sort(), NAMESPACES);
     const reusedPeer = events
       .filter((event) => event.side === "peer" && event.reused > 0)
@@ -269,7 +246,6 @@ test("converge plan: a changed local namespace invalidates only that namespace; 
     await writeLocalCorpus(memoryDir, corpus);
     await convergedPlan(memoryDir, createPeerMock(corpus));
 
-    // Mutate ONLY alpha's local file (different bytes ⇒ different sha).
     const alphaPath = path.join(memoryDir, "namespaces", "alpha", "facts/2026-08-01/alpha-fact.md");
     await fs.writeFile(alphaPath, memoryFileBody("rewritten alpha body, longer than before"));
 
@@ -284,7 +260,6 @@ test("converge plan: a changed local namespace invalidates only that namespace; 
     assert.equal(localByNamespace.get("alpha")?.reused, 0);
     assert.equal(localByNamespace.get("beta")?.computed, 0, "beta must fully reuse");
     assert.equal(localByNamespace.get("beta")?.reused, 1);
-    // The peer corpora did not change: no peer namespace refetches its manifest.
     assert.deepEqual(second.manifestStreamNamespaces, []);
   } finally {
     await fs.rm(memoryDir, { recursive: true, force: true });
@@ -310,7 +285,6 @@ test("converge plan: a corrupt cache entry fails open to recompute (#2803)", asy
     const second = createPeerMock(corpus);
     const plan = await convergedPlan(memoryDir, second);
     assert.equal(plan.converged, true);
-    // The corrupt entry recomputed rather than failing the plan.
     assert.equal(second.manifestStreamNamespaces.length, 1);
   } finally {
     await fs.rm(memoryDir, { recursive: true, force: true });
@@ -337,7 +311,6 @@ test("converge plan: cancellation stops the run and leaves completed checkpoints
     const resuming = createPeerMock(corpus);
     const plan = await convergedPlan(memoryDir, resuming);
     assert.equal(plan.converged, true);
-    // alpha + beta were checkpointed before the abort; only the tail refetches.
     assert.deepEqual(resuming.manifestStreamNamespaces, ["default", "shared"]);
   } finally {
     await fs.rm(memoryDir, { recursive: true, force: true });
@@ -385,7 +358,6 @@ test("converge plan: the cross-process lock rejects a concurrent live writer and
   const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-lock-"));
   const corpus = convergedCorpus();
   await writeLocalCorpus(memoryDir, corpus);
-  // A REAL foreign process holds the lock: spawn one and wait for it to exist.
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)"], { stdio: "ignore" });
   await new Promise<void>((resolve) => child.once("spawn", () => resolve()));
   const lockPath = path.join(convergePlanCacheRoot(memoryDir), "lock.json");
@@ -395,7 +367,6 @@ test("converge plan: the cross-process lock rejects a concurrent live writer and
     await fs.writeFile(lockPath, payload);
     await assert.rejects(convergedPlan(memoryDir, createPeerMock(corpus)), /already running/);
 
-    // Kill the holder: the same lock file becomes stale and must be stolen.
     child.kill();
     await new Promise<void>((resolve) => child.once("exit", () => resolve()));
     const plan = await convergedPlan(memoryDir, createPeerMock(corpus));
@@ -451,7 +422,6 @@ test("converge plan: an unopenable plan-cache root degrades to an uncached plan 
     const mock = createPeerMock(corpus);
     const plan = await convergedPlan(memoryDir, mock);
     assert.equal(plan.converged, true);
-    // No cache ⇒ no resume: every namespace computes its manifest live.
     assert.deepEqual(mock.manifestStreamNamespaces, NAMESPACES);
   } finally {
     await fs.rm(memoryDir, { recursive: true, force: true });
@@ -464,9 +434,7 @@ test("converge plan: peer cache entries are keyed by the peer's advertised manif
     const corpus = convergedCorpus();
     await writeLocalCorpus(memoryDir, corpus);
 
-    // Warm the cache against a versioned peer.
     await convergedPlan(memoryDir, createPeerMock(corpus, "rev-1"));
-    // Same advertised revision: entries are trusted, nothing refetches.
     const same = createPeerMock(corpus, "rev-1");
     await convergedPlan(memoryDir, same);
     assert.deepEqual(same.manifestStreamNamespaces, []);
@@ -679,7 +647,6 @@ test("converge plan: warm peer reuse requires the snapshot to request the manife
     assert.equal(warmPlan.converged, true, JSON.stringify(warmPlan.byNamespace));
     assert.deepEqual(warm.manifestStreamNamespaces, [], "warm run must reuse the cached peer manifests");
 
-    // Every snapshot request must pin the manifest's transcript set.
     for (const url of snapshotUrls) {
       assert.equal(new URL(url).searchParams.get("include_transcripts"), "false", url);
     }
@@ -799,7 +766,6 @@ test("converge plan: negative manifest rows keep their version stamps across war
     await convergedPlan(memoryDir, upgraded);
     assert.deepEqual(upgraded.fileContentPaths, ["facts/2026-08-01/default-noid.md", thirdPath]);
 
-    // A stampless (pre-upgrade) negative row is never reused either.
     await mutateCachedPeerRow(memoryDir, "default", (row) => {
       delete row.normalizerVersion;
       delete row.identityResolutionVersion;
@@ -904,7 +870,6 @@ async function mutateCachedPeerRow(
   }
 }
 
-/** Every namespace that currently has a cached PEER entry on disk. */
 async function cachedPeerNamespaces(memoryDir: string): Promise<string[]> {
   const root = convergePlanCacheRoot(memoryDir);
   const namespaces: string[] = [];
@@ -929,7 +894,6 @@ test("converge plan: progress still reports per namespace when the cache is unav
   try {
     const corpus = convergedCorpus();
     await writeLocalCorpus(memoryDir, corpus);
-    // The read-only/broken audit deployment: open() degrades to null.
     const cacheRoot = convergePlanCacheRoot(memoryDir);
     await fs.mkdir(path.dirname(cacheRoot), { recursive: true });
     await fs.writeFile(cacheRoot, "not-a-directory");
@@ -984,7 +948,6 @@ test("converge plan: a manifest diverging from its snapshot census is never chec
 
     const plan = await convergedPlan(memoryDir, mock);
     assert.equal(plan.converged, true, JSON.stringify(plan.byNamespace));
-    // The poisoned namespace must NOT be checkpointed; its peers must be.
     const cached = await cachedPeerNamespaces(memoryDir);
     assert.equal(cached.includes("alpha"), false, `alpha must not be cached under a foreign census: ${cached}`);
     for (const namespace of ["beta", "default", "shared"]) {
@@ -1007,7 +970,6 @@ test("converge plan: close releases only the lock instance this cache owns (#296
   try {
     const cache = await ConvergePlanCache.open(memoryDir, HEX16(9));
     const lockPath = path.join(convergePlanCacheRoot(memoryDir), "lock.json");
-    // Another planner steals mid-run via the same atomic rename open() uses.
     const foreignNonce = randomUUID();
     const tmp = `${lockPath}.foreign.tmp`;
     await fs.writeFile(
@@ -1052,7 +1014,6 @@ test("converge plan: an open cache renews its lock lease at each checkpoint (#29
   try {
     const cache = await ConvergePlanCache.open(memoryDir, HEX16(12));
     const lockPath = path.join(convergePlanCacheRoot(memoryDir), "lock.json");
-    // Backdate the lease without touching ownership.
     const held = JSON.parse(await fs.readFile(lockPath, "utf8")) as { nonce?: unknown };
     await fs.writeFile(lockPath, `${JSON.stringify({ ...held, savedAt: new Date(0).toISOString() })}\n`);
 
@@ -1149,7 +1110,6 @@ test("converge plan: a peer upgraded to manifest streaming rebuilds client-built
     assert.equal(replan.converged, true, JSON.stringify(replan.byNamespace));
     assert.deepEqual(upgraded.manifestStreamNamespaces, [...NAMESPACES].sort());
 
-    // Streamed rows with a trusted revision now warm-hit normally.
     const warm = createPeerMock(peer, "rev-1");
     await convergedPlan(memoryDir, warm);
     assert.deepEqual(warm.manifestStreamNamespaces, [], "streamed entries must warm-hit after the upgrade");

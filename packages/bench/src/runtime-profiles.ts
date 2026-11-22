@@ -491,7 +491,6 @@ function resolveProviderConfig(
     throw new Error(`${kind} provider requires both provider and model`);
   }
 
-  // Issue #566 slice 5 — defense in depth: the CLI rejects
   // `--provider local-llm` without `--base-url`, but programmatic
   // callers that bypass the CLI must also get a clear error rather
   // than silently falling through to an OpenAI default URL in the
@@ -502,7 +501,6 @@ function resolveProviderConfig(
         "(e.g. http://localhost:8080/v1 for llama.cpp).",
     );
   }
-  // PR #1735 review: defense in depth for programmatic callers that bypass
   // the CLI's `--internal-provider` allow-list (see bench-args.ts). Unlike
   // "codex-cli" / "anthropic", `@remnic/core`'s gateway has no `claude-cli`
   // api wiring — routing the internal Remnic-runtime LLM through it would
@@ -523,7 +521,6 @@ function resolveProviderConfig(
     );
   }
 
-  // A Codex CLI completion is a subprocess-backed model turn, including for
   // Remnic's fast gateway tier. Without a provider timeout, that tier inherits
   // core's intentional 15-second local-fast default, which is too short for a
   // normal Codex turn and can terminate it after dispatch. Keep this default
@@ -693,7 +690,6 @@ function gatewayProviderApi(provider: BuiltInProvider): string {
     return "codex-cli";
   }
   if (provider === "claude-cli") {
-    // PR #1735 review: `@remnic/core` only special-cases `api ===
     // "codex-cli"` and `api === "anthropic-messages"` — there is no
     // `claude-cli` gateway integration, so this must never be reached.
     // `resolveProviderConfig` (kind === "internal") already rejects
@@ -727,7 +723,6 @@ function defaultInternalBaseUrl(provider: BuiltInProvider): string | undefined {
     case "codex-cli":
       return "codex-cli://local";
     case "claude-cli":
-      // PR #1735 review: no internal gateway wiring for claude-cli (see
       // gatewayProviderApi above) — never hand back a fake base URL for it.
       throw new Error(
         "claude-cli has no internal-provider base URL; it is only supported as a " +

@@ -60,9 +60,6 @@ import type { HourlySummary, PluginConfig } from "./types.js";
 import { StorageManager } from "./storage.js";
 import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 
-/** Recursively collect the immediate child directory names under `root` that
- *  contain at least one file, into `out`. Used to verify the summarizer wrote
- *  each session's summary into its OWN dir (no conflation). */
 async function walkCollectDirs(root: string, out: Set<string>): Promise<void> {
   let entries: Dirent[];
   try {
@@ -87,14 +84,8 @@ async function walkCollectDirs(root: string, out: Set<string>): Promise<void> {
   }
 }
 
-// ─── Symptom A: coding-namespace derivation is stable across write/read ────
 
 test("#1492 Symptom A: a project-scoped session derives ONE stable overlay namespace — the write/read convergence point", () => {
-  // The reporter's scenario: user "pi-geek" in project "Acme/Webshop". Both the
-  // observe write path and the recall read path must resolve the SAME scoped
-  // namespace. They do so by combining the principal base with the project
-  // overlay through exactly ONE helper (combineNamespaces); a second ad-hoc
-  // combination is what caused the original drift.
   const principal = "pi-geek";
   const projectId = projectTagProjectId("Acme/Webshop");
   const codingContext = {
@@ -113,9 +104,7 @@ test("#1492 Symptom A: a project-scoped session derives ONE stable overlay names
   const scopedWrite = combineNamespaces(principal, overlay.namespace);
   const scopedRead = combineNamespaces(principal, overlay.namespace);
 
-  // Write and read converge on the identical scoped namespace.
   assert.equal(scopedRead, scopedWrite);
-  // It is well-formed: principal base + project overlay, not the flat default.
   assert.equal(scopedWrite, combineNamespaces(principal, projectNamespaceName(projectId)));
   assert.ok(
     scopedWrite.startsWith(`${principal}-`),
@@ -123,16 +112,11 @@ test("#1492 Symptom A: a project-scoped session derives ONE stable overlay names
   );
   assert.notEqual(scopedWrite, principal, "must layer the project overlay onto the principal base");
   assert.notEqual(scopedWrite, "default", "must not collapse to the flat default namespace");
-  // Two principals in the same repo get distinct scoped namespaces.
   const other = combineNamespaces("pi-friend", overlay.namespace);
   assert.notEqual(scopedWrite, other, "per-user isolation: distinct principals stay distinct");
 });
 
 test("#1492 Symptom A: combineNamespaces is idempotent under re-derivation (no double-combination drift)", () => {
-  // A read path that (incorrectly) re-combined an already-scoped namespace with
-  // the overlay would produce `pi-friend-project-x-project-x` and miss the data.
-  // Guard the single-combination contract: combineNamespaces joins base+overlay
-  // with `-`, so re-combining must change the result (drift detector).
   const principal = "pi-friend";
   const overlayNs = projectNamespaceName(projectTagProjectId("Remnic"));
   const once = combineNamespaces(principal, overlayNs);
@@ -142,15 +126,10 @@ test("#1492 Symptom A: combineNamespaces is idempotent under re-derivation (no d
   assert.ok(!once.includes(`${overlayNs}-${overlayNs}`), "no duplicated overlay fragment");
 });
 
-// ─── Symptom B: arbitrary session keys never conflate ──────────────────────
 
 test("#1492 Symptom B: arbitrary session keys get distinct transcript AND summarizer paths, never other/default", async () => {
-  // Exact keys from the issue body. Pre-fix these all collapsed into
-  // transcripts/other/default/*.jsonl AND summaries/other/default/*.md,
-  // conflating every non-agent-prefixed session in BOTH subsystems.
   const keys = ["pi-geek:abc123", "pi:abc123", "myuser:abc123", "pi-friend:def456"];
 
-  // ── Transcript path (sessionStoragePaths, consumed by transcript.ts) ──
   const transcriptDirs = new Set<string>();
   for (const key of keys) {
     const id = parseSessionIdentity(key);
@@ -164,12 +143,6 @@ test("#1492 Symptom B: arbitrary session keys get distinct transcript AND summar
   }
   assert.equal(transcriptDirs.size, keys.length, "each session key must map to a distinct transcript dir");
 
-  // ── Summarizer path: exercise the REAL HourlySummarizer.saveSummary() so a
-  //    regression in summarizer.ts itself (reverting to the old parsed-session
-  //    bucket) is caught here, not just a regression in session-identity.ts.
-  //    Pre-fix the summarizer derived its dir from the same brittle split(':')
-  //    parser; this round-trip proves the written summary files land in
-  //    distinct per-session dirs (no other/default conflation). ──
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-1492-sum-"));
   try {
     const config = {
@@ -193,9 +166,6 @@ test("#1492 Symptom B: arbitrary session keys get distinct transcript AND summar
       await summarizer.saveSummary({ ...summary, sessionKey: key });
     }
 
-    // Walk summaries/hourly/ and collect the distinct per-session dirs that
-    // actually received a file. Each must be the encoded session key, never
-    // "other" or "default".
     const hourlyRoot = path.join(memoryDir, "summaries", "hourly");
     const sessionDirs = new Set<string>();
     await walkCollectDirs(hourlyRoot, sessionDirs);
@@ -210,14 +180,12 @@ test("#1492 Symptom B: arbitrary session keys get distinct transcript AND summar
 });
 
 test("#1492 Symptom B: legacy agent: keys keep their readable identity (no regression from the fix)", () => {
-  // The fix must not break the legacy 5-part agent:<id>:discord:channel:<chan> shape.
   const id = parseSessionIdentity("agent:generalist:discord:channel:998877");
   assert.equal(id.legacy, true);
   assert.equal(id.channelType, "discord");
   assert.equal(id.channelId, "998877");
 });
 
-// ─── Symptom C: fallback recall reads EVERY category dir ───────────────────
 
 function memoryFile(id: string, category: string, content: string): string {
   const now = new Date().toISOString();
@@ -258,10 +226,6 @@ async function makeStorage(prefix = "engram-1492-"): Promise<{
 }
 
 test("#1492 Symptom C: a memory in a non-legacy-4 category (preferences/) is found by fallback disk recall", async () => {
-  // The reporter found collectActiveMemoryPaths scanned only
-  // facts/procedures/reasoning-traces/corrections. A memory written to
-  // preferences/ was invisible to the QMD-unavailable fallback, so recall
-  // returned empty even though the file was on disk.
   const { storage, baseDir, cleanup } = await makeStorage();
   try {
     const preferencesDir = path.join(baseDir, "preferences");
@@ -286,12 +250,6 @@ test("#1492 Symptom C: a memory in a non-legacy-4 category (preferences/) is fou
 
 test("#1492 Symptom C: RECALL_FALLBACK_DIRS covers the categories the issue named as missed", () => {
   // The issue enumerated questions/, entities/, decisions/, preferences/,
-  // commitments/, principles/, skills/, relationships/, moments/, rules/,
-  // artifacts/ as directories the system writes to but the old 4-dir scan
-  // missed. Assert the recall-memory categories among them are now covered.
-  // (questions/ is intentionally a non-memory queue dir; artifacts/ and
-  // entities/ are non-category content dirs — see category-dir.ts. The recall
-  // *memory* categories must all be present.)
   const requiredRecallCategories = [
     "decisions",
     "preferences",
@@ -308,7 +266,6 @@ test("#1492 Symptom C: RECALL_FALLBACK_DIRS covers the categories the issue name
       `RECALL_FALLBACK_DIRS must include ${dir}/ (missed by the pre-fix 4-dir scan)`,
     );
   }
-  // The legacy four are still present.
   for (const dir of ["facts", "procedures", "reasoning-traces", "corrections"]) {
     assert.ok(RECALL_FALLBACK_DIRS.includes(dir), `legacy recall dir ${dir}/ must remain covered`);
   }

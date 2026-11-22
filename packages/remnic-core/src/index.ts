@@ -7,13 +7,10 @@ export * from "./context-summary.js";
 export * from "./active-context-transform.js";
 
 // ---------------------------------------------------------------------------
-// Plugin entry resolution
-// ---------------------------------------------------------------------------
 
 export { resolvePluginEntry, type PluginEntryResolverOptions } from "./plugin-entry-resolver.js";
 
 // ---------------------------------------------------------------------------
-// Configuration
 // ---------------------------------------------------------------------------
 
 export { parseConfig, isOpenaiApiKeyDisabled, resolveEnvVars } from "./config.js";
@@ -36,7 +33,6 @@ export {
 } from "./migrate/from-engram.js";
 
 // ---------------------------------------------------------------------------
-// Orchestrator — primary entry point
 // ---------------------------------------------------------------------------
 
 export {
@@ -98,7 +94,6 @@ export {
 } from "./event-order-recall.js";
 
 // ---------------------------------------------------------------------------
-// Storage
 // ---------------------------------------------------------------------------
 
 export {
@@ -141,7 +136,6 @@ export {
 } from "./host-embedding-provider.js";
 
 // ---------------------------------------------------------------------------
-// Extraction
 // ---------------------------------------------------------------------------
 
 export { ExtractionEngine } from "./extraction.js";
@@ -156,7 +150,6 @@ export {
 } from "./cli-fallback.js";
 export { CODEX_SUBSCRIPTION_PROVIDER_ID, beginCodexSubscriptionShutdown, codexSubscriptionBuiltinProviderConfig, createCodexSubscriptionRunner, ensureCodexSubscriptionRunnerRegistered, getCodexSubscriptionRunnerForOwner, terminateActiveCodexSubscriptionChildren, CodexSubscriptionAuthError, CodexSubscriptionConfigError, CodexSubscriptionTimeoutError } from "./providers/codex-subscription.js";
 // ---------------------------------------------------------------------------
-// Smart buffer (issue #563)
 // ---------------------------------------------------------------------------
 
 export {
@@ -182,7 +175,6 @@ export {
 export type { BufferSurpriseEvent } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Extraction Judge (issue #376)
 // ---------------------------------------------------------------------------
 
 export {
@@ -201,7 +193,6 @@ export {
 } from "./extraction-judge.js";
 
 // ---------------------------------------------------------------------------
-// Intent + procedural recall (issue #519)
 // ---------------------------------------------------------------------------
 
 export {
@@ -218,16 +209,13 @@ export {
   parseProcedureStepsFromBody,
 } from "./procedural/procedure-types.js";
 
-// Procedural stats surface (issue #567 PR 5/5).
 export { computeProcedureStats, formatProcedureStatsText } from "./procedural/procedure-stats.js";
 export type { ProcedureStatsReport, ProcedureStatusCounts, ProcedureStatsConfigSnapshot, ProcedureStatsRecent } from "./procedural/procedure-stats.js";
 export { runProcedureLibraryMaintenance, type ProcedureLibraryMaintenanceReport, type ProcedureMaintenanceAction, type ProcedureMaintenanceActionKind, type ProcedureMaintenanceReasonCode, type ProcedureMaintenanceEvidence, type ProcedureMaintenanceMarker } from "./procedural/library-maintenance.js";
-// Portable procedural skill bundles (issue #2369).
 export { parseSkillProjectionConfig, projectProceduresToSkills, renderSkillBundle, parseSkillBundle, sanitizeSkillSlug, SKILL_FILE_NAME, type SkillBundle, type SkillProjectionConfig, type ParsedSkillBundle } from "./procedural/skill-projection.js";
 export { exportSkillBundles, readSkillBundlesFromDir, persistImportedSkills, type ExportSkillsResult, type ImportSkillsResult, type ReadSkillBundle } from "./procedural/skill-io.js";
 export * from "./preferences/index.js";
 // ---------------------------------------------------------------------------
-// Direct-answer retrieval tier (issue #518)
 // ---------------------------------------------------------------------------
 
 export {
@@ -241,7 +229,6 @@ export {
 } from "./direct-answer.js";
 
 // ---------------------------------------------------------------------------
-// Hot/cold tier routing (issue #686)
 // ---------------------------------------------------------------------------
 
 export {
@@ -253,7 +240,6 @@ export {
 } from "./tier-routing.js";
 
 // ---------------------------------------------------------------------------
-// Reasoning-trace retrieval boost (issue #564)
 // ---------------------------------------------------------------------------
 
 export {
@@ -282,7 +268,6 @@ export {
 } from "./message-parts/index.js";
 
 // ---------------------------------------------------------------------------
-// User-aware memory provenance
 // ---------------------------------------------------------------------------
 
 export {
@@ -315,7 +300,6 @@ export {
 } from "./memory-provenance.js";
 
 // ---------------------------------------------------------------------------
-// Inline source attribution (issue #369)
 // ---------------------------------------------------------------------------
 
 export {
@@ -333,7 +317,6 @@ export {
 } from "./source-attribution.js";
 
 // ---------------------------------------------------------------------------
-// Search backends
 // ---------------------------------------------------------------------------
 
 export { QmdClient } from "./qmd.js";
@@ -342,7 +325,6 @@ export { OramaBackend } from "./search/orama-backend.js";
 export { MeilisearchBackend } from "./search/meilisearch-backend.js";
 
 // ---------------------------------------------------------------------------
-// Entity / Graph
 // ---------------------------------------------------------------------------
 
 export { buildEntityRecallSection } from "./entity-retrieval.js";
@@ -359,13 +341,9 @@ export {
 } from "./namespaces/catalog.js";
 
 // ---------------------------------------------------------------------------
-// Session identity / transcript pathing (issue #1496)
 // ---------------------------------------------------------------------------
 
 // Shared, deterministic session-key → storage-path resolution. Exported so
-// downstream consumers (the @remnic/bench adapter + its tests, host adapters)
-// resolve transcript directories through the SAME layer the core writer uses
-// instead of hard-coding `other/default` (rule #20, #22, #26).
 export {
   SESSION_CHANNEL_TYPE,
   parseSessionIdentity,
@@ -377,7 +355,6 @@ export {
 export { storagePathHash } from "./storage-paths.js";
 
 // ---------------------------------------------------------------------------
-// Trust zones
 // ---------------------------------------------------------------------------
 
 export {
@@ -390,7 +367,6 @@ export {
 export { DEFAULT_UNTRUSTED_ORIGINS, HARDENED_UNTRUSTED_ORIGINS, classifyOrigin, isUntrustedOrigin, parseOriginClass, renderAuthorityFence, type MemoryInjectionDefenseMode, type OriginClass } from "./security/origin-authority.js";
 export { INJECTION_SCREEN_THRESHOLD, screenCandidateFact, type InjectionScreenFinding, type InjectionScreenProfile, type InjectionScreenResult } from "./security/injection-screen.js";
 export { auditMemoryStore, auditScreenProfile, formatAuditMemoryReport, type AuditMemoryReport } from "./security/audit-memory.js";
-// Access layer (HTTP + MCP + schema validation)
 // ---------------------------------------------------------------------------
 
 export { EngramAccessService, EngramAccessInputError, type EngramAccessRecallResponse } from "./access-service.js";
@@ -460,9 +436,6 @@ export {
 } from "./relay/mission-access.js";
 
 // agentAccessHttp.authToken SecretRef resolution (issue #757). Exposed so
-// host-specific bootstrap code (the OpenClaw plugin in `src/index.ts`, the
-// standalone server, the CLI) can resolve a SecretRef to a literal bearer
-// token before constructing the HTTP server.
 export {
   resolveAgentAccessAuthToken,
   isAgentAccessSecretRef,
@@ -473,8 +446,6 @@ export type { SecretRef, AgentAccessAuthToken } from "./types.js";
 export * from "./recall-context-composition.js";
 export * from "./recall-composition-decision.js";
 // Recall X-ray CLI helpers (issue #570).  Exported so the standalone
-// `@remnic/cli` binary can wire the `remnic xray` command without
-// reimporting core-internal modules by relative path (CLAUDE.md rule 26).
 export {
   parseXrayCliOptions,
   parseXrayBudgetFlag,
@@ -493,8 +464,6 @@ export type {
   RecallXraySnapshot, RecallXrayResult, RecallXrayScoreDecomposition, RecallXrayServedBy, RecallFilterTrace,
 } from "./recall-xray.js";
 // Recall-miss diagnosis (issue #3033). Same rationale as the X-ray exports
-// above: the standalone `@remnic/cli` binary wires `remnic why` through the
-// package entry point, never by relative path (rule 26).
 export { explainRecallMiss, RECALL_WHY_STAGES, RECALL_WHY_DROP_REASONS, RecallWhyInputError } from "./recall-why.js";
 export type { RecallWhyReport, RecallWhyStage, RecallWhyStageRecord, RecallWhyDrop, RecallWhyDropReason, RecallWhyExpectation, RecallWhyDeps, RecallWhyOptions, RecallWhyMemoryRef, RecallWhyRecallOutcome } from "./recall-why.js";
 export { renderRecallWhy, renderRecallWhyJson, renderRecallWhyMarkdown, parseRecallWhyFormat, summarizeRecallWhy, RECALL_WHY_FORMATS, type RecallWhyFormat } from "./recall-why-renderer.js";
@@ -523,7 +492,6 @@ export {
 export * from "./coding/pre-action-gate.js";
 export * from "./coding/action-gate.js";
 export * from "./causal-trajectory.js";
-// Coding-agent subsystem (issue #569)
 export {
   resolveGitContext,
   normalizeOriginUrl,
@@ -580,16 +548,11 @@ export {
 export * from "./access-schema.js";
 
 // ---------------------------------------------------------------------------
-// Day summary / LCM
 // ---------------------------------------------------------------------------
 
 export { loadDaySummaryPrompt, buildExtensionsFooterForSummary } from "./day-summary.js";
 
 // LCM (Lossless Context Management) database helpers — exposed so optional
-// host packages (e.g. @remnic/import-lossless-claw) can open the same
-// SQLite store the runtime uses without re-implementing schema bootstrap.
-// `applyLcmSchema` lets importers bootstrap an in-memory destination for
-// true read-only `--dry-run` execution.
 export {
   openLcmDatabase,
   ensureLcmStateDir,
@@ -597,7 +560,6 @@ export {
 } from "./lcm/schema.js";
 
 // ---------------------------------------------------------------------------
-// Active memory bridge
 // ---------------------------------------------------------------------------
 
 export {
@@ -611,7 +573,6 @@ export {
 } from "./active-memory-bridge.js";
 
 // ---------------------------------------------------------------------------
-// Action confidence
 // ---------------------------------------------------------------------------
 
 export {
@@ -635,7 +596,6 @@ export {
 } from "./action-confidence.js";
 
 // ---------------------------------------------------------------------------
-// Daily Context Briefing (#370)
 // ---------------------------------------------------------------------------
 
 export {
@@ -659,7 +619,6 @@ export {
 } from "./briefing.js";
 export { withBriefingDeadline, BriefingTimeoutError, BRIEFING_DEADLINE_MS } from "./briefing-deadline.js";
 // ---------------------------------------------------------------------------
-// Binary lifecycle management (#367)
 // ---------------------------------------------------------------------------
 
 export {
@@ -687,20 +646,17 @@ export {
 } from "./binary-lifecycle/index.js";
 
 // ---------------------------------------------------------------------------
-// Bootstrap
 // ---------------------------------------------------------------------------
 
 export { BootstrapEngine } from "./bootstrap.js";
 
 // ---------------------------------------------------------------------------
-// Codex compatibility helpers
 // ---------------------------------------------------------------------------
 
 export { CODEX_THREAD_KEY_PREFIX } from "./thread-key.js";
 export type { CodexCompatConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Page-level versioning (issue #371)
 // ---------------------------------------------------------------------------
 
 export {
@@ -717,7 +673,6 @@ export {
 } from "./page-versioning.js";
 
 // ---------------------------------------------------------------------------
-// OAI-mem-citation blocks (issue #379)
 // ---------------------------------------------------------------------------
 
 export {
@@ -731,13 +686,11 @@ export {
 } from "./citations.js";
 
 // ---------------------------------------------------------------------------
-// Logger
 // ---------------------------------------------------------------------------
 
 export { initLogger, log } from "./logger.js";
 
 // ---------------------------------------------------------------------------
-// Projection (workspace tree)
 // ---------------------------------------------------------------------------
 
 export {
@@ -749,7 +702,6 @@ export {
 } from "./projection/index.js";
 
 // ---------------------------------------------------------------------------
-// Onboarding
 // ---------------------------------------------------------------------------
 
 export {
@@ -763,7 +715,6 @@ export {
 } from "./onboarding/index.js";
 
 // ---------------------------------------------------------------------------
-// Curation
 // ---------------------------------------------------------------------------
 
 export {
@@ -777,7 +728,6 @@ export {
 } from "./curation/index.js";
 
 // ---------------------------------------------------------------------------
-// Dedup & Contradiction Detection
 // ---------------------------------------------------------------------------
 
 export {
@@ -799,7 +749,6 @@ export {
   type SemanticDedupDecision,
 } from "./dedup/semantic.js";
 
-// Review Inbox
 export {
   listReviewItems,
   performReview,
@@ -813,7 +762,6 @@ export * from "./review/review-deck.js";
 export * from "./review/review-deck-snapshot.js";
 
 // ---------------------------------------------------------------------------
-// Diff-Aware Sync
 // ---------------------------------------------------------------------------
 
 export {
@@ -826,7 +774,6 @@ export {
 } from "./sync/index.js";
 
 // ---------------------------------------------------------------------------
-// Offline Sync
 // ---------------------------------------------------------------------------
 export { drainPendingImpressionsForOfflineSync, drainPendingLifecycleForOfflineSync } from "./offline-sync-impression-drain.js";
 export {
@@ -884,7 +831,6 @@ export { advanceEmbeddingGenerationMarker, embeddingGenerationMembership, diverg
 export { EmbeddingIndexCapacityError, EmbeddingIndexFileStore, EmbeddingIndexStorageError, parseEmbeddingIndexDocument, serializeEmbeddingShard, shardEntriesForIndex, shardIndexOf, validateShardMembership } from "./embedding-index-storage.js";
 
 // ---------------------------------------------------------------------------
-// Memory Extension Host (#382)
 // ---------------------------------------------------------------------------
 
 export {
@@ -900,7 +846,6 @@ export {
 export { buildExtensionsBlockForConsolidation } from "./semantic-consolidation.js";
 
 // ---------------------------------------------------------------------------
-// Connector Manager
 // ---------------------------------------------------------------------------
 
 export {
@@ -939,15 +884,9 @@ export {
 export { coerceInstallExtension } from "./connectors/coerce.js";
 
 // ---------------------------------------------------------------------------
-// Live Connectors framework (#683 PR 1/N)
 // ---------------------------------------------------------------------------
 //
-// Pure framework — interface, registry, and cursor state store. Concrete
-// connectors (Drive, Notion, Gmail, GitHub) ship in PRs 2–5; the maintenance
-// scheduler hookup and CLI surface land in later PRs.
 //
-// NOTE: lives under `connectors/live/` to avoid colliding with the existing
-// Codex marketplace integration above. Do not flatten.
 
 export {
   CONNECTOR_ID_PATTERN,
@@ -990,7 +929,6 @@ export {
 } from "./connectors/live/index.js";
 
 // ---------------------------------------------------------------------------
-// Live-connector CLI helpers (issue #683 PR 6/6)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1021,7 +959,6 @@ export {
 } from "./connectors-cli.js";
 
 // ---------------------------------------------------------------------------
-// Spaces + Collaboration
 // ---------------------------------------------------------------------------
 
 export {
@@ -1054,7 +991,6 @@ export {
 } from "./spaces/index.js";
 
 // ---------------------------------------------------------------------------
-// Token Management
 // ---------------------------------------------------------------------------
 
 export {
@@ -1088,7 +1024,6 @@ export {
 export { OPERATION_NAMES, type OperationName } from "./access-boundary.js";
 
 // ---------------------------------------------------------------------------
-// Codex materializer (#378)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1109,7 +1044,6 @@ export {
 } from "./connectors/codex-materialize.js";
 
 // ---------------------------------------------------------------------------
-// Memory Extension Publishers (#381)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1132,7 +1066,6 @@ export {
 } from "./memory-extension/index.js";
 
 // ---------------------------------------------------------------------------
-// MECE Taxonomy (#366)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1151,7 +1084,6 @@ export {
 } from "./taxonomy/index.js";
 
 // ---------------------------------------------------------------------------
-// Enrichment pipeline (issue #365)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1173,7 +1105,6 @@ export {
   type WebSearchProviderOptions,
 } from "./enrichment/index.js";
 
-// Bulk-import pipeline (#460)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1204,7 +1135,6 @@ export {
 export { runAuditMemoryCliCommand, runBulkImportCliCommand, type BulkImportCliCommandOptions } from "./cli.js";
 
 // ---------------------------------------------------------------------------
-// Wearable transcript subsystem (Limitless / Bee / Omi connectors).
 // ---------------------------------------------------------------------------
 export * from "./wearables/index.js";
 export * from "./activity/index.js";
@@ -1212,7 +1142,6 @@ export * from "./meetings/index.js";
 export * from "./okf/cli.js";
 
 // ---------------------------------------------------------------------------
-// Shared importer base (issue #568)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1245,19 +1174,16 @@ export {
 } from "./fallback-llm.js";
 
 // ---------------------------------------------------------------------------
-// Local AI session summary drafts
 // ---------------------------------------------------------------------------
 
 export * from "./session-summaries/index.js";
 
 // ---------------------------------------------------------------------------
-// Training-data export (issue #459)
 // ---------------------------------------------------------------------------
 
 export * from "./training-export/index.js";
 
 // ---------------------------------------------------------------------------
-// Memory Worth scoring helper (issue #560 PR 2 of 5)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1267,7 +1193,6 @@ export {
 } from "./memory-worth.js";
 
 // ---------------------------------------------------------------------------
-// Memory Worth outcome pipeline (issue #560 PR 3 of 5)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1279,7 +1204,6 @@ export {
 } from "./memory-worth-outcomes.js";
 
 // ---------------------------------------------------------------------------
-// Memory Worth recall filter (issue #560 PR 4 of 5)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1291,14 +1215,8 @@ export {
   type MemoryWorthFilterResultItem,
 } from "./memory-worth-filter.js";
 
-// Memory Worth recall-precision benchmark (issue #560 PR 5 of 5) is NOT
-// re-exported from the public API surface. The bench is for in-package
-// test/script use only — see packages/remnic-core/src/memory-worth-bench.ts
-// and its companion test. Benchmarks the broader package ecosystem relies
-// on live in packages/bench/.
 
 // ---------------------------------------------------------------------------
-// Graph retrieval types (issue #559, PR 1 of 5)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1331,7 +1249,6 @@ export {
 } from "./graph-recall.js";
 
 // ---------------------------------------------------------------------------
-// Cross-namespace query-budget limiter (issue #565 PR 4/5)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1345,7 +1262,6 @@ export type {
 } from "./cross-namespace-budget.js";
 
 // ---------------------------------------------------------------------------
-// Recall-audit anomaly detector (issue #565 PR 5/5)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1369,7 +1285,6 @@ export type {
 } from "./access-audit.js";
 
 // ---------------------------------------------------------------------------
-// Public types
 // ---------------------------------------------------------------------------
 
 export type {
@@ -1409,7 +1324,6 @@ export {
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Peer registry (issue #679 PR 1/5)
 // ---------------------------------------------------------------------------
 
 export type {
@@ -1434,7 +1348,6 @@ export {
 } from "./peers/index.js";
 
 // ---------------------------------------------------------------------------
-// Capsule fork (issue #676 PR 4/6)
 // ---------------------------------------------------------------------------
 
 export {
@@ -1445,7 +1358,6 @@ export {
   type ForkLineage,
 } from "./transfer/capsule-fork.js";
 
-// Coding-graph engine contract (#1551 PR1), implemented by optional @remnic/coding-graph.
 
 export { CODING_GRAPH_ENGINE_VERSION, TIER_1_LANGUAGES } from "./coding/coding-graph-types.js";
 
@@ -1462,7 +1374,6 @@ export type {
 export type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 export * from "./maintenance/atomic-file.js";
 
-// Privacy-safe action-to-outcome trajectory eval (issue #2345)
 export * from "./eval-trajectory.js";
 export { MemoryControllerCoordinator, chooseAction, computeEvidenceReportHash, controllerConfigHash, evaluateActiveGates, hashControllerState, verifyEvidenceReport } from "./memory-controller.js";
 export type { ActiveContextAdapter, ActiveContextMessage, ActiveContextPlan, MemoryControllerActionFamily, MemoryControllerChoice, MemoryControllerConfig, MemoryControllerDeps, MemoryControllerEvent, MemoryControllerEvidence, MemoryControllerEvidenceReport, MemoryControllerExecutors, MemoryControllerMode, MemoryControllerPairedSeedEvidence, MemoryControllerReceipt, MemoryControllerRecorder, MemoryControllerReportReader, MemoryControllerRunResult, MemoryControllerState } from "./memory-controller.js"; export * from "./recall-navigate.js"; export * from "./recall-navigation.js"; export * from "./recall-navigation-config.js";

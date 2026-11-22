@@ -35,8 +35,6 @@ export const PATTERNS_OUTPUT_FORMATS = ["text", "markdown", "json"] as const;
 export type PatternsOutputFormat = (typeof PATTERNS_OUTPUT_FORMATS)[number];
 
 // ───────────────────────────────────────────────────────────────────────────
-// Flag validation
-// ───────────────────────────────────────────────────────────────────────────
 
 /**
  * Validate `--format <fmt>`.  Throws a listed-options error for any
@@ -95,7 +93,6 @@ export function parsePatternsCategory(value: unknown): string[] | undefined {
       `--category expects at least one non-empty category name; got ${JSON.stringify(value)}`,
     );
   }
-  // Deduplicate while preserving first-seen order.
   const seen = new Set<string>();
   const unique: string[] = [];
   for (const part of parts) {
@@ -173,7 +170,6 @@ export function parsePatternsExplainOptions(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Core list / explain behavior
 // ───────────────────────────────────────────────────────────────────────────
 
 export interface PatternListRow {
@@ -251,9 +247,6 @@ export function collectPatternMemories(
     if (b.reinforcementCount !== a.reinforcementCount) {
       return b.reinforcementCount - a.reinforcementCount;
     }
-    // Guard NaN: malformed date strings make Date.parse return NaN, which
-    // breaks the sort contract (NaN comparator return == non-deterministic
-    // ordering).  Treat invalid/missing timestamps as 0 (oldest possible).
     const aRaw = a.lastReinforcedAt ? Date.parse(a.lastReinforcedAt) : NaN;
     const bRaw = b.lastReinforcedAt ? Date.parse(b.lastReinforcedAt) : NaN;
     const aTs = Number.isFinite(aRaw) ? aRaw : 0;
@@ -366,8 +359,6 @@ export function explainPatternMemory(
     }
   }
   members.sort((a, b) => {
-    // Guard NaN: same rationale as collectPatternMemories sort — malformed
-    // supersededAt strings must not produce a NaN return from the comparator.
     const aRaw = a.supersededAt ? Date.parse(a.supersededAt) : NaN;
     const bRaw = b.supersededAt ? Date.parse(b.supersededAt) : NaN;
     const aTs = Number.isFinite(aRaw) ? aRaw : 0;
@@ -395,7 +386,6 @@ export function explainPatternMemory(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Renderers
 // ───────────────────────────────────────────────────────────────────────────
 
 export function renderPatternsList(
@@ -424,7 +414,6 @@ export function renderPatternsList(
     }
     return lines.join("\n") + "\n";
   }
-  // text
   const lines: string[] = [];
   lines.push(`Pattern memories (${rows.length}):`);
   lines.push("");
@@ -544,7 +533,6 @@ export function renderPatternExplain(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Internal helpers
 // ───────────────────────────────────────────────────────────────────────────
 
 function extractPreview(content: string): string {
@@ -560,15 +548,6 @@ function looksLikeDerivedFromPath(value: string): boolean {
   return value.includes("/") || value.includes(".");
 }
 
-/**
- * Escape characters that would break a Markdown table cell:
- *   - backslashes first (so the `\|` escape below isn't double-escaped)
- *   - then pipe characters
- *
- * CodeQL "Incomplete string escaping or encoding": backslash must be
- * escaped before pipe so that a literal `\` in content isn't
- * misinterpreted as part of a `\|` escape sequence.
- */
 function escapePipes(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }

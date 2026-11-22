@@ -267,7 +267,6 @@ test("retry-failed expands bare failed status across matrix profiles", () => {
   assert.deepEqual(filtered, workItems);
 });
 
-// ---------- `bench published` (issue #566 PR 4/7) ----------
 
 test("parseBenchArgs accepts published action with --name, --dataset, --model", () => {
   const parsed = parseBenchArgs([
@@ -288,7 +287,6 @@ test("parseBenchArgs accepts published action with --name, --dataset, --model", 
 
   assert.equal(parsed.action, "published");
   assert.equal(parsed.publishedName, "longmemeval");
-  // `--dataset` aliases to `--dataset-dir`.
   assert.equal(parsed.datasetDir, "/tmp/bench-datasets/longmemeval");
   assert.equal(parsed.systemModel, "gpt-4o-mini");
   assert.equal(parsed.publishedSeed, 42);
@@ -1084,7 +1082,6 @@ test("parseBenchArgs --limit 0 preserved (CLAUDE.md rule 27 slice-negative-zero)
 });
 
 test("parseBenchArgs resolves --local-lab-manifest into localLabManifestPath (cursor review: #1573 PR2)", () => {
-  // Regression: --runtime-profile accepted "local-lab" but there was no flag
   // to supply localLabManifestPath, so every CLI local-lab resolution failed
   // with the manifest-path error. --local-lab-manifest closes that gap and
   // resolves tildes + relative paths identically to other filesystem flags.
@@ -1108,7 +1105,6 @@ test("parseBenchArgs leaves localLabManifestPath undefined when --local-lab-mani
 });
 
 test("parseBenchArgs --matrix empty error lists local-lab alongside the other profiles (cursor review: #1573 PR2 round 5)", () => {
-  // Regression: the empty-matrix error named only baseline/real/openclaw-chain
   // even though parseBenchRuntimeProfile accepts local-lab, so the message was
   // an outdated allow-list.
   assert.throws(() => parseBenchArgs(["run", "locomo", "--matrix", " , , "]), /local-lab/);
@@ -1179,7 +1175,6 @@ test("parseBenchArgs rejects --replay-extraction-mode await on adapters that can
       ]),
     /--replay-extraction-mode may be given only once/,
   );
-  // skip stays allowed everywhere LoCoMo runs, since it matches the default.
   const quickSkip = parseBenchArgs(["run", "locomo", "--quick", "--replay-extraction-mode", "skip"]);
   assert.equal(quickSkip.locomoReplayExtractionMode, "skip");
 });

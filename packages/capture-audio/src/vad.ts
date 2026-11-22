@@ -71,14 +71,12 @@ export function resolveSherpaExport(module: unknown): SherpaOnnxModule | null {
 export async function loadSherpaOnnx(
   importModule: (specifier: string) => Promise<unknown> = (specifier) => import(specifier),
 ): Promise<SherpaOnnxModule> {
-  // Computed specifier keeps the optional sherpa-onnx-node peer out of the static
   // dependency graph so the package builds and runs without it installed.
   const specifier = "sherpa-onnx-" + "node";
   let module: unknown;
   try {
     module = await importModule(specifier);
   } catch (error) {
-    // A genuinely absent package surfaces as ERR_MODULE_NOT_FOUND naming the
     // specifier as a package, with no require stack. An installed-but-broken
     // package (missing native .node, dlopen failure) has a different code
     // and/or a require stack, so it must NOT be reported as "not installed".
@@ -93,7 +91,6 @@ export async function loadSherpaOnnx(
         "Silero VAD requires optional dependency sherpa-onnx-node; install it before enabling VAD",
       );
     }
-    // Installed but unusable. Report that distinctly, but keep the message
     // operator-safe: never echo the raw error (it can leak absolute native
     // library paths), per the CaptureConfigError contract.
     throw new CaptureConfigError(

@@ -28,7 +28,6 @@ function fn(qname: string, rawText: string): SymbolIR {
   };
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 // Rule 23/38: ONE canonical form — formatting variants hash identically.
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -55,9 +54,7 @@ test("canonical text: the embedded string equals the hashed string (rule 23)", (
   const raw = `function bar(n) { return n + 1; }`;
   const sym = fn("mod.bar", raw);
   const { text, hash } = buildCanonicalTextAndHash({ symbol: sym, rawText: raw });
-  // The hash is over the EXACT text returned — no transformation gap.
   assert.equal(hash, canonicalTextHash(text));
-  // And a different text produces a different hash.
   const other = buildCanonicalTextAndHash({ symbol: fn("mod.baz", raw), rawText: raw });
   assert.notEqual(hash, other.hash);
 });
@@ -90,7 +87,6 @@ test("canonical hash: unchanged symbol is stable (idempotent)", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// collapseWhitespace unit
 // ──────────────────────────────────────────────────────────────────────────
 
 test("collapseWhitespace: tabs/newlines/multiple-spaces → single space", () => {
@@ -100,7 +96,6 @@ test("collapseWhitespace: tabs/newlines/multiple-spaces → single space", () =>
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Body truncation respects maxBodyLines
 // ──────────────────────────────────────────────────────────────────────────
 
 test("canonical text: body truncated to maxBodyLines (token budget)", () => {
@@ -117,7 +112,6 @@ test("canonical text: body truncated to maxBodyLines (token budget)", () => {
 // ──────────────────────────────────────────────────────────────────────────
 // Braceless arrow functions keep their body (cursor Bugbot: 'Arrow bodies
 // lost in canonical text'). collapseWhitespace splits `=>` into `= >`, so
-// the signature/body split must search the NORMALIZED arrow form.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("canonical text: braceless arrow body is captured, not empty", () => {

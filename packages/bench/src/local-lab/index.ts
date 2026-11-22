@@ -1,11 +1,3 @@
-/**
- * Local-lab runtime profile public surface (issue #1573 PR2).
- *
- * Re-exports the manifest parser, profile resolver, preflight, and
- * sequential phase scheduler so callers (the bench runtime, tests, the
- * eventual `remnic bench run --profile local-lab-*` CLI wiring) reach them
- * through one entrypoint.
- */
 
 export {
   LOCAL_LAB_PROVIDER_KINDS,

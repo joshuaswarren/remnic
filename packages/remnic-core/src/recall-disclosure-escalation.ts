@@ -1,32 +1,3 @@
-/**
- * Recall disclosure auto-escalation policy (issue #677 PR 4/4).
- *
- * Pure helper that decides the *effective* disclosure depth for a recall
- * given the configured policy and the observed top-K confidence.  Lives
- * outside `access-service.ts` so the decision logic can be unit-tested
- * exhaustively without booting an orchestrator.
- *
- * Policy summary:
- *
- *   manual (default):
- *     The caller's `disclosure` is honored verbatim.  Auto-escalation
- *     does not run.
- *
- *   auto:
- *     If the caller did NOT explicitly specify a disclosure (i.e. the
- *     value in use is the system default) AND the recall's top-K
- *     confidence falls below the configured threshold, escalate from
- *     `chunk` to `section`.  `raw` is never auto-selected — it requires
- *     an explicit caller request because of its higher cost and the
- *     LCM-archive read paths it activates.  If the caller explicitly
- *     passed a disclosure (even `chunk`), the policy respects that
- *     choice and does not escalate.
- *
- * The threshold compares against `final` from the top result's score
- * decomposition.  When the snapshot has no results or no scores, no
- * escalation fires (`undefined` confidence is treated as "skip" rather
- * than "always escalate").
- */
 
 import type { RecallDisclosure } from "./types.js";
 
@@ -46,12 +17,6 @@ export function isDisclosureEscalationMode(
   );
 }
 
-/**
- * Threshold defaults — applied when config-side coercion produces an
- * out-of-range or missing value.  0.5 is a deliberate midpoint:
- * confidently-served recalls (top-K >= 0.5) stay on the cheap chunk
- * tier; ambiguous recalls escalate to section.
- */
 export const DEFAULT_DISCLOSURE_ESCALATION_THRESHOLD = 0.5;
 
 export interface DisclosureEscalationDecision {
@@ -114,8 +79,6 @@ export function decideDisclosureEscalation(
     };
   }
 
-  // Only chunk → section auto-escalation is allowed.  Section and raw
-  // are never demoted; raw is never auto-selected.
   if (input.originalDisclosure !== "chunk") {
     return {
       effective: input.originalDisclosure,

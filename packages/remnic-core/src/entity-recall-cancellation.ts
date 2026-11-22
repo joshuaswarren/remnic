@@ -12,11 +12,6 @@ import { yieldToEventLoop } from "./recall-qos.js";
 
 const ABORT_MESSAGE = "entity recall aborted";
 
-/**
- * Entities/memories processed between two yields during an index build. Matches
- * the artifact scan's interval: large enough that the yields are free relative to
- * the work, small enough that a section deadline is observed promptly.
- */
 export const ENTITY_SCAN_YIELD_INTERVAL = 256;
 
 /** Stop at the caller's signal without yielding. */
@@ -35,10 +30,6 @@ export async function yieldEntityRecallScan(abortSignal?: AbortSignal): Promise<
   throwIfAborted(abortSignal, ABORT_MESSAGE);
 }
 
-/**
- * The same yield/abort pair, but only every `ENTITY_SCAN_YIELD_INTERVAL` items —
- * for loops where yielding per item would cost more than the work itself.
- */
 export async function yieldEntityRecallScanEvery(
   processed: number,
   abortSignal?: AbortSignal,
@@ -47,11 +38,6 @@ export async function yieldEntityRecallScanEvery(
   await yieldEntityRecallScan(abortSignal);
 }
 
-/**
- * Exit an entity-recall path with "no section", unless the caller has actually
- * cancelled — in which case throw, so the bounded runner records a breach rather
- * than a successful empty section.
- */
 export function entityRecallSectionAbsent(abortSignal?: AbortSignal): null {
   throwIfAborted(abortSignal, ABORT_MESSAGE);
   return null;

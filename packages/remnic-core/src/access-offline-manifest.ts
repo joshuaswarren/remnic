@@ -41,25 +41,9 @@ export interface ServerIdentityCacheEntry {
   excluded?: boolean;
 }
 
-/**
- * Decide what the manifest stream should persist, and whether a write is
- * needed at all.
- *
- * A write is required whenever the persisted set changed — an identity was
- * rebuilt, or an entry was dropped because its file lost its identity — and
- * also when a completed walk leaves entries for paths it never saw, which are
- * files that have since been deleted. Skipping the write in that last case
- * would strand those entries on disk forever.
- *
- * Pruning is gated on the walk completing: an aborted or partially consumed
- * stream has simply not observed the remaining paths, so it may only add.
- */
 export function planServerIdentityCacheWrite(input: {
   persisted: ReadonlyMap<string, ServerIdentityCacheEntry>;
   yieldedPaths: ReadonlySet<string>;
-  /** Paths the walk saw but never yielded (removed by the exclusion
-   * callback). Not deleted — pruning them would drop their persisted
-   * classification and force a re-classify on every later cycle. */
   retainedPaths?: ReadonlySet<string>;
   streamCompleted: boolean;
   cacheDirty: boolean;
@@ -72,14 +56,6 @@ export function planServerIdentityCacheWrite(input: {
   return { shouldWrite: input.cacheDirty || entries.length !== input.persisted.size, entries };
 }
 
-/**
- * The cache lives under `.remnic/` rather than `state/`: snapshot enumeration
- * excludes internal `.remnic/` paths structurally (`isInternalRemnicStatePath`),
- * whereas `state/` is only filtered by an allowlist of known node-local
- * artifacts. Under `state/` this node-local cache would be advertised as a peer
- * file, so convergence would transfer the cache itself — and the stream rewrites
- * it during finalization, so the advertised digest could go stale mid-transfer.
- */
 function serverIdentityCachePath(storageDir: string): string {
   return nodePath.join(storageDir, ".remnic", "state", "converge-identity-cache.json");
 }
@@ -96,9 +72,6 @@ async function loadServerIdentityCache(
       citationTemplate?: string;
       files?: unknown[];
     };
-    // Identities are derived after stripping inline attribution for a specific
-    // citation template; entries written under a different one would produce
-    // wrong contentHash values for unchanged files.
     if (raw.citationTemplate !== citationTemplateFingerprint(citationTemplate)) return cache;
     for (const candidate of raw.files ?? []) {
       const entry = candidate as Partial<ServerIdentityCacheEntry> | null;
@@ -135,9 +108,6 @@ async function loadServerIdentityCache(
 
 const serverIdentityCacheWriteLocks = new Map<string, Promise<void>>();
 
-/** Serialize cache replacements per path: overlapping manifest streams for one
- * namespace would otherwise each publish a whole-file snapshot, and the slower
- * stream built from older filesystem state would overwrite the newer one. */
 async function withServerIdentityCacheWriteLock(cachePath: string, write: () => Promise<void>): Promise<void> {
   const previous = serverIdentityCacheWriteLocks.get(cachePath) ?? Promise.resolve();
   const next = previous.then(write, write);
@@ -151,8 +121,6 @@ async function withServerIdentityCacheWriteLock(cachePath: string, write: () => 
   }
 }
 
-/** Union of the entries being written and the current on-disk set; on conflict
- * the write wins (it reflects the newer run). Callers hold the write lock. */
 export async function mergeServerIdentityCacheEntries(
   fs: typeof import("node:fs/promises"),
   cachePath: string,
@@ -196,10 +164,6 @@ export async function mergeServerIdentityCacheEntries(
   return [...merged.values()];
 }
 
-/** Record classifications for files the walk excluded (the exclusion callback
- * returned true, so they were never yielded): they were seen this walk, so
- * their entries must persist and must not be pruned as deleted. Mirrors the
- * per-yield classification application for never-yielded paths. */
 export function retainExcludedClassifications(input: {
   persisted: Map<string, ServerIdentityCacheEntry>;
   classifications: ReadonlyMap<string, { statIdentity: string; excluded: boolean }>;
@@ -234,9 +198,6 @@ export async function createOfflineSyncManifestStream(
   const storage = await offlineSyncStorageForSnapshot(orchestrator, namespace);
   const citationTemplate = orchestrator.config.inlineSourceAttributionFormat;
   const identityCache = await loadServerIdentityCache(storage.dir, citationTemplate);
-  // The exclusion callback runs before every yield; without the persisted
-  // classification it would read and parse every candidate file, defeating the
-  // warm-cache skip entirely.
   const classificationUpdates = new Map<string, { statIdentity: string; excluded: boolean }>();
   const snapshotFiles = iterateOfflineSyncSnapshotFileRecords({
     root: storage.dir,
@@ -252,16 +213,8 @@ export async function createOfflineSyncManifestStream(
     format: RECONCILE_MANIFEST_FORMAT,
     schemaVersion: RECONCILE_MANIFEST_SCHEMA_VERSION,
     files: (async function* () {
-      // Any change to the persisted set, not just a rebuilt identity: a file
-      // that lost its identity, or a completed walk that must prune vanished
-      // paths, also has to reach disk or the removal is lost forever.
       let cacheDirty = false;
       let streamCompleted = false;
-      // Seeded with every previously cached entry so a partially consumed
-      // stream (client disconnect, abort) can only add to the cache. Writing
-      // just this run's rebuilds would drop every cache hit, so one edit to a
-      // large corpus would shrink the cache to that single entry and force a
-      // near-cold rebuild on the next request.
       const persistedEntries = new Map(identityCache);
       const yieldedPaths = new Set<string>();
       const retainedPaths = new Set<string>();
@@ -278,10 +231,6 @@ export async function createOfflineSyncManifestStream(
           const fs = await import("node:fs/promises");
           const cachePath = serverIdentityCachePath(storage.dir);
           await withServerIdentityCacheWriteLock(cachePath, async () => {
-            // Merge with whatever is on disk NOW: a concurrent stream for the
-            // same namespace may have published newer entries after this
-            // request loaded its snapshot, and a blind whole-file replace
-            // would discard them.
             const written = new Set(entries.map((entry) => entry.path));
             const dropped = streamCompleted
               ? new Set([...identityCache.keys()].filter((pathName) => !written.has(pathName)))
@@ -347,14 +296,11 @@ export async function createOfflineSyncManifestStream(
             parseMemory,
             citationTemplate
           );
-          // Negative results persist too: a memory-shaped file that parses
-          // without an identity would otherwise be re-read on every warm run.
           const previous = persistedEntries.get(built.path);
           if (previous?.sha256 !== built.sha256 || (built.memory !== undefined && previous?.memory !== built.memory)) {
             cacheDirty = true;
           }
           if (built.memory === undefined && built.normalizerVersion === undefined) {
-            // Read failed: do not persist a negative identity for this SHA.
             yield built;
             continue;
           }
@@ -373,10 +319,6 @@ export async function createOfflineSyncManifestStream(
         }
         streamCompleted = true;
       } finally {
-        // Files the exclusion callback removed from the snapshot were seen
-        // this walk but never yielded: persist their classifications so the
-        // next cycle skips the read+parse, and keep them out of the
-        // deleted-path prune.
         const retained = retainExcludedClassifications({
           persisted: persistedEntries,
           classifications: classificationUpdates,

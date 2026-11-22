@@ -101,9 +101,6 @@ describe("transformClaudeExport", () => {
     assert.equal(tpl.metadata?.projectName, "Synthetic weekend CLI");
   });
 
-  // Cursor review on PR #598 — when the title alone is longer than
-  // maxChars, the previous truncation logic produced content that
-  // exceeded the cap.
   it("truncation never exceeds maxConversationSummaryChars with a long title", () => {
     const longTitle = "T".repeat(500);
     const parsed = parseClaudeExport(
@@ -133,10 +130,6 @@ describe("transformClaudeExport", () => {
     assert.ok(memory.content.endsWith("..."));
   });
 
-  // Cursor review on PR #598 — even when maxChars is below the suffix
-  // length (3), content.length must never exceed maxChars. The earlier
-  // fix unconditionally appended "..." which produced 3-char output for
-  // maxChars=2.
   it("honors maxChars below the suffix length", () => {
     const longTitle = "T".repeat(500);
     const parsed = parseClaudeExport(

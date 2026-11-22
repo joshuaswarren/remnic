@@ -178,13 +178,9 @@ export interface PeerProfileReasonerPeerResult {
     | "skipped_cap_reached"
     | "skipped_aborted"
     | "error";
-  /** Number of fields actually applied to the peer's profile. */
   readonly fieldsApplied: number;
-  /** Number of proposals dropped because the per-run cap was hit. */
   readonly droppedDueToCap: number;
-  /** Set of field keys applied; useful for tests and telemetry. */
   readonly fields: ReadonlyArray<string>;
-  /** Error message, when `status === "error"`. */
   readonly error?: string;
 }
 
@@ -263,8 +259,6 @@ export function parsePeerProfileReasonerResponse(
   if (typeof raw !== "string" || raw.trim() === "") return [];
   const trimmed = raw.trim();
   // Dropped the \s* groups around the lazy body (they overlapped it and
-  // backtracked polynomially — CodeQL js/polynomial-redos). Input is already
-  // trimmed and fenced[1] is trimmed below, so matches are identical.
   const fenced = /^```(?:json)?([\s\S]*?)```$/u.exec(trimmed);
   const payload = fenced ? fenced[1].trim() : trimmed;
   let parsed: unknown;
@@ -273,14 +267,12 @@ export function parsePeerProfileReasonerResponse(
   } catch {
     return [];
   }
-  // Gotcha #18: JSON.parse('null') succeeds. Reject non-objects.
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return [];
   }
   const obj = parsed as { proposals?: unknown };
   if (!Array.isArray(obj.proposals)) return [];
   const out: PeerProfileReasonerProposal[] = [];
-  // Gotcha — drop prototype-pollution keys at the field-name layer.
   const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
   for (const item of obj.proposals) {
     if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
@@ -312,11 +304,6 @@ const SYSTEM_MESSAGE =
 
 const RUN_MARKER_KIND = "peer_profile_reasoner_run";
 
-/**
- * Find the most recent reasoner-run marker timestamp in the log.
- * Used to count "interactions since last run" so the threshold
- * gate doesn't keep firing on the same dormant log forever.
- */
 function lastRunTimestamp(
   log: ReadonlyArray<PeerInteractionLogEntry>,
 ): string | undefined {
@@ -362,7 +349,6 @@ export async function runPeerProfileReasoner(
   };
   // Disabled flag is the master gate. Defaults to false in callers'
   // config; we additionally require strict `=== true` here so a
-  // stray "true" string doesn't silently flip the flag (Gotcha #36).
   if (options.enabled !== true) {
     log.debug("[peer-profile-reasoner] disabled — no-op");
     return result;
@@ -391,7 +377,6 @@ export async function runPeerProfileReasoner(
   try {
     if (options.peerIds && options.peerIds.length > 0) {
       // Filter the explicit list against on-disk peers so we never
-      // act on an id the operator typed but didn't register.
       const all = await listPeers(options.memoryDir);
       const wanted = new Set(
         options.peerIds.filter(
@@ -431,7 +416,6 @@ export async function runPeerProfileReasoner(
       // `peerProfileReasonerMinInteractions > maxLogEntriesPerPeer`,
       // because the slice will never include enough new entries.
       // Read the full log first to compute the gate, then truncate
-      // for prompt construction below.
       const fullLog = await readPeerInteractionLog(
         options.memoryDir,
         peer.id,
@@ -448,7 +432,6 @@ export async function runPeerProfileReasoner(
       }
       // Count interactions since the last reasoner-run marker, so
       // dormant peers don't trigger another LLM call until enough
-      // new signal accumulates. Run markers themselves don't count.
       const lastRun = lastRunTimestamp(fullLog);
       const sinceLastRunFull = lastRun
         ? fullLog.filter(
@@ -468,7 +451,6 @@ export async function runPeerProfileReasoner(
       // Truncate ONLY for prompt construction so the LLM context
       // stays bounded. Use the most recent `maxLogPerPeer` entries
       // from the full since-last-run set so the prompt prefers fresh
-      // signal over older entries.
       const sinceLastRun =
         sinceLastRunFull.length > maxLogPerPeer
           ? sinceLastRunFull.slice(sinceLastRunFull.length - maxLogPerPeer)
@@ -542,7 +524,6 @@ export async function runPeerProfileReasoner(
 
       // Build the merged profile. We never replace existing
       // provenance entries — provenance is append-only so the
-      // operator retains a full audit trail.
       const sessionIdsInWindow = new Set(
         sinceLastRun
           .map((e) => e.sessionId)
@@ -566,14 +547,12 @@ export async function runPeerProfileReasoner(
       // persisted. Track the candidate count locally and only
       // commit it to the run-wide budget after `writePeerProfile`
       // returns successfully (Gotcha #25 — don't destroy old state
-      // before confirming new state succeeds).
       const appliedFieldsForPeer: string[] = [];
       let droppedDueToCap = 0;
       let invalidProposalSeen = false;
       for (const proposal of proposals) {
         // Use a candidate-budget projection so we never propose more
         // than the run-wide cap allows even before we know the write
-        // will succeed.
         const candidateBudget =
           maxFields - fieldsAppliedTotal - appliedFieldsForPeer.length;
         if (candidateBudget <= 0) {
@@ -581,7 +560,6 @@ export async function runPeerProfileReasoner(
           continue;
         }
         // Final defensive guard against prototype keys (parser
-        // already drops them, but be redundant for safety).
         if (
           proposal.field === "__proto__" ||
           proposal.field === "constructor" ||
@@ -592,7 +570,6 @@ export async function runPeerProfileReasoner(
         }
         // Sanity-check field key matches a conservative pattern so a
         // hostile LLM can't sneak path-traversal-shaped keys through
-        // for downstream consumers.
         if (!/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(proposal.field)) {
           invalidProposalSeen = true;
           continue;
@@ -645,7 +622,6 @@ export async function runPeerProfileReasoner(
       // Write succeeded — NOW commit the budget. A throw above
       // bubbles to the outer catch, where the peer is recorded as
       // `error` and the global cap remains intact for subsequent
-      // peers (Codex P1 fix on PR #736).
       fieldsAppliedTotal += appliedFieldsForPeer.length;
 
       // Append a run marker so the next reasoner pass can compute
@@ -653,7 +629,6 @@ export async function runPeerProfileReasoner(
       // file. The marker is best-effort — a write failure here
       // logs but does not roll back the profile (the operator
       // would prefer a slightly noisy threshold over a lost
-      // profile update).
       const wantsMarker = options.appendRunMarkerToLog ?? true;
       if (wantsMarker) {
         try {

@@ -1,9 +1,3 @@
-/**
- * Assistant bench: meeting prep.
- *
- * Given an upcoming meeting and attendees, generate a prep brief. Judged on
- * attendee-context accuracy, topic recall, and open-thread surfacing.
- */
 
 import type {
   BenchmarkDefinition,

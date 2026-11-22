@@ -127,8 +127,6 @@ const TRUNCATION_MARKER = "\n\n[Remnic observe truncated: payload exceeded clien
 export class RemnicClient {
   private requestId = 0;
   private versionCheckStarted = false;
-  // Circuit-breaker state: when the daemon is known-unreachable, observe/recall
-  // callers skip fast instead of blocking every turn on a doomed request (#1626).
   private unreachableUntil = 0;
   private consecutiveFailures = 0;
   /** Bumped on every markReachable so a deferred startup probe can drop a stale unreachable. */
@@ -153,11 +151,6 @@ export class RemnicClient {
     this.reachabilityGeneration += 1;
   }
 
-  /**
-   * Enter (or extend) an unreachable cooldown. The cooldown grows exponentially
-   * with consecutive failures (base, 2×base, 4×base, …) capped at 60 s, so a
-   * flapping daemon is retried gently while a hard-down host backs off hard.
-   */
   markUnreachable(baseCooldownMs: number): void {
     this.consecutiveFailures += 1;
     const factor = 2 ** Math.min(this.consecutiveFailures - 1, 4);
@@ -165,10 +158,6 @@ export class RemnicClient {
     this.unreachableUntil = Date.now() + cooldown;
   }
 
-  /**
-   * Trip unreachable only if no markReachable has run since `generation` was
-   * sampled. A late startup-health failure must not clobber a newer success.
-   */
   markUnreachableIfGeneration(generation: number, baseCooldownMs: number): void {
     if (generation !== this.reachabilityGeneration) return;
     this.markUnreachable(baseCooldownMs);
@@ -203,7 +192,6 @@ export class RemnicClient {
     if (this.versionCheckStarted) return;
     this.versionCheckStarted = true;
     try {
-      // Health has no release version; MCP initialize advertises serverInfo.version.
       const result = await this.mcpRequest("initialize", {
         protocolVersion: "2024-11-05",
         capabilities: {},
@@ -238,7 +226,6 @@ export class RemnicClient {
     const params = new URLSearchParams();
     if (this.config.namespace) params.set("namespace", this.config.namespace);
     if (sessionKey) params.set("session", sessionKey);
-    // Check the op this client's ENABLED write path uses: automatic turn
     // capture (observe) when observation is on, else the explicit store op.
     params.set("op", this.config.observeEnabled ? "observe" : "memory_store");
     const qs = params.toString();
@@ -250,10 +237,6 @@ export class RemnicClient {
         undefined,
         options,
       );
-      // Both branches require the full contract before they are trusted: an
-      // `ok:true` without a concrete namespace, or an `ok:false` without a known
-      // reason + concrete namespace, is malformed → indeterminate, never a false
-      // writable/not-writable verdict.
       if (
         payload?.ok === true &&
         typeof payload.namespace === "string" &&
@@ -281,7 +264,6 @@ export class RemnicClient {
     cwd: string,
     options: RequestOptions = {},
   ): Promise<RecallResponse> {
-    // Recall is a read-only query; retry transient connection failures with the
     // same budget as observe (#1602). Default to the per-turn budget when the
     // caller omits timeoutMs so the retries share one deadline (like observe)
     // instead of each attempt reusing the full general request timeout (cursor
@@ -326,7 +308,6 @@ export class RemnicClient {
     options: ObserveOptions = {},
   ): Promise<Record<string, unknown>> {
     const maxBytes = options.maxBytes ?? this.config.observeMaxBytes;
-    // Observe runs on the live turn hooks, so bound it by the per-turn budget
     // (#1626) regardless of how many chunks the payload splits into. A missing
     // override previously let single-chunk observe fall back to the 60s general
     // budget while multi-chunk used the 20s turn budget (cursor review). An
@@ -350,7 +331,6 @@ export class RemnicClient {
     if (chunks.length === 1) {
       return this.requestWithRetry("POST", "/engram/v1/observe", chunks[0], retryOptions);
     }
-    // Multiple chunks: send sequentially within the SAME per-turn deadline so
     // the TOTAL observe time stays under turnBudgetMs (not per-chunk), which
     // keeps it inside the host's ~30s handler budget (#1626). Each chunk is
     // retried independently on transient connection failures; observe is
@@ -445,7 +425,6 @@ export class RemnicClient {
   async mcpListTools(options: RequestOptions = {}): Promise<McpTool[]> {
     const result = await this.mcpRequest("tools/list", {}, options);
     const tools = result.tools;
-    // A malformed catalog (no tools array) must fail the listing, not pass as
     // an empty one: registerMcpTools would treat it as a successful
     // zero-tool listing and leave the session silently without Remnic tools.
     if (!Array.isArray(tools)) {
@@ -497,10 +476,6 @@ export class RemnicClient {
     }
   }
 
-  /**
-   * Single HTTP attempt with the configured timeout. No retry — retry of
-   * transient connection failures lives in {@link requestWithRetry}.
-   */
   private async request<T = Record<string, unknown>>(
     method: string,
     pathname: string,
@@ -596,7 +571,6 @@ export class RemnicClient {
     options: RequestOptions = {},
   ): Promise<T> {
     const maxRetries = options.maxRetries ?? 0;
-    // Share ONE deadline across all attempts (including backoff sleeps) when the
     // caller passes a per-turn/per-operation budget, so a late transient failure
     // cannot burn a full timeout on every retry and overshoot the host's ~30s
     // handler window (#1602/#1626 — cursor + codex reviews). The first attempt
@@ -615,7 +589,6 @@ export class RemnicClient {
         if (attempt >= maxRetries || !isTransientNetworkError(err)) throw err;
         const delayMs = RETRY_BASE_DELAY_MS * 2 ** attempt;
         if (hasDeadline) {
-          // sleeping if the sleep alone would overshoot the remaining budget,
           // so a sub-backoff timeoutMs never blocks for the full backoff only
           // to then throw (cursor review).
           const remainingBeforeSleep = deadline - Date.now();
@@ -738,13 +711,11 @@ export function chunkObservePayload(
 ): ObserveBody[] {
   const emptyEnvelope = buildObserveEnvelope(config, sessionKey, cwd, []);
   const envelopeOverhead = jsonBytes(emptyEnvelope) +
-    // The idempotencyKey is appended after hashing, so it adds a fixed number of
     // serialized bytes (fixed for a given nonce); reserve exactly that much so bodies
     // still respect observeMaxBytes (#1600 caps).
     (jsonBytes({ ...emptyEnvelope, idempotencyKey: observeIdempotencyKey(emptyEnvelope, nonce) }) - jsonBytes(emptyEnvelope));
   const messageBudget = maxBytes - envelopeOverhead;
   if (messageBudget <= 0) {
-    // The envelope overhead alone meets/exceeds the cap, so no valid body can
     // fit — return a single chunk and let the daemon reject it visibly (this is
     // a degenerate/misconfigured cap, not the common case). A small-but-positive
     // budget (<=1024) is NOT degenerate: truncate/pack normally so oversized
@@ -769,7 +740,6 @@ export function chunkObservePayload(
       chunks.push([truncateObserveMessage(message, messageBudget)]);
       continue;
     }
-    // Account for the JSON array comma separator before this message when it is
     // not the first in the chunk, so the serialized body never overshoots the
     // cap (review: cursor).
     if (current.length > 0 && currentSize + 1 + size > messageBudget) {
@@ -791,7 +761,6 @@ export function chunkObservePayload(
 const decoder = new TextDecoder();
 
 function truncateObserveMessage(message: ObserveMessage, budgetBytes: number): ObserveMessage {
-  // A truncated observe keeps ONLY role + a content marker, dropping rawContent
   // and parts. Live Pi turns carry the full original message in rawContent and
   // parsed parts; those fields dominate the serialized size and would keep the
   // chunk over the cap (defeating #1600), so they are removed — the daemon
@@ -800,7 +769,6 @@ function truncateObserveMessage(message: ObserveMessage, budgetBytes: number): O
   const slim: ObserveMessage = { role: message.role, content: "" };
   const markerOnly = jsonBytes({ ...slim, content: TRUNCATION_MARKER });
   if (markerOnly > budgetBytes) {
-    // Pathological: even the marker alone doesn't fit. Keep it anyway so the
     // turn isn't silently dropped.
     return { role: message.role, content: TRUNCATION_MARKER };
   }
@@ -808,7 +776,6 @@ function truncateObserveMessage(message: ObserveMessage, budgetBytes: number): O
   if (jsonBytes({ ...slim, content: fullContent }) <= budgetBytes) {
     return { role: message.role, content: fullContent };
   }
-  // Binary-search the largest content slice whose slim message fits. Slicing by
   // encoded bytes keeps multi-byte sequences intact where possible; the decoder
   // replaces any dangling tail with the replacement char.
   const encoded = encoder.encode(message.content);

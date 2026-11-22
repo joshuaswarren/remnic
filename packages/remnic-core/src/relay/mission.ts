@@ -1419,7 +1419,6 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   }
 
   const eventWindow = filteredEvents.slice(Math.max(0, filteredEvents.length - options.limit));
-  // `found` describes whether the mission has any valid persisted evidence,
   // not whether the caller's optional time window happened to select an
   // event. A known mission with an empty [since, until) window is distinct
   // from a mission that has never existed.

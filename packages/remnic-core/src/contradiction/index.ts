@@ -1,10 +1,3 @@
-/**
- * Contradiction detection module (issue #520).
- *
- * Nightly scan that pairs semantically-similar active memories,
- * classifies them with an LLM-as-judge, and queues contradicting
- * pairs for user resolution.
- */
 
 export { runContradictionScan, ACTIVE_STATUSES, type ScanResult, type ScanDependencies } from "./contradiction-scan.js";
 export {

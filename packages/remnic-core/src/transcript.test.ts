@@ -107,7 +107,6 @@ test("readRecent (session fast path) returns a turn written at the same instant 
   const now = new Date("2026-06-29T12:00:00.000Z");
 
   const entries = await withFrozenNow(now, async () => {
-    // Seed an entry stamped at the exact instant the read observes as "now".
     await manager.append(entryAt(now.toISOString(), sessionKey, "boundary"));
     return manager.readRecent(48, sessionKey);
   });

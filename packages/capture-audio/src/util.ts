@@ -1,4 +1,3 @@
-/** Small dependency-free helpers shared across the package. */
 
 import { randomFillSync } from "node:crypto";
 
@@ -35,12 +34,6 @@ function encodeRandom(): string {
   return out;
 }
 
-/**
- * Format a Date as YYYY-MM-DD in the given IANA timezone. Local copy of
- * the wearables-pipeline helper — capture-audio is à-la-carte and does
- * not depend on @remnic/core (that dependency arrives with the connector
- * in a later checklist item).
- */
 export function dateInTimezone(date: Date, timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
@@ -59,11 +52,6 @@ const LOOPBACK_HOSTS: Record<string, true> = {
   "::ffff:127.0.0.1": true,
 };
 
-/**
- * A host is loopback when it can only be reached from this machine.
- * Binding anything else (a LAN address, 0.0.0.0, ::) exposes the daemon
- * to the network and REQUIRES bearer-token auth on every request.
- */
 /** Strip a single pair of surrounding brackets from a URL-authority IPv6 host
  *  (`[::1]` -> `::1`); non-bracketed hosts pass through unchanged. */
 export function stripIpv6Brackets(host: string): string {

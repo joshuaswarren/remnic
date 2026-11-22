@@ -18,11 +18,6 @@ import {
 export interface TargetedFactRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
   sessionId?: string;
-  /**
-   * Ordered, read-authorized LCM read key set (primary overlay → project/root
-   * fallbacks). When present, evidence is gathered across EVERY key and merged
-   * under this section's budget (#1505 codex P2). Falls back to `sessionId`.
-   */
   sessionIds?: readonly (string | undefined)[];
   query: string;
   maxChars: number;
@@ -55,13 +50,6 @@ export async function buildTargetedFactRecallSection(
     return "";
   }
 
-  // #1505 codex P2: gather candidates across the ordered LCM read key set
-  // (primary overlay → project/root fallbacks) and UNION them into the existing
-  // rank/dedupe/budget pass, so stronger project-fallback evidence is not masked
-  // by a weak primary-key hit. `gatherAcrossReadSessions` isolates a per-key read
-  // failure so a corrupt/locked fallback index can't discard the primary key's
-  // evidence; the single-key path collects exactly one search+scan pair and
-  // propagates a failure as before — byte-for-byte the pre-#1505 behavior.
   const collected: EvidencePackItem[] = [];
   await gatherAcrossReadSessions(resolveLcmReadSessionIds(options), async (sessionId) => {
     const scoped = { ...options, sessionId };
@@ -220,21 +208,6 @@ async function collectTargetedFactScanItems(
   return items;
 }
 
-/**
- * Issue #1539 PR3: targeted-fact now routes dedup/score/threshold/sort through
- * the unified spine (`unifiedDedupeAndRank`). The divergence that lived inline
- * here — append-normalized-numeric-cues content transform, relevance scoring on
- * ORIGINAL content, default DESC turn-index ordering with -1 sentinel for
- * missing turns — is now declared config on the spine. The score and
- * appendNormalizedNumericCues helpers stay in this module because they are
- * genuinely per-tier policy; only the duplicated dedup/sort/threshold machinery
- * moved out.
- *
- * Behavior is byte-for-byte identical to the inline implementation it replaces
- * (the spine was extracted to match it exactly; see recall-pipeline-stages.ts).
- * The targeted-fact-recall.test.ts suite (42 cases, incl. the search/scan
- * ordering and summary insertion tests) is the characterization.
- */
 function rankAndDedupeTargetedFactItems(
   items: EvidencePackItem[],
   query: string,

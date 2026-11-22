@@ -161,7 +161,6 @@ export class LanceDbBackend implements SearchBackend {
     const docs = await scanMemoryDir(memoryDir);
     if (isSearchAborted(execution)) return false;
     if (docs.length === 0) {
-      // Clear stale data when no docs remain
       try {
         const db = await this.ensureDb();
         await db.dropTable(collection).catch(() => {});
@@ -236,7 +235,6 @@ export class LanceDbBackend implements SearchBackend {
         rows.length > 0 && rows.every((row) => row.vectorProvider === embeddingProviderIdentity),
       );
       if (isSearchAborted(execution)) return false;
-      // FTS index on the content column.
       await this.createFtsIndex(table);
       if (collection === this.collection) this.table = table;
       return true;
@@ -358,7 +356,6 @@ export class LanceDbBackend implements SearchBackend {
   }
 
   private async ensureTableForCollection(collection: string): Promise<any> {
-    // For the default collection, use the cached instance
     if (collection === this.collection) return this.ensureTable();
 
     const db = await this.ensureDb();
@@ -368,7 +365,6 @@ export class LanceDbBackend implements SearchBackend {
       return await db.openTable(collection);
     }
 
-    // Create empty table with schema
     const emptyRow = {
       docid: "__placeholder__",
       path: "",
@@ -432,9 +428,7 @@ export class LanceDbBackend implements SearchBackend {
       vectorProvider: "",
     };
     this.table = await db.createTable(this.collection, [emptyRow]);
-    // Create FTS index on content column
     await this.createFtsIndex(this.table);
-    // Remove placeholder row
     try {
       await this.table.delete("docid = '__placeholder__'");
     } catch {
@@ -482,7 +476,6 @@ export class LanceDbBackend implements SearchBackend {
         const embedResult = await this.resolveCompatibleQueryEmbedding(table, query, execution);
         throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         if (!embedResult) {
-          // Fall back to FTS
           const results = await table.search(query, "fts").limit(limit).toArray();
           throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
           return this.mapRows(results);
@@ -492,7 +485,6 @@ export class LanceDbBackend implements SearchBackend {
         return this.mapRows(results);
       }
 
-      // hybrid — try FTS+vector with RRF reranking
       const embedResult = await this.resolveCompatibleQueryEmbedding(table, query, execution);
       throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
       if (!embedResult) {

@@ -29,10 +29,7 @@ import {
 } from "./admin-surfaces.js";
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
-/** Minimal namespace-enabled config for admin-surface tests. */
 function makeConfig(overrides: Record<string, unknown> = {}) {
   return parseConfig({
     namespacesEnabled: true,
@@ -45,27 +42,18 @@ function makeConfig(overrides: Record<string, unknown> = {}) {
 const makeTempDir = (): Promise<string> => managedMakeTempDir("remnic-admin-test-");
 
 // ---------------------------------------------------------------------------
-// redactSensitive
 // ---------------------------------------------------------------------------
 
 test("redactSensitive redacts bearer-token-shaped values and sensitive keys", () => {
   const redacted = redactSensitive({
     namespace: "default",
-    // The KEY name triggers redaction (contains "token"); value is an inert fixture.
     authToken: "test-auth-token-fixture",
     nested: {
-      // The KEY name triggers redaction (matches "bearer"); value is inert.
       bearer: "test-bearer-fixture",
       safe: "keep me",
-      // The KEY name triggers redaction (matches "password"); value is inert.
       password: "test-password-fixture",
     },
-    // A value matching BEARER_VALUE_RE under a non-sensitive key exercises the
-    // value-based branch independently. "bearer-test" is obviously not a real
-    // credential — it just matches the prefix regex.
     description: "bearer-test-fixture",
-    // A ≥40-char opaque string under a non-sensitive key exercises the long-
-    // opaque branch. All-a's has zero entropy so it won't trip secret scanners.
     opaqueField: "a".repeat(46),
     array: ["bearer-test-array-value", "normal value"],
     identityToken: "ns-test-routing-token", // routing token — NOT redacted (exempt key)
@@ -84,12 +72,8 @@ test("redactSensitive redacts bearer-token-shaped values and sensitive keys", ()
     ((redacted as Record<string, unknown>).nested as Record<string, unknown>).password,
     REDACTED,
   );
-  // Value-based branch: "bearer-test-fixture" matches BEARER_VALUE_RE even under
-  // a non-sensitive key.
   assert.equal((redacted as Record<string, unknown>).description, REDACTED);
-  // Long-opaque branch: 46-char alphanumeric string under a non-sensitive key.
   assert.equal((redacted as Record<string, unknown>).opaqueField, REDACTED);
-  // The 16-hex identity token must survive (it's a routing token, not a credential).
   assert.equal((redacted as Record<string, unknown>).identityToken, "ns-test-routing-token");
 });
 
@@ -101,7 +85,6 @@ test("redactSensitive leaves primitives untouched", () => {
 });
 
 // ---------------------------------------------------------------------------
-// inspectScope — single-user (namespaces disabled)
 // ---------------------------------------------------------------------------
 
 test("inspectScope returns a self-layer plan in single-user mode", () => {
@@ -118,7 +101,6 @@ test("inspectScope returns a self-layer plan in single-user mode", () => {
 });
 
 // ---------------------------------------------------------------------------
-// inspectScope — namespace-aware: principal derived from session key
 // ---------------------------------------------------------------------------
 
 test("inspectScope resolves a principal-scoped write namespace when namespaces are enabled", () => {
@@ -134,8 +116,6 @@ test("inspectScope resolves a principal-scoped write namespace when namespaces a
     inspection.readNamespaces.includes("alice"),
     "read namespaces must include the principal self namespace",
   );
-  // The plan field MUST be present so the "same plan as runtime resolver"
-  // acceptance test holds — the dashboard displays this verbatim.
   assert.ok(inspection.plan, "plan must be present");
   assert.equal(inspection.plan.baseNamespace, inspection.writeNamespace);
 });
@@ -160,7 +140,6 @@ test("inspectScope flags an ignored namespace override that is not readable", ()
     sessionKey: "alice:bot:x:1",
     namespace: "protected",
   });
-  // The override is not readable by alice → warning + plan falls through.
   assert.equal(inspection.namespaceOverride, undefined);
   assert.ok(
     inspection.warnings.some((w) => w.includes("not readable")),
@@ -169,7 +148,6 @@ test("inspectScope flags an ignored namespace override that is not readable", ()
 });
 
 // ---------------------------------------------------------------------------
-// listAdminNamespaces
 // ---------------------------------------------------------------------------
 
 test("listAdminNamespaces returns disabled payload when the catalog is off", async () => {
@@ -188,12 +166,9 @@ test("listAdminNamespaces lists configured + discovered namespaces and marks sta
     await catalog.registerConfiguredNamespaces();
     const result = await listAdminNamespaces({ catalog, staleThresholdDays: 0 });
     assert.equal(result.enabled, true);
-    // default + shared should both be present.
     const names = result.entries.map((entry) => entry.namespace);
     assert.ok(names.includes("default"), "default namespace must be listed");
     assert.ok(names.includes("shared"), "shared namespace must be listed");
-    // staleThresholdDays: 0 → every entry written > 0 days ago is stale.
-    // freshly-registered namespaces have no lastWriteAt, so they are stale.
     assert.ok(result.entries.every((entry) => entry.stale), "fresh entries should be stale");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -215,7 +190,6 @@ test("listAdminNamespaces filters by kind", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// gatherMaintenanceHealth
 // ---------------------------------------------------------------------------
 
 test("gatherMaintenanceHealth reports degraded mode when QMD probe fails", async () => {
@@ -270,13 +244,11 @@ test("gatherMaintenanceHealth reports healthy when QMD probe returns available",
 });
 
 // ---------------------------------------------------------------------------
-// auditTranscripts
 // ---------------------------------------------------------------------------
 
 test("auditTranscripts detects mixed other/default data and stays dry-run", async () => {
   const memoryDir = await makeTempDir();
   try {
-    // Seed a shared other/default file holding two distinct sessions.
     const transcriptsDir = path.join(memoryDir, "transcripts", "other", "default");
     await mkdir(transcriptsDir, { recursive: true });
     const today = new Date().toISOString().slice(0, 10);
@@ -312,10 +284,8 @@ test("auditTranscripts reports clean when no legacy data exists", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// promoteMemory — reason + authorization enforcement
 // ---------------------------------------------------------------------------
 
-/** In-memory storage provider for promotion tests. */
 function makeMemoryStorageProvider(): PromotionStorageProvider & {
   written: Array<{ namespace: string; memoryId: string; tags: string[]; lineage: string[] }>;
 } {
@@ -453,10 +423,8 @@ test("promoteMemory throws source_not_found when the source memory is absent", a
 });
 
 // ---------------------------------------------------------------------------
-// gatherMaintenanceHealth — honest QMD state classification (issue #1658 thread 1)
 // ---------------------------------------------------------------------------
 
-/** Build a QMD health snapshot fixture for the provider. */
 function qmdFixture(namespace: string, overrides: Partial<Record<string, unknown>> = {}) {
   return {
     namespace,
@@ -504,9 +472,6 @@ test("gatherMaintenanceHealth classifies an unknown collection state distinctly 
       catalog,
       qmdHealthProvider: async (ns) => qmdFixture(ns, { collectionState: "unknown" }),
     });
-    // "unknown" is still counted degraded (matches the router health path) so
-    // aggregate alerting is unchanged, but it is now RENDERED honestly as a
-    // distinct state rather than collapsed into "missing".
     assert.equal(report.degradedMode, true);
     const entry = report.perNamespace.find((e) => e.namespace === "default");
     assert.ok(entry);
@@ -574,7 +539,6 @@ test("gatherMaintenanceHealth reports not_probed when no provider is supplied (i
 });
 
 // ---------------------------------------------------------------------------
-// promoteMemory — honest project-context promotion reasons (issue #1658 thread 2)
 // ---------------------------------------------------------------------------
 
 test("promoteMemory reports an honest 'no active scope profile' reason for a project target without a profile (issue #1658 thread 2)", async () => {
@@ -616,7 +580,6 @@ test("promoteMemory reports an honest 'no active scope profile' reason for a non
   assert.equal(result.ok, false);
   const target = result.targets[0]!;
   assert.match(target.reason, /no active scope profile/);
-  // Non-project targets must NOT mention coding context.
   assert.doesNotMatch(target.reason, /coding context/i);
 });
 
@@ -635,7 +598,6 @@ test("promoteMemory surfaces the profile layer's 'missing project context' reaso
     principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
     namespacePolicies: [{ name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
   });
-  // No coding context → the userProject layer resolves "missing project context".
   const scopeProfilePlan = resolveScopeProfilePlan({
     config,
     principal: "alice",
@@ -662,7 +624,6 @@ test("promoteMemory surfaces the profile layer's 'missing project context' reaso
 });
 
 // ---------------------------------------------------------------------------
-// inspectScope — read-only override honest warning (issue #1658 thread 6)
 // ---------------------------------------------------------------------------
 
 test("inspectScope warns when an explicit override is readable but not writable (issue #1658 thread 6)", () => {
@@ -670,7 +631,6 @@ test("inspectScope warns when an explicit override is readable but not writable 
     principalFromSessionKeyMode: "prefix",
     principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
     namespacePolicies: [
-      // alice can READ "audit-log" but cannot WRITE it.
       { name: "audit-log", readPrincipals: ["alice", "bob"], writePrincipals: ["bob"] },
       { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
     ],
@@ -680,10 +640,8 @@ test("inspectScope warns when an explicit override is readable but not writable 
     sessionKey: "alice:bot:x:1",
     namespace: "audit-log",
   });
-  // The override is readable → it becomes the effective write namespace...
   assert.equal(inspection.namespaceOverride, "audit-log");
   assert.equal(inspection.writeNamespace, "audit-log");
-  // ...but alice cannot write it → an honest warning must surface the mismatch.
   assert.ok(
     inspection.warnings.some(
       (w) => w.includes("audit-log") && w.includes("not writable") && w.includes("writes will be rejected"),
@@ -714,11 +672,6 @@ test("inspectScope does not warn when an explicit override is writable (issue #1
 });
 
 test("gatherMaintenanceHealth preserves the original qmdDegraded invariant for an unrecognized collectionState (issue #1658 thread 1)", async () => {
-  // The original degraded formula was: !available || "missing" || "unknown".
-  // An available backend with any OTHER collectionState (present/skipped/and any
-  // unrecognized value) was NOT degraded. The classified qmdState surfaces the
-  // unrecognized value honestly, but the degraded bit must stay false so the
-  // aggregate alerting invariant is byte-for-byte unchanged.
   const memoryDir = await makeTempDir();
   try {
     const config = makeConfig({ memoryDir });

@@ -1,15 +1,3 @@
-/**
- * Coding-graph benchmark harness tests (issue #1557).
- *
- * Ordered per the issue's prove-fail-first discipline:
- *   1. Generator determinism — same params, byte-identical output (rule 38).
- *   2. Generator distinctness — different seeds produce different output.
- *   3. Harness smoke test — index a small fixture, assert every metric key
- *      is present with plausible types.
- *   4. Regression gate — passes when metrics are within tolerance.
- *   5. Regression gate prove-fail — FAILS when a baseline claims a metric
- *      much faster than measured (rule 50 — a real failing step).
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -41,8 +29,6 @@ import {
 } from "@remnic/coding-graph";
 
 // ──────────────────────────────────────────────────────────────────────────
-// 1. Generator determinism (rule 38).
-// ──────────────────────────────────────────────────────────────────────────
 
 test("generator: same seed + same params → byte-identical output", () => {
   const config = { ...DEFAULT_SMOKE_FIXTURE, fileCount: 10, symbolsPerFile: 5 };
@@ -57,7 +43,6 @@ test("generator: deterministic symbol spans and content hashes", () => {
   const config = { ...DEFAULT_SMOKE_FIXTURE, fileCount: 5, symbolsPerFile: 3, seed: 999 };
   const repo = generateSyntheticRepo(config);
 
-  // Re-generate and verify byte-level identity of specific fields.
   const repo2 = generateSyntheticRepo(config);
   const sym0a = repo.files[0].symbols[0];
   const sym0b = repo2.files[0].symbols[0];
@@ -69,15 +54,12 @@ test("generator: deterministic symbol spans and content hashes", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// 2. Generator distinctness — different seeds → different repos.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("generator: different seeds produce different repos", () => {
   const repo1 = generateSyntheticRepo({ ...DEFAULT_SMOKE_FIXTURE, seed: 100 });
   const repo2 = generateSyntheticRepo({ ...DEFAULT_SMOKE_FIXTURE, seed: 99999 });
 
-  // Different seeds produce different edge targets — the entire edge
-  // structure should differ (different targets, different confidences).
   const edges1 = JSON.stringify(repo1.files.map((f) => f.edges));
   const edges2 = JSON.stringify(repo2.files.map((f) => f.edges));
   assert.notEqual(edges1, edges2, "different seeds must produce different edge structure");
@@ -114,7 +96,6 @@ test("seeded RNG: produces stable, reproducible sequence", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// 3. Harness smoke test — every metric key present with plausible types.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("harness smoke: small fixture produces complete report with all metric keys", async () => {
@@ -123,27 +104,22 @@ test("harness smoke: small fixture produces complete report with all metric keys
     iterations: 20,
   });
 
-  // Schema version.
   assert.equal(report.schemaVersion, CODING_GRAPH_BENCH_SCHEMA_VERSION);
 
-  // Machine fingerprint.
   assert.ok(typeof report.machine.arch === "string" && report.machine.arch.length > 0);
   assert.ok(typeof report.machine.nodeVersion === "string");
 
-  // Fixture metadata.
   assert.equal(report.fixture.fileCount, 10);
   assert.equal(report.fixture.symbolCount, 50);
   assert.ok(report.fixture.edgeCount > 0, "fixture should have edges");
   assert.ok(report.fixture.approximateLoc > 0);
 
-  // Full index metrics.
   assert.ok(report.fullIndexMs.ms > 0, "fullIndexMs must be positive");
   assert.ok(
     report.fullIndexLocsPerSecond > 0,
     "fullIndexLocsPerSecond must be positive",
   );
 
-  // Incremental update distribution.
   assert.equal(report.incrementalUpdate.iterations, 20);
   assert.ok(report.incrementalUpdate.p50 >= 0);
   assert.ok(
@@ -152,10 +128,6 @@ test("harness smoke: small fixture produces complete report with all metric keys
   );
   assert.equal(report.incrementalUpdate.samplesMs.length, 20);
 
-  // Incremental MODIFIED-content update distribution (#1688 item 1) — the
-  // change-heavy path. It does strictly more work than the idempotent no-op,
-  // so p50 should be >= the idempotent p50 (defensive lower bound; not a
-  // strict perf assertion since both are sub-ms and noisy).
   assert.equal(report.incrementalModifiedUpdate.iterations, 20);
   assert.ok(report.incrementalModifiedUpdate.p50 >= 0);
   assert.ok(
@@ -164,33 +136,26 @@ test("harness smoke: small fixture produces complete report with all metric keys
   );
   assert.equal(report.incrementalModifiedUpdate.samplesMs.length, 20);
 
-  // Trace path.
   assert.equal(report.tracePath.iterations, 20);
   assert.ok(report.tracePath.p95 >= 0);
   assert.equal(report.tracePath.samplesMs.length, 20);
 
-  // Search graph.
   assert.equal(report.searchGraph.iterations, 20);
   assert.ok(report.searchGraph.p95 >= 0);
   assert.equal(report.searchGraph.samplesMs.length, 20);
 
-  // Dead code.
   assert.ok(report.deadCodeMs.ms >= 0);
 
-  // DB size.
   assert.ok(report.dbBytes > 0, "DB file must exist and be non-empty");
   assert.ok(report.dbBytesPerKloc > 0);
 
-  // Peak RSS.
   assert.ok(report.peakRssBytes > 0);
 
-  // Graph counts.
   assert.ok(report.graphNodeCount > 0, "graph should have nodes after index");
   assert.ok(report.graphEdgeCount > 0, "graph should have edges after index");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// 4. Regression gate — passes within tolerance.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("regression gate: passes when metrics match the baseline", async () => {
@@ -199,8 +164,6 @@ test("regression gate: passes when metrics match the baseline", async () => {
     iterations: 20,
   });
 
-  // Build a baseline from the report itself — metrics are identical, so
-  // the gate must pass with any tolerance.
   const baseline = buildBaselineFromReport(report, "smoke baseline");
   const result = checkCodingGraphRegression(report, baseline, 30);
 
@@ -214,20 +177,6 @@ test("regression gate: tolerates a slowdown strictly below the tolerance bound",
     iterations: 20,
   });
 
-  // History (#1688, #1838): this test used to run the benchmark TWICE and
-  // assert the two wall-clock reports stayed within tolerance. That asserts
-  // a statistical property of a shared CI runner, not a property of the
-  // gate, and it flaked on untouched branches AND blocked two release runs
-  // on 2026-07-11 even after the #1688 hardening. The tolerance contract is
-  // deterministic when tested like the prove-fail test below: perturb the
-  // BASELINE by a known factor and assert the gate's verdict. Each metric is
-  // moved 20% into ITS OWN regressing direction: lower-is-better (ms, bytes)
-  // baselines sit below the measured value so the measurement reads as a
-  // +20% slowdown; higher-is-better (LOC/s) baselines sit ABOVE the measured
-  // value so the measurement reads as a 20% throughput drop
-  // (chatgpt-codex-connector #1843 P2). Both are 20% in the regressing
-  // direction - ratio math, no wall-clock coupling - strictly below the 30%
-  // tolerance, so the gate MUST pass outright. No stable-metric waiver.
   const realMetrics = extractMetrics(report);
   const scaled = Object.fromEntries(
     Object.entries(realMetrics).map(([key, value]) => {
@@ -259,8 +208,6 @@ test("regression gate: tolerates a slowdown strictly below the tolerance bound",
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// 5. Regression gate prove-fail — gross regression is a REAL failure
-//    (rule 50 — the gate fails, not warns).
 // ──────────────────────────────────────────────────────────────────────────
 
 test("regression gate prove-fail: gross slowdown FAILS the gate", async () => {
@@ -269,8 +216,6 @@ test("regression gate prove-fail: gross slowdown FAILS the gate", async () => {
     iterations: 20,
   });
 
-  // Construct a baseline that claims fullIndexMs is 10× faster than
-  // measured — this is a gross regression that MUST trip the gate.
   const realMetrics = extractMetrics(report);
   const aggressiveBaseline: CodingGraphBaseline = {
     schemaVersion: report.schemaVersion,
@@ -307,7 +252,6 @@ test("regression gate prove-fail: gross slowdown FAILS the gate", async () => {
 });
 
 test("regression gate: higherIsBetter metric regresses when throughput drops", () => {
-  // Synthetic report + baseline — no DB needed.
   const mockReport: CodingGraphBenchReport = {
     schemaVersion: 1,
     timestamp: "2026-01-01T00:00:00.000Z",
@@ -368,7 +312,6 @@ test("regression gate: higherIsBetter metric regresses when throughput drops", (
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// 6. Regression gate — fixture mismatch is a hard failure.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("regression gate: fixture mismatch fails the gate", () => {
@@ -429,7 +372,6 @@ test("regression gate: fixture mismatch fails the gate", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// 6b. Regression gate — a seed-only mismatch still fails (every knob counts).
 // ──────────────────────────────────────────────────────────────────────────
 
 test("regression gate: seed-only fixture mismatch fails the gate", () => {
@@ -468,7 +410,6 @@ test("regression gate: seed-only fixture mismatch fails the gate", () => {
   const baseline: CodingGraphBaseline = {
     schemaVersion: 1,
     machine: baseReport.machine,
-    // Identical except seed: 42 vs 99 — every other knob matches.
     fixtureConfig: { seed: 42, fileCount: 20, symbolsPerFile: 10, callDensity: 0.3, language: "typescript" },
     metrics: {
       fullIndexMs: 10,
@@ -491,9 +432,6 @@ test("regression gate: seed-only fixture mismatch fails the gate", () => {
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// 7. Machine-fingerprint guard (#1688 item 2) — a baseline from a different
-//    machine class must SKIP the comparison (passed: true + skipped: true),
-//    not fail CI on legitimate hardware variance.
 // ──────────────────────────────────────────────────────────────────────────
 
 const SAME_MACHINE: MachineFingerprint = {
@@ -590,13 +528,11 @@ test("machine guard: different cpuModel SKIPS comparison", () => {
 });
 
 test("machine guard: different node MAJOR version SKIPS (minor does not)", () => {
-  // Major differs (v23 vs v22) → skip.
   const majorDiff = reportWithMachine({ ...SAME_MACHINE, nodeVersion: "v23.0.0" });
   const r1 = checkCodingGraphRegression(majorDiff, baselineWithMachine(SAME_MACHINE), 30);
   assert.equal(r1.skipped, true, "different node major skips");
   assert.ok(r1.machineMismatch!.differingFields.includes("nodeVersion(major)"));
 
-  // Minor differs only (v22.5.0 vs v22.20.0) → same major → comparable, no skip.
   const minorDiff = reportWithMachine({ ...SAME_MACHINE, nodeVersion: "v22.5.0" });
   const r2 = checkCodingGraphRegression(minorDiff, baselineWithMachine(SAME_MACHINE), 30);
   assert.equal(r2.skipped, undefined, "same node major does not skip");
@@ -604,8 +540,6 @@ test("machine guard: different node MAJOR version SKIPS (minor does not)", () =>
 });
 
 test("machine guard: totalMemoryMb difference alone does NOT skip", () => {
-  // Memory alone rarely moves sub-ms SQLite ops; over-triggering the skip
-  // on memory would hide real regressions. Only memory differs here.
   const report = reportWithMachine({ ...SAME_MACHINE, totalMemoryMb: 16384 });
   const baseline = baselineWithMachine(SAME_MACHINE);
   const result = checkCodingGraphRegression(report, baseline, 30);
@@ -637,17 +571,9 @@ test("compareMachineFingerprints: lists every load-bearing differing field", () 
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// 8. Guard ordering (#1688 review) — structural invariants beat the
-//    machine-fingerprint skip. A misconfigured run (wrong fixture or
-//    incompatible schema) on a different machine must FAIL on its real
-//    problem, not be silently skipped as "hardware variance".
 // ──────────────────────────────────────────────────────────────────────────
 
 test("guard ordering: fixture mismatch beats machine-fingerprint skip", () => {
-  // Report is on a DIFFERENT machine (arch x64) AND has a different
-  // fixture (fileCount 1000 vs 20). Before the reorder this returned
-  // {passed:true, skipped:true} — the machine skip masked the fixture
-  // mismatch. Now the structural fixture check must fail first.
   const report = reportWithMachine({ ...SAME_MACHINE, arch: "x64" });
   const baseline = baselineWithMachine(SAME_MACHINE);
   const mismatchedReport: CodingGraphBenchReport = {
@@ -667,10 +593,6 @@ test("guard ordering: fixture mismatch beats machine-fingerprint skip", () => {
 });
 
 test("guard ordering: schema-version mismatch fails instead of crashing", () => {
-  // A pre-v2 report (schemaVersion 1) compared against a v2 baseline.
-  // Before the schema guard, extractMetrics dereferenced the v2-only
-  // incrementalModifiedUpdate field and threw a TypeError. Now the
-  // schema guard fails the gate with an actionable message.
   const report = reportWithMachine(SAME_MACHINE);
   const baseline = baselineWithMachine(SAME_MACHINE);
   const staleReport: CodingGraphBenchReport = {
@@ -689,8 +611,6 @@ test("guard ordering: schema-version mismatch fails instead of crashing", () => 
 });
 
 test("extractMetrics: throws on a report missing incrementalModifiedUpdate (guard is load-bearing)", () => {
-  // Proves the schema guard above is necessary: without it, extractMetrics
-  // deref-crashes on the v2-only field.
   const report = reportWithMachine(SAME_MACHINE);
   const staleReport = {
     ...report,
@@ -700,11 +620,6 @@ test("extractMetrics: throws on a report missing incrementalModifiedUpdate (guar
 });
 
 test("baseline guard: a non-numeric baseline metric fails instead of silently passing via NaN", () => {
-  // A corrupt baseline JSON carries fullIndexLocsPerSecond as a string.
-  // Before the guard, measVal / baseVal = number / "oops" = NaN, and
-  // NaN > tolerance is false so the gate silently PASSED. Now a
-  // present-but-non-finite baseline value fails loudly
-  // (chatgpt-codex-connector #1688 P2: 'Validate baseline metrics').
   const report = reportWithMachine(SAME_MACHINE);
   const baseline: CodingGraphBaseline = {
     ...baselineWithMachine(SAME_MACHINE),
@@ -724,10 +639,6 @@ test("baseline guard: a non-numeric baseline metric fails instead of silently pa
 });
 
 test("baseline guard: a simply-absent baseline metric stays additive (skipped, not failed)", () => {
-  // A baseline that omits a metric (vs. carrying a non-number) is the
-  // documented additive case — the missing key is skipped, not treated as
-  // corruption. This guards against the validation over-reaching and
-  // breaking the "keys present in BOTH" contract.
   const report = reportWithMachine(SAME_MACHINE);
   const baseline: CodingGraphBaseline = {
     ...baselineWithMachine(SAME_MACHINE),
@@ -736,7 +647,6 @@ test("baseline guard: a simply-absent baseline metric stays additive (skipped, n
       fullIndexLocsPerSecond: 100000,
       incrementalUpdateP50Ms: 1,
       incrementalUpdateP95Ms: 2,
-      // incrementalModifiedUpdateP50Ms / P95Ms deliberately absent.
       tracePathP95Ms: 2,
       searchGraphP95Ms: 2,
       deadCodeMs: 1,
@@ -749,11 +659,6 @@ test("baseline guard: a simply-absent baseline metric stays additive (skipped, n
 });
 
 test("fingerprint guard: a non-string nodeVersion fails instead of throwing in nodeMajor", () => {
-  // A corrupt JSON report carries nodeVersion as a number. Before the
-  // type guard, compareMachineFingerprints → nodeMajor called .replace on
-  // a number and threw. Now the wrong-typed field fails the gate with a
-  // structured message (chatgpt-codex-connector #1688 P2: 'Validate
-  // fingerprint field types').
   const report = reportWithMachine({
     ...SAME_MACHINE,
     nodeVersion: 22 as unknown as string,
@@ -769,7 +674,6 @@ test("fingerprint guard: a non-string nodeVersion fails instead of throwing in n
 });
 
 test("fingerprint guard: an empty machine object {} fails (present but fieldless)", () => {
-  // machine: {} passes the old null check but carries no typed fields.
   const report = reportWithMachine({} as MachineFingerprint);
   const baseline = baselineWithMachine(SAME_MACHINE);
   const result = checkCodingGraphRegression(report, baseline, 30);
@@ -780,9 +684,6 @@ test("fingerprint guard: an empty machine object {} fails (present but fieldless
 });
 
 test("fingerprint guard: a non-string non-null cpuModel fails (type validation)", () => {
-  // cpuModel is nullable but must be string-or-null. A numeric/object
-  // value is corruption (cursor Bugbot: 'Fingerprint skip omits cpuModel
-  // validation').
   const report = reportWithMachine({
     ...SAME_MACHINE,
     cpuModel: 123 as unknown as string,
@@ -795,11 +696,6 @@ test("fingerprint guard: a non-string non-null cpuModel fails (type validation)"
 });
 
 test("fingerprint guard: a null cpuModel is 'unknown', not a skip-triggering difference", () => {
-  // report.cpuModel=null (undetected) vs baseline.cpuModel="Apple M2 Max".
-  // Before the fix, null !== "Apple M2 Max" pushed a cpuModel difference
-  // and SKIPPED the gate, hiding a real regression. Now null is treated as
-  // "unknown" — with every other field matching, the gate compares normally
-  // (cursor Bugbot: 'Fingerprint skip omits cpuModel validation').
   const report = reportWithMachine({ ...SAME_MACHINE, cpuModel: null });
   const baseline = baselineWithMachine(SAME_MACHINE);
   const result = checkCodingGraphRegression(report, baseline, 30);
@@ -809,8 +705,6 @@ test("fingerprint guard: a null cpuModel is 'unknown', not a skip-triggering dif
 });
 
 test("fingerprint guard: two differing concrete cpuModels still SKIP", () => {
-  // Regression guard for the cpuModel change: when BOTH sides report a
-  // concrete (non-null) but different model, the designed skip still fires.
   const report = reportWithMachine({ ...SAME_MACHINE, cpuModel: "Apple M3 Pro" });
   const baseline = baselineWithMachine(SAME_MACHINE);
   const result = checkCodingGraphRegression(report, baseline, 30);
@@ -819,10 +713,6 @@ test("fingerprint guard: two differing concrete cpuModels still SKIP", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// 9. Modified-loop restore (#1688 review) — re-ingesting the full fixture
-//    restores cross-file edges that the churn prune cascade-deleted.
-//    Restoring only the churned file leaves peer files' incoming edges
-//    gone, so the graph would shrink each pass.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("modified-loop restore: full-fixture re-ingest restores cascade-deleted cross-file edges", async () => {
@@ -864,8 +754,6 @@ test("modified-loop restore: full-fixture re-ingest restores cascade-deleted cro
       const baselineEdges = baselineStats.ok ? baselineStats.stats.edges : 0;
       assert.ok(baselineEdges > 0, "fixture must have edges to exercise the restore");
 
-      // Pick a target that has INCOMING cross-file edges so the
-      // single-file-restore defect is observable below.
       let targetIdx = -1;
       for (let i = 0; i < storeFiles.length; i++) {
         const symSet = new Set(
@@ -887,7 +775,6 @@ test("modified-loop restore: full-fixture re-ingest restores cascade-deleted cro
       );
       const target = storeFiles[targetIdx]!;
 
-      // Churn: replace the target with a single churn symbol + no edges.
       const modified: StoreFileIR = {
         ...target,
         contentHash: target.contentHash + "-churn",
@@ -915,7 +802,6 @@ test("modified-loop restore: full-fixture re-ingest restores cascade-deleted cro
           ")",
       );
 
-      // FIX: restore by re-ingesting the FULL fixture.
       const restoreResult = await store.upsertFileBatch(storeFiles);
       assert.equal(restoreResult.ok, true, "full-fixture restore must succeed");
       const afterRestore = store.schemaStats();
@@ -930,8 +816,6 @@ test("modified-loop restore: full-fixture re-ingest restores cascade-deleted cro
           ")",
       );
 
-      // DEFECT PROOF: re-churn, then restore ONLY the target file (the
-      // old behavior). Cross-file incoming edges stay gone.
       const churnAgain = await store.upsertFileBatch([modified]);
       assert.equal(churnAgain.ok, true);
       const singleRestore = await store.upsertFileBatch([target]);
@@ -955,10 +839,6 @@ test("modified-loop restore: full-fixture re-ingest restores cascade-deleted cro
 });
 
 test("guard ordering: corrupt v2 report missing a metric field fails instead of crashing", () => {
-  // schemaVersion matches the baseline (both 2) but the v2-only field is
-  // absent (a truncated/hand-edited report). Before the field-presence
-  // guard, extractMetrics dereferenced the missing field and threw an
-  // uncaught TypeError (cursor #1688 review: 'v2 report crashes gate').
   const report = reportWithMachine(SAME_MACHINE);
   const baseline = baselineWithMachine(SAME_MACHINE);
   const corruptReport: CodingGraphBenchReport = {
@@ -972,14 +852,6 @@ test("guard ordering: corrupt v2 report missing a metric field fails instead of 
   assert.ok(result.summary.includes("missing"), "summary must explain the missing field");
 });
 test("guard ordering: corrupt v2 report on a DIFFERENT machine fails before the machine skip", () => {
-  // Before the field-presence-before-machine-fingerprint reorder, a corrupt
-  // v2 report (schema matches but incrementalModifiedUpdate is absent) on a
-  // different machine would hit the machine-fingerprint skip FIRST and
-  // return {passed:true, skipped:true} — silently passing a malformed
-  // artifact through cross-machine CI. The field-presence guard must run
-  // before the machine skip so corrupt reports always fail
-  // (chatgpt-codex-connector #1688 review: 'Validate corrupt reports
-  // before machine skips').
   const corruptReport: CodingGraphBenchReport = {
     ...reportWithMachine({ ...SAME_MACHINE, arch: "x64" }),
     incrementalModifiedUpdate:
@@ -992,12 +864,6 @@ test("guard ordering: corrupt v2 report on a DIFFERENT machine fails before the 
   assert.ok(result.summary.includes("missing"), "summary must explain the missing field, not the machine mismatch");
 });
 test("guard ordering: corrupt v2 report with truncated nested metric field fails", () => {
-  // schemaVersion matches (both 2) and the top-level field exists, but a
-  // nested sub-field is missing (e.g. incrementalModifiedUpdate: { p50: 1 }
-  // with no p95). Before the deepened guard, extractMetrics produced
-  // undefined for the missing p95 and the comparison loop silently skipped
-  // it — letting corrupt artifacts pass as passed:true.
-  // (chatgpt-codex-connector #1688 P2: 'Validate nested metric fields'.)
   const report = reportWithMachine(SAME_MACHINE);
   const baseline = baselineWithMachine(SAME_MACHINE);
   const truncatedReport: CodingGraphBenchReport = {
@@ -1010,11 +876,6 @@ test("guard ordering: corrupt v2 report with truncated nested metric field fails
   assert.ok(result.summary.includes("incrementalModifiedUpdate.p95"), "summary must name the missing nested field");
 });
 test("guard ordering: corrupt v2 report missing p50 (but has p95) fails the gate", () => {
-  // The deepened guard must check BOTH p50 and p95, not just p95.
-  // extractMetrics reads both percentiles; a report with p95 present
-  // but p50 missing previously passed the guard and the comparison loop
-  // silently skipped the undefined p50 metric (cursor Bugbot: 'Regression
-  // gate skips missing p50').
   const report = reportWithMachine(SAME_MACHINE);
   const baseline = baselineWithMachine(SAME_MACHINE);
   const missingP50Report: CodingGraphBenchReport = {
@@ -1027,11 +888,6 @@ test("guard ordering: corrupt v2 report missing p50 (but has p95) fails the gate
 });
 
 test("guard ordering: corrupt v2 report missing scalar metrics fails before machine skip", () => {
-  // The field-presence guard must also validate scalar/complex metrics
-  // (fullIndexMs.ms, fullIndexLocsPerSecond, deadCodeMs.ms, dbBytesPerKloc),
-  // not just nested micro-metrics. A report missing these on a different
-  // machine would otherwise fall through to the skip as hardware variance
-  // (chatgpt-codex-connector #1688 P2: "Validate scalar report metrics").
   const report = reportWithMachine({ ...SAME_MACHINE, arch: "x64" });
   const baseline = baselineWithMachine(SAME_MACHINE);
   const missingScalar: CodingGraphBenchReport = {
@@ -1045,10 +901,6 @@ test("guard ordering: corrupt v2 report missing scalar metrics fails before mach
 });
 
 test("guard ordering: report with non-numeric metric value fails (NaN guard)", () => {
-  // A JSON-loaded report may carry a string where a number is expected
-  // (fullIndexLocsPerSecond: "oops"). Without Number.isFinite validation,
-  // the NaN ratio passes the tolerance check and the gate returns true.
-  // (chatgpt-codex-connector #1688 P2: "Validate metric values as finite").
   const report = reportWithMachine(SAME_MACHINE);
   const baseline = baselineWithMachine(SAME_MACHINE);
   const nonNumericReport: CodingGraphBenchReport = {
@@ -1061,9 +913,6 @@ test("guard ordering: report with non-numeric metric value fails (NaN guard)", (
 });
 
 test("guard ordering: report with null machine fingerprint fails before compare", () => {
-  // A corrupt JSON report may have machine: null. Without the guard,
-  // compareMachineFingerprints dereferences the null and crashes.
-  // (chatgpt-codex-connector #1688 P2: "Validate machine fingerprints").
   const report = reportWithMachine(SAME_MACHINE);
   const baseline = baselineWithMachine(SAME_MACHINE);
   const nullMachineReport: CodingGraphBenchReport = {

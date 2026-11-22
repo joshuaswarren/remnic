@@ -13,7 +13,6 @@
  * host-facing packages surface this hint instead of re-implementing a rebuild.
  */
 
-/** Substrings that identify a native-binding load failure, lowercased. */
 const BINDING_ERROR_MARKERS = [
   "could not locate the bindings file",
   "was compiled against a different node.js version",
@@ -28,7 +27,6 @@ function messageOf(error: unknown): string {
   return "";
 }
 
-/** True when the error is a better-sqlite3 native-binding load failure. */
 export function isNativeBindingError(error: unknown): boolean {
   const message = messageOf(error).toLowerCase();
   if (message.length === 0) return false;

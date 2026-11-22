@@ -214,8 +214,6 @@ test("recallWithTrace preserves recall text and emits content-free row lineage",
       { role: "user", content: `Remember the ${secret}.` },
       { role: "assistant", content: "Acknowledged." },
     ]);
-    // The first search initializes the in-memory index. Compare two calls only
-    // after that normal lazy-initialization boundary has settled.
     await adapter.recall(
       "trace-session",
       "What is the cobalt-orchid deployment target?",
@@ -263,8 +261,6 @@ test("recallWithTrace keeps recorded ranges inside the fenced recall text", asyn
       { role: "user", content: `Remember the ${secret}.` },
       { role: "assistant", content: "Acknowledged." },
     ]);
-    // The first search initializes the in-memory index; recall twice like the
-    // unfenced trace test so the traced call sees the settled index.
     await adapter.recall(
       "fence-trace-session",
       "What is the cobalt-orchid deployment target?",
@@ -325,8 +321,6 @@ test("fenced recallWithTrace maps raw-message rows through the fence instead of 
       { role: "user", content: "The vermilion-heron rollout starts Monday." },
       { role: "assistant", content: "Noted." },
     ]);
-    // An unrelated query finds no sections, so recall falls back to the raw
-    // message rows; under the fencing arm those rows are quoted.
     const traced = await adapter.recallWithTrace!("fence-raw-session", "zzzz qqqq unrelated", 4_000);
     assert.match(traced.text, /REMNIC DATA FENCE/);
     const rawRows = traced.trace.selections.filter((selection) => selection.sectionId === "raw-messages");
@@ -1126,10 +1120,6 @@ test("direct adapter correct() reports not-applied when the planner finds nothin
   const adapter = await createRemnicAdapter({});
 
   try {
-    // Empty store + no classify LLM → the correction planner deterministically
-    // produces zero actions; correct() must report { applied: false } so the
-    // MemCorrect wrapper falls back to the turn path, and the adapter must
-    // stay fully usable afterwards.
     assert.ok(adapter.correct, "direct adapter must expose the correction surface");
     const outcome = await adapter.correct(
       "correct-session",
@@ -2753,10 +2743,6 @@ test("direct adapter session reset clears caller-owned cold replay state", async
       extractionMinUserTurns: 999,
     },
   };
-  // The caller-owned directory already holds these cold memories when the
-  // adapter opens it. A separate StorageManager rooted at cold/ cannot
-  // invalidate the adapter's corpus read cache, and daemon start now reads the
-  // corpus early (fact-hash warm-up), so writing after open would be stale.
   const coldStorage = new StorageManager(path.join(memoryDir, "cold"));
   const { id: resetColdId } = await coldStorage.writeMemory(
     "fact",
@@ -4341,10 +4327,6 @@ test("runtime-backed adapter preserves source timestamps for historical recall",
     ]);
     await adapter.drain?.();
 
-    // After issue #1496, an arbitrary session key routes to
-    // transcripts/session/<hash>/ rather than the legacy shared other/default
-    // fallback. Resolve the directory through the same identity layer the core
-    // transcript writer uses so the test tracks routing (rule #20).
     const transcriptPath = path.join(
       sandboxDir,
       "transcripts",
@@ -4661,8 +4643,6 @@ test("lightweight adapter suppresses real Remnic pipeline even when feature over
 });
 
 // ---------------------------------------------------------------------------
-// Session-scoped correction decisions (PR #1862 review — codex P1 ×2, cursor)
-// ---------------------------------------------------------------------------
 
 test("correction scoping: fully-owned plan proceeds", () => {
   const owned = new Set(["m-1", "m-2"]);
@@ -4705,8 +4685,6 @@ test("correction scoping: mixed ownership demands a replan with the owned subset
 });
 
 test("correction scoping: replanned plan with foreign action targets is rejected", () => {
-  // Neighbor expansion pulled a same-entityRef twin back in despite explicit
-  // targetIds — the caller must fail loudly, never apply.
   const decision = resolveSessionScopedCorrectionDecision(
     {
       affected: [{ memoryId: "m-1" }, { memoryId: "twin-1" }],

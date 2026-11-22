@@ -189,7 +189,6 @@ export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = 
   "engram.memory_store": "memory_store",
   "engram.coding_decision": "coding_decision",
   "engram.coding_architecture": "coding_architecture",
-  // codegraph parity tools (issue #1554) — each maps to its boundary op.
   "engram.codegraph_index": "codegraph_index",
   "engram.codegraph_list_projects": "codegraph_list_projects",
   "engram.codegraph_delete_project": "codegraph_delete_project",
@@ -205,10 +204,8 @@ export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = 
   "engram.codegraph_manage_adr": "codegraph_manage_adr",
   "engram.codegraph_ingest_traces": "codegraph_ingest_traces",
   "engram.coding_delta": "coding_delta",
-  // Correction Contract (issue #1580) — one plan/apply pipeline.
   "engram.memory_correct_plan": "memory_correct_plan",
   "engram.memory_correct_apply": "memory_correct_apply",
-  // Fully migrated through the strict-schema boundary (#1668).
   "engram.recall": "recall",
   "engram.recall_explain": "recall_explain",
   "engram.set_coding_context": "set_coding_context",
@@ -718,9 +715,6 @@ export class EngramMcpServer {
         },
       },
       {
-        // Registered as `engram.recall_xray`; `withToolAliases` below
-        // emits the canonical `remnic.recall_xray` alias automatically
-        // (dual-naming invariant for every new MCP tool).
         name: "engram.recall_xray",
         description:
           "Run a recall with X-ray capture enabled and return the unified per-result attribution snapshot (tier + audit + MMR + filters in one view). Issue #570.",
@@ -1188,7 +1182,6 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      // ── Continuity / Identity tools ─────────────────────────────────────
       {
         name: "engram.continuity_audit_generate",
         description: "Generate a deterministic identity continuity audit report (weekly/monthly).",
@@ -1323,7 +1316,6 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      // ── Work Layer tools ─────────────────────────────────────────────────
       {
         name: "engram.work_task",
         description:
@@ -1383,8 +1375,6 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      // ── Shared Context tools (extracted; access-mcp.ts is at its ratchet
-      // ceiling — issue #2920) ─────────────────────────────────────────
       ...sharedContextMcpTools,
       {
         name: "engram.compounding_weekly_synthesize",
@@ -1412,7 +1402,6 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      // ── Compression Guidelines tools ────────────────────────────────────
       {
         name: "engram.compression_guidelines_optimize",
         description: "Run compression guideline optimizer, optionally persisting new guidelines.",
@@ -1656,10 +1645,6 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      // ── Daily Context Briefing (#370) ───────────────────────────────────
-      // Uses the legacy "engram.*" prefix like every other tool in this array;
-      // withToolAliases (applied via .flatMap below) generates the canonical
-      // "remnic.briefing" alias automatically.
       ...(service.briefingEnabled
         ? [
             {
@@ -1691,7 +1676,6 @@ export class EngramMcpServer {
             },
           ]
         : []),
-      // ── Contradiction Review (issue #520) ────────────────────────────────
       {
         name: "engram.review_list",
         description: "List contradiction review items pending user resolution.",
@@ -1810,7 +1794,6 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      // ── Peer Registry tools (issue #679 PR 4/5) ─────────────────────────
       {
         name: "engram.peer_list",
         description:
@@ -1900,7 +1883,6 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      // ── Operator Console state (issue #688 PR 2/3) ─────────────────────────
       {
         name: "engram.console_state",
         description:
@@ -1916,7 +1898,6 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      // ── Dreams telemetry (issue #678 PR 3+4) ─────────────────────────────
       {
         name: "engram.dreams_status",
         description:
@@ -2044,10 +2025,6 @@ export class EngramMcpServer {
       this.tools = [...this.tools, ...architectureTools];
     }
     if (this.codegraphVisible) {
-      // The 14 codegraph parity tools (issue #1554). Each delegates to its
-      // boundary operation; the MCP dispatch injects the `tool` field from
-      // the operation name. The inputSchema is intentionally permissive —
-      // the boundary's zod schema owns validation (rule 51).
       const codegraphToolDefs: Array<{ suffix: string; description: string; required?: string[] }> = [
         { suffix: "index", description: "Index a repository into the code graph.", required: ["repoRoot"] },
         { suffix: "list_projects", description: "List code graph projects for the principal." },
@@ -2198,22 +2175,11 @@ export class EngramMcpServer {
       );
       this.tools = [...this.tools, ...chatTools];
     }
-    // Apply `readOnlyHint` annotations to the conservative read-only
-    // allowlist. Done as a final pass so every spread (chat, codegraph,
-    // coding_*, correction, etc.) inherits the annotation without
-    // scattering the same logic across every `withToolAliases` call site.
-    // Suffix-based matching covers both the `remnic_*` and `engram.*`
-    // naming forms emitted by `withToolAliases`.
     this.tools = this.tools.map((tool) =>
       isReadOnlyToolName(tool.name) && tool.annotations?.readOnlyHint !== true
         ? { ...tool, annotations: { ...(tool.annotations ?? {}), readOnlyHint: true } }
         : tool
     );
-    // Apply `outputSchema` declarations from the registry. Like the
-    // readOnlyHint pass above, this is a final suffix-based pass so every
-    // tool (including both `remnic_*` and `engram.*` aliases) gets a
-    // schema. Tools that already declare an outputSchema (e.g.
-    // chatgpt_memory_inspector) are left untouched.
     this.tools = applyToolOutputSchemas(this.tools, CANONICAL_MCP_PREFIX, LEGACY_MCP_PREFIX);
   }
 
@@ -2242,12 +2208,6 @@ export class EngramMcpServer {
     }
     if (method === "initialize") {
       const params = request.params ?? {};
-      // MCP initialize REQUIRES params.protocolVersion (string). Reject a
-      // missing/mistyped field with JSON-RPC invalid params instead of
-      // silently negotiating (repo rule: never reinterpret invalid input).
-      // An unsupported-but-well-formed version gets the spec-mandated
-      // counter-offer below instead: the server answers with the newest
-      // version it supports and the client decides whether to proceed.
       if (typeof params.protocolVersion !== "string" || params.protocolVersion.length === 0) {
         return {
           jsonrpc: "2.0",
@@ -2259,21 +2219,17 @@ export class EngramMcpServer {
         };
       }
       const rawClientInfo = params.clientInfo as { name?: string; version?: string } | undefined;
-      // Generate a server-side session ID for this MCP session.
       // The caller should send this back as Mcp-Session-Id on subsequent requests.
       const newSessionId = randomUUID();
       if (rawClientInfo && typeof rawClientInfo.name === "string") {
         const info = { name: rawClientInfo.name, version: rawClientInfo.version as string | undefined };
         this.clientInfoBySession.set(newSessionId, info);
-        // Evict oldest sessions if map exceeds limit
         if (this.clientInfoBySession.size > 1000) {
           const firstKey = this.clientInfoBySession.keys().next().value;
           if (firstKey) this.clientInfoBySession.delete(firstKey);
         }
       }
       const version = await getMcpServerVersion();
-      // Store session ID keyed by correlation ID (unique per HTTP request) so
-      // concurrent initializes with the same JSON-RPC id don't collide.
       const corrId = options?.correlationId;
       if (corrId) this.initSessionIds.set(corrId, newSessionId);
       return {
@@ -2295,10 +2251,6 @@ export class EngramMcpServer {
       };
     }
     if (method === "tools/list") {
-      // Issue #1850 round 5 (finding 3): a scoped/deny-all token must not
-      // enumerate the full tool surface — filter advertised tools by the
-      // token's ops allow-list via the same map callTool uses. Unrestricted
-      // tokens (ops axis absent) see everything; unmapped tool ⇒ "" ⇒ hidden.
       const caps = tokenCapabilityStore.getStore();
       const tools =
         caps?.ops === undefined
@@ -2539,10 +2491,6 @@ export class EngramMcpServer {
   }
 
   private toolAcceptsArgument(name: string, key: string): boolean {
-    // Match by canonical name so argument validation resolves whether the
-    // caller used `engram.*`, `remnic.*`, or `remnic_*` and regardless of
-    // whether legacy aliases are advertised (issue #1427) — a tool stays
-    // callable under those names even when only remnic_* appears in tools/list.
     const target = toCanonicalToolName(name);
     const tool = this.tools.find((entry) => toCanonicalToolName(entry.name) === target);
     const inputSchema = getObjectProperties(tool?.inputSchema);
@@ -2580,7 +2528,6 @@ export class EngramMcpServer {
     if (this.citationsEnabled) return true;
     if (!this.citationsAutoDetect) return false;
 
-    // Direct session lookup (HTTP transport with mcp-session-id header).
     if (mcpSessionId) {
       const info = this.clientInfoBySession.get(mcpSessionId);
       if (!info) return false;
@@ -2632,14 +2579,6 @@ export class EngramMcpServer {
   ): Promise<unknown> {
     const migrated = MCP_MIGRATED_OPERATIONS[toLegacyToolName(name)];
     if (!migrated) {
-      // Teaching rejection (#3035): name the nearest registered tool instead
-      // of a bare "unknown tool". Semantics are unchanged — this still throws
-      // and never executes a guessed correction.
-      //
-      // Candidates are the SAME capability-filtered set `tools/list` shows
-      // (issue #1850 finding 3). Enumerating the global map here would let a
-      // scoped or deny-all token recover the full tool surface through the
-      // error path, re-opening the leak that fix closed.
       const caps = tokenCapabilityStore.getStore();
       const visible = this.tools
         .filter(
@@ -2660,7 +2599,6 @@ export class EngramMcpServer {
     } else if (migrated.startsWith("codegraph_")) {
       envelope = { ...args, tool: migrated.slice("codegraph_".length) };
     } else if (migrated === "chat_message") {
-      // memory_chat bypasses op.run(); gate op + resumed-session namespace like the HTTP route (#1850 r6).
       assertOperationAllowed(tokenCapabilityStore.getStore(), migrated);
       const message = typeof args.message === "string" ? args.message : "";
       if (!message) throw new EngramAccessInputError("message is required");
@@ -2668,15 +2606,6 @@ export class EngramMcpServer {
       if (chatSessionId) {
         await enforceChatSessionNamespace(this.service, chatSessionId);
       } else {
-        // NEW chat session (no chatSessionId): processChatMessage mints a fresh
-        // session under the EFFECTIVE namespace (scope.namespace OR server
-        // default). Unlike the HTTP chat handler (which forwards no namespace),
-        // the MCP scope CAN carry one (Thread 17), so route it through the SAME
-        // effective-namespace chokepoint as the HTTP new-chat path
-        // (enforceNamespaceAllowList maps undefined → default) — a namespace-
-        // scoped token CANNOT start a chat in a namespace outside its allow-
-        // list, including an unconfigured/forbidden server default. Fail closed;
-        // no-op for unrestricted/legacy tokens (issue #1850 round 8).
         enforceNamespaceAllowList(
           tokenCapabilityStore.getStore(),
           scope?.namespace,
@@ -2701,7 +2630,6 @@ export class EngramMcpServer {
     } else {
       envelope = args;
     }
-    // recall citation guidance (MCP-specific post-processing).
     if (migrated === "recall") {
       const result = (await op.run(envelope, {
         service: this.service,

@@ -24,7 +24,6 @@ export async function withBriefingDeadline<T>(
     signal.throwIfAborted();
     return await raceAbort(run(signal), signal, "briefing aborted");
   } catch (err) {
-    // raceAbort normalizes cancellation; retain the distinct deadline reason.
     const reason: unknown = signal.reason;
     if (signal.aborted && (reason instanceof BriefingTimeoutError || isAbortError(reason))) throw reason;
     throw err;

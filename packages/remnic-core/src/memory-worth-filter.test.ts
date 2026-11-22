@@ -33,7 +33,6 @@ test("uninstrumented memories pass through with multiplier 1.0", () => {
       now: NOW,
     },
   );
-  // All multipliers are 1.0 and scores are unchanged; order preserved.
   for (const item of out) {
     assert.equal(item.multiplier, 1);
     assert.equal(item.score, item.originalScore);
@@ -116,7 +115,6 @@ test("reorder:false preserves original order but still applies multiplier", () =
     out.map((o) => o.path),
     ["neutral.md", "good.md"],
   );
-  // But the score field still reflects the multiplier.
   assert.ok(out[1]!.score > out[1]!.originalScore);
 });
 
@@ -202,7 +200,6 @@ test("negative candidate scores do not invert filter direction", () => {
     ],
     { counters, now: NOW, reorder: false },
   );
-  // All scaled scores must be non-negative (bases clamped to 0).
   for (const item of out) {
     assert.ok(item.score >= 0, `${item.path} score should be >= 0, got ${item.score}`);
   }

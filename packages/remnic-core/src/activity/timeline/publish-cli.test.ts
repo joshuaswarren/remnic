@@ -75,7 +75,6 @@ test("the shared timeline runner dispatches publish and writes the managed regio
   const sink = capture();
 
   const code = await runTimelineCliCommand(
-    // qa stays disabled: publish is not a qa surface and must not be gated by it.
     { cards: null, qa: { enabled: false, maxRangeDays: 31 }, timelineEnabled: true, config },
     ["publish", "--date", DATE],
     sink.io,

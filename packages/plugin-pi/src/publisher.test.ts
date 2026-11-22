@@ -62,7 +62,6 @@ class SymlinkSwapFailingPiPublisher extends PiMemoryExtensionPublisher {
     super();
   }
 
-  // Runs after config/wrapper are written (renderInstructions feeds the readme
   // write). Replace the just-written config with a symlink to an external file,
   // simulating an adversary swapping the file between snapshot and restore, then
   // fail so the rollback path runs.
@@ -579,7 +578,6 @@ test("Pi publisher unpublish refuses owned file symlinks", async (t) => {
   assert.equal(fs.readFileSync(path.join(extensionRoot, "README.md"), "utf8"), "# Remnic\n");
 });
 
-// ── omp (oh-my-pi) publisher ────────────────────────────────────────────────
 
 test("omp publisher exposes hostId omp and resolves the ~/.omp/agent extension root", async () => {
   const publisher = new OmpMemoryExtensionPublisher();
@@ -658,7 +656,6 @@ test("omp publisher publishes config, wrapper, readme, pre-bundle loader, and ma
   const readme = fs.readFileSync(path.join(extensionRoot, "README.md"), "utf8");
   assert.match(readme, /omp/i);
 
-  // Pre-bundle infrastructure (issue #1598): loader.js + package.json + dist-bundle.
   const loaderPath = path.join(extensionRoot, "loader.js");
   const packageJsonPath = path.join(extensionRoot, "package.json");
   const bundleEntry = path.join(extensionRoot, "dist-bundle", "index.js");
@@ -759,7 +756,6 @@ test("omp publisher unpublish removes a profile-scoped install even without the 
     tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
   });
 
-  // Install under the "work" profile.
   process.env.OMP_PROFILE = "work";
   const profileRoot = path.join(home, ".omp", "profiles", "work", "agent", "extensions", "remnic");
   const installResult = await new OmpMemoryExtensionPublisher().publish({
@@ -772,7 +768,6 @@ test("omp publisher unpublish removes a profile-scoped install even without the 
   assert.ok(fs.existsSync(path.join(profileRoot, "loader.js")), "loader.js was not installed");
   assert.ok(fs.existsSync(path.join(profileRoot, "dist-bundle", "index.js")), "bundle was not installed");
 
-  // Remove WITHOUT the profile env set — must still find and remove the
   // profile-scoped install instead of no-oping on the default agent dir.
   delete process.env.OMP_PROFILE;
   await new OmpMemoryExtensionPublisher().unpublish();
@@ -801,7 +796,6 @@ test("omp publisher fails with a clear message when bun is absent", async (t) =>
   delete process.env.PI_CODING_AGENT_DIR;
   delete process.env.OMP_PROFILE;
   delete process.env.PI_PROFILE;
-  // Point to a nonexistent binary so resolveBunBinary returns null.
   process.env.REMNIC_OMP_BUN_BIN = path.join(root, "does-not-exist");
   t.after(() => {
     restoreEnv("HOME", previousHome);
@@ -828,7 +822,6 @@ test("omp publisher fails with a clear message when bun is absent", async (t) =>
     /requires `bun`.*omp/i,
   );
 
-  // Rollback: the extension root was newly created, so it must be cleaned up.
   const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
   assert.equal(fs.existsSync(extensionRoot), false, "extension root must be cleaned up on rollback");
 });
@@ -838,7 +831,6 @@ test("omp publisher rolls back shared files when bun build fails", async (t) => 
   const home = path.join(root, "home");
   fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
 
-  // Pre-populate the extension root with prior files so we can verify rollback
   // restores them rather than deleting the root.
   const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
   fs.mkdirSync(extensionRoot, { recursive: true });
@@ -857,7 +849,6 @@ test("omp publisher rolls back shared files when bun build fails", async (t) => 
   delete process.env.PI_CODING_AGENT_DIR;
   delete process.env.OMP_PROFILE;
   delete process.env.PI_PROFILE;
-  // Fake bun that always fails.
   const failingBun = path.join(root, "failing-bun");
   fs.writeFileSync(
     failingBun,
@@ -890,15 +881,12 @@ test("omp publisher rolls back shared files when bun build fails", async (t) => 
     /bun build failed/i,
   );
 
-  // Prior files must be restored to their original content.
   assert.equal(fs.readFileSync(path.join(extensionRoot, "remnic.config.json"), "utf8"), '{"prior":true}\n');
   assert.equal(fs.readFileSync(path.join(extensionRoot, "index.ts"), "utf8"), "// prior wrapper\n");
   assert.equal(fs.readFileSync(path.join(extensionRoot, "README.md"), "utf8"), "prior readme\n");
-  // dist-bundle must not exist (rollback cleans newly created dirs).
   assert.equal(fs.existsSync(path.join(extensionRoot, "dist-bundle")), false, "dist-bundle must be cleaned up on rollback");
 });
 
-// ── Regression (PR #1641 / #1598): a failed omp pre-bundle (bun missing or
 // `bun build` failing) must NOT roll back the connector token. The CLI commits
 // the new token before publishing and the loader self-heals dist-bundle on
 // first load; destroying the token leaves the connector installed with no
@@ -919,7 +907,6 @@ test("omp publisher keeps the connector token when pre-bundling fails", async (t
   delete process.env.PI_CODING_AGENT_DIR;
   delete process.env.OMP_PROFILE;
   delete process.env.PI_PROFILE;
-  // No bun available → resolveBunBinary returns null → pre-bundle fails.
   process.env.REMNIC_OMP_BUN_BIN = path.join(root, "does-not-exist");
   t.after(() => {
     restoreEnv("HOME", previousHome);
@@ -931,7 +918,6 @@ test("omp publisher keeps the connector token when pre-bundling fails", async (t
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  // The CLI has already committed the new omp token; there was no prior token.
   saveTokenStore({
     tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
   });
@@ -948,7 +934,6 @@ test("omp publisher keeps the connector token when pre-bundling fails", async (t
     /requires `bun`.*omp/i,
   );
 
-  // The committed token must survive the pre-bundle failure.
   const ompToken = loadTokenStore().tokens.find((entry) => entry.connector === "omp");
   assert.equal(ompToken?.token, "omp-token", "omp token must be preserved when pre-bundling fails");
 });
@@ -994,7 +979,6 @@ test("omp publisher loader.js embeds the plugin-pi dist path for mtime self-heal
   const loader = fs.readFileSync(path.join(extensionRoot, "loader.js"), "utf8");
   const wrapper = fs.readFileSync(path.join(extensionRoot, "index.ts"), "utf8");
 
-  // omp pre-bundles the wrapper with `bun build`, whose bundler cannot resolve
   // file:// specifiers (verified Bun 1.2–1.3: "Could not resolve: file://...").
   // The wrapper must therefore use a relative import specifier; the loader
   // still embeds the absolute plugin-pi dist path for mtime self-healing.
@@ -1012,7 +996,6 @@ test("omp publisher loader.js embeds the plugin-pi dist path for mtime self-heal
   );
 });
 
-// ── Regression (PR #1641 / #1598): the pre-existing dist-bundle must survive a
 // failed final swap. runBundleBuild renames the old bundle aside, moves the new
 // one in, and restores the backup if the final rename fails — it never removes
 // the working bundle before the new one is in place.
@@ -1021,7 +1004,6 @@ test("omp publisher preserves the existing dist-bundle when the final bundle swa
   const home = path.join(root, "home");
   fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
 
-  // Stand up an extension root whose existing dist-bundle holds a working bundle.
   const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
   fs.mkdirSync(extensionRoot, { recursive: true });
   fs.mkdirSync(path.join(extensionRoot, "dist-bundle"), { recursive: true });
@@ -1056,7 +1038,6 @@ test("omp publisher preserves the existing dist-bundle when the final bundle swa
     tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
   });
 
-  // Sabotage only the final tmp->dist-bundle rename so the new build succeeds
   // but the swap fails. The backup rename (dist-bundle -> .bak-*) still works.
   const realRenameSync = fs.renameSync;
   let swapFailed = false;
@@ -1082,13 +1063,11 @@ test("omp publisher preserves the existing dist-bundle when the final bundle swa
   );
 
   assert.ok(swapFailed, "the final swap must have been attempted and failed");
-  // The working bundle must still be in place — the install is never left bundle-less.
   assert.equal(
     fs.readFileSync(path.join(extensionRoot, "dist-bundle", "index.js"), "utf8"),
     'export default async function prior() { return "prior-bundle"; }\n',
     "pre-existing dist-bundle must be restored after a failed swap",
   );
-  // No leftover tmp or backup dirs.
   for (const entry of fs.readdirSync(extensionRoot)) {
     assert.ok(
       !entry.startsWith(".dist-bundle.tmp-") && !entry.startsWith(".dist-bundle.bak-"),
@@ -1097,7 +1076,6 @@ test("omp publisher preserves the existing dist-bundle when the final bundle swa
   }
 });
 
-// ── Regression (PR #1641 / #1598): the generated loader.js must reuse the bun
 // path resolved at install time so self-healing works when bun is reachable
 // only via REMNIC_OMP_BUN_BIN or a common absolute path that is not on omp's
 // runtime PATH.
@@ -1142,7 +1120,6 @@ test("omp publisher loader.js embeds the resolved bun path for self-healing rebu
   const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
   const loader = fs.readFileSync(path.join(extensionRoot, "loader.js"), "utf8");
 
-  // The resolved absolute bun path must be embedded and used by the rebuild.
   assert.ok(
     loader.includes(JSON.stringify(resolvedBun)),
     `loader must embed the resolved bun path (${resolvedBun}) for self-healing`,
@@ -1160,14 +1137,12 @@ test("omp publisher loader.js embeds the resolved bun path for self-healing rebu
   );
 });
 
-// ── Regression (PR #1641 / #1598): resolveBunBinary must honour USERPROFILE
 // (matching omp's path helpers) so the ~/.bun/bin/bun fallback resolves on
 // Windows installs where HOME is unset.
 test("omp publisher resolveBunBinary falls back to USERPROFILE/.bun when HOME is unset", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-bun-userprofile-"));
   const home = path.join(root, "home");
   fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
-  // Plant a bun binary under the USERPROFILE home so the candidate lookup finds it.
   fs.mkdirSync(path.join(home, ".bun", "bin"), { recursive: true });
   const userprofileBun = path.join(home, ".bun", "bin", "bun");
   fs.writeFileSync(
@@ -1183,7 +1158,6 @@ test("omp publisher resolveBunBinary falls back to USERPROFILE/.bun when HOME is
   const previousPiProfile = process.env.PI_PROFILE;
   const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
   const previousPath = process.env.PATH;
-  // Force the PATH probe to fail so resolveBunBinary must use the USERPROFILE
   // candidate. Empty PATH only affects spawnSync("bun") (ENOENT); the candidate
   // is invoked as an absolute path and needs no PATH.
   delete process.env.HOME;
@@ -1208,7 +1182,6 @@ test("omp publisher resolveBunBinary falls back to USERPROFILE/.bun when HOME is
     tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
   });
 
-  // Publish must succeed: resolveBunBinary found the USERPROFILE-relative bun,
   // pre-bundled, and wrote loader.js + dist-bundle.
   const result = await new OmpMemoryExtensionPublisher().publish({
     config: { memoryDir: path.join(root, "memory") },
@@ -1245,7 +1218,6 @@ function createFakeBunScript(): string {
   ].join("\n");
 }
 
-// ── Regression (PR #1641 / #1598, P1): omp pre-bundles index.ts with
 // `bun build`, whose bundler cannot resolve file:// import specifiers. The
 // generated wrapper must use a relative specifier so a real bun build produces
 // dist-bundle (the fake-bun tests never parse the entry, so this is the only
@@ -1306,7 +1278,6 @@ test("omp publisher wrapper is bun-buildable (relative import, not file://)", as
   // (relative, not file://) that makes a real install buildable.
 });
 
-// ── Regression (PR #1641 / #1598): package.json postinstall must reuse the
 // resolved bun path so `npm install` re-bundles on systems where bun is not on
 // the PATH npm inherits.
 test("omp publisher writes a cross-platform postinstall-bundle.cjs that embeds the resolved bun path", async (t) => {
@@ -1365,11 +1336,9 @@ test("omp publisher writes a cross-platform postinstall-bundle.cjs that embeds t
   assert.match(helper, /function pickBun/, "helper must resolve bun with a PATH fallback");
   assert.match(helper, /\.dist-bundle\.bak-/, "helper must swap bundles atomically (backup dir)");
 
-  // The helper must be syntactically valid Node (no shell-specific syntax).
   const syntaxCheck = spawnSync(process.execPath, ["--check", helperPath], { encoding: "utf-8" });
   assert.equal(syntaxCheck.status, 0, `postinstall-bundle.cjs fails node --check: ${syntaxCheck.stderr}`);
 
-  // Running the helper must rebuild dist-bundle via the embedded bun path.
   fs.rmSync(path.join(extensionRoot, "dist-bundle"), { recursive: true, force: true });
   const run = spawnSync(process.execPath, [helperPath], {
     cwd: extensionRoot,
@@ -1388,7 +1357,6 @@ test("omp publisher resolveBunBinary finds ~/.bun/bin/bun.exe (Windows installer
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-bun-exe-"));
   const home = path.join(root, "home");
   fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
-  // Plant ONLY bun.exe (no bun) under the home, mirroring the Windows installer.
   fs.mkdirSync(path.join(home, ".bun", "bin"), { recursive: true });
   const bunExe = path.join(home, ".bun", "bin", "bun.exe");
   fs.writeFileSync(bunExe, createFakeBunScript(), { mode: 0o755 });
@@ -1433,7 +1401,6 @@ test("omp publisher resolveBunBinary finds ~/.bun/bin/bun.exe (Windows installer
   );
 });
 
-// ── Regression (PR #1641 / #1598): the loader's self-heal rebuild must build to
 // a temp dir and swap (mirroring runBundleBuild), never writing --outdir
 // straight into dist-bundle where a failure could corrupt the working bundle.
 test("omp publisher loader rebuilds via a temp dir swap, not an in-place build", async (t) => {
@@ -1480,7 +1447,6 @@ test("omp publisher loader rebuilds via a temp dir swap, not an in-place build",
   assert.match(loader, /\.dist-bundle\.tmp-/, "loader rebuild must build to a temp dir");
   assert.match(loader, /\.dist-bundle\.bak-/, "loader rebuild must rename the old bundle aside");
   assert.match(loader, /renameSync\(tmp, bundleDir\)/, "loader rebuild must swap the temp into place");
-  // The spawn call must target the temp dir, not dist-bundle directly
   // (the literal "--outdir=dist-bundle" still appears in error-guidance text,
   // so assert the call site specifically).
   assert.doesNotMatch(
@@ -1488,7 +1454,6 @@ test("omp publisher loader rebuilds via a temp dir swap, not an in-place build",
     /spawnSync\(bunForRebuild.*--outdir=dist-bundle/,
     "loader rebuild spawn must not target dist-bundle directly",
   );
-  // Must still be valid JS.
   const syntaxCheck = spawnSync(
     process.execPath,
     ["--check", path.join(home, ".omp", "agent", "extensions", "remnic", "loader.js")],
@@ -1497,7 +1462,6 @@ test("omp publisher loader rebuilds via a temp dir swap, not an in-place build",
   assert.equal(syntaxCheck.status, 0, `loader.js fails node --check: ${syntaxCheck.stderr}`);
 });
 
-// ── Regression (PR #1641 / #1598): the omp pre-bundle must not pull all of
 // @remnic/core (and the LanceDB native asset) into the extension bundle.
 // The omp wrapper is `bun build`-ed from the generated index.ts, which imports
 // `createRemnicPiExtension`. Every file transitively reachable from that entry
@@ -1509,7 +1473,6 @@ test("omp publisher loader rebuilds via a temp dir swap, not an in-place build",
 // modules / ~0.16 MB with zero native refs.
 test("omp extension runtime closure imports core only via leaf submodules, not the barrel", () => {
   const srcDir = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "src");
-  // publisher.ts is build/install-time only — it is never in the omp-bundled
   // runtime graph (the wrapper imports createRemnicPiExtension from index.ts),
   // so its barrel import is exempt.
   const exempt: Record<string, true> = { "publisher.ts": true };
@@ -1531,7 +1494,6 @@ test("omp extension runtime closure imports core only via leaf submodules, not t
   );
 });
 
-// ── Regression (PR #1641 / #1598): the omp wrapper import specifier must stay
 // a valid relative module specifier even on Windows cross-drive layouts. When
 // the extension dir and the plugin-pi install are on different drives,
 // path.relative returns an absolute drive path; prefixing "./" then yields an
@@ -1553,7 +1515,6 @@ test("resolveOmpWrapperImportSpecifier emits a ./ relative specifier for same-dr
 test("resolveOmpWrapperImportSpecifier fails fast with an actionable error for cross-drive Windows layouts", () => {
   const wrapperDir = "C:\\Users\\me\\.omp\\agent\\extensions\\remnic";
   const modulePath = "D:\\remnic\\plugin-pi\\dist\\index.js";
-  // Sanity-check the cross-drive premise: different roots under win32 semantics.
   assert.notEqual(win32.parse(wrapperDir).root, win32.parse(modulePath).root);
   assert.throws(
     () => resolveOmpWrapperImportSpecifier(modulePath, wrapperDir, win32),
@@ -1562,14 +1523,12 @@ test("resolveOmpWrapperImportSpecifier fails fast with an actionable error for c
   );
 });
 test("resolveOmpWrapperImportSpecifier treats Windows drive-letter casing as the same drive", () => {
-  // Windows drive roots are case-insensitive: the omp agent home and the
   // plugin-pi install may report the drive letter in different casing (e.g.
   // C:\ from the home env var, c:\ from fileURLToPath(import.meta.url)). Such a
   // layout is same-drive and path.win32.relative yields a valid specifier, so
   // the guard must NOT reject it.
   const wrapperDir = "C:\\Users\\me\\.omp\\agent\\extensions\\remnic";
   const modulePath = "c:\\remnic\\plugin-pi\\dist\\index.js";
-  // Sanity-check: raw roots differ in casing but the drive is the same.
   assert.notEqual(win32.parse(wrapperDir).root, win32.parse(modulePath).root);
   assert.equal(
     win32.parse(wrapperDir).root.toLowerCase(),
@@ -1583,7 +1542,6 @@ test("resolveOmpWrapperImportSpecifier treats Windows drive-letter casing as the
   assert.doesNotMatch(specifier, /^[A-Za-z]:[\\/]/, "specifier must not be a bare absolute drive path");
 });
 
-// ── Regression (PR #1641 / #1598): when bun is found via the PATH probe,
 // resolveBunBinary must resolve it to an absolute executable path so the
 // embedded loader/postinstall don't depend on omp's runtime PATH (GUI/service
 // launches often strip PATH, which would make a bare "bun" self-heal spawn
@@ -1592,7 +1550,6 @@ test("omp publisher resolveBunBinary resolves the PATH-found bun to an absolute 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-bun-path-resolve-"));
   const binDir = path.join(root, "bin");
   fs.mkdirSync(binDir, { recursive: true });
-  // Fake bun that satisfies BOTH the `--version` PATH probe (exit 0) and the
   // `build --outdir` bundle step (writes a stub index.js).
   const fakeBun = path.join(binDir, "bun");
   fs.writeFileSync(
@@ -1628,7 +1585,6 @@ test("omp publisher resolveBunBinary resolves the PATH-found bun to an absolute 
   delete process.env.OMP_PROFILE;
   delete process.env.PI_PROFILE;
   delete process.env.REMNIC_OMP_BUN_BIN;
-  // Only the fake bun is on PATH, so the PATH probe resolves to it.
   process.env.PATH = binDir;
   t.after(() => {
     restoreEnv("HOME", previousHome);
@@ -1664,7 +1620,6 @@ test("omp publisher resolveBunBinary resolves the PATH-found bun to an absolute 
   );
 });
 
-// ── Regression (PR #1641 / #1598): resolveBunOnPath must skip non-executable
 // PATH candidates so it matches `which(1)` and the spawnSync("bun", …) version
 // probe. When a stale, non-executable `bun` file appears earlier on PATH than
 // the real executable, the OS exec lookup in the version probe skips it and
@@ -1684,9 +1639,7 @@ test("resolveBunOnPath skips a non-executable bun earlier on PATH and resolves t
   fs.mkdirSync(goodDir, { recursive: true });
   const staleBun = path.join(staleDir, "bun");
   const goodBun = path.join(goodDir, "bun");
-  // Stale: a regular, non-executable file named `bun` earlier on PATH.
   fs.writeFileSync(staleBun, "#!/bin/sh\nold broken bun\n", { mode: 0o644 });
-  // Good: an executable `bun` later on PATH.
   fs.writeFileSync(goodBun, "#!/bin/sh\necho bun\n", { mode: 0o755 });
   const previousPath = process.env.PATH;
   process.env.PATH = `${staleDir}:${goodDir}`;
@@ -1698,7 +1651,6 @@ test("resolveBunOnPath skips a non-executable bun earlier on PATH and resolves t
   assert.equal(resolved, fs.realpathSync(goodBun));
 });
 
-// ── Regression (PR #1641 / #1598): when the PATH `bun --version` probe fails,
 // resolveBunBinary's filesystem fallback must also skip a stale,
 // non-executable ~/.bun/bin/bun instead of returning it over a later working
 // binary. Same executable-file check as the PATH walk (isExecutableFile),
@@ -1713,7 +1665,6 @@ test("resolveBunBinary fallback skips a stale non-executable ~/.bun/bin/bun", (t
   const home = path.join(root, "home");
   const bunBinDir = path.join(home, ".bun", "bin");
   fs.mkdirSync(bunBinDir, { recursive: true });
-  // Stale, non-executable regular file at the first fallback candidate.
   fs.writeFileSync(path.join(bunBinDir, "bun"), "broken\n", { mode: 0o644 });
 
   const previousHome = process.env.HOME;
@@ -1723,7 +1674,6 @@ test("resolveBunBinary fallback skips a stale non-executable ~/.bun/bin/bun", (t
   process.env.HOME = home;
   process.env.USERPROFILE = home;
   delete process.env.REMNIC_OMP_BUN_BIN;
-  // Empty PATH so the spawnSync("bun", ["--version"]) probe fails and the
   // filesystem fallback candidate list is exercised.
   process.env.PATH = "";
   t.after(() => {
@@ -1736,7 +1686,6 @@ test("resolveBunBinary fallback skips a stale non-executable ~/.bun/bin/bun", (t
   });
 
   const resolved = resolveBunBinary();
-  // The stale non-executable ~/.bun/bin/bun must NOT be returned. If the host
   // has a real bun at a later candidate (/usr/local/bin/bun, /opt/homebrew/bin/
   // bun) the resolver returns that working binary instead — either way the
   // non-executable file is skipped, which is the bug fix's intent. When a
@@ -1748,7 +1697,6 @@ test("resolveBunBinary fallback skips a stale non-executable ~/.bun/bin/bun", (t
   }
 });
 
-// ── Regression (#1662): a first-time `remnic connectors install omp` without
 // Bun must be fully retryable. The OmpPreBundleError catch restores every
 // extension file/dir snapshot (so the root is wiped clean) while SKIPPING only
 // the token rollback (the CLI already committed the token; the loader
@@ -1795,29 +1743,24 @@ test("omp first-time publish without bun is fully retryable after installing bun
     log,
   };
 
-  // ── First attempt: no Bun → OmpPreBundleError.
   await assert.rejects(
     () => new OmpMemoryExtensionPublisher().publish(publishCtx),
     /requires `bun`.*omp/i,
   );
 
-  // The extension root was newly created on this first attempt, so rollback
   // must wipe it entirely — no half-written config/wrapper/readme/loader left
   // behind to confuse the retry.
   assert.equal(fs.existsSync(extensionRoot), false, "extension root must be wiped after first-time pre-bundle failure");
-  // The connector token must survive (OmpPreBundleError skips token rollback)
   // so a non-`--force` retry is not blocked.
   const tokenAfterFailure = loadTokenStore().tokens.find((entry) => entry.connector === "omp");
   assert.equal(tokenAfterFailure?.token, "omp-token", "omp token must be preserved for retry");
 
-  // ── Retry: install Bun (fake), re-run the same install.
   process.env.REMNIC_OMP_BUN_BIN = createFakeBun(root);
 
   const result = await new OmpMemoryExtensionPublisher().publish(publishCtx);
   assert.equal(result.hostId, "omp");
   assert.equal(result.extensionRoot, extensionRoot);
 
-  // Every owned file must be present and complete — the retry wrote them as if
   // the failed first attempt never happened.
   const expectedFiles = [
     "remnic.config.json",
@@ -1832,12 +1775,10 @@ test("omp first-time publish without bun is fully retryable after installing bun
     assert.ok(fs.existsSync(filePath), `retry must write ${fileName}`);
     assert.ok(fs.statSync(filePath).size > 0, `retry must write non-empty ${fileName}`);
   }
-  // dist-bundle must exist (the retry pre-bundled successfully).
   assert.ok(
     fs.existsSync(path.join(extensionRoot, "dist-bundle", "index.js")),
     "retry must produce dist-bundle/index.js",
   );
-  // No leftover temp/backup artefacts from either attempt.
   for (const entry of fs.readdirSync(extensionRoot)) {
     assert.ok(
       !/\.tmp-\d+-\d+$/.test(entry) && !entry.startsWith(".dist-bundle."),
@@ -1846,7 +1787,6 @@ test("omp first-time publish without bun is fully retryable after installing bun
   }
 });
 
-// ── Regression (#1662): restoring a pre-existing file must use
 // "write-new-before-delete-old" (rules 42/54). The prior content is written to
 // a temp path and renamed into place, so the live file is never truncated. If
 // the restore write itself fails (disk full, EACCES, …), the file keeps its
@@ -1863,7 +1803,6 @@ test("restore uses write-new-before-delete-old: a failed restore leaves the file
   const configPath = path.join(extensionRoot, "remnic.config.json");
   fs.mkdirSync(extensionRoot, { recursive: true });
   fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
-  // Pre-existing prior config — what the snapshot will capture and would
   // restore if the restore succeeded. Publish merges prior fields, so the
   // raw prior content is captured for a byte-for-byte "not restored" check.
   const priorRaw = `${JSON.stringify({ priorConfig: true }, null, 2)}\n`;
@@ -1886,7 +1825,6 @@ test("restore uses write-new-before-delete-old: a failed restore leaves the file
     tokens: [{ connector: "pi", token: "pi-token", createdAt: "2026-07-06T00:00:00.000Z" }],
   });
 
-  // Sabotage only the restore temp-write: Buffer data written to a `.tmp-`
   // path. Forward atomicWriteFile passes a string (with encoding), so publish
   // writes succeed; only the rollback restore (Buffer snapshot content) fails.
   const realWriteFileSync = fs.writeFileSync;
@@ -1932,9 +1870,7 @@ test("restore uses write-new-before-delete-old: a failed restore leaves the file
   );
 
   assert.ok(restoreAttempted, "the restore must have attempted a temp write");
-  // The restore failure must surface as a rollback warning.
   assert.match(warnings.join("\n"), /rollback failed/i);
-  // CRITICAL — write-new-before-delete-old: the config file is NOT truncated
   // or half-written. It still holds the complete content publish wrote
   // (merge of defaults + prior fields + the auth token), because the restore
   // temp-write failed BEFORE the live file was touched. The surviving file is
@@ -1954,13 +1890,11 @@ test("restore uses write-new-before-delete-old: a failed restore leaves the file
     "auto",
     "config must retain publish-written recallMode after a failed restore",
   );
-  // No lingering temp artefact.
   for (const entry of fs.readdirSync(extensionRoot)) {
     assert.ok(!/\.tmp-\d+-\d+$/u.test(entry), `leftover restore temp file: ${entry}`);
   }
 });
 
-// ── Regression (#1662): rollback-symlink TOCTOU defense-in-depth. If a file
 // is swapped for a symlink AFTER the snapshot but BEFORE the restore, the
 // restore must NOT write the prior content through the symlink to an arbitrary
 // target. The atomic temp+rename restore detects the symlink and aborts (the
@@ -1974,12 +1908,10 @@ test("restore does not write through a symlink swapped in after the snapshot (TO
   const piAgentHome = path.join(root, "pi-agent");
   const extensionRoot = path.join(piAgentHome, "extensions", "remnic");
   const configPath = path.join(extensionRoot, "remnic.config.json");
-  // External file the adversary swaps the config symlink to point at.
   const externalTarget = path.join(root, "external-target.json");
   const externalOriginal = `${JSON.stringify({ externalOriginal: true }, null, 2)}\n`;
   fs.mkdirSync(extensionRoot, { recursive: true });
   fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
-  // Pre-existing prior config — what the snapshot captures and would restore.
   fs.writeFileSync(configPath, `${JSON.stringify({ priorConfig: true }, null, 2)}\n`);
   fs.writeFileSync(externalTarget, externalOriginal);
 
@@ -2020,9 +1952,7 @@ test("restore does not write through a symlink swapped in after the snapshot (TO
     /readme write failed/,
   );
 
-  // The restore must have refused the symlink (logged as a rollback warning).
   assert.match(warnings.join("\n"), /must not be a symlink/);
-  // CRITICAL — the symlink's target is untouched: the prior config content was
   // never written through the symlink. Under the old `fs.writeFileSync(path,
   // snapshot)` restore, this file would have been overwritten with the prior
   // config content.
@@ -2033,7 +1963,6 @@ test("restore does not write through a symlink swapped in after the snapshot (TO
   );
 });
 
-// ── prime-agent publisher ────────────────────────────────────────────────────
 
 test("prime-agent publisher exposes hostId prime-agent and resolves the ~/.prime/agent extension root", async () => {
   const publisher = new PrimeAgentMemoryExtensionPublisher();
@@ -2053,7 +1982,6 @@ test("prime-agent publisher honors PRIME_AGENT_CODING_AGENT_DIR and ignores Pi-f
     }),
     path.join("/custom/prime-agent", "extensions", "remnic"),
   );
-  // Prime Agent is a separate install tree: the Pi-family overrides must NOT
   // relocate it (unlike omp, which inherits PI_CODING_AGENT_DIR).
   assert.equal(
     await publisher.resolveExtensionRoot({

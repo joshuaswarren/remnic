@@ -20,7 +20,6 @@ export interface AnalysisRunMetadata {
 }
 
 export const ANALYSIS_METADATA_MAX_FIELD_LENGTH = 120;
-/** True when value is an identifier-safe provider/model/promptVersion string. */
 export const isAnalysisIdentifier = (value: string): boolean => IDENTIFIER.test(value);
 
 /**
@@ -42,7 +41,6 @@ const FIELD_PATTERNS: Readonly<Record<string, RegExp>> = {
 
 function validateMetadataField(field: string, value: unknown): string {
   // Never interpolate the value itself: an error string is a log line, and a
-  // caller that mis-passes prompt text must not have it echoed there.
   if (typeof value !== "string") {
     throw new RangeError(
       `analysis run metadata ${field} must be a string; received ${typeof value}`,
@@ -56,9 +54,7 @@ function validateMetadataField(field: string, value: unknown): string {
       `analysis run metadata ${field} is too long (max ${ANALYSIS_METADATA_MAX_FIELD_LENGTH} characters)`,
     );
   }
-  // Report a line break as a line break even though the pattern would also
   // reject it. U+2028 and U+2029 are line separators too: they break
-  // line-oriented log consumers exactly like CR and LF.
   if (/[\n\r\u2028\u2029]/.test(value)) {
     throw new RangeError(`analysis run metadata ${field} must not contain a line break`);
   }
@@ -90,7 +86,6 @@ export function buildAnalysisRunMetadata(input: {
     observationCount < 0
   ) {
     // Report the type only. JSON.stringify would echo mis-passed content into
-    // the log, and it throws outright on a bigint or a circular object.
     throw new RangeError(
       `analysis run metadata observationCount must be a non-negative integer; received ${typeof observationCount}`,
     );

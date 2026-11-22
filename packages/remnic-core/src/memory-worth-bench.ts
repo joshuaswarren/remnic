@@ -42,15 +42,9 @@ interface BenchCase {
     isRelevant: boolean;
     counters?: MemoryWorthCounters;
   }[];
-  /** Top-K used for precision@K. */
   k: number;
 }
 
-/**
- * Deterministic pseudo-random number generator (mulberry32) so the bench
- * produces identical results across runs, making precision changes easy to
- * attribute to code rather than seed drift.
- */
 function mulberry32(seed: number): () => number {
   let t = seed >>> 0;
   return () => {
@@ -62,26 +56,8 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-/**
- * Generate a synthetic test case.
- *
- * Corpus design:
- *   - 20 candidates per case.
- *   - Top 5 by base score include 2 "traps" — memories that the retriever
- *     ranks highly but whose outcome history is 10/0 failures. These should
- *     be sunk by the filter.
- *   - 3 lower-ranked memories are genuinely relevant with 10/0 success
- *     history. The filter should promote them into the top 5.
- *   - Remaining 15 are noise at the neutral prior (no counter data).
- *
- * `k = 5`, so the ideal precision@K is 3/5 = 0.6 (three genuinely relevant
- * items, after filter promotion). Without the filter, precision@5 is 0/5
- * because the top 5 by base score are the 2 traps + 3 irrelevant neutral
- * items.
- */
 function buildCase(caseIndex: number, rng: () => number): BenchCase {
   const candidates: BenchCase["candidates"] = [];
-  // 2 high-ranked traps: high base score, bad outcome history, NOT relevant.
   for (let i = 0; i < 2; i += 1) {
     candidates.push({
       path: `case-${caseIndex}-trap-${i}.md`,
@@ -90,7 +66,6 @@ function buildCase(caseIndex: number, rng: () => number): BenchCase {
       counters: { mw_success: 0, mw_fail: 10 },
     });
   }
-  // 3 high-ranked irrelevant neutral items.
   for (let i = 0; i < 3; i += 1) {
     candidates.push({
       path: `case-${caseIndex}-noise-high-${i}.md`,
@@ -108,7 +83,6 @@ function buildCase(caseIndex: number, rng: () => number): BenchCase {
       counters: { mw_success: 10, mw_fail: 0 },
     });
   }
-  // 12 irrelevant noise candidates at random lower scores.
   for (let i = 0; i < 12; i += 1) {
     candidates.push({
       path: `case-${caseIndex}-noise-low-${i}.md`,
@@ -116,7 +90,6 @@ function buildCase(caseIndex: number, rng: () => number): BenchCase {
       isRelevant: false,
     });
   }
-  // Shuffle to remove any input-order bias.
   for (let i = candidates.length - 1; i > 0; i -= 1) {
     const j = Math.floor(rng() * (i + 1));
     [candidates[i], candidates[j]] = [candidates[j]!, candidates[i]!];
@@ -188,13 +161,11 @@ export function runMemoryWorthBench(options?: {
       c.candidates.filter((x) => x.isRelevant).map((x) => x.path),
     );
 
-    // Filter OFF: sort by baseScore descending.
     const off = [...c.candidates]
       .sort((a, b) => b.baseScore - a.baseScore)
       .map((x) => x.path);
     const pOff = computePrecisionAtK(off, relevant, c.k);
 
-    // Filter ON: build counter map and apply the filter.
     const counters = new Map<string, MemoryWorthCounters>();
     for (const cand of c.candidates) {
       if (cand.counters) counters.set(cand.path, cand.counters);

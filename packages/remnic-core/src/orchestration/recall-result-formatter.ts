@@ -43,15 +43,6 @@ import type {
   RecallPlanMode,
 } from "../types.js";
 
-/**
- * Issue #2183 — render the persisted `sourceConnector` carried on the result
- * (hydrated where the memory is loaded) as `[agent: <connector>]`. The value
- * reaches model-visible recall context, so it is validated against the canonical
- * persisted-ID charset (CONNECTOR_ID_PATTERN — IDs the system accepts,
- * including '.'/'_', keep their label) and TRUNCATED past CONNECTOR_LABEL_MAX
- * with an explicit marker (attribution survives; suppression would lose the
- * exact signal this PR adds). One resolver at the single render site.
- */
 function renderConnectorLabel(connector: string | undefined): string | null {
   if (!isValidConnectorId(connector)) return null;
   return connector.length <= CONNECTOR_LABEL_MAX_LENGTH
@@ -59,8 +50,6 @@ function renderConnectorLabel(connector: string | undefined): string | null {
     : `${connector.slice(0, CONNECTOR_LABEL_MAX_LENGTH - 1)}…`;
 }
 
-// ---------------------------------------------------------------------------
-// Identity injection mode helpers (moved verbatim from orchestrator.ts)
 // ---------------------------------------------------------------------------
 
 export function hasIdentityRecoveryIntent(prompt: string): boolean {
@@ -88,12 +77,6 @@ export function resolveEffectiveIdentityInjectionMode(options: {
   return { mode: options.configuredMode, shouldInject: true };
 }
 
-/**
- * Render an internal (possibly absolute) result path as a memoryDir-relative
- * path for display in prompts/citations, so operator-specific filesystem paths
- * never leak into recall output and citations stay portable across machines
- * (#2020). Non-absolute or out-of-root paths are returned unchanged.
- */
 export function displayResultPath(
   resultPath: string,
   memoryDir: string,
@@ -103,8 +86,6 @@ export function displayResultPath(
   const root = path.resolve(memoryDir);
   const nsRoot = path.join(root, "namespaces");
   if (namespace && (resultPath === nsRoot || resultPath.startsWith(nsRoot + path.sep))) {
-    // memoryDir/namespaces/<token>/<rel> -> "<namespace>/<rel>", the exact
-    // form the citation resolver decodes back to the owning namespace.
     const afterNs = path.relative(nsRoot, resultPath).split(path.sep).slice(1).join("/");
     if (afterNs) return `${namespace}/${afterNs}`;
   }
@@ -114,18 +95,6 @@ export function displayResultPath(
     : resultPath;
 }
 
-/**
- * Return a display-safe copy of a recall snapshot for the `includeDebug=true`
- * surface (#2077). `includedMemories[].path` is rendered namespace-relative
- * from each memory's own namespace — the same rendering `resultPaths` received
- * before the struct consolidation; a `tierExplain.sourceAnchors[]` entry
- * reuses that SAME authoritative metadata when its absolute path matches an
- * included memory's path, and otherwise falls back to the memoryDir-relative
- * on-disk form. Either way the debug flag never leaks absolute operator
- * paths, and an anchor is never attributed to a decoded (guessed) namespace —
- * an anchor carries no owner of its own. Returns a shallow copy; the input
- * snapshot is never mutated.
- */
 export function displaySafeRecallSnapshot<
   T extends {
     includedMemories?: IncludedMemory[];
@@ -181,21 +150,14 @@ export function displaySafeRecallSnapshot<
 }
 
 // ---------------------------------------------------------------------------
-// Coordinator
 // ---------------------------------------------------------------------------
 
-/**
- * Formats recall search results into display sections and assembles the
- * identity-continuity section. Holds a reference to config for feature-gated
- * rendering (memory handles, epistemic hedges, identity injection mode).
- */
 export class RecallResultFormatter {
   private readonly originAuthorityEnabled: boolean;
   constructor(private readonly config: PluginConfig) {
     this.originAuthorityEnabled = resolveSecurityCapabilities(config).originAuthority;
   }
 
-  // ── QMD results (memory handles + epistemic hedge) ──────────────────────
 
   formatQmdResultEntries(
     title: string,
@@ -216,9 +178,6 @@ export class RecallResultFormatter {
       const snippetBody = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
         : "(no preview)";
-      // Historical-prefix contract (issue #1952): only a labeled superseded
-      // row gets `[superseded <date> by <id>]`; every other row — and every
-      // render with the feature off — stays byte-identical.
       const statePrefix =
         (r.stateLabel === "historical" || r.stateLabel === "transition") &&
         r.supersededAt &&
@@ -240,9 +199,6 @@ export class RecallResultFormatter {
       const withHandle = handle ? `${head.trimEnd()} ${handle}` : head.trimEnd();
       const connectorLabel = renderConnectorLabel(r.sourceConnector);
       const withConnector = connectorLabel ? `${withHandle} [agent: ${connectorLabel}]` : withHandle;
-      // Preference age note (issue #2371). Set only when
-      // `driftDetection.annotateAfterDays` is on, so this suffix is absent —
-      // and the rendered line byte-identical to pre-#2371 — by default.
       const withDrift = r.driftNote ? `${withConnector} ${r.driftNote}` : withConnector;
       if (hedgeMap) {
         const item = trustResultFor(hedgeMap, r);
@@ -271,7 +227,6 @@ export class RecallResultFormatter {
     return [formatted.heading, ...formatted.entries].join("\n\n");
   }
 
-  // ── Specialized recall result formatters ────────────────────────────────
 
   formatObjectiveStateResults(
     results: ObjectiveStateSearchResult[],
@@ -355,10 +310,6 @@ export class RecallResultFormatter {
           `${node.kind}/${node.abstractionLevel}`,
           node.sessionKey,
         ].join(" | ");
-        // #1955 review: node title/summary copy active source-memory content;
-        // harmonic nodes carry no per-node origin yet, so fence as unknown
-        // (least privilege) when origin authority is on (plumbing: #2397).
-        // Flag-off keeps the original two-slot shape byte-identical.
         const bodyParts = this.originAuthorityEnabled
           ? [renderAuthorityBoundContent(
               [node.title, node.summary].filter(Boolean).join("\n"),
@@ -409,8 +360,6 @@ export class RecallResultFormatter {
         `### Episode: ${shortKey} turns ${episode.fromTurn}-${episode.toTurn - 1} ` +
         `(supports [${episode.memoryIds.join(", ")}])`;
       const lines = episode.turns.map((turn) => {
-        // Archived conversation turns carry no origin: least-privilege
-        // fencing applies when origin authority is enabled (issue #2331).
         const content = renderAuthorityBoundContent(turn.content, undefined, {
           enabled: this.originAuthorityEnabled,
           untrustedOrigins: this.config.untrustedOrigins,
@@ -488,9 +437,6 @@ export class RecallResultFormatter {
           verificationStatus,
           `confidence:${effectiveConfidence.toFixed(2)}`,
         ].join(" | ");
-        // #1955 review: the rule body derives from a source memory whose
-        // origin is not copied onto the rule — fence via the rule's own
-        // frontmatter origin (missing → unknown, least privilege) when on.
         const ruleBody = renderAuthorityBoundContent(rule.content, rule.frontmatter.origin, {
           enabled: this.originAuthorityEnabled,
           untrustedOrigins: this.config.untrustedOrigins,
@@ -506,7 +452,6 @@ export class RecallResultFormatter {
     return `## Verified Rules\n\n${lines.join("\n\n")}`;
   }
 
-  // ── Identity continuity helpers ─────────────────────────────────────────
 
   summarizeIdentityText(
     raw: string,

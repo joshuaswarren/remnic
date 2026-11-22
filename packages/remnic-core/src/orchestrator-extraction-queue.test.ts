@@ -38,7 +38,6 @@ function createCoordinator(): ExtractionQueueCoordinator {
   return new ExtractionQueueCoordinator(1);
 }
 
-// ── Per-key FIFO: queued tasks retain their own captured scope and settlement ─
 
 test("same-key queued tasks both run in FIFO order", async () => {
   const coordinator = createCoordinator();
@@ -179,14 +178,8 @@ test("same-key enqueues behind an active task retain both queued tasks in FIFO o
   assert.deepEqual(order, ["running", "queued-first", "queued-second"]);
 });
 
-// ── Issue #549 ─────────────────────────────────────────────────────────────
 
 test("processQueue logs an AbortError task at debug, not error (#549)", async () => {
-  // Regression for issue #549: session transitions fire the abort
-  // signal, and queued extraction tasks that pick it up throw via
-  // `throwIfRecallAborted` (an Error with `name === "AbortError"`).
-  // That is intentional deduplication, not a failure.  The queue
-  // processor must log it at debug.
   const { entries } = installCapturingLogger();
   const coordinator = createCoordinator();
   coordinator.pushRaw(async () => {
@@ -212,8 +205,6 @@ test("processQueue logs an AbortError task at debug, not error (#549)", async ()
 });
 
 test("processQueue still logs real task failures at error", async () => {
-  // Guard the other half: non-abort errors (network, parse, I/O) must
-  // continue to log at error level.
   const { entries } = installCapturingLogger();
   const coordinator = createCoordinator();
   coordinator.pushRaw(async () => {
@@ -265,15 +256,8 @@ test("processQueue clears queueProcessing on exit regardless of task outcomes", 
   assert.equal(coordinator.isProcessing, false);
 });
 
-// ── Outer processQueue().catch() branch (Codex follow-up on #549) ──────────
 
 test("logExtractionQueueFailure(processor) classifies AbortError as debug (#549)", async () => {
-  // Covers the outer `processQueue().catch(...)` path in
-  // `enqueue`.  A processor-level AbortError can
-  // bubble from e.g. a processQueue rewrite that awaits an external
-  // signal, so the handler must fail open to debug — otherwise a
-  // session-transition-triggered processor abort would get logged
-  // at error next to the successful extraction it just produced.
   const { entries } = installCapturingLogger();
   const coordinator = createCoordinator();
   coordinator.logExtractionQueueFailure(
@@ -307,10 +291,6 @@ test("logExtractionQueueFailure(processor) preserves error-level for real failur
 });
 
 test("logExtractionQueueFailure names the right layer (task vs processor)", async () => {
-  // Regression guard that keeps the two log messages distinct — a
-  // single shared message would lose the operator context that
-  // tells them whether a specific extraction aborted or the queue
-  // processor itself did.
   const { entries } = installCapturingLogger();
   const coordinator = createCoordinator();
   coordinator.logExtractionQueueFailure(abortError("a"), "task");
@@ -413,13 +393,11 @@ test("a front enqueue does not abort a task that did not register as preemptable
   assert.deepEqual(order, ["protected", "flush"]);
 });
 
-// ── Bounded-parallel queue (extractionQueueConcurrency) ─────────────────────
 
 function createParallelCoordinator(limit: number): ExtractionQueueCoordinator {
   return new ExtractionQueueCoordinator(limit);
 }
 
-/** A parked queue task with deterministic start/abort/release signals. */
 function makeParkedTask(preemptable: boolean) {
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -584,7 +562,6 @@ test("pauseAndDrain waits for concurrent accepted work and rejects new producers
   assert.equal(coordinator.isProcessing, false);
 });
 
-// ── Key reservations (daemon backlog scheduler) ────────────────────────────
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

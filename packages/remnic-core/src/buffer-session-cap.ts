@@ -1,9 +1,6 @@
-/** Per-session retained-turn cap (#3415 bound). Split from buffer.ts (1200-line ratchet). */
 import { log } from "./logger.js";
 import type { BufferEntryState, BufferTurn } from "./types.js";
 
-// Far above the extraction trigger (bufferMaxTurns, default 5), so healthy
-// sessions never touch it. Covers direct constructions predating the knob.
 export const FALLBACK_MAX_TURNS_PER_SESSION = 200;
 
 export function resolveMaxTurnsPerSession(configured: number | undefined): number {

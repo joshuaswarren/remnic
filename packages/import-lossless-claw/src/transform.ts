@@ -1,8 +1,4 @@
-// ---------------------------------------------------------------------------
-// Pure mapping functions: lossless-claw rows → Remnic LCM rows.
 //
-// Kept side-effect-free so they can be unit-tested without SQLite in the
-// loop. The orchestration in importer.ts handles I/O.
 // ---------------------------------------------------------------------------
 
 import type {
@@ -38,11 +34,6 @@ export interface MappedSummaryNode {
   created_at: string;
 }
 
-/**
- * Resolve a conversation row to a Remnic session_id. Prefer the explicit
- * session_id field; fall back to conversation_id when null/empty so every
- * imported row has a stable session anchor.
- */
 export function resolveSessionId(
   conversation: LosslessClawConversation,
 ): string {
@@ -81,12 +72,6 @@ export function buildMessageMetadata(
   return JSON.stringify(sorted);
 }
 
-/**
- * Map a source message to a Remnic LCM row. `turnIndex` is supplied by the
- * caller (importer.ts) which assigns a session-global running counter so
- * multiple conversations sharing one session id do not collide on
- * (session_id, turn_index).
- */
 export function mapMessage(
   conversation: LosslessClawConversation,
   message: LosslessClawMessage,
@@ -108,13 +93,6 @@ export interface SummaryDerivation {
   messageIds: string[];
 }
 
-/**
- * Pick the canonical parent id from a multi-parent DAG row. lossless-claw
- * supports many-to-many parent edges; Remnic's `lcm_summary_nodes.parent_id`
- * is a single FK. Lowest ordinal wins (tie-break: lexicographic id) so the
- * choice is deterministic. Multi-parent rows are reported by the importer so
- * users have visibility into the lossy edge.
- */
 export function pickCanonicalParent(
   parents: LosslessClawSummaryParent[],
 ): string | null {
@@ -142,10 +120,6 @@ export function mapSummary(input: MapSummaryInput): MappedSummaryNode {
         "cannot derive msg_start/msg_end. Skip this summary at the caller.",
     );
   }
-  // Iterative min/max — `Math.min(...arr)` / `Math.max(...arr)` push every
-  // element onto the call stack via spread and throw `RangeError: Maximum
-  // call stack size exceeded` on summaries that cover tens of thousands of
-  // messages (Cursor Bugbot review on PR #797).
   let msg_start = input.messageSeqs[0]!;
   let msg_end = msg_start;
   for (let i = 1; i < input.messageSeqs.length; i++) {
@@ -168,26 +142,10 @@ export function mapSummary(input: MapSummaryInput): MappedSummaryNode {
   };
 }
 
-/**
- * Determine if a summary has multiple parents (lossy-collapse signal).
- */
 export function isMultiParent(parents: LosslessClawSummaryParent[]): boolean {
   return parents.length > 1;
 }
 
-/**
- * Resolve the (probable) single session for a summary by looking at the
- * messages it covers. lossless-claw summaries technically span multiple
- * conversations only via DAG construction, which Remnic's per-session
- * structure cannot represent — return null in that case so the caller can
- * skip the summary with a warning rather than picking a wrong session.
- *
- * Strict on dangling references: if ANY referenced message_id fails to
- * resolve to a session, return null. Silently dropping unresolved IDs
- * would let a summary with mixed valid + dangling refs pass through
- * with msg_start/msg_end computed from only the resolved subset, mis-
- * representing the summary's true coverage (Codex P2 review on PR #797).
- */
 export function resolveSummarySession(
   messageIds: string[],
   sessionByMessageId: ReadonlyMap<string, string>,
@@ -203,10 +161,6 @@ export function resolveSummarySession(
   return [...sessions][0]!;
 }
 
-/**
- * Index summary_messages and messages so we can emit per-summary message-id
- * lists and seq lists without N+1 queries. Pure helper.
- */
 export function indexSummaryDerivations(
   summaryMessages: LosslessClawSummaryMessage[],
   parents: LosslessClawSummaryParent[],

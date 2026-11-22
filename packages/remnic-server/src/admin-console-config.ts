@@ -1,7 +1,3 @@
-/**
- * Admin-console fields for standalone server config.
- * Extracted from index.ts to keep that file under its line ceiling.
- */
 
 export interface AdminConsoleServerFields {
   adminConsoleEnabled?: boolean;

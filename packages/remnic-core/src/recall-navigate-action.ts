@@ -1,8 +1,3 @@
-/**
- * Recall navigation action parse (issue #1956 leftover).
- *
- * Pure. Surfaces wait. Unknown or empty is unknown_action.
- */
 
 const NAVIGATE_ACTIONS = ["expand", "traverse"] as const;
 

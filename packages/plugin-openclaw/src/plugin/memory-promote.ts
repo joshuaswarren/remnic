@@ -10,11 +10,6 @@ import { isSupportPassportPrivateMemory } from "@remnic/core/support-passport";
 import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite";
 import { isSafeRouteNamespace } from "@remnic/core/routing/engine";
 import { indexMemoryAsync, indexesExistAsync } from "@remnic/core/temporal-index";
-/**
- * `memory_promote` executor — copy a memory into another namespace
- * (extracted from tools.ts; issue #1989 PR4 file-size discipline).
- * Returns the user-facing result message.
- */
 
 function buildPromotionOrigin(
   srcNamespace: string,
@@ -50,15 +45,9 @@ export async function executeMemoryPromote(
   },
 ): Promise<string> {
   const { memoryId, fromNamespace, toNamespace, note } = params;
-  // Reject invalid input instead of reinterpreting it: a blank namespace or
-  // non-string memory reference must not silently select a different target.
-  // `null` is treated as absent because optional tool parameters historically
-  // used it interchangeably with omission.
   if (typeof memoryId !== "string" || memoryId.length === 0) {
     return `Invalid memoryId: ${JSON.stringify(memoryId)} — expected a non-empty memory ID.`;
   }
-  // Namespace validation reuses the SAME contract as core routing
-  // (isSafeRouteNamespace), so every namespace core accepts is accepted here.
   for (const [name, value] of [
     ["fromNamespace", fromNamespace],
     ["toNamespace", toNamespace],
@@ -76,10 +65,6 @@ export async function executeMemoryPromote(
 
   const src = await orchestrator.getStorage(srcNs);
   const mem = await src.getMemoryById(memoryId);
-  // Owner-private support-passport records must not cross their storage
-  // boundary through a copy-based promotion. Reported as not found so the
-  // tool never confirms a private record's existence to another principal
-  // (#2387).
   if (!mem || isSupportPassportPrivateMemory(mem)) {
     return `Memory not found in ${srcNs}: ${memoryId}`;
   }
@@ -87,8 +72,6 @@ export async function executeMemoryPromote(
   const dst = await orchestrator.getStorage(dstNs);
   const promotionOrigin = buildPromotionOrigin(srcNs, memoryId);
 
-  // Sealed-envelope write (issue #1989 PR4): a promotion REPLAYS a stored
-  // row — legacy data may predate current limits, so salvage.
   const promoteEnvelope = composeSalvagedEnvelope(
     "promote",
     {
@@ -123,20 +106,10 @@ export async function executeMemoryPromote(
     },
   );
 
-  // #1645 (review threads TWB/Yhu): if the destination namespace's tombstone
-  // blocked this promotion, the copy landed pending_review (no active
-  // promoted memory). Surface that honestly and SKIP query-aware indexing so
-  // the blocked copy is not embedded as if it were active.
   if (tombstoneBlocked) {
     return `Promotion of ${srcNs}:${memoryId} → ${dstNs}:${newId} is queued for review (tombstone-blocked): no active promoted copy was created.`;
   }
 
-  // Update temporal + tag indexes for the promoted copy (v8.1). Same guard
-  // as memory_store: skip if indexes don't exist yet to avoid blocking the
-  // full corpus bootstrap on the next extraction. Indexing is a SIDE
-  // EFFECT: the promotion is durable already, so an index failure reports
-  // instead of throwing — a thrown error here would read as a failed
-  // promotion and invite a duplicating retry (#2022 review).
   try {
     if (
       orchestrator.config.queryAwareIndexingEnabled &&
@@ -153,8 +126,6 @@ export async function executeMemoryPromote(
       }
     }
   } catch (err) {
-    // displayErrorDetail strips absolute paths and stack noise before the
-    // detail reaches a user-facing tool result (MCP/tool clients).
     return `Promoted ${srcNs}:${memoryId} → ${dstNs}:${newId} (index refresh failed — recall picks it up on the next maintenance pass: ${displayErrorDetail(err)})`;
   }
 

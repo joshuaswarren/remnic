@@ -19,7 +19,6 @@ test("loadBenchmarkResult upgrades legacy files missing newer required meta fiel
       },
     },
     async (filePath) => {
-      // Issue #2850: pre-validator artifacts upgrade with documented
       // defaults instead of being skipped.
       const loaded = await loadBenchmarkResult(filePath);
       assert.equal(loaded.meta.benchmarkTier, "custom");
@@ -48,7 +47,6 @@ test("loadBenchmarkResult still rejects files missing the legacy identity floor"
 
 test("loadBenchmarkResult upgrades legacy files missing cost fields to zero-cost", async () => {
   const result: Record<string, unknown> = { ...validResult() };
-  // A true legacy shape carries no provenance markers. A modern artifact
   // that merely lost cost fields keeps its provenance and must reject
   // instead of upgrading, so strip the modern meta here.
   result.meta = {
@@ -66,7 +64,6 @@ test("loadBenchmarkResult upgrades legacy files missing cost fields to zero-cost
   };
 
   await withResultFile(result, async (filePath) => {
-    // Absent cost accounting upgrades to zero, never to a guess.
     const loaded = await loadBenchmarkResult(filePath);
     assert.equal(loaded.cost.totalTokens, 0);
     assert.equal(loaded.cost.inputTokens, 0);
@@ -84,7 +81,6 @@ test("loadBenchmarkResult rejects a modern artifact that lost cost fields", asyn
   };
 
   await withResultFile(result, async (filePath) => {
-    // Provenance markers claim the modern contract; a missing required
     // cost field is corruption, not a legacy upgrade (issue #2885).
     await assert.rejects(
       () => loadBenchmarkResult(filePath),
@@ -378,7 +374,6 @@ test("loadBenchmarkResult rejects a modern artifact with a malformed provider op
     systemProvider: { provider: "openai", model: "gpt-5.4", rubricVersion: 42 },
   };
   await withResultFile(result, async (filePath) => {
-    // Canonical validation rejects the malformed optional field (issue
     // #2895); the modern artifact must not launder through the legacy
     // path either.
     await assert.rejects(

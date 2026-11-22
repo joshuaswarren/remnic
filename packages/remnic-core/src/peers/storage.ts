@@ -18,19 +18,10 @@
 import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
 
-/**
- * Atomic, symlink-rejecting open: returns a file handle whose
- * underlying open(2) call carried `O_NOFOLLOW`, so the kernel itself
- * refuses to follow a symlink at the target path. Closes the
- * check-then-use TOCTOU race that a separate `assertPathNotSymlink`
- * + `fs.writeFile` pattern leaves open (codex P1 round 5 on PR #723).
- */
 async function openNoFollow(file: string, flags: number): Promise<import("node:fs/promises").FileHandle> {
   return fs.open(file, flags | fsConstants.O_NOFOLLOW);
 }
 
-/** Read a file, refusing to follow symlinks at the kernel level
- * AND verifying parent-dir inode stability (codex P1 round 9). */
 async function readFileNoFollow(file: string): Promise<string> {
   await assertParentDirInodeStable(file);
   const fh = await openNoFollow(file, fsConstants.O_RDONLY);
@@ -41,23 +32,6 @@ async function readFileNoFollow(file: string): Promise<string> {
   }
 }
 
-/**
- * Codex P1 round 9: O_NOFOLLOW only protects the FINAL path
- * component, so a parent-directory swap mid-flight (peers/<id>
- * unlinked + replaced with a symlink between assertPeerDirNotEscaped
- * and the open) could still write outside memoryDir. Without
- * `openat` (Node has no stable JS binding for it), the best
- * pure-Node mitigation is to:
- *   1. Open the parent directory with O_DIRECTORY | O_NOFOLLOW so
- *      WE hold the original-inode handle.
- *   2. fstat the parent handle and compare its (dev, inode) against
- *      lstat of the parent path. If they diverge, a swap happened
- *      between mkdir and now — abort.
- *   3. Then do the symlink-rejecting open of the file.
- * This narrows the race window to the few microseconds between the
- * fstat/lstat compare and the open. Fully closing the race needs
- * `openat`, which is tracked as a follow-up.
- */
 async function assertParentDirInodeStable(filePath: string): Promise<void> {
   const parent = path.dirname(filePath);
   const dh = await fs.open(
@@ -80,9 +54,6 @@ async function assertParentDirInodeStable(filePath: string): Promise<void> {
   }
 }
 
-/** Overwrite a file, refusing to follow symlinks at the kernel level
- * AND verifying the parent directory inode is stable across the open
- * (codex P1 round 9). */
 async function writeFileNoFollow(file: string, data: string): Promise<void> {
   await assertParentDirInodeStable(file);
   const fh = await openNoFollow(
@@ -129,8 +100,6 @@ async function writeFileNoFollowIfAbsent(file: string, data: string): Promise<bo
   return true;
 }
 
-/** Append to a file, refusing to follow symlinks AND verifying parent
- * inode stability (codex P1 round 9). */
 export async function appendFileNoFollow(file: string, data: string): Promise<void> {
   await assertParentDirInodeStable(file);
   const fh = await openNoFollow(
@@ -154,8 +123,6 @@ import {
   type PeerProfileFieldProvenance,
 } from "./types.js";
 
-// ──────────────────────────────────────────────────────────────────────
-// Validation
 // ──────────────────────────────────────────────────────────────────────
 
 const ALLOWED_KINDS: ReadonlySet<PeerKind> = new Set<PeerKind>([
@@ -184,9 +151,6 @@ export function assertValidPeerId(peerId: unknown): asserts peerId is string {
       `peerId "${peerId}" is invalid — must match ${PEER_ID_PATTERN}`,
     );
   }
-  // Defence-in-depth: reject consecutive dots/dashes/underscores. The
-  // regex already prevents leading/trailing separators, but explicit
-  // adjacency checks document intent and survive future regex refactors.
   if (/[.\-_]{2,}/.test(peerId)) {
     throw new Error(
       `peerId "${peerId}" is invalid — must not contain consecutive separators`,
@@ -194,13 +158,6 @@ export function assertValidPeerId(peerId: unknown): asserts peerId is string {
   }
 }
 
-/**
- * Strict plain-object check. Rejects arrays, null, Maps, Sets, class
- * instances, and anything else with a non-Object/null prototype.
- * Codex P2 round 13: writePeerProfile previously treated any
- * non-null non-array object as plain; inputs like `new Map()` would
- * pass and serialize to `{}` losing all data.
- */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -218,7 +175,6 @@ function assertValidKind(kind: unknown): asserts kind is PeerKind {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Path helpers
 // ──────────────────────────────────────────────────────────────────────
 
 /** Root directory holding the peer registry, relative to memoryDir. */
@@ -229,17 +185,9 @@ function peersRoot(memoryDir: string): string {
 }
 
 function peerDir(memoryDir: string, peerId: string): string {
-  // Guard against path traversal on top of regex validation. After
-  // assertValidPeerId, peerId cannot contain `/`, `..`, or NUL — but we
-  // re-check defensively here.
   assertValidPeerId(peerId);
   const candidate = path.join(peersRoot(memoryDir), peerId);
   const root = peersRoot(memoryDir);
-  // Ensure resolved path stays within peersRoot. Note: this is a
-  // lexical check only — a symlinked peer directory can still escape.
-  // I/O sites must additionally call `assertPeerDirNotEscaped` (below)
-  // before reading or writing, which uses lstat to reject symlinks
-  // and realpath to confirm physical containment (codex P1 #723).
   const relative = path.relative(root, candidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`peerId "${peerId}" resolves outside peers root`);
@@ -247,12 +195,6 @@ function peerDir(memoryDir: string, peerId: string): string {
   return candidate;
 }
 
-/**
- * Reject the peers root if it is itself a symlink. Called BEFORE any
- * `fs.mkdir`, so a `peers → /tmp/outside` symlink can't get its
- * target mutated by a recursive mkdir before subsequent checks fire
- * (codex P2 + cursor M on PR #723).
- */
 async function assertPeersRootNotSymlink(memoryDir: string): Promise<void> {
   const root = peersRoot(memoryDir);
   let rootStat: import("node:fs").Stats | null = null;
@@ -266,19 +208,8 @@ async function assertPeersRootNotSymlink(memoryDir: string): Promise<void> {
   }
 }
 
-/**
- * Codex P1 round 13: atomic mkdir of the peer directory under a
- * verified peers root. Opens the peers root with O_DIRECTORY|
- * O_NOFOLLOW first (creating it if missing under the same flags) so
- * a root-symlink swap can't redirect the subsequent mkdir to its
- * target. The dir handle is held across the mkdir, then we lstat
- * the candidate and reject if it's a symlink.
- */
 export async function mkdirPeerDirAtomic(memoryDir: string, peerId: string): Promise<void> {
   const root = peersRoot(memoryDir);
-  // Ensure the root exists as a real directory, not a symlink. Use
-  // mkdir + lstat: if mkdir succeeds (or EEXIST), lstat must report
-  // a directory and not a symlink.
   await fs.mkdir(memoryDir, { recursive: true });
   try {
     await fs.mkdir(root);
@@ -292,9 +223,6 @@ export async function mkdirPeerDirAtomic(memoryDir: string, peerId: string): Pro
   if (!rootLstat.isDirectory()) {
     throw new Error(`peers root "${root}" exists but is not a directory`);
   }
-  // Open the root with O_DIRECTORY|O_NOFOLLOW to anchor the inode.
-  // Hold the handle across the peer-dir mkdir so a root swap
-  // mid-operation is detected via fstat-vs-lstat compare afterward.
   const rootHandle = await fs.open(
     root,
     fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
@@ -302,13 +230,11 @@ export async function mkdirPeerDirAtomic(memoryDir: string, peerId: string): Pro
   try {
     const candidate = peerDir(memoryDir, peerId);
     await fs.mkdir(candidate, { recursive: true });
-    // Verify root inode unchanged across the mkdir.
     const fstatRoot = await rootHandle.stat();
     const lstatRoot = await fs.lstat(root);
     if (fstatRoot.ino !== lstatRoot.ino || fstatRoot.dev !== lstatRoot.dev) {
       throw new Error(`peers root "${root}" was swapped during mkdir`);
     }
-    // Reject symlinked peer dir.
     const peerLstat = await fs.lstat(candidate);
     if (peerLstat.isSymbolicLink()) {
       throw new Error(`peer directory "${peerId}" is a symlink and is rejected`);
@@ -318,21 +244,10 @@ export async function mkdirPeerDirAtomic(memoryDir: string, peerId: string): Pro
   }
 }
 
-/**
- * Codex P1 on PR #723: `peerDir` only enforces a lexical
- * `path.relative` check, so a symlinked peer directory like
- * `peers/self → /tmp/outside` would slip through. Run this guard
- * AFTER the peer directory has been (or is known to) exist, so we
- * can lstat it and realpath-check containment. For first-time writes,
- * call `mkdirPeerDirAtomic` BEFORE this; for reads, this alone.
- */
 export async function assertPeerDirNotEscaped(memoryDir: string, peerId: string): Promise<void> {
   const candidate = peerDir(memoryDir, peerId);
   const root = peersRoot(memoryDir);
-  // 1. The peers root must not be a symlink (defensive — writers
-  // already checked this before mkdir, but reads must still verify).
   await assertPeersRootNotSymlink(memoryDir);
-  // 2. lstat on the candidate itself. If it's a symlink, refuse.
   let candidateStat: import("node:fs").Stats | null = null;
   try {
     candidateStat = await fs.lstat(candidate);
@@ -342,7 +257,6 @@ export async function assertPeerDirNotEscaped(memoryDir: string, peerId: string)
   if (candidateStat && candidateStat.isSymbolicLink()) {
     throw new Error(`peer directory "${peerId}" is a symlink and is rejected`);
   }
-  // 3. Real-path containment. Only meaningful if the candidate exists.
   if (candidateStat) {
     const realRoot = await fs.realpath(root);
     const realCandidate = await fs.realpath(candidate);
@@ -366,31 +280,14 @@ export function interactionsPath(memoryDir: string, peerId: string): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Minimal YAML helpers (peer files only)
 // ──────────────────────────────────────────────────────────────────────
 //
-// We deliberately do not depend on the codebase's primary YAML parser
-// (`storage.ts`) because the peer schema is small and structured. We emit
-// a strict, predictable subset:
 //
 //   ---
-//   id: my-peer
-//   kind: agent
-//   displayName: "Codex"
-//   createdAt: 2026-04-25T00:00:00.000Z
-//   updatedAt: 2026-04-25T00:00:00.000Z
 //   ---
-//   {free-form markdown notes}
 //
-// String values are always double-quoted with `\\` and `\"` escapes. ISO
-// timestamps and the kind enum are emitted bare. This keeps round-trip
-// behaviour deterministic and easy to validate.
 
 function escapeYamlString(value: string): string {
-  // Cursor Medium: must escape newlines / carriage returns / tabs so a
-  // value like `displayName: "first\nsecond"` doesn't blow up the
-  // line-oriented parsePeerFrontmatter. Backslash → `\\`, double-quote
-  // → `\"`, newline → `\n`, carriage return → `\r`, tab → `\t`.
   return `"${value
     .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
@@ -439,14 +336,10 @@ interface ParsedFrontmatter {
 }
 
 function parsePeerFrontmatter(raw: string): ParsedFrontmatter {
-  // Frontmatter must begin with a `---` line. We tolerate a leading BOM
-  // and trailing newlines but otherwise require a strict, line-oriented
-  // YAML subset of `key: value` pairs.
   const text = raw.replace(/^\uFEFF/, "");
   if (!text.startsWith("---")) {
     throw new Error("peer file is missing YAML frontmatter delimiter");
   }
-  // Split on the first occurrence of `\n---` after the leading `---`.
   const after = text.slice(3);
   const close = after.indexOf("\n---");
   if (close === -1) {
@@ -483,21 +376,11 @@ function emitPeerIdentity(peer: Peer): string {
   lines.push(`id: ${escapeYamlString(peer.id)}`);
   lines.push(`kind: ${peer.kind}`);
   lines.push(`displayName: ${escapeYamlString(peer.displayName)}`);
-  // Cursor M: emit timestamps as quoted YAML strings — bare emission
-  // would let a `createdAt` value containing a newline inject extra
-  // frontmatter fields when round-tripped through `parsePeerFrontmatter`.
-  // (`writePeer` validates these are non-empty strings, but the type
-  // doesn't constrain content.)
   lines.push(`createdAt: ${escapeYamlString(peer.createdAt)}`);
   lines.push(`updatedAt: ${escapeYamlString(peer.updatedAt)}`);
   lines.push("---");
   lines.push("");
   lines.push(peer.notes ?? "");
-  // Trailing newline for POSIX friendliness.
-  // CodeQL: the previous `replace(/\n+$/, "\n")` flagged as
-  // polynomial-regex risk because `\n+` can backtrack on long
-  // trailing-newline runs. Strip trailing newlines with a bounded
-  // loop instead — O(N) over the trailing-newline count, no regex.
   let out = lines.join("\n");
   while (out.endsWith("\n")) out = out.slice(0, -1);
   return out + "\n";
@@ -515,18 +398,12 @@ function assertWritablePeer(peer: Peer): void {
   if (typeof peer.updatedAt !== "string" || peer.updatedAt === "") {
     throw new Error("peer.updatedAt must be a non-empty ISO-8601 string");
   }
-  // Codex P2 round 8: reject non-string `peer.notes`. Without this,
-  // an untyped JS caller passing an object/number would silently
-  // coerce to "[object Object]"/"42" via lines.push(notes ?? "")
-  // and corrupt user-authored identity content. Notes are optional;
-  // omit by passing undefined (NOT null).
   if (peer.notes !== undefined && typeof peer.notes !== "string") {
     throw new Error("peer.notes must be a string when provided");
   }
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Public storage API
 // ──────────────────────────────────────────────────────────────────────
 
 /**
@@ -543,9 +420,6 @@ export async function readPeer(
   assertValidPeerId(peerId);
   await assertPeerDirNotEscaped(memoryDir, peerId);
   const file = identityPath(memoryDir, peerId);
-  // Codex P1 #2: even with the directory validated, a symlinked
-  // identity.md inside a real peer dir would let us read arbitrary
-  // out-of-scope files. Reject symlinks at the file level too.
   let raw: string;
   try {
     raw = await readFileNoFollow(file);
@@ -569,24 +443,11 @@ export async function readPeer(
   if (createdAt === "") {
     throw new Error(`peer "${peerId}" is missing createdAt`);
   }
-  // Codex P2: nullish-coalescing alone treated `updatedAt: ""` as a
-  // valid empty timestamp, contradicting writePeer's non-empty
-  // validation and the module's "malformed files throw" contract.
-  // Treat empty string as missing and fall back to createdAt; throw
-  // only when the field is malformed in some other way (caught by
-  // the typeof check).
   const rawUpdatedAt = fields.updatedAt;
   const updatedAt =
     typeof rawUpdatedAt === "string" && rawUpdatedAt.length > 0
       ? rawUpdatedAt
       : createdAt;
-  // Codex P2 + CodeQL: previously used `body.replace(/^\s+/, "")`
-  // which stripped ALL leading whitespace — including indentation in
-  // notes. The `\s+` patterns also flagged as polynomial-regex risk
-  // (CodeQL alert #74) because they can backtrack on adversarial
-  // inputs. Strip exactly one leading separator newline and one
-  // trailing newline — internal AND user-authored leading
-  // indentation are preserved verbatim, and the regex is bounded.
   let trimmedBody = body;
   if (trimmedBody.startsWith("\r\n")) trimmedBody = trimmedBody.slice(2);
   else if (trimmedBody.startsWith("\n")) trimmedBody = trimmedBody.slice(1);
@@ -611,18 +472,9 @@ export async function readPeer(
  */
 export async function writePeer(memoryDir: string, peer: Peer): Promise<void> {
   assertWritablePeer(peer);
-  // Codex P1 round 13: atomic root validation. Open the peers root
-  // (or its parent if peers doesn't exist yet) with O_DIRECTORY|
-  // O_NOFOLLOW BEFORE the mkdir. This holds a kernel handle on the
-  // original-inode root, so a swap between the symlink check and
-  // the mkdir can't redirect mkdir to a symlink-target. We then
-  // mkdir, lstat the result against the held handle, and only
-  // proceed if they match.
   await mkdirPeerDirAtomic(memoryDir, peer.id);
   await assertPeerDirNotEscaped(memoryDir, peer.id);
   const file = identityPath(memoryDir, peer.id);
-  // Codex P1 #2: reject if identity.md exists as a symlink so we
-  // don't follow it on overwrite.
   await writeFileNoFollow(file, emitPeerIdentity(peer));
 }
 
@@ -667,13 +519,6 @@ export async function deletePeer(memoryDir: string, peerId: string): Promise<boo
   assertValidPeerId(peerId);
   await assertPeerDirNotEscaped(memoryDir, peerId);
   const file = identityPath(memoryDir, peerId);
-  // Refuse to follow a symlink at `identity.md` itself: lstat first
-  // and reject if the target is a symlink. Then verify the parent
-  // directory inode is stable across the unlink (mirrors the
-  // assertParentDirInodeStable + O_NOFOLLOW pattern used by
-  // writeFileNoFollow). This narrows the TOCTOU window between the
-  // lstat and the unlink to the same few microseconds the write path
-  // accepts.
   let lstatBefore: import("node:fs").Stats;
   try {
     lstatBefore = await fs.lstat(file);
@@ -740,20 +585,10 @@ export async function forgetPeer(
   }
   assertValidPeerId(peerId);
   await assertPeersRootNotSymlink(memoryDir);
-  // assertPeerDirNotEscaped performs the realpath-containment check that
-  // the lexical `peerDir()` guard alone cannot provide: it lstat-checks
-  // the candidate, rejects symlinks, and confirms the resolved path stays
-  // inside peersRoot. Mirrors the contract of every other I/O entry-point
-  // in this module (`readPeer`, `writePeer`, `deletePeer`,
-  // `appendInteractionLog`, `readPeerProfile`, `writePeerProfile`).
-  // The function handles ENOENT gracefully (returns without throwing), so
-  // calling it here is safe for the idempotent no-op path as well.
   await assertPeerDirNotEscaped(memoryDir, peerId);
 
   const dir = peerDir(memoryDir, peerId);
 
-  // lstat the candidate directory. Return early (idempotent) if it
-  // doesn't exist. Reject if it resolves to a symlink.
   let dirStat: import("node:fs").Stats;
   try {
     dirStat = await fs.lstat(dir);
@@ -774,10 +609,6 @@ export async function forgetPeer(
     );
   }
 
-  // Perform the recursive removal. `fs.rm` with `{ recursive: true }`
-  // is the correct API (replaces the deprecated `fs.rmdir`). The
-  // `force: true` flag makes it a no-op if the directory was already
-  // removed between our lstat and this call (race-safe idempotency).
   await fs.rm(dir, { recursive: true, force: true });
   return { purged: true };
 }
@@ -791,24 +622,7 @@ export async function forgetPeer(
  * `identity.md` are also skipped.
  */
 export async function listPeers(memoryDir: string): Promise<Peer[]> {
-  // Codex P2 round 13: atomic readdir against the root. Open the
-  // peers directory with O_DIRECTORY|O_NOFOLLOW first so we hold the
-  // original-inode handle, then readdir from that handle. A
-  // root-symlink swap between assertPeersRootNotSymlink and a path-
-  // based readdir is no longer possible — the kernel rejects the
-  // open if the path resolves to a symlink, and the dirHandle.read()
-  // operates on the original inode regardless of subsequent path-
-  // based mutations.
   const root = peersRoot(memoryDir);
-  // Cursor M round 14: Node's FileHandle has no `readdir` method
-  // (only `fs.readdir(path)` is exposed), so we can't read directly
-  // from the handle. Instead anchor the original-inode by opening
-  // the dir with O_NOFOLLOW, fstat it, then do path-based readdir
-  // and confirm the path's lstat AFTER matches the held inode. If
-  // it diverges, a swap happened — abort. This is a fence around
-  // the readdir, not the kernel-level guarantee a true `fdreaddir`
-  // would give, but it closes the path-traversal race without
-  // requiring native bindings.
   let entries: string[];
   let dh: import("node:fs/promises").FileHandle | null = null;
   try {
@@ -835,8 +649,6 @@ export async function listPeers(memoryDir: string): Promise<Peer[]> {
     if (dh) await dh.close();
   }
   const peers: Peer[] = [];
-  // Sort for deterministic ordering — callers that need a different
-  // sort order can re-sort the result.
   entries.sort();
   for (const name of entries) {
     if (!PEER_ID_PATTERN.test(name) || name.length > PEER_ID_MAX_LENGTH) {
@@ -844,32 +656,16 @@ export async function listPeers(memoryDir: string): Promise<Peer[]> {
     }
     let stat;
     try {
-      // Codex P1: use `lstat` so we don't follow symlinks. A
-      // `peers/<valid-id>` symlink pointing at an arbitrary directory
-      // would otherwise let listPeers (and the readPeer that
-      // follows) traverse outside the peers root.
       stat = await fs.lstat(path.join(root, name));
     } catch (err) {
-      // Codex P2 round 13: don't swallow non-ENOENT errors.
-      // Permission-denied / EACCES / EIO need to surface so the
-      // operator sees a real I/O problem rather than a silently
-      // truncated peer list.
       if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw err;
     }
-    // Skip symlinks entirely — only real directories are peers.
     if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
     let peer: Peer | null = null;
     try {
       peer = await readPeer(memoryDir, name);
     } catch (err) {
-      // Cursor M round 14: classifying by `.code` alone treated
-      // security-check failures (assertPeerDirNotEscaped /
-      // assertParentDirInodeStable / "is a symlink and is rejected"
-      // / "inode mismatch") as parse failures and silently skipped
-      // them. Those messages are critical signals — an attacker
-      // attempted to redirect a read outside the peers root. Match
-      // by message prefix to detect them and propagate.
       const code = (err as NodeJS.ErrnoException).code;
       const message = err instanceof Error ? err.message : String(err);
       const isSecurityFailure =
@@ -882,9 +678,7 @@ export async function listPeers(memoryDir: string): Promise<Peer[]> {
         message.includes("is a symlink and is rejected") ||
         message.includes("was swapped");
       if (isSecurityFailure) throw err;
-      // Real I/O errors (EACCES, EIO, EBUSY, etc.) propagate too.
       if (code && code !== "ENOENT") throw err;
-      // Schema/parse failures fall through and skip the entry.
       continue;
     }
     if (peer !== null) {
@@ -895,7 +689,6 @@ export async function listPeers(memoryDir: string): Promise<Peer[]> {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Interaction log (append-only)
 // ──────────────────────────────────────────────────────────────────────
 
 function parseIsoTimestampMs(value: string): number | null {
@@ -907,7 +700,6 @@ function parseIsoTimestampMs(value: string): number | null {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Profile read/write (schema scaffold; reasoner ships in PR 2/5)
 // ──────────────────────────────────────────────────────────────────────
 
 interface ProfileFile {
@@ -917,9 +709,6 @@ interface ProfileFile {
 }
 
 function emitPeerProfile(profile: PeerProfile): string {
-  // Profiles use a JSON-in-fenced-code-block payload inside a markdown
-  // file so they remain human-readable. The frontmatter holds the
-  // updatedAt stamp; the body holds the full structured payload.
   const payload: ProfileFile = {
     updatedAt: profile.updatedAt,
     fields: { ...profile.fields },
@@ -966,22 +755,11 @@ function parsePeerProfile(raw: string, peerId: string): PeerProfile {
     throw new Error(`peer profile for "${peerId}" is not an object`);
   }
   const payload = parsed as Partial<ProfileFile>;
-  // Codex P2: only accept string updatedAt values. A malformed payload
-  // like `{ "updatedAt": 123 }` would previously short-circuit through
-  // `payload.updatedAt ?? fm.updatedAt ?? ""` and produce a `PeerProfile`
-  // whose updatedAt is a number — corrupting any downstream code that
-  // assumes the contract.
   const payloadUpdatedAt = typeof payload.updatedAt === "string" ? payload.updatedAt : undefined;
   const updatedAt = payloadUpdatedAt ?? fm.updatedAt ?? "";
   if (typeof updatedAt !== "string" || updatedAt === "") {
     throw new Error(`peer profile for "${peerId}" is missing updatedAt`);
   }
-  // Codex P2 round 10: a malformed `fields: "wat"` or
-  // `provenance: 42` previously coerced to {} and silently dropped
-  // the section. That contradicts the "malformed files throw"
-  // contract — the file IS malformed, not just empty. Reject loudly.
-  // `undefined` is still tolerated (an older profile file might omit
-  // the section entirely).
   let fieldsObj: object;
   if (payload.fields === undefined) {
     fieldsObj = {};
@@ -1006,14 +784,6 @@ function parsePeerProfile(raw: string, peerId: string): PeerProfile {
   } else {
     throw new Error(`peer profile for "${peerId}" has malformed provenance section`);
   }
-  // Coerce values defensively. We never trust the on-disk shape.
-  // Codex P1: skip prototype-pollution keys explicitly. We don't use
-  // null-prototype objects in the returned shape because callers
-  // (tests, downstream consumers) expect plain objects with normal
-  // semantics — the assertion `assert.deepEqual` differentiates by
-  // prototype. The skip-list is the load-bearing defense; iteration
-  // via Object.entries() of attacker-controlled JSON objects is safe
-  // as long as we never assign through dangerous keys.
   const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
   const fields: Record<string, string> = {};
   for (const [k, v] of Object.entries(fieldsObj)) {
@@ -1034,14 +804,8 @@ function parsePeerProfile(raw: string, peerId: string): PeerProfile {
         continue;
       }
       const r = item as unknown as Record<string, unknown>;
-      // Codex P2 round 9: empty observedAt/signal strings should be
-      // treated as malformed, not valid. Drop the entry.
       if (typeof r.observedAt !== "string" || r.observedAt === "") continue;
       if (typeof r.signal !== "string" || r.signal === "") continue;
-      // Codex P2 round 6: previously the optional fields were never
-      // type-checked, so a hand-edited `{sourceSessionId: 123}`
-      // survived and corrupted the PeerProfileFieldProvenance contract.
-      // Build a clean record with only string-typed optional fields.
       const clean: PeerProfileFieldProvenance = {
         observedAt: r.observedAt,
         signal: r.signal,
@@ -1085,9 +849,6 @@ export async function readPeerProfile(
   return parsePeerProfile(raw, peerId);
 }
 
-/**
- * Write (create or overwrite) a peer's profile.
- */
 export async function writePeerProfile(
   memoryDir: string,
   profile: PeerProfile,
@@ -1096,21 +857,9 @@ export async function writePeerProfile(
   if (typeof profile.updatedAt !== "string" || profile.updatedAt === "") {
     throw new Error("profile.updatedAt must be a non-empty ISO-8601 string");
   }
-  // Codex P2 round 6: validate the nested payload shape on write so
-  // round-trip semantics are preserved. Without this, untyped JS
-  // callers can persist non-string field values or malformed
-  // provenance entries — readPeerProfile silently scrubs them on
-  // the way back, so data is lost without an error. Fail fast at
-  // the boundary instead.
   if (!isPlainObject(profile.fields)) {
     throw new Error("profile.fields must be a plain object");
   }
-  // Codex P2 round 11: parsePeerProfile drops "__proto__" /
-  // "constructor" / "prototype" keys on read. Without symmetric
-  // rejection on write, those keys silently disappear during
-  // round-trip — failing the contract that what writes succeeds
-  // also reads back. Reject at the boundary so JS callers learn
-  // immediately that those keys aren't allowed.
   const RESERVED_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
   for (const [key, value] of Object.entries(profile.fields)) {
     if (RESERVED_KEYS.has(key)) {
@@ -1142,9 +891,6 @@ export async function writePeerProfile(
       if (typeof r.signal !== "string" || r.signal === "") {
         throw new Error(`profile.provenance["${key}"][${i}].signal must be a non-empty string`);
       }
-      // Cursor M round 9: empty optional strings would round-trip lose
-      // (parsePeerProfile drops them on read). Reject at the boundary
-      // for consistency with other validators in this module.
       if (r.sourceSessionId !== undefined) {
         if (typeof r.sourceSessionId !== "string" || r.sourceSessionId === "") {
           throw new Error(`profile.provenance["${key}"][${i}].sourceSessionId must be a non-empty string when provided`);
@@ -1187,33 +933,6 @@ export async function readInteractionLogRaw(
   }
 }
 
-/**
- * Inverse of `formatLogEntry`. Used by `readPeerInteractionLog` to
- * convert the on-disk one-line bullet form back into a structured
- * `PeerInteractionLogEntry`. Returns `null` for malformed lines so
- * callers can keep the rest of the log even when a single entry was
- * hand-edited or partially written.
- *
- * Formats accepted (must match `formatLogEntry`):
- *
- *   - [TS] (KIND) [session=SID] SUMMARY     // canonical (PR #736)
- *   - [TS] (KIND) SUMMARY                   // session optional
- *
- * The unbracketed `session=SID` form (which would have been written
- * by an earlier draft of #679 PR 2/5) is intentionally NOT parsed —
- * the cursor #736 finding showed it was indistinguishable from a
- * summary that legitimately starts with `session=`. Since #679 PR
- * 2/5 is the first shipped writer for `sessionId` AND ships the
- * bracketed canonical form simultaneously, there is no real legacy
- * data on disk to support. A summary like `session=foo bar` thus
- * round-trips verbatim into `summary` rather than being mis-claimed
- * as a session id.
- *
- * Whitespace inside SUMMARY is preserved verbatim. The parser is
- * deliberately strict — anything that doesn't start with `- [` is
- * rejected and dropped (the file is also markdown-friendly, so blank
- * lines and stray prose are simply ignored).
- */
 function parseLogLine(line: string): PeerInteractionLogEntry | null {
   if (!line.startsWith("- [")) return null;
   const tsClose = line.indexOf("]", 3);
@@ -1221,7 +940,6 @@ function parseLogLine(line: string): PeerInteractionLogEntry | null {
   const timestamp = line.slice(3, tsClose).trim();
   if (timestamp === "") return null;
   if (parseIsoTimestampMs(timestamp) === null) return null;
-  // Skip optional whitespace between `]` and `(`.
   let cursor = tsClose + 1;
   while (cursor < line.length && line[cursor] === " ") cursor += 1;
   if (line[cursor] !== "(") return null;
@@ -1232,41 +950,15 @@ function parseLogLine(line: string): PeerInteractionLogEntry | null {
   if (kind === "") return null;
   cursor = kindClose + 1;
   let sessionId: string | undefined;
-  // Optional session id token. We tolerate any leading whitespace
-  // count; `formatLogEntry` always emits exactly one space, but
-  // operator-edited logs may diverge.
   while (cursor < line.length && line[cursor] === " ") cursor += 1;
-  // Canonical form (PR #736): `[session=<id>]`. Unambiguous because
-  // a sanitized summary cannot start with `[session=` followed by a
-  // closing bracket and a space — sanitization preserves user content
-  // verbatim except for newlines/CR/tab, so a summary that literally
-  // begins `[session=foo]` would imply the OPERATOR wrote a real
-  // session marker, which is acceptable as session attribution.
   if (line.startsWith("[session=", cursor)) {
     const close = line.indexOf("]", cursor + "[session=".length);
-    // A `[session=...]` with no closing bracket on the same line is
-    // malformed metadata; treat the whole tail as summary instead of
-    // misclaiming a session id.
     if (close > -1) {
       const sid = line.slice(cursor + "[session=".length, close).trim();
       if (sid.length > 0) sessionId = sid;
       cursor = close + 1;
     }
   }
-  // NOTE: the legacy unbracketed `session=<id>` form is intentionally
-  // NOT parsed. The cursor #736 finding is fundamentally a format
-  // ambiguity: `- [TS] (KIND) session=foo bar` is indistinguishable
-  // from a real session token vs. a summary that begins with the
-  // literal text `session=foo bar`. Since #679 PR 2/5 is the first
-  // PR that writes `sessionId` to the log AND ships the bracketed
-  // canonical form simultaneously, there is no production legacy
-  // data to support. Old `session=`-style summaries — both real
-  // operator notes and hypothetical legacy entries — round-trip
-  // verbatim into `summary` rather than being silently mis-claimed
-  // as a session id.
-  // Remaining tail is the summary (possibly empty if the log was
-  // hand-edited; we still accept "" because `formatLogEntry` itself
-  // accepts an empty summary string).
   while (cursor < line.length && line[cursor] === " ") cursor += 1;
   const summary = line.slice(cursor);
   return sessionId === undefined
@@ -1301,9 +993,6 @@ export async function readPeerInteractionLog(
   const raw = await readInteractionLogRaw(memoryDir, peerId);
   if (raw === "") return [];
   const entries: PeerInteractionLogEntry[] = [];
-  // Split on bare newlines; logs are written with a trailing `\n` per
-  // entry by `appendInteractionLog`, so the final element after split
-  // is typically the empty string. Both `\r\n` and `\n` are tolerated.
   for (const lineRaw of raw.split(/\r?\n/)) {
     const line = lineRaw.trimEnd();
     if (line === "") continue;

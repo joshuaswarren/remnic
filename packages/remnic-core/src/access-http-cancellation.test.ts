@@ -97,10 +97,6 @@ test("HTTP recall aborts in-flight work when the client disconnects", async () =
 });
 
 test("stop() does not wait for an in-flight request longer than the grace period", async () => {
-  // An in-flight recall or observe holds server.close() open. On jarvis-ml a
-  // restart sat in listener-closure until systemd's 700 s stop timeout killed
-  // the process. After the grace period stop() must cut the connection, which
-  // also aborts the request's signal.
   const started = deferred<void>();
   const settled = deferred<void>();
   let observedSignal: AbortSignal | undefined;
@@ -171,9 +167,6 @@ test("a queued recall rejects immediately on abort — before the holder release
   });
   controller.abort();
 
-  // The queued recall rejects on abort WITHOUT waiting for the holder to
-  // release — the #1906 behavior change (the old width-1 lock only re-checked
-  // the abort signal after acquiring). The holder is still held here.
   await assert.rejects(waitFor(second), (error: Error) => error.name === "AbortError");
   assert.equal(secondStarted, false);
 

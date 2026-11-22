@@ -45,7 +45,6 @@ import type {
 } from "./dependency-propagation-delivery.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
-/** Result type of {@link ContradictionLinkingCoordinator.checkForContradiction}. */
 export interface ContradictionResult {
   supersededId: string;
   confidence: number;
@@ -334,14 +333,6 @@ export class ContradictionLinkingCoordinator {
     }
     return null;
   }
-  /**
-   * #1645: Complete the deferred contradiction auto-resolve after writeMemory
-   * returns and the new write's tombstone status is known. Retires the old
-   * memory + deindexes it ONLY when the new write is genuinely active (not
-   * tombstone-blocked / pending_review). A blocked write must not retire the
-   * only active copy — deferring here closes the "contradictionAutoResolve
-   * supersedes before tombstone status is known" defect class.
-   */
   async applyDeferredContradictionResolve(
     contradiction: ContradictionResolveTarget | null | undefined,
     storage: StorageManager,
@@ -349,8 +340,6 @@ export class ContradictionLinkingCoordinator {
     postWriteGuard: boolean,
   ): Promise<ContradictionResolveOutcome> {
     const config = this.getConfig();
-    // #1645 yG2: clear the pre-write `supersedes` link from a blocked row so
-    // it doesn't claim to supersede a still-active memory (best-effort).
     if (postWriteGuard && contradiction && config.contradictionAutoResolve) {
       try {
         const blockedRow = await storage.getMemoryById(newMemoryId);
@@ -371,9 +360,6 @@ export class ContradictionLinkingCoordinator {
       return postWriteGuard ? "blocked" : "not_attempted";
     }
 
-    // Capture propagation inputs before the primary supersession. The
-    // propagation hook is orchestration-owned, so its own supersessions cannot
-    // recurse.
     let oldMemory: PropagationEvent["oldMemory"] | null = null;
     let replacementContent: string | null = null;
     let propagationEvent: PropagationEvent | null = null;
@@ -652,8 +638,6 @@ export class ContradictionLinkingCoordinator {
   }
 
   // ---------------------------------------------------------------------------
-  // Memory Linking (Phase 3A)
-  // ---------------------------------------------------------------------------
 
   /**
    * Suggest links for a new memory based on similar existing memories.
@@ -665,7 +649,6 @@ export class ContradictionLinkingCoordinator {
   ): Promise<MemoryLink[]> {
     if (!this.isSearchAvailable()) return [];
 
-    // Search for related memories
     const results = await this.searchAcrossNamespaces({
       query: content,
       namespaces: [namespaceScope],
@@ -674,7 +657,6 @@ export class ContradictionLinkingCoordinator {
     });
     if (results.length === 0) return [];
 
-    // Get full memory details for candidates
     const candidates: Array<{ id: string; content: string; category: string }> =
       [];
     for (const result of results) {
@@ -700,7 +682,6 @@ export class ContradictionLinkingCoordinator {
 
     if (candidates.length === 0) return [];
 
-    // Ask LLM for link suggestions
     const extraction = this.getExtraction();
     const suggestions = await extraction.suggestLinks(
       { content, category },
@@ -709,7 +690,6 @@ export class ContradictionLinkingCoordinator {
 
     if (!suggestions || suggestions.links.length === 0) return [];
 
-    // Convert to MemoryLink format
     return suggestions.links.map((link) => ({
       targetId: link.targetId,
       linkType: link.linkType,

@@ -21,12 +21,10 @@ function loadFixture(name: string): string {
 describe("parseChatGPTExport", () => {
   it("reads the 2026 `memory` object shape", () => {
     const parsed = parseChatGPTExport(loadFixture("saved-memories-2026.json"));
-    // Two active memories + one soft-deleted (skipped).
     assert.equal(parsed.savedMemories.length, 2);
     assert.equal(parsed.conversations.length, 0);
     assert.equal(parsed.savedMemories[0].id, "11111111-aaaa-4000-8000-000000000001");
     assert.equal(parsed.savedMemories[1].pinned, true);
-    // Soft-deleted entry must not leak through.
     assert.ok(!parsed.savedMemories.some((m) => m.id?.endsWith("0003")));
   });
 
@@ -55,7 +53,6 @@ describe("parseChatGPTExport", () => {
       userTurns[0].content,
       "I want to build a synthetic weekend project.",
     );
-    // createdAt is derived from the numeric create_time field → ISO.
     assert.ok(
       userTurns[0].createdAt &&
         /\d{4}-\d{2}-\d{2}T/.test(userTurns[0].createdAt),
@@ -112,9 +109,6 @@ describe("parseChatGPTExport", () => {
     assert.equal(parsed.savedMemories.length, 0);
   });
 
-  // Cursor review on PR #595 — strict mode should reject object payloads
-  // that have none of the recognized ChatGPT export sections rather than
-  // silently returning an empty struct.
   it("strict mode rejects unknown object shapes", () => {
     assert.throws(
       () => parseChatGPTExport({ foo: "bar" }, { strict: true }),
@@ -128,9 +122,6 @@ describe("parseChatGPTExport", () => {
     assert.equal(parsed.conversations.length, 0);
   });
 
-  // Cursor review on PR #595 — collectUserTurnsFromConversation should
-  // follow the current_node → parent chain rather than flattening every
-  // node in the mapping, which would include abandoned branches.
   it("follows current_node chain and ignores abandoned mapping branches", () => {
     const conv = {
       current_node: "msg-3",
@@ -261,7 +252,6 @@ describe("parseChatGPTExport", () => {
       },
     };
     const turns = collectUserTurnsFromConversation(conv);
-    // Sorted by create_time ascending.
     assert.deepEqual(
       turns.map((t) => t.content),
       ["beta", "alpha"],
@@ -287,22 +277,16 @@ describe("parseChatGPTExport", () => {
       },
     };
     const turns = collectUserTurnsFromConversation(conv);
-    // Stable order: node id ascending.
     assert.deepEqual(
       turns.map((t) => t.content),
       ["turn-msg-a", "turn-msg-b", "turn-msg-c"],
     );
   });
 
-  // Codex review on PR #595 — when current_node's parent chain is broken
-  // (dangling reference to a node that doesn't exist in mapping),
-  // followCurrentNodeChain must return [] rather than a partial tail, so
-  // the caller falls back to a timestamp-sorted traversal of ALL nodes.
   it("falls back to sorted traversal when current_node's parent chain is broken", () => {
     const conv = {
       current_node: "msg-3",
       mapping: {
-        // msg-3 → parent "missing-id" which is NOT in the mapping.
         "msg-3": {
           id: "msg-3",
           parent: "missing-id",
@@ -313,7 +297,6 @@ describe("parseChatGPTExport", () => {
             create_time: 300,
           },
         },
-        // These should still appear because we fall back to timestamp sort.
         "msg-1": {
           id: "msg-1",
           parent: null,
@@ -333,17 +316,11 @@ describe("parseChatGPTExport", () => {
     );
   });
 
-  // Codex review on PR #595 — parseChatGPTExport MUST reject undefined /
-  // null input (what runImportCommand passes when --file is omitted) with
-  // a user-facing error. Silently returning 0 memories masks bad CLI
-  // invocations. Matches the gemini/claude slices.
   it("rejects missing input with a user-facing error", () => {
     assert.throws(() => parseChatGPTExport(undefined), /requires a file/);
     assert.throws(() => parseChatGPTExport(null), /requires a file/);
   });
 
-  // Cursor review on PR #595 — asIsoString must not throw on corrupted
-  // timestamps that overflow Date.toISOString's valid range.
   it("returns undefined for timestamps beyond Date's valid range", () => {
     const conv = {
       current_node: "m1",
@@ -355,7 +332,6 @@ describe("parseChatGPTExport", () => {
             id: "m1",
             author: { role: "user" },
             content: { parts: ["hello"] },
-            // 1e20 seconds → vastly beyond Date's safe range
             create_time: 1e20,
           },
         },

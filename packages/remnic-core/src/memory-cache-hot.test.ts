@@ -1,11 +1,3 @@
-/**
- * Issue #1902 — unit tests for the hot-memories result cache layer.
- *
- * These pin the low-level cache contract that StorageManager.readAllMemories()
- * relies on: version-keyed round-trip, the version-0 and version-mismatch null
- * guards, in-place patch-on-write / patch-on-delete, and the two invalidation
- * shapes (wholesale drop vs derived/global-only keep).
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -91,17 +83,13 @@ test("hot cache: wholesale invalidateAllForDir drops the hot layer; invalidateDe
 test("hot cache: keyId scopes entries — a mismatched secure-store key misses (#1902 Codex P1)", () => {
   const dir = "/tmp/remnic-hot-unit-keyid";
   clearMemoryCache();
-  // A keyed (unlocked encrypted) manager warms the cache with decrypted content.
   setCachedMemories(dir, [mem("secret.md", "decrypted")], 5, "secure-store:key:1");
-  // A locked/unkeyed manager for the SAME dir must NOT read the decrypted entry.
   assert.equal(
     getCachedMemories(dir, 5, ""),
     null,
     "a manager without the matching key must miss the decrypted cache entry",
   );
-  // A different key id also misses.
   assert.equal(getCachedMemories(dir, 5, "secure-store:key:2"), null, "a different key id misses");
-  // The matching key id hits.
   const got = getCachedMemories(dir, 5, "secure-store:key:1");
   assert.ok(got, "the matching key id serves the cached corpus");
   assert.deepEqual(got!.map((m) => m.path), ["secret.md"]);
@@ -111,16 +99,12 @@ test("hot cache: keyId scopes entries — a mismatched secure-store key misses (
 test("hot cache: TTL expires an entry so external edits self-heal (#1902 Codex P1)", (t) => {
   const dir = "/tmp/remnic-hot-unit-ttl";
   clearMemoryCache();
-  // Deterministic time control (no real timers): the entry's loadedAt is stamped
   // from the mocked clock at set time; advancing it past the TTL forces a miss.
   t.mock.timers.enable({ apis: ["Date"] });
   try {
     setCachedMemories(dir, [mem("a.md")], 9, "");
-    // ttl=0 disables the TTL: always a hit at the matching version.
     assert.ok(getCachedMemories(dir, 9, "", 0), "ttl=0 disables expiry");
-    // Fresh entry within a generous TTL still hits.
     assert.ok(getCachedMemories(dir, 9, "", 60_000), "fresh entry within TTL hits");
-    // Advance past the TTL: the entry is now a miss, forcing a rescan that would
     // pick up any external filesystem edit that bypassed the version sentinel.
     t.mock.timers.tick(120_000);
     assert.equal(getCachedMemories(dir, 9, "", 60_000), null, "entry older than ttl is a miss");

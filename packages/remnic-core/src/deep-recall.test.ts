@@ -152,10 +152,6 @@ test("deep recall distinguishes a seed backend failure from an empty store", asy
 });
 
 test("deep recall enforces the total timeout on pre-policy work, not only before policy calls", async () => {
-  // A seed search that never settles used to block the loop forever: the
-  // deadline was merely CHECKED before the first policy call, so the check
-  // never ran. The invocation must end inside totalTimeoutMs with the partial
-  // (here empty) working set and a BUDGET_EXHAUSTED tail.
   const startedMs = Date.now();
   const result = await runBudgetedDeepRecall(
     {
@@ -179,8 +175,6 @@ test("deep recall enforces the total timeout on pre-policy work, not only before
 });
 
 test("deep recall keeps the overall deadline when the per-step timeout is disabled", async () => {
-  // stepTimeoutMs: 0 disables only its own axis (§33). A finite totalTimeoutMs
-  // must still reach the policy call, otherwise a slow call runs unbounded.
   const budgets: number[] = [];
   const withTotalOnly = await runBudgetedDeepRecall(
     {
@@ -202,7 +196,6 @@ test("deep recall keeps the overall deadline when the per-step timeout is disabl
     `the remaining total budget must reach the policy call, got ${budgets[0]}`,
   );
 
-  // Both axes disabled is the only "no timeout" case.
   budgets.length = 0;
   await runBudgetedDeepRecall(
     {
@@ -221,10 +214,6 @@ test("deep recall keeps the overall deadline when the per-step timeout is disabl
 });
 
 test("deep recall drops a seed whose memory is missing or no longer active", async () => {
-  // QMD keeps indexing a memory whose governance status left the ACTIVE set
-  // (pending_review, rejected, quarantined, …). `loadMemory` reports
-  // `active: false`; hydration used to keep the entry and only overwrite its
-  // content, so the final result surfaced memory governance had excluded.
   const loaded: string[] = [];
   const result = await runBudgetedDeepRecall(
     {
@@ -271,10 +260,6 @@ test("deep recall drops a seed whose memory is missing or no longer active", asy
 });
 
 test("deep recall retires an expanded node from the frontier", async () => {
-  // EXPAND skips source memories that are inactive or unreadable, so
-  // `nodeAddsNothing` never became true for node-beta and the refreshed
-  // frontier re-offered it through the same shared anchor: the policy could
-  // spend every remaining step re-expanding a node that adds nothing.
   const graph: DeepRecallGraphSnapshot = {
     nodes: [
       {
@@ -348,10 +333,6 @@ test("deep recall retires an expanded node from the frontier", async () => {
 });
 
 test("deep recall ranks by distinct shared anchors, not working-set memory count (issue #2915)", async () => {
-  // "node-candidate-c" shares ONE anchor with a node holding TWO working-set
-  // memories; "node-candidate-d" shares TWO distinct anchors with one
-  // working-set memory. Counting per memory (the old bug) scored both 2 and
-  // the nodeId tiebreak expanded C first; distinct anchors must rank D first.
   const node = (nodeId: string, ...sourceMemoryIds: string[]): DeepRecallGraphSnapshot["nodes"][number] => ({
     schemaVersion: 1,
     nodeId,
@@ -445,8 +426,6 @@ test("deep recall aborts before any dependency call when the signal is already a
 
 test("deep recall propagates cancellation from a stalled policy call instead of waiting for the deadline (issue #2915)", async () => {
   const controller = new AbortController();
-  // The policy leg aborts the transport mid-call and then never settles:
-  // without signal racing the invocation would hang until totalTimeoutMs.
   const resultPromise = runBudgetedDeepRecall(
     {
       config: makeConfig({ totalTimeoutMs: 10_000 }),

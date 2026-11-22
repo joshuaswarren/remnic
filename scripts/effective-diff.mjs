@@ -1,34 +1,6 @@
-/**
- * Effective-diff computation for AI-review scope fences (issue #1991,
- * umbrella #1988).
- *
- * The AI review gate wastes reviewer rounds on PRs whose diff is dominated
- * by generated artifacts (PR #1863 pushed 52k lines of bench artifacts
- * through the bots). `.github/ai-review-ignore` lists artifact paths; the
- * gate computes the PR's EFFECTIVE diff (changed files minus ignored paths)
- * and skips bot-review enforcement when the effective diff is empty.
- *
- * This module is the TESTED MIRROR of the helpers inlined in
- * `.github/workflows/ai-review-gate.yml` (same convention as
- * `scripts/ai-review-gate.mjs`). Keep the two copies in sync when editing.
- *
- * Manifest syntax (deliberately a strict, documented subset of gitignore):
- *   - one pattern per line, repo-root-relative, forward slashes;
- *   - `#` starts a comment; blank lines are skipped;
- *   - `*` matches within a path segment, `**` matches across segments,
- *     `?` matches a single non-separator character;
- *   - a trailing `/` anchors a directory prefix (equivalent to `dir/**`);
- *   - negation (`!`) and leading-slash forms are NOT supported and are a
- *     manifest ERROR — never silently reinterpreted (AGENTS.md §39).
- */
 
 const MANIFEST_UNSUPPORTED_PREFIXES = ["!", "/"];
 
-/**
- * Parse the ignore manifest text into a list of pattern strings.
- * Throws on unsupported syntax so a bad manifest fails the gate loudly
- * instead of silently reviewing (or silently skipping) the wrong files.
- */
 export function parseIgnoreManifest(text) {
   if (typeof text !== "string") {
     throw new Error("ai-review-ignore manifest must be a string");
@@ -55,9 +27,7 @@ export function parseIgnoreManifest(text) {
   return patterns;
 }
 
-/** Convert one manifest pattern to an anchored RegExp. */
 function patternToRegExp(pattern) {
-  // Trailing `/` = directory prefix.
   const normalized = pattern.endsWith("/") ? `${pattern}**` : pattern;
   let out = "";
   let i = 0;
@@ -65,7 +35,6 @@ function patternToRegExp(pattern) {
     const ch = normalized[i];
     if (ch === "*") {
       if (normalized[i + 1] === "*") {
-        // `**/` after a slash (or at start) may match zero segments.
         if (normalized[i + 2] === "/") {
           out += "(?:[^/]+/)*";
           i += 3;
@@ -90,7 +59,6 @@ function patternToRegExp(pattern) {
   return new RegExp(`^${out}$`);
 }
 
-/** True when a repo-relative posix path matches any manifest pattern. */
 export function isIgnoredPath(path, patterns) {
   if (typeof path !== "string" || path.length === 0) return false;
   const normalized = path.replaceAll("\\", "/");

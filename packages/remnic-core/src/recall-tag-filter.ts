@@ -1,4 +1,3 @@
-// Tag filtering helpers for memory recall (issue #689).
 //
 // Tags are free-form labels stored on each memory's frontmatter (see
 // `storage.ts`). Recall callers can filter the result set down to memories

@@ -388,8 +388,6 @@ test("custom llm_judge benchmark honors judgeCacheDir across runs (PR #1591 roun
     });
     const judgeProvider = { provider: "openai" as const, model: "judge-model" };
 
-    // Run 1: cache miss — the underlying judge is invoked once and the verdict
-    // is persisted (the runner drains fire-and-forget writes on return).
     const system1 = makeSystem();
     const r1 = await runCustomBenchmarkFile(benchmarkPath, {
       mode: "quick",
@@ -401,7 +399,6 @@ test("custom llm_judge benchmark honors judgeCacheDir across runs (PR #1591 roun
     assert.equal(r1.cost.judgeModelCalls, 1, "first run reports one judge model call");
     assert.equal(system1.judge, originalJudge, "caller judge restored after run 1");
 
-    // Run 2: cache hit — the judge is NOT invoked; the cached verdict is served.
     const system2 = makeSystem();
     const r2 = await runCustomBenchmarkFile(benchmarkPath, {
       mode: "quick",
@@ -418,13 +415,6 @@ test("custom llm_judge benchmark honors judgeCacheDir across runs (PR #1591 roun
 });
 
 test("custom llm_judge benchmark does not break #private receivers when judge is getter-only (PR #1591 round-9)", async () => {
-  // Mirror of the runBenchmark (ab) regression for the custom path: a
-  // class-based system adapter with a #private field AND a getter-only
-  // judge property. The in-place mutation throws (getter-only), so the
-  // runner must fall back to createJudgeOverrideProxy and complete the run
-  // without throwing or mutating the caller's adapter. The old Object.create
-  // fallback changed `this` and broke private member access (cursor bugbot,
-  // thread PRRT_kwDORJXyws6OVjxR).
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-custom-readonly-judge-"));
   const benchmarkPath = path.join(tempDir, "readonly.yaml");
   const cacheDir = path.join(tempDir, "judge-cache");
@@ -458,8 +448,6 @@ test("custom llm_judge benchmark does not break #private receivers when judge is
       }
       async store(): Promise<void> {}
       async recall(): Promise<string> {
-        // Throws only if `this` is not a real PrivateSystem instance
-        // holding the #data slot — i.e. if a shadow Object.create were used.
         return this.#data;
       }
       async search() {
@@ -470,8 +458,6 @@ test("custom llm_judge benchmark does not break #private receivers when judge is
         return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
       }
       async destroy(): Promise<void> {}
-      // getter-only judge => `system.judge = wrapped` throws in strict mode,
-      // forcing the runner onto the createJudgeOverrideProxy fallback path.
       get judge(): BenchJudge {
         return originalJudge;
       }

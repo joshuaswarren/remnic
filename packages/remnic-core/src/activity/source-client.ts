@@ -72,8 +72,6 @@ function responsePage(value: unknown, machine: string): ActivitySnapshotPage {
   if (!isRecord(value) || !Array.isArray(value.snapshots)) {
     throw new TypeError("activity source response has no snapshots array");
   }
-  // A missing/undefined nextCursor (field omitted, not JSON null) is normal
-  // end-of-pagination — only a present non-string value is invalid.
   const nextCursor = value.nextCursor === undefined ? null : value.nextCursor;
   if (nextCursor !== null && typeof nextCursor !== "string") {
     throw new TypeError("activity source response has invalid nextCursor");
@@ -111,8 +109,6 @@ export class ActivityHttpSourceClient implements ActivitySourceClient {
   }
 
   private async request(url: string, signal?: AbortSignal): Promise<Response> {
-    // Bound every request so a stalled daemon aborts instead of hanging the
-    // sync forever; honor the caller's signal too when one is supplied.
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const composed = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
     const response = await fetch(url, {
@@ -128,10 +124,6 @@ export class ActivityHttpSourceClient implements ActivitySourceClient {
       await this.request(requestUrl(this.baseUrl, "/v1/health", {}), signal);
       return { ok: true };
     } catch (error: unknown) {
-      // The controlled `HTTP <status>` message is safe to surface verbatim;
-      // anything else (network/runtime fetch errors that can embed hostnames or
-      // absolute paths) is reduced to a sanitized name+code via
-      // displayErrorDetail, matching the wearables operator-facing path.
       const detail =
         error instanceof Error && error.message.startsWith("activity source HTTP ")
           ? error.message.slice("activity source ".length)

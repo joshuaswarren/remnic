@@ -1,4 +1,3 @@
-/** Bounded multi-session turn admission (#3368 split from buffer.ts). */
 
 import { selectEvictedBufferKeys } from "./buffer-eviction.js";
 import {

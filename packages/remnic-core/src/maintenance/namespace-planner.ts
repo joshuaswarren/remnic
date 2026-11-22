@@ -206,11 +206,6 @@ export async function planNamespaceMaintenance(
   options: NamespaceMaintenancePlannerOptions
 ): Promise<NamespaceMaintenancePlan> {
   const generatedAt = (options.now ?? new Date()).toISOString();
-  // When namespaces are disabled, storageFor() collapses every namespace name
-  // to config.memoryDir. Seeding all configured namespaces (default + shared +
-  // policies) would make a mutating maintenance job process the SAME corpus
-  // once per configured name. The #1500 contract is "namespaces disabled:
-  // maintain the current default storage only," so collapse to the default.
   const configured = resolveNamespaceCapabilities(config).namespaces
     ? getConfiguredNamespaces(config)
     : [config.defaultNamespace.trim()].filter(Boolean);
@@ -229,8 +224,6 @@ export async function planNamespaceMaintenance(
   if (resolveNamespaceCapabilities(config).namespaces && resolveConversationContextCapabilities(config).maintenanceNamespaceFanout !== false) {
     const configuredSet = new Set(configured);
     try {
-      // An incomplete read (unreadable file, malformed rows) still returns the readable records,
-      // so they are planned as before; the callback records that the catalog was not whole.
       const records = options.catalog?.enabled
         ? await options.catalog.listNamespaces(undefined, {
             onIncomplete: (reason) =>
@@ -725,10 +718,6 @@ export async function runNamespaceMaintenancePlan(
       const result = await withNamespaceMaintenanceLockHeartbeat(config, lock, () => runner(candidate));
       const completedAt = new Date().toISOString();
       if (result?.skipped) {
-        // The runner performed no work (e.g. the job's own cadence gate
-        // throttled this namespace). Record skipped WITHOUT touching the
-        // catalog's lastMaintenanceAt so a throttled namespace is not
-        // falsely reported as maintained.
         const status: NamespaceMaintenanceRunStatus = {
           namespace: candidate.namespace,
           jobName: plan.jobName,

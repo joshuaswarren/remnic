@@ -1,22 +1,3 @@
-/**
- * Capture-time processing pipeline (pure, hardware-free). A raw candidate —
- * frontmost app/window plus either an AX tree or pre-extracted text — is turned
- * into a decision: dropped by a deny rule, skipped (OCR unavailable / deduped),
- * or a fully-formed spool snapshot. The steps, in order:
- *
- *   1. Deny-lists FIRST — a match records NOTHING (not even metadata).
- *   2. Text: pre-extracted text is used as-is; otherwise the AX tree is walked
- *      (secure fields + off-screen nodes excluded, bounded to maxNodes). A
- *      terminal-class window, or an AX tree with no visible text, routes to the
- *      OCR seam; when OCR is unavailable the snapshot is skipped (reflected in
- *      health) rather than crashing.
- *   3. Redaction — SSN/card + user patterns, before hashing or storage.
- *   4. Dedup — per-window SimHash gate (threshold / TTL).
- *   5. Content hash — length-prefixed SHA-256 so control chars can't collide.
- *
- * The OCR step is a seam (an injected callback), so the daemon wires the native
- * helper while tests inject a fake without any macOS binary.
- */
 
 import { createHash } from "node:crypto";
 
@@ -82,11 +63,6 @@ interface ContentHashFields {
   textSource: string;
 }
 
-/**
- * SHA-256 over length-prefixed fields so control characters (incl. NUL) in the
- * captured text cannot make two distinct snapshots collide — a collision would
- * silently drop a valid capture via the UNIQUE content_hash + INSERT OR IGNORE.
- */
 export function contentHash(fields: ContentHashFields): string {
   const hash = createHash("sha256");
   const parts = [fields.capturedAtUtc, fields.app, fields.windowTitle, fields.browserUrl ?? "", fields.text, fields.textSource];

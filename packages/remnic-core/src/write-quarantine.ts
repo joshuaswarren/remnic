@@ -1,23 +1,3 @@
-/**
- * Dead-letter quarantine for writes rejected by the namespace write-ACL
- * (issue #1888).
- *
- * When `observe` / `memory_store` / `suggestion_submit` fail namespace
- * authorization, the payload used to be dropped with no recoverable copy: a
- * client configured with a namespace that matches no policy (and is not the
- * default/shared namespace) had every write in the window silently destroyed.
- * The ACL rejection is CORRECT and stays fail-closed; this store only
- * preserves the payload so it can be replayed after the config is fixed,
- * following the AGENTS.md "reject loudly but never destroy state" posture
- * (patterns 14/42).
- *
- * Records live OUTSIDE any memory namespace at
- * `<memoryDir>/state/quarantine/<principalSafe>/<timestamp>-<id>.json`, keyed
- * by the encoded principal, and are bounded per principal by count and age.
- * Every path is resolved from `memoryDir` through `resolveSafeStoragePath`, so
- * a symlinked `state`/`quarantine` cannot redirect writes outside the memory
- * directory. The store never re-routes a payload into a writable namespace.
- */
 
 import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
@@ -32,7 +12,6 @@ export interface QuarantineEntryInput {
   operation: QuarantineOperation;
   /** Authenticated principal the write was attributed to, if any. */
   principal: string | undefined;
-  /** Namespace the caller attempted to write and was denied. */
   attemptedNamespace: string;
   /** The original request payload, preserved verbatim for replay. */
   payload: unknown;
@@ -138,7 +117,6 @@ export class WriteQuarantineStore {
 
     const dir = await this.safeDir(principalSegment);
     await mkdir(dir, { recursive: true });
-    // The temp write uses the exclusive `wx` flag so a pre-planted symlink at
     // the temp name can never be followed (O_EXCL); rename is atomic (rule 42).
     const finalPath = await this.safeDir(principalSegment, fileName);
     const tmpPath = await this.safeDir(principalSegment, `${fileName}.tmp`);
@@ -200,7 +178,6 @@ export class WriteQuarantineStore {
     if (rel === "" || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
       return false;
     }
-    // Symlink-race-safe resolution (issue #1888): resolveSafeStoragePath rejects
     // any symlinked path component and verifies the REAL path stays inside the
     // real quarantine root before we touch it, so a swapped component cannot
     // redirect the deletion outside the store — lexical containment alone is not
@@ -226,14 +203,12 @@ export class WriteQuarantineStore {
     return (await this.list()).length;
   }
 
-  /** lstat (no symlink follow): true only for a real directory. */
   private async isRealDir(dir: string): Promise<boolean> {
     const info = await lstat(dir).catch(() => null);
     return info?.isDirectory() === true;
   }
 
   private async principalDirs(): Promise<string[]> {
-    // safeDir() rejects a symlinked/containment-escaping root — let that
     // propagate instead of masquerading as an empty store.
     const root = await this.safeDir();
     if (!(await this.isRealDir(root))) return [];
@@ -241,7 +216,6 @@ export class WriteQuarantineStore {
     try {
       entries = await readdir(root, { withFileTypes: true });
     } catch (err) {
-      // Root vanished mid-scan → legitimately empty. Any other failure
       // (permissions, IO) is a genuine inspection failure and must surface.
       if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return [];
       throw err;

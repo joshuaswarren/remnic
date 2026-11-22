@@ -1,7 +1,3 @@
-/**
- * Composite profile storage proxy for recall orchestration — extracted from
- * recall-internal.ts (issue #1526, seam 18).
- */
 
 import path from "node:path";
 import type { StorageManager } from "../index.js";

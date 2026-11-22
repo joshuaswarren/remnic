@@ -1,9 +1,3 @@
-/**
- * Session mapping strategies.
- *
- * Maps caller identity to Remnic session keys so memory is scoped
- * appropriately per user or shared across all callers.
- */
 
 export interface ChatCompletionRequest {
   model?: string;
@@ -32,9 +26,6 @@ function headerValue(
   return undefined;
 }
 
-/**
- * Returns a fixed session key for single-user setups.
- */
 export class SingleSessionMapper implements SessionMapper {
   private readonly key: string;
 

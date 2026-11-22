@@ -1,6 +1,3 @@
-/**
- * Sum half-open activity dwell spans (issue #2053).
- */
 export interface DwellSpan {
   startMs: number;
   endMs: number;

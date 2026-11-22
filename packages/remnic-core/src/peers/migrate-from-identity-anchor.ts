@@ -57,10 +57,7 @@ import { readPeer, writePeerIfAbsent } from "./storage.js";
 import type { Peer } from "./types.js";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Public types
-// ──────────────────────────────────────────────────────────────────────────────
 
-/** Options for `migrateFromIdentityAnchor`. */
 export interface MigrateFromIdentityAnchorOptions {
   /**
    * Memory directory (same value as `config.memoryDir`). All source and
@@ -89,7 +86,6 @@ export interface MigrateFromIdentityAnchorOptions {
   createdAt?: string;
 }
 
-/** Result returned by `migrateFromIdentityAnchor`. */
 export interface MigrateFromIdentityAnchorResult {
   /**
    * The peer record that was (or would be) written for `peers/self/`.
@@ -130,7 +126,6 @@ export interface MigrateFromIdentityAnchorResult {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Internal helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -154,7 +149,6 @@ export interface MigrateFromIdentityAnchorResult {
 async function safeReadLegacyFile(
   filePath: string,
 ): Promise<{ content: string; filePath: string } | { content: null; filePath: null }> {
-  // 1. Reject a symlinked parent directory.
   const parent = path.dirname(filePath);
   try {
     const parentStat = await fs.lstat(parent);
@@ -168,8 +162,6 @@ async function safeReadLegacyFile(
     throw err;
   }
 
-  // 2. Open with O_NOFOLLOW so the kernel refuses a symlink at the target
-  //    path, atomically closing the lstat-then-read TOCTOU window.
   let fh: import("node:fs/promises").FileHandle;
   try {
     fh = await fs.open(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
@@ -183,7 +175,6 @@ async function safeReadLegacyFile(
   }
 
   try {
-    // Verify it is a regular file (not a directory, FIFO, device, etc.).
     const stat = await fh.stat();
     if (!stat.isFile()) {
       return { content: null, filePath: null };
@@ -195,15 +186,6 @@ async function safeReadLegacyFile(
   }
 }
 
-/**
- * Build the `notes` markdown body for the `self` peer from the two
- * optional legacy sources.
- *
- * The resulting notes are kept intentionally terse — the peer kernel is
- * meant to hold stable identity facts, not a full dump of every reflection
- * entry. We label the sections clearly so operators know exactly what came
- * from where.
- */
 function buildSelfNotes(
   anchorContent: string | null,
   identityMdContent: string | null,
@@ -217,8 +199,6 @@ function buildSelfNotes(
   }
 
   if (identityMdContent !== null && identityMdContent.trim().length > 0) {
-    // IDENTITY.md can be quite long. Embed it as a labelled section so the
-    // operator can prune it manually after migration rather than losing data.
     parts.push(
       "## Migrated from IDENTITY.md\n\n" + identityMdContent.trim(),
     );
@@ -229,7 +209,6 @@ function buildSelfNotes(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Public API
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -246,25 +225,18 @@ export async function migrateFromIdentityAnchor(
   const createdAt = options.createdAt ?? now;
   const displayName = options.displayName ?? "Self";
 
-  // 1. Guard: if peers/self/identity.md already exists, skip.
-  //    We read through the standard `readPeer` helper (which enforces all
-  //    path-traversal guards) rather than stat-ing the file directly.
   const existing = await readPeer(memoryDir, "self");
   if (existing !== null) {
     return {
       peer: existing,
       written: false,
       skipped: true,
-      // P2 (codex): preserve the caller-requested dryRun flag even on the
-      // skip path. Previously hard-coded `false`, which contradicted the
-      // MigrateFromIdentityAnchorResult contract for dry-run callers.
       dryRun,
       identityAnchorSource: null,
       identityMdSource: null,
     };
   }
 
-  // 2. Read legacy sources (both optional; symlinks are silently skipped).
   const anchorPath = path.join(memoryDir, "identity", "identity-anchor.md");
   const identityMdPath = path.join(memoryDir, "IDENTITY.md");
 
@@ -273,7 +245,6 @@ export async function migrateFromIdentityAnchor(
     safeReadLegacyFile(identityMdPath),
   ]);
 
-  // 3. Compose the self peer record.
   const notes = buildSelfNotes(
     anchorResult.content,
     identityMdResult.content,
@@ -288,9 +259,6 @@ export async function migrateFromIdentityAnchor(
     ...(notes !== undefined ? { notes } : {}),
   };
 
-  // 4. Write (unless dry-run). Use the peer storage create-if-absent helper so
-  // migration gets the same root, peer-directory, parent-inode, and O_NOFOLLOW
-  // guards as writePeer while preserving the non-overwrite migration contract.
   if (!dryRun) {
     const created = await writePeerIfAbsent(memoryDir, peer);
     if (!created) {

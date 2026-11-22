@@ -1,6 +1,3 @@
-/**
- * @remnic/bench — CLI Wiring for Benchmark Failure Attribution (Issue #1954)
- */
 
 import { QmdClient } from "@remnic/core";
 import { lstat, readdir, readFile } from "node:fs/promises";

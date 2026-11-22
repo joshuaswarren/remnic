@@ -92,7 +92,6 @@ test("clearMemoryDays removes stale completion records", () => {
   });
   assert.equal(state.sources.limitless.memoryDayHashes?.["2026-06-10"], "h1");
 
-  // A later run where the day's memory pass failed must clear the
   // earlier completion record even though the body hash is unchanged.
   state = updateSourceSyncState(state, "limitless", {
     syncedAt: "2026-06-12T01:00:00.000Z",
@@ -102,7 +101,6 @@ test("clearMemoryDays removes stale completion records", () => {
   });
   assert.equal(state.sources.limitless.memoryDayHashes?.["2026-06-10"], undefined);
 
-  // A clear for a day that completed in the same run is a no-op.
   state = updateSourceSyncState(state, "limitless", {
     syncedAt: "2026-06-13T01:00:00.000Z",
     days: ["2026-06-10"],
@@ -128,7 +126,6 @@ test("day hashes are bounded to the most recent dates", () => {
   });
   const keys = Object.keys(state.sources.limitless.dayHashes).sort();
   assert.equal(keys.length, 800);
-  // The oldest dates were evicted, the newest retained.
   assert.equal(keys.includes("2024-01-01"), false);
   assert.ok(keys[keys.length - 1] > "2026-01-01");
 });

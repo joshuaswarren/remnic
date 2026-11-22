@@ -29,7 +29,6 @@ import {
   type ContradictionFixtureVerdict,
 } from "./fixture.js";
 
-// ── Definition ────────────────────────────────────────────────────────────────
 
 export const contradictionDetectionDefinition: BenchmarkDefinition = {
   id: "contradiction-detection",
@@ -49,7 +48,6 @@ export const contradictionDetectionDefinition: BenchmarkDefinition = {
   },
 };
 
-// ── Verdict constants ─────────────────────────────────────────────────────────
 
 const ALL_VERDICTS: ContradictionFixtureVerdict[] = [
   "contradicts",
@@ -58,12 +56,6 @@ const ALL_VERDICTS: ContradictionFixtureVerdict[] = [
   "needs-user",
 ];
 
-// ── Deterministic heuristic judge ─────────────────────────────────────────────
-//
-// A simple text-based classifier that uses token overlap and keyword
-// signals.  This is NOT a replacement for the real LLM judge — it
-// exists so the bench can run without an LLM and measure structural
-// correctness of the pipeline.
 
 const CONTRA_SIGNALS = [
   " not ",
@@ -90,32 +82,22 @@ function heuristicVerdict(
   const b = textB.toLowerCase();
   const overlap = tokenOverlap(a, b);
 
-  // Check for contradiction signals
   const aHasContra = CONTRA_SIGNALS.some((s) => a.includes(s));
   const bHasContra = CONTRA_SIGNALS.some((s) => b.includes(s));
   if (aHasContra || bHasContra) {
-    // If the texts share even modest token overlap, the signal
-    // likely indicates a genuine contradiction.
     if (overlap > 0.15) return "contradicts";
   }
 
-  // Check for near-duplicate
   if (overlap > 0.55) return "duplicates";
 
-  // Contradiction signal present but virtually no token overlap —
-  // ambiguous, defer to human review.
   if ((aHasContra || bHasContra) && overlap <= 0.15) return "needs-user";
 
-  // Some topic overlap but not duplicate and not contradictory
   if (overlap > 0.2) return "independent";
 
-  // Very little overlap
   return "independent";
 }
 
 function tokenOverlap(a: string, b: string): number {
-  // Dice coefficient on word unigrams — symmetric, and more generous
-  // than Jaccard for near-paraphrases with asymmetric length.
   const setA = new Set(a.split(/\s+/).filter(Boolean));
   const setB = new Set(b.split(/\s+/).filter(Boolean));
   if (setA.size === 0 && setB.size === 0) return 1;
@@ -126,8 +108,6 @@ function tokenOverlap(a: string, b: string): number {
   }
   const dice = (2 * shared) / (setA.size + setB.size);
 
-  // Containment: fraction of the smaller set's tokens found in the larger.
-  // Handles paraphrases where one sentence is a subset restatement.
   const smaller = setA.size <= setB.size ? setA : setB;
   const larger = setA.size <= setB.size ? setB : setA;
   let contained = 0;
@@ -136,12 +116,9 @@ function tokenOverlap(a: string, b: string): number {
   }
   const containment = contained / smaller.size;
 
-  // Weighted blend: containment alone would over-score contradictions
-  // that happen to share all short-text tokens, so mix with Dice.
   return 0.5 * dice + 0.5 * containment;
 }
 
-// ── Per-verdict metrics ───────────────────────────────────────────────────────
 
 interface VerdictMetrics {
   tp: number;
@@ -176,7 +153,6 @@ function computeVerdictMetrics(
   return { tp, fp, fn, precision, recall, f1 };
 }
 
-// ── Runner ────────────────────────────────────────────────────────────────────
 
 export async function runContradictionDetectionBenchmark(
   options: ResolvedRunBenchmarkOptions,
@@ -184,7 +160,6 @@ export async function runContradictionDetectionBenchmark(
   const cases = loadCases(options.mode, options.limit);
   const tasks: TaskResult[] = [];
 
-  // Per-case task results — time each heuristic call individually
   const predicted: ContradictionFixtureVerdict[] = [];
 
   for (let i = 0; i < cases.length; i++) {
@@ -223,7 +198,6 @@ export async function runContradictionDetectionBenchmark(
     verdictScores[`f1_${v}`] = m.f1;
   }
 
-  // Overall accuracy
   const correctCount = tasks.filter((t) => t.scores.accuracy === 1).length;
   verdictScores.overall_accuracy = cases.length > 0 ? correctCount / cases.length : 0;
 
@@ -273,7 +247,6 @@ export async function runContradictionDetectionBenchmark(
   };
 }
 
-// ── Case loader ───────────────────────────────────────────────────────────────
 
 function loadCases(
   mode: "quick" | "full",

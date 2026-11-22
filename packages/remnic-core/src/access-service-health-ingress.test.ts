@@ -70,7 +70,6 @@ test("health exposes bufferIngress at the TOP LEVEL, outside extraction", async 
     const health = await service.health();
     assert.ok(health.bufferIngress, "bufferIngress must be present");
     assert.deepEqual(health.bufferIngress.totals.accepted, { turns: 2, chars: 2 * "observed turn".length });
-    // Observational sub-count of accepted: the re-offer is appended AND counted.
     assert.deepEqual(health.bufferIngress.totals.acceptedExactDuplicate, { turns: 1, chars: "observed turn".length });
     assert.equal(health.bufferIngress.hours.length, 1);
     // `extraction` is the typed ExtractionLivenessStatus field of the health contract; the TOP-LEVEL

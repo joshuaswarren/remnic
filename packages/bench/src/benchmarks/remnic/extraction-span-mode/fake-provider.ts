@@ -68,11 +68,6 @@ export function runFakeExtraction(
   mode: ExtractionMode,
   seed: number,
 ): ProviderRun {
-  // Same model + same seed → identical fact selection and RNG stream shape
-  // across both variants; only the emission format differs. The per-
-  // conversation salt decorrelates offset-error draws: reseeding every
-  // conversation with the identical stream would corrupt the same fact slot
-  // in every conversation (one bad draw amplified N times).
   const rng = createSeededRandom((seed * 0x1000193 + stableConversationSalt(conversation.id)) % 0x100000000);
 
   const rawFacts: unknown[] = conversation.facts.map((gold) => {
@@ -116,8 +111,6 @@ function emitSpanFact(
   const { charStart, charEnd } = goldSpan(gold, conversation);
   const messageLength = conversation.messages[gold.messageIndex].text.length;
   const roll = rng();
-  // Production schema and the on-mode prompt require content. Mirror that
-  // by emitting the short frame there; that is the token saving vs restatement.
   const base = {
     category: gold.category,
     confidence: gold.confidence,

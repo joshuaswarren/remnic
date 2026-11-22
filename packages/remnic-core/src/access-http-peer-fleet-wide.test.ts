@@ -10,10 +10,6 @@ import { Orchestrator } from "./orchestrator.js";
 import { parseConfig } from "./config.js";
 import { writePeer, writePeerProfile } from "./peers/index.js";
 
-// Issue #3225 B3: the HTTP peer routes dispatch to global stores, so REST
-// must enforce the same operation policy as MCP — a namespace-scoped token
-// (any namespaces axis, including []) must be denied before any file in the
-// store changes, while ops-scoped and legacy tokens keep working.
 
 const PEER_ID = "b3-target-peer";
 const NOW = "2026-11-11T00:00:00.000Z";
@@ -83,8 +79,6 @@ test("HTTP peer routes deny namespace-scoped tokens before the stores, REST poli
   try {
     const before = await snapshotDir(root);
 
-    // Namespace-scoped token (single namespace): every peer route is denied
-    // BEFORE the store is touched — including the destructive purge.
     assert.equal((await call("ns-scoped", "/engram/v1/peers")).status, 403, "peer_list denied");
     assert.equal((await call("ns-scoped", `/engram/v1/peers/${PEER_ID}`)).status, 403, "peer_get denied");
     assert.equal(
@@ -105,13 +99,10 @@ test("HTTP peer routes deny namespace-scoped tokens before the stores, REST poli
     );
     assert.equal((await call("ns-scoped", `/engram/v1/peers/${PEER_ID}/profile`)).status, 403, "peer_profile_get denied");
 
-    // Empty namespace allow-list: denied too.
     assert.equal((await call("ns-empty", "/engram/v1/peers")).status, 403, "empty namespace list denied");
 
-    // Denials never reached the stores — no file read effect, no mutation.
     assert.deepEqual(await snapshotDir(root), before, "denied requests must not change any peer file");
 
-    // An ops-scoped token without a namespace axis keeps full peer access.
     const listed = await call("ops-peer", "/engram/v1/peers");
     assert.equal(listed.status, 200, "ops-scoped token lists peers");
     // SAFETY: the peer_list REST route returns the service envelope { peers }.
@@ -140,12 +131,10 @@ test("HTTP peer routes deny namespace-scoped tokens before the stores, REST poli
       "the destructive purge removed the peer directory",
     );
 
-    // Legacy unrestricted token (static authToken, no capability record).
     const legacyList = await call("legacy-operator", "/engram/v1/peers");
     assert.equal(legacyList.status, 200, "legacy token lists peers");
     await legacyList.text();
 
-    // Peer-forget confirmation behavior is unchanged: no confirm body, no purge.
     const unconfirmed = await call("legacy-operator", `/engram/v1/peers/${PEER_ID}?forget=true`, {
       method: "DELETE",
       body: JSON.stringify({}),
@@ -158,7 +147,6 @@ test("HTTP peer routes deny namespace-scoped tokens before the stores, REST poli
       "the seeded peer survived the rejected confirmation",
     );
 
-    // A malformed PUT body still fails loudly instead of silently defaulting.
     const malformed = await call("legacy-operator", "/engram/v1/peers/malformed-peer", {
       method: "PUT",
       body: JSON.stringify({ displayName: 5 }),
@@ -170,9 +158,6 @@ test("HTTP peer routes deny namespace-scoped tokens before the stores, REST poli
       "the rejected write created no peer file",
     );
 
-    // An explicit null is a malformed field too (rule 51): the operation
-    // schema strips nulls, so the route must reject them before dispatch
-    // instead of registering the peer with default kind/name/notes.
     for (const field of ["kind", "displayName", "notes"]) {
       const nullField = await call("legacy-operator", `/engram/v1/peers/null-${field}-peer`, {
         method: "PUT",

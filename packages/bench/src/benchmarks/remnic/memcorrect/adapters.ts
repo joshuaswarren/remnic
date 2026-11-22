@@ -30,8 +30,6 @@ import type { BenchMemoryAdapter } from "../../../adapters/types.js";
 import type { MemCorrectSystemAdapter } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Prompt-only baseline
-// ---------------------------------------------------------------------------
 
 interface IngestedTurn {
   sessionKey: string;
@@ -172,10 +170,6 @@ export class PromptOnlyBaselineAdapter implements MemCorrectSystemAdapter {
   async recall(query: string, sessionKey: string): Promise<string[]> {
     const queryTf = termFrequencies(tokenize(query));
     if (queryTf.size === 0) return [];
-    // Scope recall to the requesting session so a primary-namespace probe
-    // cannot pull twin-namespace text (and vice-versa). Without this filter
-    // scoped scenarios let cross-namespace turns distort the baseline's
-    // scope and recall signals.
     const scored = this.turns
       .filter((turn) => turn.sessionKey === sessionKey)
       .map((turn) => {
@@ -190,8 +184,6 @@ export class PromptOnlyBaselineAdapter implements MemCorrectSystemAdapter {
       .filter((entry) => entry.overlap > 0)
       .sort((a, b) => {
         if (b.overlap !== a.overlap) return b.overlap - a.overlap;
-        // Stable tiebreak by ingestion order (most recent first), mirroring
-        // a recency-biased prompt window.
         return this.turns.indexOf(b.turn) - this.turns.indexOf(a.turn);
       })
       .slice(0, 5)
@@ -200,9 +192,6 @@ export class PromptOnlyBaselineAdapter implements MemCorrectSystemAdapter {
   }
 
   async correct(text: string, sessionKey: string): Promise<void> {
-    // The baseline accepts a correction as just another user turn — no
-    // retire, no tombstone. This is precisely why non_resurrection collapses
-    // for the baseline under re-ingest.
     await this.ingestTurn(sessionKey, "user", text, new Date().toISOString());
   }
 
@@ -212,7 +201,6 @@ export class PromptOnlyBaselineAdapter implements MemCorrectSystemAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Recording adapter (test fixture)
 // ---------------------------------------------------------------------------
 
 /**
@@ -300,7 +288,6 @@ export class RecordingAdapter implements MemCorrectSystemAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Remnic-native adapter (public-surface wrapper)
 // ---------------------------------------------------------------------------
 
 /**
@@ -337,10 +324,6 @@ export function createRemnicMemCorrectAdapter(
     },
     async recall(query, sessionKey) {
       const text = await adapter.recall(`${sessionPrefix}:${sessionKey}`, query);
-      // Split the recalled context blob into ranked strings. Adapters return
-      // a single context string; the benchmark scores token containment over
-      // the joined text, so splitting on blank-line boundaries preserves
-      // structure without changing the containment semantics.
       const trimmed = text.trim();
       if (trimmed.length === 0) return [];
       return trimmed
@@ -349,13 +332,6 @@ export function createRemnicMemCorrectAdapter(
         .filter((s) => s.length > 0);
     },
     async correct(text, sessionKey, at) {
-      // Prefer the explicit Correction Contract surface (#1580 / plan item
-      // 2a): plan + confirmed apply through the same public access layer the
-      // MCP/HTTP correction tools use. When the planner produces no
-      // applicable action (or the adapter has no correction surface), fall
-      // back to delivering the correction as a user turn — the seeded corpus
-      // timestamp is preserved so temporal reasoning is evaluated against
-      // the scenario timeline, not wall-clock ingestion time.
       const scopedSession = `${sessionPrefix}:${sessionKey}`;
       if (adapter.correct) {
         const outcome = await adapter.correct(scopedSession, text, at);
@@ -366,10 +342,6 @@ export function createRemnicMemCorrectAdapter(
       ]);
     },
     async runMaintenance() {
-      // Force the background write paths (#1579's tombstone chokepoint
-      // hooks drain-then-contradiction-scan). drain() settles LCM +
-      // consolidation; a no-op drain (adapters without background work) is
-      // allowed and surfaces as a higher non_resurrection for this adapter.
       await adapter.drain?.();
     },
   };

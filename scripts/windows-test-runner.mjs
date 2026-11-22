@@ -27,10 +27,8 @@ export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url
 export const SKIP_LIST_PATH = path.join(REPO_ROOT, "scripts", "windows-skip-list.json");
 export const SMOKE_LIST_PATH = path.join(REPO_ROOT, "scripts", "windows-smoke-list.json");
 
-/** Suite under test: the `@remnic/core` unit tests, as posix repo-relative paths. */
 export const CORE_TEST_DIR = "packages/remnic-core/src";
 
-/** `#123` or a full github issue URL. Anchored, no nested quantifiers. */
 const ISSUE_REF_RE =
   /^(?:#[0-9]{1,9}|https:\/\/github\.com\/[A-Za-z0-9._-]{1,64}\/[A-Za-z0-9._-]{1,64}\/issues\/[0-9]{1,9})$/;
 
@@ -117,7 +115,6 @@ export function parseSmokeList(raw) {
   });
 }
 
-/** Every `@remnic/core` test file, as sorted posix repo-relative paths. */
 export function collectCoreTestFiles(repoRoot = REPO_ROOT) {
   const base = path.join(repoRoot, ...CORE_TEST_DIR.split("/"));
   return readdirSync(base, { recursive: true })
@@ -160,7 +157,6 @@ export function formatSkipReport(skipped, scope) {
   ];
 }
 
-/** Run one `node --import tsx --test` invocation, streaming output. */
 function runNodeTest(files, env) {
   return new Promise((resolve) => {
     // Spawn the node executable directly: on Windows a `.cmd` shim cannot be
@@ -211,8 +207,6 @@ async function main() {
     process.exit(1);
   }
 
-  // Stale smoke entries are validated against the full collected set so a
-  // renamed file fails loudly instead of silently shrinking the subset.
   if (smoke) {
     const present = new Set(all);
     const missing = smokeFiles.filter((file) => !present.has(file));
@@ -237,8 +231,6 @@ async function main() {
     process.exit(1);
   }
 
-  // Name only skips that apply to the universe being run: a full-suite
-  // entry outside the curated subset would overstate what smoke omits.
   const universeSet = new Set(universe);
   const skippedInScope = skipped.filter((entry) => universeSet.has(entry.file));
   for (const line of formatSkipReport(skippedInScope, smoke ? "the curated smoke subset" : undefined)) {

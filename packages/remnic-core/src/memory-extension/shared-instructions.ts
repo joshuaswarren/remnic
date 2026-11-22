@@ -6,9 +6,6 @@
  * per-host copy-paste drift.
  */
 
-/**
- * Describes the Remnic memory types a host agent may encounter.
- */
 export const REMNIC_SEMANTIC_OVERVIEW = `\
 ## Remnic Memory Types
 
@@ -31,10 +28,6 @@ When reading Remnic content, the front-matter \`type\` field tells you what
 kind of knowledge you are looking at and how much weight to give it.
 `;
 
-/**
- * Explains the oai-mem-citation block format hosts should use when
- * referencing Remnic-sourced content.
- */
 export const REMNIC_CITATION_FORMAT = `\
 ## Citing Remnic Memories
 
@@ -96,10 +89,6 @@ supports MCP connections.
 Legacy \`engram.*\` prefixed names are accepted as aliases for all tools.
 `;
 
-/**
- * Decision rules for when a host agent should use MCP recall vs
- * reading Remnic files directly from disk.
- */
 export const REMNIC_RECALL_DECISION_RULES = `\
 ## When to Use Recall vs Direct Read
 

@@ -21,8 +21,6 @@ export { OKF_EXPORT_VERSION };
 import { StorageManager } from "../storage.js";
 import type { MemoryFile, MemoryLink, MemoryStatus } from "../types.js";
 
-// Shared bundle mechanics (frontmatter, publish, symlink guard, file write)
-// live in ../okf/render.ts — one source of truth for every OKF exporter.
 export const OKF_LOG_TRUNCATION_MARKER = "<!-- okf-log-truncated -->";
 export const DEFAULT_OKF_LOG_MAX_ENTRIES = 500;
 
@@ -38,13 +36,6 @@ const MEMORY_STATUSES: readonly MemoryStatus[] = [
 
 export interface ExportOkfOptions {
   memoryDir: string;
-  /**
-   * Optional namespace segment. Resolved here, once, through the shared
-   * containment guard: both CLI entry points used to join the raw operator
-   * value onto `memoryDir/namespaces`, so `--namespace ../../..` escaped the
-   * namespace root and exported an arbitrary tree (rule 9 — one resolver, not
-   * a per-caller guard).
-   */
   namespace?: string;
   outDir: string;
   includeStatus?: readonly string[];
@@ -113,9 +104,6 @@ export async function exportOkfBundle(opts: ExportOkfOptions): Promise<ExportOkf
   }
   included.sort((a, b) => toRel(a.path, memoryDir).localeCompare(toRel(b.path, memoryDir)));
 
-  // Stage inside the destination's parent, not the OS temp dir: publishBundle
-  // finishes with a rename, and a rename across filesystems fails with EXDEV
-  // whenever --out lives on a different mount than /tmp.
   mkdirSync(path.dirname(outDir), { recursive: true });
   const staging = await mkdtemp(path.join(path.dirname(outDir), ".remnic-okf-export-"));
   const byCategory: Record<string, number> = {};
@@ -278,10 +266,6 @@ function boldAction(raw: string): string {
 
 export function firstHeading(content: string): string | undefined {
   for (const line of content.split("\n")) {
-    // `\S` makes the capture boundary disjoint from `\s+`, so the regex
-    // cannot backtrack across split points — `\s+(.+)` was superlinear on
-    // whitespace-heavy lines (CodeQL js/polynomial-redos). `.` still excludes
-    // \r\u2028\u2029, preserving the skip-line behavior on those lines.
     const match = /^#\s+(\S.*)$/.exec(line.trim());
     if (match) return match[1]!.trim();
   }

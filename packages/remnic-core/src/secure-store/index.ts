@@ -1,17 +1,3 @@
-/**
- * Public surface of the secure-store module.
- *
- * Issue #690 (PR 1/4) — pure encryption primitives only. No storage
- * integration, no CLI, no daemon lock state. Subsequent PRs add:
- *
- *   - PR 2/4: `remnic secure-store {init,lock,unlock,status}` CLI.
- *   - PR 3/4: transparent storage.ts wrapping + migration.
- *   - PR 4/4: capsule export `--encrypt`, encrypted backups, docs.
- *
- * Naming: `secure-store` (NOT `vault`) intentionally avoids
- * collision with `ObsidianVaultState` / `vaultId` / `obsidianVaults`
- * in `native-knowledge.ts`. See `kdf.ts` header for details.
- */
 
 export {
   AES_KEY_LENGTH,
@@ -59,7 +45,6 @@ export {
   type SecureStoreMetadataKdfScrypt,
 } from "./metadata.js";
 
-// Issue #690 PR 2/4 — header (metadata + verifier) and CLI surface.
 export {
   HEADER_FILENAME,
   HEADER_FORMAT,
@@ -115,7 +100,6 @@ export {
 
 export { createPassphraseReader } from "./passphrase-reader.js";
 
-// PR 3/4 — transparent storage-layer encryption
 export {
   FILE_FORMAT_FLAGS,
   FILE_FORMAT_VERSION,

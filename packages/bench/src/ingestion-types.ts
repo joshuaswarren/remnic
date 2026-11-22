@@ -1,6 +1,3 @@
-/**
- * Types for the ingestion benchmark tier.
- */
 
 export type GoldEntityType = "person" | "org" | "project" | "topic" | "event" | "location";
 

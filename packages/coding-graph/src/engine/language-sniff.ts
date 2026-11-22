@@ -50,7 +50,6 @@ export function sniffLanguage(filePath: string): CodingGraphLanguage | null {
   return EXTENSION_MAP[ext] ?? null;
 }
 
-/** Return true if `lang` is a valid tier-1 language. */
 export function isTier1Language(lang: string): lang is CodingGraphLanguage {
   return (TIER_1_LANGUAGES as readonly string[]).includes(lang);
 }

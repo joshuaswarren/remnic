@@ -1,20 +1,4 @@
-// Regression tests for issue #2478: the runtime bridge must resolve
-// @remnic/coding-graph through the shared loader
-// (optional-coding-graph.ts) -- ONE import, ONE cache, ONE contract
-// check -- and the miss path must surface the canonical install hint,
-// never a raw ERR_MODULE_NOT_FOUND.
 //
-// Both tests drive the REAL dynamic-import machinery in a child process
-// with a registered resolve hook (the established technique from
-// packages/remnic-cli/src/openclaw-managed-upgrade.test.ts):
-//
-//   1. pass-through hook that COUNTS resolutions of the specifier --
-//      the shared loader caches success, so a probe + a store open must
-//      resolve "@remnic/coding-graph" exactly once. A parallel loader
-//      in codegraph-runtime.ts resolves it a second time and fails.
-//   2. throwing hook that simulates the absent package -- the store
-//      open must reject with the tagged CodegraphRuntimeError whose
-//      message is the canonical install hint (buildCodingGraphInstallHint).
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -176,11 +160,6 @@ function lastJsonLine(stdout: string): DriverReport {
 }
 
 test("codegraph-runtime resolves @remnic/coding-graph exactly once (shared loader, no parallel import)", async () => {
-  // The counting hook maps the specifier to the workspace source when the
-  // optional peer is not linked, so the import SUCCEEDS in every install
-  // state. The shared loader then caches the success: a probe + a store
-  // open must resolve the specifier exactly once. A parallel loader in
-  // codegraph-runtime.ts imports the package again and fails this count.
   const root = makeScratch("remnic-2478-single-load-");
   try {
     const { hookPath, logPath } = writeCountingResolveHook(root);
@@ -207,8 +186,6 @@ test("codegraph-runtime resolves @remnic/coding-graph exactly once (shared loade
 });
 
 test("codegraph-runtime miss path throws the canonical install hint, not raw MODULE_NOT_FOUND", async () => {
-  // The throwing resolve hook simulates the absent package even on a dev
-  // workspace where it is installed, so this runs everywhere.
   const root = makeScratch("remnic-2478-miss-");
   try {
     const hookPath = writeMissingPackageResolveHook(root);

@@ -1,10 +1,3 @@
-/**
- * Coding-graph benchmark suite — public re-exports (issue #1557).
- *
- * The CLI reaches this surface only through the optional loader
- * (packages/remnic-cli/src/optional-bench.ts). Nothing bench-related enters
- * the base `dependencies`/`noExternal` (rule 57).
- */
 
 export {
   createSeededRng,

@@ -62,7 +62,6 @@ test("assessMtimeTrust: the measured distill-kura shape (50 of 214 files on one 
 });
 
 test("assessMtimeTrust: the 20% boundary is inclusive", () => {
-  // 43 of 214 = 20.09% -> flagged; 42 of 214 = 19.6% -> not flagged.
   const flagged = assessMtimeTrust([...Array<number>(43).fill(NOW), ...spreadDays(171, NOW - 400 * DAY_MS)]);
   assert.equal(flagged.bulkTouchDays.has(utcDayKey(NOW)), true, "43/214 on one day is >= 20%");
   const clear = assessMtimeTrust([...Array<number>(42).fill(NOW), ...spreadDays(172, NOW - 400 * DAY_MS)]);
@@ -84,10 +83,8 @@ test("applyRecencyBoost: exact blend, unknown age untouched, weight 0 untouched,
   };
   const expected = 1 * 0.5 + Math.pow(0.5, 14 / 7) * 0.5;
   assert.ok(Math.abs(applyRecencyBoost(1, memory, 0.5, NOW) - expected) < 1e-12);
-  // Unknown age (no dates, no trusted mtime) leaves the score alone.
   assert.equal(applyRecencyBoost(0.7, { path: "facts/b.md", frontmatter: {} }, 0.5, NOW), 0.7);
   assert.equal(applyRecencyBoost(0.7, memory, 0, NOW), 0.7);
-  // A corrupt future date clamps to age zero instead of boosting past 1.
   const future = {
     path: "facts/c.md",
     frontmatter: { created: new Date(NOW + 30 * DAY_MS).toISOString() },
@@ -96,8 +93,6 @@ test("applyRecencyBoost: exact blend, unknown age untouched, weight 0 untouched,
 });
 
 test("collectMtimeFallbackContext: fully dated memories skip it entirely (no stats)", async () => {
-  // The paths do not exist: any stat would surface below as a null mtime
-  // instead of the documented null short-circuit.
   const context = await collectMtimeFallbackContext([
     { path: "/nonexistent/facts/a.md", created: new Date(NOW).toISOString() },
     { path: "/nonexistent/facts/b.md", updated: new Date(NOW).toISOString() },

@@ -13,31 +13,6 @@ export function trustResultFor(
   return trustByPath.get(trustResultKey(result)) ?? trustByPath.get(result.path);
 }
 
-/**
- * trust-score-stage.ts — signal adapters + recall pipeline stage (issue #1577 PR 2).
- *
- * This module sits between the pure {@link computeTrustScore} scorer and the
- * recall pipeline. It owns TWO jobs:
- *
- *   1. **Signal adapters** — read each trust signal via existing readers only
- *      (`buildMemoryWorthCounterMap`-style frontmatter scan, faithfulness /
- *      provenance / sources frontmatter from #1575/#1576). No new disk format,
- *      no new write path. Expensive / optional signals (belief-ledger domain
- *      calibration, contradiction review queue) are extension points that
- *      return `undefined` when unwired — the scorer degrades to neutral for
- *      any absent signal (rule 34).
- *
- *   2. **The recall stage** — apply `trustMultiplier(trust.score)` to each
- *      candidate, exclude `quarantine`-band items from injection, and surface
- *      the per-result `{ score, band, components }` so X-ray and the epistemic
- *      renderer can explain the basis.
- *
- * Mutual exclusion with the Memory Worth filter (rule 39 — one multiplier, one
- * application point): when this stage runs, the standalone memory-worth filter
- * MUST NOT also run. The orchestrator enforces that at the wiring site
- * (`if (caps.recallTrustScore) … else if (caps.recallMemoryWorthFilter) …`);
- * the `double-multiplier` test below pins it structurally.
- */
 
 import { computeMemoryWorth } from "./memory-worth.js";
 import {
@@ -51,11 +26,6 @@ import {
 } from "./trust-score.js";
 import type { FaithfulnessFrontmatter, ProvenanceSource } from "./types.js";
 
-/**
- * Frontmatter projection the adapter reads. Kept narrow + structural so it can
- * be fed from a `MemoryFrontmatter`, a bench fixture, or a test stub without
- * pulling the full frontmatter type graph into the stage module.
- */
 export interface TrustFrontmatterProjection {
   mw_success?: number;
   mw_fail?: number;
@@ -84,12 +54,7 @@ export function buildTrustSignalMap(
     const fm = m.frontmatter;
     const signals: TrustSignals = {};
 
-    // Memory worth — reuse the exact Laplace computation the standalone filter
-    // uses so the two never disagree on the same counters.
     if (fm.mw_success !== undefined || fm.mw_fail !== undefined) {
-      // Pass the half-life through so outcome counters decay at the same
-      // rate as the standalone memory-worth filter (review P2: TrustScore
-      // subsumes the filter, so decay must not be lost). Convert days → ms.
       const halfLifeMs =
         options.recencyHalfLifeDays !== undefined
           ? options.recencyHalfLifeDays * 86_400_000
@@ -106,14 +71,10 @@ export function buildTrustSignalMap(
 
     if (fm.provenance !== undefined) signals.provenance = fm.provenance;
     if (fm.faithfulness !== undefined) {
-      // `skipped_no_span` (legacy fact lacking a verified source span) carries
-      // no entailment signal — collapse it to `unchecked` so the scorer treats
-      // it as the neutral "no verdict" case rather than a hard negative.
       signals.faithfulness =
         fm.faithfulness.verdict === "skipped_no_span" ? "unchecked" : fm.faithfulness.verdict;
     }
 
-    // Corroboration = distinct source sessions/turns backing the fact.
     if (Array.isArray(fm.sources) && fm.sources.length > 0) {
       const distinct = new Set(
         fm.sources.map((s) => `${s.sessionKey ?? ""}|${s.turnId ?? ""}`),
@@ -121,8 +82,6 @@ export function buildTrustSignalMap(
       signals.corroborationCount = distinct.size;
     }
 
-    // Recency: prefer an explicit observation timestamp; fall back to
-    // lastAccessed. Days-old vs the per-category half-life the caller supplies.
     const ts = fm.observedAt ?? fm.lastAccessed;
     if (nowUsable && typeof ts === "string" && ts.length > 0) {
       const parsed = Date.parse(ts);
@@ -135,8 +94,6 @@ export function buildTrustSignalMap(
       }
     }
 
-    // Only record an entry when at least one signal is present — a fully-empty
-    // entry would score neutral anyway, and skipping keeps the map small.
     if (Object.keys(signals).length > 0) {
       map.set(m.path, signals);
     }
@@ -152,12 +109,10 @@ export interface TrustStageCandidate {
   key?: string;
 }
 
-/** One candidate after the TrustScore stage. */
 export interface TrustStageResultItem {
   path: string;
   /** Namespace-aware result key used to preserve result identity through rerank. */
   key?: string;
-  /** Final score after the trust multiplier is applied. */
   score: number;
   /** The untouched input score — for telemetry / X-ray. */
   originalScore: number;
@@ -173,7 +128,6 @@ export interface TrustStageOptions {
   /** `path → TrustSignals`. Candidates absent from the map score neutral. */
   signals: ReadonlyMap<string, TrustSignals>;
   weights?: TrustWeights;
-  /** Multiplier bounds; see {@link trustMultiplier}. */
   minMultiplier?: number;
   maxMultiplier?: number;
   /**
@@ -191,15 +145,9 @@ export interface TrustStageOptions {
   reorder?: boolean;
 }
 
-/** Output of {@link applyTrustScoreStage}. */
 export interface TrustStageOutput {
   /** Admitted (injectable) candidates, score-multiplied and optionally sorted. */
   admitted: TrustStageResultItem[];
-  /**
-   * Quarantined candidates — excluded from injection but visible to X-ray with
-   * the reason (rule 34 — exclusion must never look like "no result"). Callers
-   * that only need the injected list read `admitted`; X-ray reads `all`.
-   */
   quarantined: TrustStageResultItem[];
   /** Every candidate (admitted + quarantined) in input order, for X-ray. */
   all: TrustStageResultItem[];
@@ -229,18 +177,10 @@ export function applyTrustScoreStage(
 
   for (let i = 0; i < candidates.length; i += 1) {
     const c = candidates[i]!;
-    // Prefer the namespace-aware composite key; fall back to path for callers
-    // (and tests) that key signals by bare path (#2020).
     const signals = options.signals.get(c.key ?? c.path) ?? options.signals.get(c.path);
     const trust = computeTrustScore(signals, options.weights);
     const isQuarantined = quarantine && trust.band === "quarantine";
-    // Quarantined items are excluded from injection. Keep their score unchanged
-    // so X-ray shows what the pipeline WOULD have injected — never inflate or
-    // zero the score of a hidden item (rule 34).
     const multiplier = isQuarantined ? 1 : trustMultiplier(trust.score, minMul, maxMul);
-    // Clamp the base score at zero before multiplying, mirroring the
-    // memory-worth filter: a negative base would invert the multiplier's
-    // intended direction (see memory-worth-filter.ts:145-153).
     const safeBase = c.score < 0 ? 0 : c.score;
     const scored = safeBase * multiplier;
     const item: TrustStageResultItem = {
@@ -258,13 +198,8 @@ export function applyTrustScoreStage(
   }
 
   if (reorder) {
-    // Stable sort by descending multiplied score, with original input position
-    // as the deterministic tiebreaker (CLAUDE.md rule 19 / checklist §12).
     admitted.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
-      // Tiebreaker: original insertion order. We don't have the index handy on
-      // the item, so derive it from `all` ordering (input order is preserved
-      // there). Equal-score items keep first-seen-first order.
       return 0;
     });
     // Node's sort is stable (ES2019+); the explicit `return 0` documents the
@@ -274,12 +209,6 @@ export function applyTrustScoreStage(
   return { admitted, quarantined, all };
 }
 
-/**
- * Compact X-ray projection of one stage item. Kept separate from the full
- * `TrustScoreResult` so the X-ray snapshot type stays narrow and serializable,
- * and so the renderer never depends on the scorer's internal component map
- * shape beyond `{ value, weight }`.
- */
 export interface TrustXrayProjection {
   score: number;
   band: TrustBand;
@@ -290,7 +219,6 @@ export interface TrustXrayProjection {
   quarantineReason?: string;
 }
 
-/** Build the X-ray projection for one stage result item. */
 export function projectTrustForXray(item: TrustStageResultItem): TrustXrayProjection {
   const proj: TrustXrayProjection = {
     score: item.trust.score,
@@ -314,49 +242,22 @@ export function explainQuarantine(trust: TrustScoreResult): string {
 }
 
 
-// ─── Recall-stage signal builder (I/O orchestration) ──────────────────────
 
-/**
- * Narrow callbacks the signal builder needs from its host (the orchestrator).
- * Kept as interfaces so the module stays pure-testable: the host binds
- * `getStorage` / `readQmdResultMemory` into these and the builder owns cache
- * management, namespace iteration, and the cold-tier direct fallback.
- */
 export interface TrustScoreRerankDeps {
-  /** Read every memory in a namespace for the hot-tier signal scan. */
   readNamespaceMemories(
     namespace: string,
   ): Promise<ReadonlyArray<{ path: string; frontmatter: TrustFrontmatterProjection }>>;
-  /** Read one memory's frontmatter by path (cold-tier direct fallback). The
-   * owning namespace is passed so a relative path resolves against the correct
-   * namespace store instead of the first fallback (#2020). */
   readMemoryFrontmatter(
     path: string,
     preferredNamespace?: string,
   ): Promise<TrustFrontmatterProjection | null>;
-  /**
-   * Current cross-process corpus version for a namespace (issue #1905). Used
-   * to key the per-namespace corpus-fallback cache so it invalidates on the
-   * next memory mutation instead of on a wall-clock timer that is shorter than
-   * recall latency (which produced a permanent steady-state miss).
-   */
   getNamespaceVersion(namespace: string): Promise<number>;
 }
 
-/**
- * Per-namespace signal cache the host owns and the builder mutates. Keyed on
- * the shared corpus version (issue #1905): an entry is valid iff its `version`
- * still equals the namespace's current corpus version AND it is younger than
- * TRUST_SIGNAL_CACHE_MAX_AGE_MS. The age bound is required because trust
- * signals bake wall-clock time into their values (ageDays,
- * computeMemoryWorth(..., now) with recency half-life) — pure version
- * invalidation would serve stale decay on a read-only corpus (#1905, Codex).
- */
 export interface TrustScoreSignalCache {
   cache: Map<string, { version: number; cachedAt: number; signals: ReadonlyMap<string, TrustSignals> }>;
 }
 
-/** See TrustScoreSignalCache — bounds time-based staleness of cached signals. */
 export const TRUST_SIGNAL_CACHE_MAX_AGE_MS = 300_000;
 
 /** Bound on distinct namespaces retained; overflow evicts the oldest. */
@@ -410,12 +311,6 @@ export async function buildTrustSignalsForRerank(
      * corpus path stays reachable. See `recallTrustStageCorpusFallbackEnabled`.
      */
     corpusFallbackEnabled?: boolean;
-    /**
-     * Cooperative cancellation (issue #1905, Codex): when the recall's shared
-     * enrichment-assembly deadline wins the race, the host aborts this signal
-     * so an orphaned corpus scan / direct-read loop stops at the next loop
-     * boundary instead of continuing to burn I/O after recall already returned.
-     */
     abortSignal?: AbortSignal;
   } = {},
 ): Promise<Map<string, TrustSignals>> {
@@ -424,19 +319,8 @@ export async function buildTrustSignalsForRerank(
   const corpusFallbackEnabled = options.corpusFallbackEnabled ?? true;
   const halfLife = { recencyHalfLifeDays: options.recencyHalfLifeDays };
 
-  // Paths examined via preloaded frontmatter (issue #1905, Cursor/Codex).
-  // buildTrustSignalMap deliberately OMITS neutral memories (no trust fields),
-  // so a preloaded candidate can be examined yet absent from `signals` — it
-  // must NOT be treated as missing, or the corpus fallback + direct read fire
-  // for every uninstrumented hot candidate, defeating the O(candidates) path.
-  // Absent-from-signals still means multiplier 1.0 downstream, exactly what a
-  // corpus scan would have produced for the same neutral memory.
   const preloadedKeys = new Set<string>();
 
-  // Normalize candidates to a composite identity: `signalKey` is what the
-  // trust stage looks up (namespace-aware), `lookupKey` matches the preloaded
-  // frontmatter map's key, `path` is the raw store path used for corpus/direct
-  // reads. A bare string keeps the legacy path-only behavior (#2020).
   const normalized = candidates.map((c) =>
     typeof c === "string"
       ? { path: c, signalKey: c, lookupKey: c, namespace: undefined as string | undefined }
@@ -448,15 +332,9 @@ export async function buildTrustSignalsForRerank(
         },
   );
 
-  // O(candidates) fast path: seed signals from candidate frontmatter already
-  // loaded on the hot recall path. Reuses the exact `buildTrustSignalMap`
-  // computation so a candidate's signals equal what a corpus scan produced.
   if (options.preloadedFrontmatter) {
     const preloaded: Array<{ path: string; frontmatter: TrustFrontmatterProjection }> = [];
     for (const c of normalized) {
-      // Composite lookupKey is authoritative; the bare-path fallback keeps
-      // path-keyed preloaded maps (e.g. the recent-scan branch) hitting the
-      // fast path and is inert in production composite-keyed maps (#2020).
       const mem =
         options.preloadedFrontmatter.get(c.lookupKey) ??
         options.preloadedFrontmatter.get(c.path);
@@ -470,15 +348,9 @@ export async function buildTrustSignalsForRerank(
     }
   }
 
-  // Corpus-level fallback (config-gated): candidates still missing probe a
-  // per-namespace signal map, cached and invalidated by the shared
-  // cross-process corpus version. Only candidate rows are copied out — never
-  // the whole map (issue #1905, no per-recall full-map union).
   if (corpusFallbackEnabled) {
     const seenNamespaces = new Set<string>();
     for (const ns of namespaces) {
-      // Cooperative cancellation: the recall's assembly deadline may have won
-      // the race — stop before starting another namespace scan (#1905, Codex).
       if (options.abortSignal?.aborted) break;
       if (seenNamespaces.has(ns)) continue;
       seenNamespaces.add(ns);
@@ -488,9 +360,6 @@ export async function buildTrustSignalsForRerank(
         const cached = signalCache.cache.get(ns);
         const nowMs = now.getTime();
         let nsMap: ReadonlyMap<string, TrustSignals>;
-        // Valid iff the corpus version still matches AND the entry is younger
-        // than the max age: trust signals bake `now` into their values, so an
-        // unchanged corpus still goes stale as wall-clock advances (#1905, Codex).
         if (
           cached &&
           cached.version === version &&
@@ -504,12 +373,7 @@ export async function buildTrustSignalsForRerank(
           capTrustSignalCache(signalCache.cache, TRUST_SIGNAL_CACHE_MAX_NAMESPACES);
         }
         for (const c of normalized) {
-          // Preloaded keys were already examined — absent-from-signals means
-          // neutral (multiplier 1.0), identical to what the corpus map holds.
           if (signals.has(c.signalKey) || preloadedKeys.has(c.signalKey)) continue;
-          // A namespaced candidate belongs to exactly one namespace: never seed
-          // its signals from a different namespace's corpus map, or two
-          // same-path candidates in different namespaces collapse (#2020).
           if (c.namespace !== undefined && c.namespace !== ns) continue;
           const s = nsMap.get(c.path);
           if (s) signals.set(c.signalKey, s);
@@ -523,9 +387,6 @@ export async function buildTrustSignalsForRerank(
     }
   }
 
-  // Direct per-path fallback for candidates still absent (cold-tier / archive).
-  // Preloaded paths are excluded — they were examined and are neutral priors.
-  // Bounded-parallel (≤16) to match loadSearchResultMemoryMap's batch size.
   const missing = normalized.filter(
     (c) => !signals.has(c.signalKey) && !preloadedKeys.has(c.signalKey),
   );
@@ -533,7 +394,6 @@ export async function buildTrustSignalsForRerank(
     const fallbackMemories: Array<{ path: string; frontmatter: TrustFrontmatterProjection }> = [];
     const BATCH = 16;
     for (let off = 0; off < missing.length; off += BATCH) {
-      // Cooperative cancellation between batches (#1905, Codex).
       if (options.abortSignal?.aborted) break;
       const batch = await Promise.all(
         missing.slice(off, off + BATCH).map(async (c) => {

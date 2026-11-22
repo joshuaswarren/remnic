@@ -1266,25 +1266,21 @@ test("deriveLoCoMoGoldMemories derives correct statements in evidence order, ded
     },
   };
 
-  // Evidence order: D1:2 then D1:1
   const derivedOrder = deriveLoCoMoGoldMemories(observation, ["D1:2", "D1:1"]);
   assert.deepEqual(derivedOrder, [
     "Alice prefers jasmine tea on rainy mornings.",
     "Alice moved to Seattle in 2022.",
   ]);
 
-  // Deduplication: D1:2 and D1:3 both map to "Alice prefers jasmine tea..."
   const derivedDedupe = deriveLoCoMoGoldMemories(observation, ["D1:2", "D1:3"]);
   assert.deepEqual(derivedDedupe, [
     "Alice prefers jasmine tea on rainy mornings.",
     "Alice loves rainy mornings.",
   ]);
 
-  // Omit when no evidence matches
   const derivedNone = deriveLoCoMoGoldMemories(observation, ["D9:99"]);
   assert.equal(derivedNone, undefined);
 
-  // Empty evidence
   const derivedEmptyEv = deriveLoCoMoGoldMemories(observation, []);
   assert.equal(derivedEmptyEv, undefined);
 });
@@ -1311,7 +1307,6 @@ test("deriveLoCoMoGoldMemories handles malformed annotation shapes defensively w
     });
   }
 
-  // Well-formed item alongside malformed items in same observation
   const mixedObs = {
     bad_session: "invalid",
     session_1_observation: {

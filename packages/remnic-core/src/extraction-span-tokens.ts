@@ -1,10 +1,3 @@
-/**
- * Isolated span token-cost estimator (issue #2333, Phase A).
- *
- * Pure. Estimates the output-token cost of emitting span offsets versus
- * generating the memory value, so the Phase A bench can compare both sides
- * without touching the extraction engine.
- */
 
 const CHARS_PER_TOKEN = 4;
 

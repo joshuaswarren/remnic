@@ -1,10 +1,3 @@
-/**
- * Synthetic fixture source code for each tier-1 language.
- *
- * Public-repo policy (#1551): every fixture is synthetic — never real user
- * code. Each fixture is small enough that the expected IR can be reasoned
- * about and asserted against without magic numbers.
- */
 import type { CodingGraphLanguage } from "@remnic/core";
 
 export interface Fixture {

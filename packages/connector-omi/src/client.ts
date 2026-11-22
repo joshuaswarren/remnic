@@ -275,9 +275,6 @@ export class OmiClient {
       return { ok: true };
     } catch (err) {
       if (err instanceof OmiApiError && err.status !== undefined) {
-        // The auth chain yields distinct, actionable detail strings.
-        // Legacy integration mode can also surface app/user capability
-        // failures, so keep those hints mode-specific.
         const hint =
           err.status === 401
             ? "missing/malformed Authorization header"
@@ -295,11 +292,6 @@ export class OmiClient {
           detail: [err.detail, hint].filter(Boolean).join(" — ") || err.message,
         };
       }
-      // OmiApiError messages are our own constructed strings (already
-      // scrubbed — network text is reduced to name + code inside
-      // requestJson); foreign errors reduce to name + errno code so raw
-      // Node text (paths, loader stacks) never reaches operator
-      // surfaces.
       return {
         ok: false,
         detail: err instanceof OmiApiError ? err.message : describeNetworkError(err),

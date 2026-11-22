@@ -16,13 +16,6 @@ ensurePackageBuild(
   ],
 );
 
-// #1557: bench now depends on @remnic/coding-graph for the coding-graph
-// benchmark harness. Ensure its dist is built before bench's tsup DTS
-// generation runs, mirroring the @remnic/core call above.
-//
-// Guard against recursion: @remnic/coding-graph's own prebuild script calls
-// this file. Without the guard, building coding-graph would trigger building
-// coding-graph again (infinite loop).
 if (!process.env.REMNIC_BUILDING_CODING_GRAPH) {
   process.env.REMNIC_BUILDING_CODING_GRAPH = "1";
   ensurePackageBuild(

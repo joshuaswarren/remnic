@@ -1,6 +1,3 @@
-/**
- * Production regenerate flow for timeline-card analysis (issue #2050).
- */
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -276,7 +273,6 @@ test("enabled analysis prewrites pending, and a pending day is re-analyzed", asy
     const first = await run();
     assert.equal(first.status, "ok");
     assert.deepEqual(seenOnDisk, ["pending"], "the deterministic prewrite must persist pending, not disabled");
-    // Simulate a crash between the prewrite and the final write.
     const persisted = JSON.parse(await readFile(timelineDayPath(memoryDir, DATE), "utf8")) as {
       status: string;
     };
@@ -312,7 +308,6 @@ test("a legacy disabled file is re-analyzed once analysis is enabled", async () 
         deps: { remoteLlm: remote },
       });
     await run();
-    // Simulate the old prewrite behavior: enabled input, disabled file.
     const persisted = JSON.parse(await readFile(timelineDayPath(memoryDir, DATE), "utf8")) as {
       status: string;
     };

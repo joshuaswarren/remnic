@@ -59,7 +59,6 @@ function makeStorage(t: TestContext): StorageManager {
 function makeStallingStorage(t: TestContext) {
   const storage = makeStorage(t);
   const fallback = Promise.withResolvers<void>();
-  // The fallback releases broken signal plumbing too, so the regression cannot hang.
   t.mock.method(
     storage,
     "readMemoriesWindow",
@@ -115,7 +114,6 @@ test("a cancelled briefing does not drain the correction-notification queue", as
     storage,
     window: WINDOW,
     abortSignal: controller.signal,
-    // Cancel after reads, just before the queue-draining phase.
     followupGenerator: async () => {
       controller.abort();
       return [];
@@ -153,7 +151,6 @@ test("an HTTP/MCP briefing cancelled during the location read keeps the notifica
     t.mock.restoreAll();
     syncBuiltinESMExports();
   });
-  // Object.create yields untyped values, so no assertion is needed: briefing() reads only these members.
   const orchestrator: Orchestrator = Object.assign(Object.create(Orchestrator.prototype), {
     config: {
       briefing: { enabled: true, defaultWindow: "24h", defaultFormat: "markdown", maxFollowups: 0, llmFollowups: false },

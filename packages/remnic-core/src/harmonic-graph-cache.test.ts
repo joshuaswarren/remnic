@@ -54,7 +54,6 @@ test("a second cached read does no file reads", async () => {
     const a = await read(memoryDir);
     assert.equal(a.nodes.length, 1);
     assert.equal(harmonicGraphCacheStats.misses, before.misses + 1);
-    // Remove every file the projection reads. A real read would now return nothing.
     await rm(nodeFile, { force: true });
     await rm((await storage.getMemoryById(first.id))!.path, { force: true });
     const b = await read(memoryDir);
@@ -92,7 +91,6 @@ test("an out-of-band corpus bump invalidates, so a source that leaves the active
       memoryPath,
       (await readFile(memoryPath, "utf8")).replace("category: fact", "category: fact\nstatus: quarantined"),
     );
-    // The documented out-of-band bump: the same call review and governance writers make.
     bumpMemoryCorpusVersionForDir(memoryDir);
     assert.equal((await read(memoryDir)).nodes.length, 0);
   });
@@ -156,7 +154,6 @@ function anchor(anchorId: string, nodeRef: string, memoryId: string): CueAnchor 
   };
 }
 
-// Each case seeds node n1 (source m1) and, for the anchor cases, anchor a1, fills the cache, then runs ONE
 // store write with no memory write after it. The next read must miss and show the new count; with the
 // graph version bump removed these fail because the corpus sentinels never move.
 async function seedForWrite(memoryDir: string, storage: StorageManager) {
@@ -222,7 +219,6 @@ test("pruneOrphanCueAnchors alone invalidates the cached graph", async () => {
     const { m2 } = await seedForWrite(memoryDir, storage);
     await recordCueAnchor({ memoryDir, anchor: anchor("a2", "n2", m2.id) });
     assert.deepEqual(await counts(memoryDir), { nodes: 2, anchors: 2 });
-    // n2's file goes away behind the cache's back, which makes a2 an orphan. Only the prune below bumps.
     await rm(path.join(memoryDir, "state", "abstraction-nodes", "nodes", new Date().toISOString().slice(0, 10), "n2.json"), { force: true });
     assert.deepEqual(await counts(memoryDir), { nodes: 2, anchors: 2 });
     assert.equal(await pruneOrphanCueAnchors({ memoryDir }), 1);
@@ -230,7 +226,6 @@ test("pruneOrphanCueAnchors alone invalidates the cached graph", async () => {
   });
 });
 
-// Recall waits for the graph build, so a cache miss costs every recall that lands on it. Production: a
 // 2106 node, 9174 anchor graph rebuilt in 5 s standalone, 7 s inside the daemon, and 17 to 32 s when two
 // recalls overlapped and each ran its own build.
 async function until(condition: () => Promise<boolean>) {
@@ -353,7 +348,6 @@ test("a private support passport source's invalid_at does not end the cache entr
   });
 });
 
-// Unreadable node store: a file where the nodes directory belongs is not ENOENT, so the strict listing throws
 // (a corrupt node file would not: readAbstractionNodes skips those on purpose).
 async function breakNodeStore(memoryDir: string) {
   const nodesDir = path.join(memoryDir, "state", "abstraction-nodes", "nodes");
@@ -409,7 +403,6 @@ test("a failing refresh is retried at most once per TTL, not on every stale read
     clock.mock.mockImplementation(() => start + 31_000);
     const missesBefore = harmonicGraphCacheStats.misses;
     assert.equal((await read(memoryDir)).nodes.length, 1, "the stale graph is still served");
-    // The failing build bumps `misses` before it reads the broken store: wait for it to settle, not for a time.
     await settleHarmonicGraphBuilds();
     assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1, "one refresh was started");
     clock.mock.mockImplementation(() => start + 40_000);
@@ -423,7 +416,6 @@ test("a failing refresh is retried at most once per TTL, not on every stale read
   });
 });
 
-// The build's own clock reading is taken before it reads the anchors, so an invalid_at can pass while a
 // build is still running. Every caller that joined that build must still get an unexpired graph.
 test("a source that expires while the build is running is not served from that build", async () => {
   await withDir(async (memoryDir, storage) => {
@@ -433,29 +425,24 @@ test("a source that expires while the build is running is not served from that b
       await recordAbstractionNode({ memoryDir, node: node(`n${i}`, `xi race fact ${i}`, [memory.id]) });
       sources.push({ id: memory.id, path: (await storage.getMemoryById(memory.id))!.path });
     }
-    // Anchors are read after the sources are projected, so many of them make the tail the deadline falls in.
     await upsertCueAnchors({
       memoryDir,
       anchors: Array.from({ length: 1500 }, (_, i) => anchor(`xi-a${i}`, `n${i % 120}`, sources[i % 120]!.id)),
     });
-    // Calibrate: how long one cold build takes on this machine.
     const calibrationStart = Date.now();
     await read(memoryDir);
     const buildMs = Date.now() - calibrationStart;
     clearHarmonicGraphCache();
-    // n0's source expires near the end of the next build, which started before the deadline.
     const first = sources[0]!;
     const deadlineMs = Date.now() + Math.max(2, Math.floor(buildMs * 0.85));
     await writeFile(
       first.path,
       (await readFile(first.path, "utf8")).replace("category: fact", `category: fact\ninvalidAt: ${new Date(deadlineMs).toISOString()}`),
     );
-    // The storage layer caches parsed memories by corpus version, so an out-of-band edit needs the documented bump.
     bumpMemoryCorpusVersionForDir(memoryDir);
     const graph = await read(memoryDir);
     const returnedAtMs = Date.now();
     const served = graph.nodes.some((candidate) => candidate.nodeId === "n0");
-    // A build that finished before the deadline may legitimately include n0 (a 25 ms margin covers the
     // hand-off); one that returned after it must not.
     if (returnedAtMs >= deadlineMs + 25) {
       assert.equal(served, false, `expired source served; build took about ${buildMs} ms`);
@@ -471,10 +458,6 @@ interface BuildHold {
   signal?: AbortSignal;
 }
 
-/**
- * Hold the first build inside its source-memory read so a second read can land while it runs. The held call
- * records the build's own abort signal; builds started after it are not held.
- */
 function holdFirstBuild(t: TestContext): BuildHold {
   const original = StorageManager.prototype.readAllMemories;
   let release = () => {};
@@ -498,7 +481,6 @@ function holdFirstBuild(t: TestContext): BuildHold {
   return hold;
 }
 
-/** Fail the test instead of hanging when a promise that must settle does not. */
 function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   return Promise.race([
     promise,

@@ -1,10 +1,3 @@
-/**
- * causal-chain.ts — Cross-session causal chain persistence for CMC.
- *
- * Stitches causal trajectories across session boundaries by detecting
- * when a trajectory in one session follows up on a trajectory from
- * another session. Persists edges in a graph index for later retrieval.
- */
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -16,7 +9,6 @@ import { log } from "./logger.js";
 import { normalizeRecallTokens } from "./recall-tokenization.js";
 import { assertIsoRecordedAt, assertString, isRecord, recordStoreDay } from "./store-contract.js";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface CausalEdge {
   schemaVersion: 1;
@@ -50,7 +42,6 @@ export interface StitchCandidate {
   stitchMethod: CausalEdge["stitchMethod"];
 }
 
-// ─── Scoring Weights ─────────────────────────────────────────────────────────
 
 const STITCH_WEIGHTS = {
   followUpToGoal: 4.0,
@@ -113,7 +104,6 @@ function countTokenSetOverlap(queryTokens: Set<string>, valueTokens: Set<string>
   return matches;
 }
 
-// ─── Validation ──────────────────────────────────────────────────────────────
 
 export function validateCausalEdge(raw: unknown): CausalEdge {
   if (!isRecord(raw)) throw new Error("CausalEdge must be an object");
@@ -151,14 +141,12 @@ export function validateCausalEdge(raw: unknown): CausalEdge {
   };
 }
 
-// ─── Stable Edge ID ──────────────────────────────────────────────────────────
 
 export function makeEdgeId(fromId: string, toId: string): string {
   const digest = createHash("sha256").update(`${fromId}\0${toId}`).digest("hex").slice(0, 12);
   return `edge-${digest}`;
 }
 
-// ─── Storage Paths ───────────────────────────────────────────────────────────
 
 export function resolveChainsDir(memoryDir: string, causalTrajectoryStoreDir?: string): string {
   const root = resolveCausalTrajectoryStoreDir(memoryDir, causalTrajectoryStoreDir);
@@ -174,7 +162,6 @@ function edgeFilePath(chainsDir: string, edge: CausalEdge): string {
   return path.join(chainsDir, "edges", day, `${edge.edgeId}.json`);
 }
 
-// ─── Chain Index CRUD ────────────────────────────────────────────────────────
 
 const chainMutationQueues = new Map<string, Promise<unknown>>();
 
@@ -237,12 +224,7 @@ function addEdgeToIndex(index: CausalChainIndex, edge: CausalEdge): void {
   index.edges[edge.edgeId] = edge;
 }
 
-// ─── Stitching Algorithm ─────────────────────────────────────────────────────
 
-/**
- * Score how strongly a candidate trajectory from another session
- * relates to the new trajectory being recorded.
- */
 export function scoreStitchCandidate(
   newTrajectory: CausalTrajectoryRecord,
   candidate: CausalTrajectoryRecord
@@ -251,7 +233,6 @@ export function scoreStitchCandidate(
   let dominantMethod: CausalEdge["stitchMethod"] = "lexical";
   let maxComponent = 0;
 
-  // 1. Follow-up → Goal match (token overlap)
   const newFollowUpTokens = new Set(normalizeStitchLexicalTokens(newTrajectory.followUpSummary ?? "", []));
   const candidateGoalTokens = normalizeStitchLexicalTokens(candidate.goal, []);
   const candidateGoalTokenSet = new Set(candidateGoalTokens);
@@ -266,7 +247,6 @@ export function scoreStitchCandidate(
     }
   }
 
-  // 1b. Candidate follow-up → New goal match (reverse direction)
   const candidateFollowUpTokens = new Set(normalizeStitchLexicalTokens(candidate.followUpSummary ?? "", []));
   const newGoalTokens = normalizeStitchLexicalTokens(newTrajectory.goal, []);
   const newGoalTokenSet = new Set(newGoalTokens);
@@ -281,7 +261,6 @@ export function scoreStitchCandidate(
     }
   }
 
-  // 2. Outcome → Goal match
   const newOutcomeTokens = new Set(normalizeStitchLexicalTokens(newTrajectory.outcomeSummary, []));
   if (newOutcomeTokens.size > 0) {
     const overlap = countTokenSetOverlap(newOutcomeTokens, candidateGoalTokenSet);
@@ -294,7 +273,6 @@ export function scoreStitchCandidate(
     }
   }
 
-  // 3. Entity overlap (Jaccard)
   const newEntities = newTrajectory.entityRefs ?? [];
   const candidateEntities = candidate.entityRefs ?? [];
   if (newEntities.length > 0 && candidateEntities.length > 0) {
@@ -307,7 +285,6 @@ export function scoreStitchCandidate(
     }
   }
 
-  // 4. Tag overlap (Jaccard)
   const newTags = newTrajectory.tags ?? [];
   const candidateTags = candidate.tags ?? [];
   if (newTags.length > 0 && candidateTags.length > 0) {
@@ -320,7 +297,6 @@ export function scoreStitchCandidate(
     }
   }
 
-  // 5. Temporal proximity: 1/(1 + gapHours/24)
   const newMs = Date.parse(newTrajectory.recordedAt);
   const candidateMs = Date.parse(candidate.recordedAt);
   if (Number.isFinite(newMs) && Number.isFinite(candidateMs)) {
@@ -334,7 +310,6 @@ export function scoreStitchCandidate(
     }
   }
 
-  // Determine edge type by heuristic
   let edgeType: CausalEdge["edgeType"] = "continuation";
   const goalTokens = new Set(newGoalTokens);
   const goalOverlap = countTokenSetOverlap(goalTokens, candidateGoalTokenSet);
@@ -354,10 +329,6 @@ export function scoreStitchCandidate(
   return { trajectory: candidate, score, edgeType, stitchMethod: dominantMethod };
 }
 
-/**
- * Read trajectory records from the causal-trajectories store within
- * the lookback window, excluding the current session.
- */
 async function readRecentTrajectories(
   memoryDir: string,
   causalTrajectoryStoreDir: string | undefined,
@@ -391,10 +362,6 @@ async function readRecentTrajectories(
   return results;
 }
 
-/**
- * After a new trajectory is recorded, attempt to stitch it to
- * existing trajectories from other sessions.
- */
 export async function stitchCausalChain(options: {
   memoryDir: string;
   causalTrajectoryStoreDir?: string;
@@ -428,7 +395,6 @@ export async function stitchCausalChain(options: {
     for (const candidate of scored) {
       const edgeId = makeEdgeId(candidate.trajectory.trajectoryId, newTrajectory.trajectoryId);
 
-      // Skip if edge already exists
       if (index.edges[edgeId]) continue;
 
       const edge: CausalEdge = {

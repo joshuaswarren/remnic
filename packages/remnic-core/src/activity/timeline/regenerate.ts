@@ -200,10 +200,6 @@ function sourceHash(input: {
 }): string {
   return hashActivityBody(
     JSON.stringify({
-      // The timezone is a day-window determinant (it bounds which
-      // observations the day sees), so it belongs to the source identity:
-      // identical observations under a different timezone must not reuse
-      // the cached day (issue #2891).
       timezone: input.timezone,
       observations: input.observations.map((observation) => ({
         id: observation.id,

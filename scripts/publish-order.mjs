@@ -5,18 +5,6 @@ import { pathToFileURL } from "node:url";
 
 const dependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
 
-// Compute the names of dependencies that *require* the dependency to be
-// published first. Optional peer deps are excluded because they are
-// declared optional via peerDependenciesMeta — any version of either peer
-// can be installed at any time, so they do not constrain publish ordering.
-// (Issue #1551 PR1 added a mutual optional peer between @remnic/core and
-// @remnic/coding-graph; without this carve-out the resolver would
-// incorrectly report a cycle.)
-//
-// Returns both `all` (every dependency name across the three fields) and
-// `required` (the same minus entries declared optional in peerDependenciesMeta).
-// Today only `required` is used by the resolver; `all` is kept for callers
-// that need the unfiltered view.
 function packageDepNames(manifest) {
   const all = new Set();
   const required = new Set();

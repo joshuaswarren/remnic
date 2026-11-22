@@ -102,7 +102,6 @@ interface MergedObservations {
   observations: TimelineObservation[];
 }
 
-/** Per-machine merge pass: compatibility + gap rules (see module doc). */
 function mergeTrack(
   machine: string,
   track: TimelineObservation[],
@@ -137,7 +136,6 @@ export function buildTimelineDay(input: TimelineBuildInput): TimelineDay {
   const dayStartMs = Date.parse(window.startUtc);
   const dayEndMs = Date.parse(window.endUtc);
 
-  // Observations: canonicalize, drop instants outside the day window.
   const observations = input.observations
     .filter((observation) => Number.isFinite(canonicalMs(observation.capturedAtUtc)))
     .filter((observation) => {
@@ -145,7 +143,6 @@ export function buildTimelineDay(input: TimelineBuildInput): TimelineDay {
       return ms >= dayStartMs && ms < dayEndMs;
     });
 
-  // Pauses: validate instants, clip to the day, union overlaps.
   for (const pause of input.pauses ?? []) {
     const startMs = canonicalMs(pause.startUtc);
     const endMs = canonicalMs(pause.endUtc);
@@ -160,7 +157,6 @@ export function buildTimelineDay(input: TimelineBuildInput): TimelineDay {
       .filter(([startMs, endMs]) => endMs > startMs),
   );
 
-  // Group per machine; sort by (instant, contentHash) — position-independent.
   const tracks = new Map<string, TimelineObservation[]>();
   for (const observation of observations) {
     const track = tracks.get(observation.machine) ?? [];
@@ -178,7 +174,6 @@ export function buildTimelineDay(input: TimelineBuildInput): TimelineDay {
   for (const machine of machines) {
     const track = tracks.get(machine) ?? [];
     const merged = mergeTrack(machine, track, pauseIntervals);
-    // [startMs, endMs] per merged card, reused by the idle pass below.
     const trackIntervals: Array<[number, number]> = [];
     for (let index = 0; index < merged.length; index++) {
       const group = merged[index];

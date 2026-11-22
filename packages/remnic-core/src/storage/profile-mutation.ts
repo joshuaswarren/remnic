@@ -1,14 +1,6 @@
 import path from "node:path";
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 
-/**
- * Ports over the StorageManager surface the profile mutation domain needs.
- * Kept as ports so this module stays out of the storage.ts god-file (issue
- * #1533/#1995) while sharing ONE serialization domain per baseDir: the
- * `profile:<baseDir>` key is the in-process FIFO and `profile.md.lock` is the
- * cross-process gate, matching updateMetaSerialized's meta.json.lock shape
- * (bounded, fail-closed BEFORE any read/write, no LLM inside).
- */
 export interface ProfileMutationPorts {
   readonly baseDir: string;
   readProfile(): Promise<string>;
@@ -31,10 +23,8 @@ function normalizeForDedup(s: string): string {
  */
 function isFuzzyDuplicate(newNorm: string, existingNorms: string[]): boolean {
   for (const existing of existingNorms) {
-    // Exact normalized match
     if (newNorm === existing) return true;
 
-    // Containment check: shorter must be >60% length of longer
     const shorter = newNorm.length <= existing.length ? newNorm : existing;
     const longer = newNorm.length > existing.length ? newNorm : existing;
     if (shorter.length > 20 && shorter.length / longer.length > 0.6 && longer.includes(shorter)) {
@@ -75,7 +65,6 @@ async function appendToProfileUnlocked(ports: ProfileMutationPorts, updates: str
 async function withProfileMutationLock<T>(ports: ProfileMutationPorts, task: () => Promise<T>): Promise<T> {
   return withHeldFileLock(
     path.join(ports.baseDir, "profile.md.lock"),
-    // Bounded: a profile RMW is a short read-merge-write, never a scan.
     { staleMs: 5_000, maxWaitMs: 2_000, pollMs: 50 },
     async (acquired) => {
       if (!acquired) {
@@ -87,9 +76,6 @@ async function withProfileMutationLock<T>(ports: ProfileMutationPorts, task: () 
 }
 
 export async function appendToProfileSerialized(ports: ProfileMutationPorts, updates: string[]): Promise<void> {
-  // Per-dir in-process chain, then the cross-process lock around the whole
-  // RMW: serialized, the second append re-reads after the first's write.
-  // Errors propagate: the extraction retry path retains the accepted turns.
   await serializeMutations(`profile:${ports.baseDir}`, () =>
     withProfileMutationLock(ports, () => appendToProfileUnlocked(ports, updates)),
   );

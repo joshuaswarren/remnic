@@ -1,12 +1,3 @@
-/**
- * Pure CLI argument helpers.
- *
- * Extracted from index.ts so tests can import them without triggering the
- * CLI entry's transitive dependency on `@remnic/core/dist/index.js`, which
- * may not be built when running root-level `tsx --test` in CI.
- *
- * No external dependencies — safe to import anywhere.
- */
 
 /**
  * Returns the trailing value after `flag` in `args`, or `undefined` if the

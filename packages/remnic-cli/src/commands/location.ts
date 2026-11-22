@@ -18,9 +18,6 @@ export async function runLocationBinaryCommand(rest: string[]): Promise<void> {
       ? ["help"]
       : rest;
   try {
-    // Config failures get a constant message: parseConfig error strings can
-    // embed config values (CodeQL js/clear-text-logging), so they must never
-    // reach console output.
     let config: ReturnType<typeof parseConfig>;
     try {
       const configPath = resolveConfigPath();
@@ -46,8 +43,6 @@ export async function runLocationBinaryCommand(rest: string[]): Promise<void> {
     );
     if (code !== 0) process.exitCode = code;
   } catch (err) {
-    // Runner errors are our own constructed messages (provider API error
-    // classes, IO failures) — no config taint.
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
   }

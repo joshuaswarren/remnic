@@ -147,7 +147,6 @@ describe("fetchAllMem0Memories (record/replay)", () => {
         sleeps.push(ms);
       },
     });
-    // Two pages fetched → exactly one sleep between them.
     assert.equal(sleeps.length, 1);
     assert.equal(sleeps[0], 500);
   });
@@ -212,15 +211,12 @@ describe("fetchAllMem0Memories (record/replay)", () => {
     assert.equal(fetchCalls, 1);
   });
 
-  // Cursor review on PR #602 — pagination must keep walking when the
-  // server returns numeric page metadata without a `next` cursor.
   it("falls back to page-number pagination when next cursor is absent", async () => {
     let called = 0;
     const fetchImpl = (async (input: Parameters<typeof fetch>[0]): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
       called += 1;
       if (!url.includes("page=2")) {
-        // Page 1: returns `page`+`total`+`per_page`, no `next`.
         return new Response(
           JSON.stringify({
             results: [
@@ -234,7 +230,6 @@ describe("fetchAllMem0Memories (record/replay)", () => {
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }
-      // Page 2: reaches the end.
       return new Response(
         JSON.stringify({
           results: [{ id: "p2-a", memory: "page 2 item" }],
@@ -260,7 +255,6 @@ describe("fetchAllMem0Memories (record/replay)", () => {
   });
 
   it("does not infinite-loop when page metadata is missing entirely", async () => {
-    // No `next`, no `total` → must stop after the first page.
     const fetchImpl = (async (): Promise<Response> =>
       new Response(JSON.stringify({ results: [{ id: "only", memory: "x" }] }), {
         status: 200,
@@ -274,10 +268,6 @@ describe("fetchAllMem0Memories (record/replay)", () => {
     assert.equal(memories.length, 1);
   });
 
-  // Cursor review on PR #602 — explicit `next: null` must stop pagination
-  // even when numeric pagination fields are present. The original code
-  // fell through to the numeric-fallback path because it only checked for
-  // `typeof next === "string"`, conflating null with undefined.
   it("treats explicit next:null as authoritative stop even with numeric fields", async () => {
     let called = 0;
     const fetchImpl = (async (): Promise<Response> => {
@@ -286,7 +276,6 @@ describe("fetchAllMem0Memories (record/replay)", () => {
         JSON.stringify({
           results: [{ id: "only", memory: "hello" }],
           next: null,
-          // Numeric fields that would normally trigger the fallback:
           page: 1,
           per_page: 1,
           total: 9999,
@@ -299,14 +288,10 @@ describe("fetchAllMem0Memories (record/replay)", () => {
       baseUrl: "https://api.mem0.test",
       fetchImpl,
     });
-    // Exactly one request — we must NOT follow numeric pagination when
-    // next is explicitly null.
     assert.equal(called, 1);
     assert.equal(memories.length, 1);
   });
 
-  // Codex review on PR #602 — cross-origin cursors must not be followed
-  // because the loop would forward the mem0 API key to that host.
   it("rejects cross-origin pagination cursors without leaking the API key", async () => {
     const seenRequests: string[] = [];
     const fetchImpl = (async (input: Parameters<typeof fetch>[0]): Promise<Response> => {
@@ -366,8 +351,6 @@ describe("fetchAllMem0Memories (record/replay)", () => {
     assert.equal(memories.length, 2);
   });
 
-  // Codex review on PR #602 — self-hosted mem0-oss exposes `/memories/`
-  // without the `/v1` prefix. Let operators override via listPath.
   it("honors a custom listPath for self-hosted deployments", async () => {
     let firstRequestUrl = "";
     const fetchImpl = (async (input: Parameters<typeof fetch>[0]): Promise<Response> => {

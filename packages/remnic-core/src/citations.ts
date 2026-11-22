@@ -18,7 +18,6 @@
  *   </oai-mem-citation>
  */
 
-/** A single citation entry referencing a memory file and line range. */
 export interface CitationEntry {
   path: string;
   lineStart: number;
@@ -26,13 +25,11 @@ export interface CitationEntry {
   note: string;
 }
 
-/** Parsed citation block containing entries and rollout/thread IDs. */
 export interface CitationBlock {
   entries: CitationEntry[];
   rolloutIds: string[];
 }
 
-/** Metadata attached to a recall result for citation guidance. */
 export interface CitationMetadata {
   memoryId: string;
   path: string;
@@ -143,7 +140,6 @@ function parseIds(block: string, openTag: string, closeTag: string): string[] | 
   const raw = block.slice(start + openTag.length, end);
   const lines = raw.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
 
-  // Deduplicate preserving insertion order.
   const seen = new Set<string>();
   const unique: string[] = [];
   for (const id of lines) {
@@ -172,9 +168,6 @@ export function sanitizeNoteForCitation(note: string): string {
 // Formatter
 // ---------------------------------------------------------------------------
 
-/**
- * Format a `CitationBlock` into the canonical `<oai-mem-citation>` XML block.
- */
 export function formatOaiMemCitation(block: CitationBlock): string {
   const entryLines = block.entries
     .map((e) => `${e.path}:${e.lineStart}-${e.lineEnd}|note=[${sanitizeNoteForCitation(e.note)}]`)
@@ -217,7 +210,6 @@ export function buildCitationGuidance(citations: CitationMetadata[]): string {
     .filter((c) => c.rolloutId != null)
     .map((c) => c.rolloutId!);
 
-  // Dedupe rollout IDs preserving order.
   const seenRollouts = new Set<string>();
   const uniqueRollouts: string[] = [];
   for (const id of rolloutExamples) {

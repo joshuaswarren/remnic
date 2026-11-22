@@ -1,43 +1,3 @@
-/**
- * @remnic/core — per-directory abstract/overview sidecars (issue #2977).
- *
- * One derived `overview.md` per memory directory (category roots and every
- * directory beneath them, including `namespaces/<ns>/` subtrees), rendered
- * bottom-up from existing memory content:
- *
- *   - the ABSTRACT is a single line (<=256 chars) composed from child titles;
- *   - the OVERVIEW body lists one preview line per child memory and embeds
- *     each child DIRECTORY's abstract, so a parent summarizes its subtree
- *     without embedding full child overviews.
- *
- * Determinism: no LLM, no embeddings. Content is assembled with the same
- * preview machinery the OKF index files use (`normalizeProjectionPreview`).
- *
- * Invalidation: each sidecar stores a content-free fingerprint of its subtree
- * (child name|size|mtime for files, recursive fingerprints for child dirs).
- * Any add/edit/delete anywhere below a directory changes its fingerprint, so
- * `loadDirectorySidecar` can detect staleness with `readdir`+`stat` alone and
- * refresh without reading child memory files first. Eager regeneration runs
- * through {@link runDirectorySidecarMaintenance}; lazy refresh on read covers
- * direct-write paths that bypass scheduled maintenance (Gotcha #43).
- *
- * Isolation: sidecars are derived artifacts, excluded from generic recall via
- * `isGenericRecallExcludedPath` (basename match, the same tradeoff OKF makes
- * for `index.md`/`log.md`) while staying full-text searchable. Files at the
- * sidecar path WITHOUT the marker are user content: never overwritten, never
- * removed.
- *
- * Layer 2: {@link refreshDirectorySidecarsAfterWrite} refreshes only the
- * changed directory and its category ancestors. `enabled: false` is a
- * proven no-op (no reads, no writes).
- *
- * Layer 3 (this slice): {@link applyDirectorySidecarDrillDown} scores
- * fresh sidecars and attaches the winning directory's abstract to hits.
- * `enabled` stays a function argument — not a parseConfig key (`config.ts`
- * and `types.ts` are at their file-size ratchets). Retrieval never writes.
- * xray trajectory, storage write-hook, parseConfig wiring, and LLM
- * summarization remain later layers on #2977.
- */
 
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
@@ -59,7 +19,6 @@ const OVERVIEW_MAX_CHARS = 4000;
 const DEFAULT_QUERY_LIMIT = 5;
 const CATEGORY_ROOTS: ReadonlySet<string> = new Set(RECALL_FALLBACK_DIRS);
 
-/** Config fields this slice owns. Mix into `PluginConfig` in a later layer. */
 export interface DirectorySidecarSettings {
   /** Populate sidecars on memory writes. Default false. */
   directorySidecarsEnabled: boolean;
@@ -93,7 +52,6 @@ const RESERVED_CHILD_BASENAMES: Readonly<Record<string, true>> = Object.freeze({
 });
 
 export interface DirectorySidecar {
-  /** Absolute directory the sidecar describes. */
   readonly dir: string;
   /** Single-line L0 abstract (<=256 chars). */
   readonly abstract: string;
@@ -147,7 +105,6 @@ function isRealDirectory(entryPath: string): boolean {
 }
 
 function memoryChildren(dir: string): string[] {
-  // Dirent.isFile() is false for symlinks, so a linked memory never enters the corpus.
   return listEntries(dir)
     .filter((entry) => entry.isFile() && !RESERVED_CHILD_BASENAMES[entry.name] && entry.name.endsWith(".md"))
     .map((entry) => entry.name)
@@ -155,19 +112,12 @@ function memoryChildren(dir: string): string[] {
 }
 
 function directoryChildren(dir: string): string[] {
-  // Dirent.isDirectory() is false for symlinks (fs-boundary rule, PRs #1938/#1999).
   return listEntries(dir)
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort((a, b) => a.localeCompare(b));
 }
 
-/**
- * Content-free subtree fingerprint: sha256 over sorted child descriptors.
- * Files contribute `name|size|mtimeMs`; directories contribute their own
- * recursive fingerprint, so any change below a directory invalidates every
- * ancestor. Reads no file contents.
- */
 export function directoryFingerprint(dir: string): string {
   const hash = createHash("sha256");
   for (const name of memoryChildren(dir)) {
@@ -200,7 +150,6 @@ function parseSidecar(content: string): ParsedSidecar | null {
   const overviewStart = content.indexOf("## Abstract");
   const overview =
     overviewStart === -1 ? "" : content.slice(overviewStart, overviewStart + OVERVIEW_MAX_CHARS).trim();
-  // The `* name — preview` child bullets are the rendered child count.
   const childCount = (content.match(/^\* .+$/gm) ?? []).length;
   return { abstract, overview, childCount, fingerprint };
 }
@@ -262,10 +211,6 @@ function scopeRoots(memoryDir: string): string[] {
   return roots;
 }
 
-/**
- * Every directory that should carry a sidecar, deepest first (post-order) so
- * parents render after their children and can embed child abstracts.
- */
 function collectSidecarDirs(scopeRoot: string): string[] {
   const dirs: string[] = [];
   const walk = (dir: string, isCategoryRoot: boolean): boolean => {
@@ -273,8 +218,6 @@ function collectSidecarDirs(scopeRoot: string): string[] {
     for (const name of directoryChildren(dir)) {
       carries = walk(path.join(dir, name), false) || carries;
     }
-    // A directory that stopped carrying memories must still be visited so its
-    // orphaned sidecar can be pruned or rewritten (cache-invalidation completeness).
     const hasSidecar = readFileOrNull(sidecarPath(dir))?.startsWith(DIRECTORY_SIDECAR_MARKER) === true;
     if (isCategoryRoot || carries || hasSidecar) dirs.push(dir);
     return carries;
@@ -437,7 +380,6 @@ export async function loadDirectorySidecar(
   }
   if (!refresh) return null;
 
-  // Refresh bottom-up so this directory's body embeds current child abstracts.
   const childAbstracts = new Map<string, string>();
   for (const name of directoryChildren(dir)) {
     const child = await loadDirectorySidecar(path.join(dir, name));
@@ -450,7 +392,6 @@ export async function loadDirectorySidecar(
   }
   if (readFileOrNull(target) !== next) {
     if (stored !== null && !generated) {
-      // User-authored file at the sidecar path: serve nothing rather than clobber it.
       return null;
     }
     await writeFileAtomically(target, next);

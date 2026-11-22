@@ -42,7 +42,6 @@ export function resolvePrincipal(sessionKey: string | undefined, config: PluginC
     }
   }
 
-  // Fallback heuristic: "agent:<agentId>:<channelType>:..."
   const parts = sk.split(":");
   if (parts.length >= 2 && parts[0] === "agent") {
     const agentId = parts[1];
@@ -72,21 +71,6 @@ export function canWriteNamespace(principal: string | undefined, namespace: stri
   return policy.writePrincipals.includes(principal) || policy.writePrincipals.includes("*");
 }
 
-/**
- * Config-time namespace-policy lint (issue #1888 improvement 3). Principal-
- * agnostic mirror of {@link canWriteNamespace}: true when the namespace is
- * writable by AT LEAST ONE principal. When namespace enforcement is off every
- * write is allowed. Otherwise an explicit `namespacePolicies` entry takes
- * precedence (exactly as `canWriteNamespace`): with a matching policy the
- * namespace is covered only if that policy grants at least one non-blank
- * writer — even when the name equals `defaultNamespace`; without a policy it
- * is covered only if it IS the `defaultNamespace`. The `sharedNamespace` is
- * NOT implicitly writable (matching
- * `canWriteNamespace`), and a policy entry with no `writePrincipals` grants
- * nobody. A configured namespace that is NOT covered is writable for no one,
- * so every write to it is rejected by the ACL and dead-lettered — `remnic
- * doctor` warns on that before a session silently loses memory.
- */
 export function isNamespacePolicyCovered(namespace: string, config: PluginConfig): boolean {
   if (!resolveNamespaceCapabilities(config).namespaces) return true;
   // An explicit policy wins over the default fallback (exactly as

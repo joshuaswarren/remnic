@@ -19,12 +19,7 @@ import { readEnvVar } from "../runtime/env.js";
 import type { ConnectorManifest } from "./index.js";
 import type { TokenStore } from "../tokens.js";
 
-// ── Manifest ────────────────────────────────────────────────────────────────
 
-/**
- * The droid connector manifest entry. Imported into BUILTIN_CONNECTORS
- * in connectors/index.ts.
- */
 export const DROID_CONNECTOR_MANIFEST: ConnectorManifest = {
   id: "droid",
   name: "Factory Droid",
@@ -52,34 +47,18 @@ export const DROID_CONNECTOR_MANIFEST: ConnectorManifest = {
   requiresToken: true,
 };
 
-// ── Provenance reading for removeConnector ─────────────────────────────────
 
-/**
- * Result of reading the droid MCP provenance from the saved connector JSON.
- */
 export interface DroidMcpProvenance {
-  /** Resolved MCP config path, or null if none found. */
   mcpConfigPath: string | null;
   /** True if the connector JSON was malformed (abort removal). */
   registryParseFailed: boolean;
 }
 
-// ── Install step (called from installConnector) ────────────────────────────
 
-/**
- * Result of the droid install step — either success with rollback/mcpPath,
- * or an error result that installConnector should return directly.
- */
 export type DroidInstallStepResult =
   | { ok: true; rollback: (() => void) | null; mcpPath: string }
   | { ok: false; errorMessage: string };
 
-/**
- * Write the remnic MCP entry to ~/.factory/mcp.json, with token rollback on failure.
- *
- * `saveTokenStoreFn` is the token-store saver (`saveTokenStore` in
- * production), injected so a test can observe or fail the rollback.
- */
 export function droidInstallStep(
   authToken: string | undefined,
   resolvedConfig: Record<string, unknown>,
@@ -138,11 +117,6 @@ export function readDroidMcpProvenance(configPath: string): DroidMcpProvenance {
   return { mcpConfigPath, registryParseFailed };
 }
 
-/**
- * Atomic write with owner-only (0o600) permissions. Mirrors the
- * `writeSecretFileSync` in connectors/index.ts — kept local so this module
- * has no dependency back into the main file.
- */
 function writeSecretFileSync(filePath: string, data: string): void {
   const dir = path.dirname(filePath);
   const base = path.basename(filePath);
@@ -163,13 +137,8 @@ function writeSecretFileSync(filePath: string, data: string): void {
   }
 }
 
-// ── Install ─────────────────────────────────────────────────────────────────
 
-/**
- * Result of the droid MCP install step.
- */
 export interface DroidMcpInstallResult {
-  /** Absolute path to ~/.factory/mcp.json that was written. */
   mcpPath: string;
   /** Rollback closure: restores prior content (or deletes if newly created). */
   rollback: () => void;
@@ -235,7 +204,6 @@ export function removeDroidMcpEntry(mcpPath: string): string | null {
   return `Removed remnic entry from Droid MCP config: ${mcpPath}`;
 }
 
-// ── Doctor ──────────────────────────────────────────────────────────────────
 
 export interface DroidDoctorCheck {
   name: string;
@@ -243,14 +211,8 @@ export interface DroidDoctorCheck {
   detail: string;
 }
 
-/**
- * Check that ~/.factory/mcp.json contains a remnic entry.
- *
- * Called from `doctorConnector` when `connectorId === "droid"`.
- */
 export function droidMcpDoctorCheck(savedPath: string | undefined): DroidDoctorCheck {
   const mcpPath = savedPath ?? resolveFactoryMcpPath();
-  // Safety gate: validate persisted path before reading (mirrors removeConnector).
   if (savedPath !== undefined) {
     const expectedSuffix = path.join(".factory", "mcp.json");
     if (!path.isAbsolute(savedPath) || !savedPath.endsWith(expectedSuffix)) {
@@ -265,7 +227,6 @@ export function droidMcpDoctorCheck(savedPath: string | undefined): DroidDoctorC
       return { name: "Droid MCP config", ok: false, detail: `remnic entry missing in ${mcpPath} — run \`remnic connectors install droid\`` };
     }
     const remnic = (servers as Record<string, Record<string, unknown>>).remnic;
-    // Validate the entry has the expected shape (type + url + Authorization).
     if (remnic.type !== "http" || typeof remnic.url !== "string") {
       return { name: "Droid MCP config", ok: false, detail: `remnic entry malformed in ${mcpPath}` };
     }
@@ -281,7 +242,6 @@ export function droidMcpDoctorCheck(savedPath: string | undefined): DroidDoctorC
   }
 }
 
-// ── Path resolution and low-level helpers ───────────────────────────────────
 
 /**
  * Resolve the path to ~/.factory/mcp.json. Honours the HOME env override
@@ -307,9 +267,6 @@ export function readFactoryMcpIfExists(mcpPath: string): string | null {
   }
 }
 
-/**
- * Default MCP server URL for the Remnic daemon.
- */
 const REMNIC_DEFAULT_MCP_URL = "http://127.0.0.1:4318/mcp";
 
 /**
@@ -335,13 +292,10 @@ export function upsertFactoryMcpRemnicEntry(
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         config = parsed as Record<string, unknown>;
       } else {
-        // Non-object JSON — start fresh but warn in console.
         console.warn("[remnic/connectors] ~/.factory/mcp.json contained non-object JSON; starting fresh.");
         config = {};
       }
     } catch {
-      // Malformed JSON — do NOT silently discard other MCP server entries.
-      // Throw so the caller can surface the error instead of overwriting the file.
       throw new Error(
         "~/.factory/mcp.json contains malformed JSON and cannot be parsed. " +
         "Fix the file manually before reinstalling, or use --force to overwrite (this will lose existing MCP server entries).",
@@ -363,9 +317,6 @@ export function upsertFactoryMcpRemnicEntry(
 
   const remnicEntry: Record<string, unknown> = { type: "http", url: mcpUrl };
 
-  // Preserve prior headers EXCEPT Remnic-managed ones (Authorization,
-  // X-Engram-Namespace). These are always replaced from the current install
-  // config so a reinstall that clears namespace does not leave a stale header.
   const REMNIC_MANAGED_HEADERS = new Set(["Authorization", "X-Engram-Namespace"]);
   const headers: Record<string, string> = {};
   if (

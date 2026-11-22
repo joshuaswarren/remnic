@@ -14,14 +14,6 @@ function fail(message) {
   process.exit(1);
 }
 
-/**
- * A symlinked scan root or entry would let the release gate inspect artifacts
- * outside the package it was asked about, and a dangling one would abort the
- * verifier with an uncaught filesystem error. Everything under `dist/` must be
- * a real file or directory (AGENTS.md: reject symlink traversal in directory
- * scans). Runs before `npm pack` so a redirected root is reported as such
- * rather than as whatever downstream assertion happens to notice first.
- */
 function assertRealDirectory(dir, label) {
   const stats = lstatSync(dir, { throwIfNoEntry: false });
   if (stats === undefined) return false;
@@ -31,9 +23,6 @@ function assertRealDirectory(dir, label) {
 }
 
 assertRealDirectory(packageDir, "package directory");
-// Checked here so a redirected root is rejected before `npm pack` runs any
-// lifecycle script; existence is re-read after the pack, because a `prepack`
-// script may legitimately create dist/.
 assertRealDirectory(distDir, "dist directory");
 
 function parsePackOutput(stdout) {
@@ -128,13 +117,6 @@ for (const requiredFile of requiredFiles) {
   }
 }
 
-// Every emitted dist file must be IN the tarball. This is the invariant that
-// matters: tsup code-splits whenever the entry gains a dynamic import, and a
-// split chunk missing from the packlist breaks the plugin at runtime with a
-// module-not-found the tests never see. It replaces an older `>= 2 dist files`
-// proxy that silently encoded one such chunk (`legacy-hook-compat-*.js`) as a
-// requirement; removing that module in #2279 left the assertion unsatisfiable
-// and blocked every release from 2026-07-31 on.
 const distFiles = [...files].filter((file) => file.startsWith("dist/"));
 const builtDistFiles = assertRealDirectory(distDir, "dist directory") ? listBuiltDistFiles() : [];
 if (builtDistFiles.length === 0) {
@@ -145,10 +127,7 @@ if (unpacked.length > 0) {
   fail(`${packageJson.name}@${packageJson.version} built ${unpacked.join(", ")} but the packlist omits them`);
 }
 
-// Deliberately no byte floor on the entry bundle: this script also verifies
-// the shim package, whose legitimate build is a few hundred bytes, so any
 // size threshold is a number rather than an invariant. "The build ran and
-// everything it emitted is packed" is the property that holds for both.
 const entryBundle = entries.find((entry) => entry.path === "dist/index.js");
 if (!entryBundle || typeof entryBundle.size !== "number") {
   fail("npm pack output has no size for dist/index.js");

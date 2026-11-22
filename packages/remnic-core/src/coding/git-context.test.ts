@@ -22,8 +22,6 @@ import {
 } from "./git-context.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Mock invoker helpers
-// ──────────────────────────────────────────────────────────────────────────
 
 type InvokeKey = string;
 
@@ -48,7 +46,6 @@ function mockInvoker(responses: Record<InvokeKey, { stdout: string; exitCode: nu
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// expandTildePath
 // ──────────────────────────────────────────────────────────────────────────
 
 test("expandTildePath: returns input unchanged when no leading `~`", () => {
@@ -69,7 +66,6 @@ test("expandTildePath: expands `~/sub` to <home>/sub", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// normalizeOriginUrl
 // ──────────────────────────────────────────────────────────────────────────
 
 test("normalizeOriginUrl: scp-style ssh and https form of same repo normalize equally", () => {
@@ -87,9 +83,6 @@ test("normalizeOriginUrl: ssh:// protocol form normalizes", () => {
 });
 
 test("normalizeOriginUrl: ssh:// with non-standard port — port preserved on host", () => {
-  // Port is preserved so `host:2222/foo/bar` and `host/foo/bar` route to
-  // different project namespaces. Losing the port would false-coalesce
-  // separate repos on custom SSH mesh setups.
   assert.equal(
     normalizeOriginUrl("ssh://git@github.com:2222/foo/bar.git"),
     "github.com:2222/foo/bar",
@@ -112,7 +105,6 @@ test("normalizeOriginUrl: userless scp form (`host:path`) normalizes identically
 });
 
 test("normalizeOriginUrl: scp paths may start with digits", () => {
-  // Valid scp remote where the first path segment is purely numeric.
   assert.equal(
     normalizeOriginUrl("git@host:123/repo.git"),
     "host/123/repo",
@@ -146,8 +138,6 @@ test("normalizeOriginUrl: IPv6 host in protocol URL", () => {
     normalizeOriginUrl("ssh://[2001:db8::1]:2222/org/repo.git"),
     "[2001:db8::1]:2222/org/repo",
   );
-  // Regression: `[2001:db8::1]:2222` (IPv6 + port) must not normalize
-  // to the same string as the longer bare address `2001:db8::1:2222`.
   assert.notEqual(
     normalizeOriginUrl("ssh://[2001:db8::1]:2222/org/repo.git"),
     normalizeOriginUrl("ssh://[2001:db8::1:2222]/org/repo.git"),
@@ -155,11 +145,6 @@ test("normalizeOriginUrl: IPv6 host in protocol URL", () => {
 });
 
 test("normalizeOriginUrl: single-character scp host alias is accepted", () => {
-  // `.ssh/config` host aliases may be a single character (`h:foo/bar`),
-  // and git treats those as scp remotes. The Windows drive-letter check
-  // only matches `[A-Za-z]:[\\/]`, so a single-char alias followed by
-  // `:<path>` (no slash immediately after the colon) still falls through
-  // to scp.
   assert.equal(
     normalizeOriginUrl("h:foo/bar.git"),
     "h/foo/bar",
@@ -181,8 +166,6 @@ test("normalizeOriginUrl: git:// protocol form", () => {
 });
 
 test("normalizeOriginUrl: uppercase .GIT suffix stripped (case-insensitive)", () => {
-  // Regression: earlier `.endsWith('.git')` was case-sensitive, so `.GIT`
-  // leaked through and appeared as `.git` in the lowercased output.
   assert.equal(
     normalizeOriginUrl("https://github.com/foo/bar.GIT"),
     "github.com/foo/bar",
@@ -211,10 +194,6 @@ test("normalizeOriginUrl: empty input yields empty string", () => {
 });
 
 test("normalizeOriginUrl: scp-style IPv6 host matches ssh:// IPv6 host", () => {
-  // Regression: git accepts `git@[2001:db8::1]:org/repo.git` as an scp
-  // remote. Without bracket-aware parsing the regex split on the first
-  // internal `:` of the IPv6 literal, producing a malformed host and a
-  // different projectId from the equivalent ssh://[...]/ form.
   assert.equal(
     normalizeOriginUrl("git@[2001:db8::1]:org/repo.git"),
     "2001:db8::1/org/repo",
@@ -227,22 +206,14 @@ test("normalizeOriginUrl: scp-style IPv6 host matches ssh:// IPv6 host", () => {
 });
 
 test("normalizeOriginUrl: file:/// URLs do not fall through to scp parser", () => {
-  // Regression: `file:///path/to/repo` has an empty host component. Before the
-  // fix, the protocol regex required a non-empty host and so fell through to
-  // the scp regex, which mis-parsed `file` as the host and `///path/to/repo`
-  // as the path, producing `file/path/to/repo`. Now the protocol regex
-  // accepts an empty host and `file://` URLs normalize under a stable
-  // `localhost/<path>` prefix.
   assert.equal(
     normalizeOriginUrl("file:///path/to/repo"),
     "localhost/path/to/repo",
   );
-  // Two distinct local file paths must NOT collapse to the same namespace.
   assert.notEqual(
     normalizeOriginUrl("file:///home/alice/repo"),
     normalizeOriginUrl("file:///home/bob/repo"),
   );
-  // file:// with an explicit host still normalizes under that host.
   assert.equal(
     normalizeOriginUrl("file://host.example/path/to/repo"),
     "host.example/path/to/repo",
@@ -250,7 +221,6 @@ test("normalizeOriginUrl: file:/// URLs do not fall through to scp parser", () =
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// stableHash
 // ──────────────────────────────────────────────────────────────────────────
 
 test("stableHash: deterministic — same input always yields same output", () => {
@@ -271,7 +241,6 @@ test("stableHash: output is 8-char lowercase hex", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// resolveGitContext — invalid inputs
 // ──────────────────────────────────────────────────────────────────────────
 
 test("resolveGitContext: empty cwd returns null", async () => {
@@ -291,11 +260,9 @@ test("resolveGitContext: non-string cwd returns null", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// resolveGitContext — outside a repo
 // ──────────────────────────────────────────────────────────────────────────
 
 test("resolveGitContext: outside a git repo returns null", async () => {
-  // rev-parse --show-toplevel exits non-zero.
   const invoker = mockInvoker({
     [keyFor("/tmp/not-a-repo", ["rev-parse", "--show-toplevel"])]: {
       stdout: "",
@@ -313,8 +280,6 @@ test("resolveGitContext: git not on PATH (exit 127) returns null", async () => {
 });
 
 test("resolveGitContext: custom invoker throwing synchronously → returns null (never throws contract)", async () => {
-  // Regression: the documented "Never throws" contract had no top-level
-  // try/catch. A misbehaving custom invoker used to propagate its error.
   const invoker: GitInvoker = () => {
     throw new Error("synthetic invoker failure");
   };
@@ -323,8 +288,6 @@ test("resolveGitContext: custom invoker throwing synchronously → returns null 
 });
 
 test("resolveGitContext: custom invoker throwing on a later call → returns null", async () => {
-  // First call succeeds (pretend we're in a repo), subsequent call throws.
-  // Must still resolve to null rather than leaking the error.
   let callCount = 0;
   const invoker: GitInvoker = (cwd) => {
     callCount += 1;
@@ -383,7 +346,6 @@ test("#2206 resolveGitContext gives each probe only the remaining deadline budge
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// resolveGitContext — happy path (origin, branch, default branch)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("resolveGitContext: full happy path with origin + branch + default branch", async () => {
@@ -448,7 +410,6 @@ test("resolveGitContext: projectId is equal for scp and https forms of same repo
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// resolveGitContext — partial / degraded inputs
 // ──────────────────────────────────────────────────────────────────────────
 
 test("resolveGitContext: detached HEAD — branch is null", async () => {
@@ -476,7 +437,6 @@ test("resolveGitContext: no origin remote — falls back to root: projectId", as
   const invoker = mockInvoker({
     [keyFor(cwd, ["rev-parse", "--show-toplevel"])]: { stdout: `${root}\n`, exitCode: 0 },
     [keyFor(root, ["rev-parse", "--abbrev-ref", "HEAD"])]: { stdout: "main\n", exitCode: 0 },
-    // origin lookup fails
     [keyFor(root, ["remote", "get-url", "origin"])]: { stdout: "", exitCode: 128 },
     [keyFor(root, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])]: { stdout: "", exitCode: 1 },
   });
@@ -533,7 +493,6 @@ test("resolveGitContext: unborn HEAD repo — branch recovered from symbolic-ref
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// resolveGitContext — rootPath vs cwd
 // ──────────────────────────────────────────────────────────────────────────
 
 test("resolveGitContext: cwd inside repo returns repo root, not cwd", async () => {
@@ -558,7 +517,6 @@ test("resolveGitContext: cwd inside repo returns repo root, not cwd", async () =
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Memoization (COS-666): per-request git spawns blocked the event loop.
 // ──────────────────────────────────────────────────────────────────────────
 
 async function makeRepoDir(head: string): Promise<string> {
@@ -616,7 +574,6 @@ test("a cache hit is served only while HEAD is unchanged; a checkout re-asks git
   assert.equal((await resolveGitContext("/repo", { invoker, cache }))?.branch, "main");
   assert.equal(calls, callsAfterFirst, "unchanged HEAD: no spawn");
 
-  // Git, not a regex over HEAD, names the branch (e.g. heads/main when a tag shares the name).
   branch = "heads/feat";
   await writeFile(path.join(root, ".git", "HEAD"), "ref: refs/heads/feat\n");
   assert.equal((await resolveGitContext("/repo", { invoker, cache }))?.branch, "heads/feat");
@@ -684,7 +641,6 @@ test("a checkout racing the branch probe is not pinned: the next call re-asks gi
       calls += 1;
     }, () => branch)(cwd, args);
     if (args[1] === "--abbrev-ref") {
-      // git has answered "main"; the checkout lands right after.
       branch = "feat";
       await writeFile(path.join(root, ".git", "HEAD"), "ref: refs/heads/feat\n");
     }
@@ -840,7 +796,6 @@ test("probeGitContext: dubious-ownership exit 128 is inconclusive, a real non-re
   assert.equal(n.conclusive, true);
   assert.equal(n.context, null);
 
-  // Inside a confirmed repo, an optional probe failing (no origin) stays conclusive.
   const noOrigin: GitInvoker = (cwd, args) => {
     if (args.includes("--show-toplevel")) return { stdout: "/repo\n", exitCode: 0 };
     if (args[0] === "remote") return { stdout: "", stderr: "error: No such remote 'origin'", exitCode: 2 };

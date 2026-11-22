@@ -1,19 +1,3 @@
-/**
- * Location day-file + sync-state store (issue #2044).
- *
- * Day documents live at `<memoryDir>/locations/<YYYY-MM-DD>.md` — OUTSIDE the
- * memory scan roots (facts/, entities/, …) so raw location history never
- * surfaces as a memory in recall or governance passes, and INSIDE the QMD
- * collection root so the markdown stays full-text searchable once an index
- * update runs. Per-source sync state lives at
- * `<memoryDir>/state/locations/sync.json` and is written only after the day
- * document is durable (see pipeline.ts).
- *
- * Both writes are atomic (temp file + rename) and containment-checked: a
- * symlinked `locations/` root or day file is rejected even when it resolves
- * inside the memory dir (AGENTS.md pattern #3), and a path that escapes the
- * memory dir is refused outright.
- */
 
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, realpath } from "node:fs/promises";
@@ -34,8 +18,6 @@ const MAX_TRACKED_LOCATION_DAYS = 90;
 
 const DAY_FILE_NAME_PATTERN = /^\d{4}-\d{2}-\d{2}\.md$/;
 
-// Serializes state load→mutate→save sections per state file so two sources
-// syncing concurrently cannot lose-update each other's entries.
 const stateLocks = new Map<string, Promise<unknown>>();
 
 function withStateLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
@@ -54,8 +36,6 @@ function withStateLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
 
 export function locationDayFilePath(memoryDir: string, date: string): string {
   if (!isValidLocationDate(date)) {
-    // Never interpolate an unvalidated date into a filesystem path (a `../`
-    // would escape <memoryDir>/locations/). Reject loudly.
     throw new RangeError(`Invalid location date "${date}"; expected a real YYYY-MM-DD day.`);
   }
   return path.join(memoryDir, LOCATIONS_DIR_NAME, `${date}.md`);
@@ -98,9 +78,6 @@ export async function loadLocationSyncState(memoryDir: string): Promise<Location
   try {
     parsed = JSON.parse(raw);
   } catch {
-    // A corrupt state file must not brick syncing forever; treat it as a cold
-    // start. The worst case is re-syncing days already on disk, and the day
-    // file's contentHash makes that rewrite idempotent.
     return emptyLocationSyncState();
   }
   if (
@@ -375,7 +352,6 @@ export function parseLocationDaySummary(raw: string): LocationDaySummary | null 
   };
 }
 
-// ── Containment-checked day-file IO ─────────────────────────────────────────
 
 async function assertNotSymlink(target: string, kind: "directory" | "day file"): Promise<void> {
   let stat: { isSymbolicLink(): boolean };
@@ -416,8 +392,6 @@ async function assertDayPathContained(memoryDir: string, targetPath: string): Pr
   const locationsDir = path.join(memoryDir, LOCATIONS_DIR_NAME);
   await assertNoEscape(rootReal, locationsDir);
   await assertNoEscape(rootReal, targetPath);
-  // Reject a symlinked locations root or day file outright — even when the
-  // link resolves inside the memory dir (aliasing / tampering) — before IO.
   await assertNotSymlink(locationsDir, "directory");
   await assertNotSymlink(targetPath, "day file");
 }

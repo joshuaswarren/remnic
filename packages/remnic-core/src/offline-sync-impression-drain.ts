@@ -67,34 +67,14 @@ export async function getOfflineSyncStorage<T extends PendingLifecycleDrain & { 
 ): Promise<T> {
   const storage = await orchestrator.getStorage(namespace);
   const memoryRoot = path.resolve(orchestrator.config.memoryDir);
-  // Recall impressions are global: the orchestrator's single LastRecallStore
-  // roots at config.memoryDir, so the active recall_impressions.jsonl lives at
-  // <memoryDir>/state/. Fold the global pending queue ONLY when THIS snapshot's
-  // root actually contains that active file - a root snapshot. A namespace
-  // snapshot (storage.dir under namespaces/<token>/) cannot carry it, so
-  // draining there would empty the durable pending queue into a file this
-  // snapshot omits and strand the row until a root sync; leave it pending for
-  // the root sync instead (#2033).
   const impressionsFile = path.join(memoryRoot, "state", "recall_impressions.jsonl");
   if (pathIsInside(path.resolve(storage.dir), impressionsFile)) {
     await drainPendingImpressionsForOfflineSync(() => orchestrator.drainPendingRecallImpressions());
   }
   await drainPendingLifecycleForSyncOrThrow(() => storage.drainPendingMemoryLifecycleEventsForSync());
-  // Root snapshot: buildOfflineSyncSnapshot walks `namespaces/<ns>/state/` for
-  // every namespace under the memory root and INCLUDES each namespace's active
-  // lifecycle ledger, but the per-namespace pending spill dirs are offline-sync
-  // EXCLUDED. Draining only the root ledger above would let a root snapshot omit
-  // append-only rows still sitting in a namespace's spill queue, so fold every
-  // namespace ledger too - each through its OWN namespace storage so secure-store
-  // AAD stays namespace-scoped (#2033, matching the CLI all-ledger drain). A
-  // namespace snapshot folds only its own ledger, already done above.
   if (path.resolve(storage.dir) === memoryRoot && orchestrator.listOfflineSyncNamespaces) {
     const drained = new Set<string>([memoryRoot]);
     for (const ns of await orchestrator.listOfflineSyncNamespaces()) {
-      // A single unresolvable namespace (e.g. a legacy canonical token dir whose
-      // name exceeds the route-namespace length cap) must not abort the whole root
-      // snapshot — degrade to draining the rest. listOfflineSyncNamespaces already
-      // normalizes token dirs, so this is defense-in-depth.
       let nsStorage: T;
       try {
         nsStorage = await orchestrator.getStorage(ns);
@@ -127,18 +107,7 @@ export async function listOfflineSyncNamespaces(host: OfflineSyncNamespaceHost):
     for (const ledgerPath of await offlineSyncLifecycleLedgerPaths(host.config.memoryDir)) {
       const namespaceDir = path.dirname(path.dirname(ledgerPath));
       if (path.basename(path.dirname(namespaceDir)) !== "namespaces") continue;
-      // A namespace is stored under its canonical token dir `ns-<hex>`. Decode the
-      // token back to the namespace NAME so the drain fanout resolves the SAME
-      // storage the token dir belongs to (the catalog rebuild scanner decodes the
-      // same way, catalog.ts finishRebuild). A raw dir already named as a plain
-      // namespace is used verbatim. Skip any name the router would reject — e.g. a
-      // canonical token dir whose decoded-or-raw name exceeds isSafeRouteNamespace's
-      // 64-char cap — because getStorage() would throw `unsafe namespace` and 500
-      // the whole root snapshot-stream (the offline-sync regression this fixes).
       const dirName = path.basename(namespaceDir);
-      // namespaceIdentityFromToken returns "" for the ns-default token (the
-      // default-namespace identity) — map that to the configured default
-      // namespace instead of skipping the directory as an unsafe empty name.
       const decoded = namespaceIdentityFromToken(dirName);
       const name =
         decoded === null
@@ -189,13 +158,6 @@ export function offlineSyncStorageForSnapshot<T extends PendingLifecycleDrain & 
 
 const LIFECYCLE_LEDGER_FILE = "memory-lifecycle-ledger.jsonl";
 
-/**
- * Plaintext filesystem IO for a standalone (CLI) offline-sync lifecycle drain.
- * A standalone offline cache is plaintext - exactly like its LastRecallStore
- * impression drain - so spills read/append as UTF-8. `writeSecure` keeps the
- * atomic temp+rename the pending contract requires (#2033); a pure drain never
- * spills a new event, but the interface demands an atomic writer.
- */
 function plaintextLifecyclePendingIo(): LifecyclePendingIo {
   return {
     writeSecure: async (filePath, payload) => {
@@ -205,23 +167,9 @@ function plaintextLifecyclePendingIo(): LifecyclePendingIo {
   };
 }
 
-/**
- * Lifecycle ledger paths under a standalone memory dir: the root `state/` ledger
- * plus every per-namespace `namespaces/<ns>/state/` ledger (#2033). Offline sync
- * pushes the whole memory dir, so every namespace's ledger can carry pending
- * spills that must be folded first.
- */
 async function offlineSyncLifecycleLedgerPaths(memoryDir: string): Promise<string[]> {
   const paths = [path.join(memoryDir, "state", LIFECYCLE_LEDGER_FILE)];
   const namespacesBase = path.join(memoryDir, "namespaces");
-  // Symlink/traversal containment (#2033): a symlinked <memoryDir>/namespaces
-  // (or a symlinked child) must not redirect the pre-sync drain - and the
-  // ledger appends/mkdirs it drives - outside memoryDir. Resolve the memory
-  // root and the scan base through realpath, reject a symlinked/escaping/
-  // non-directory base, and skip any symlinked/escaping child, mirroring the
-  // lifecycle-compaction scanner (orchestration/maintenance.ts) and the
-  // memory-store walkers (utils/path-containment). A rejected base is
-  // non-fatal: drain the root ledger only, never through the poisoned link.
   let memoryDirReal: string;
   try {
     memoryDirReal = await realpath(memoryDir);

@@ -1,12 +1,3 @@
-/**
- * Child-process entry for the scheduled memory-projection rebuild.
- *
- * The daemon forks this file so the corpus and lifecycle ledger are allocated
- * in a fresh heap. Invoke only with `--remnic-projection-rebuild-runner`.
- * Arguments are the memory directory, default namespace, and an ISO timestamp.
- * Do not put secrets, passphrases, or secure-store unlock material on argv
- * or in the environment — an encrypted store rebuilds in the parent instead.
- */
 import { initLogger, log } from "../logger.js";
 import { watchProjectionRebuildParent } from "./projection-rebuild-abort.js";
 import { rebuildMemoryProjection } from "./rebuild-memory-projection.js";

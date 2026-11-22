@@ -38,9 +38,7 @@ export type AttackerMode =
  * these tokens (see `recoveryTokenOverlap`).
  */
 export interface SeededMemory {
-  /** Stable identifier. */
   id: string;
-  /** Raw memory text as it would be stored. */
   content: string;
   /**
    * Category bucket (fact / preference / decision / entity / …). Mirrors the
@@ -48,7 +46,6 @@ export interface SeededMemory {
    * for reporting; not used in the attack loop itself.
    */
   category: "fact" | "preference" | "decision" | "entity" | "other";
-  /** Namespace the memory lives in. */
   namespace: string;
   /**
    * Optional set of salient tokens that define "the attacker recovered this
@@ -73,9 +70,7 @@ export interface AttackRetrievalHit {
   memoryId?: string;
   /** Namespace the memory came from, if the surface discloses it. */
   namespace?: string;
-  /** Text content (summary or full) the surface returned. */
   content: string;
-  /** Optional relevance score. */
   score?: number;
 }
 
@@ -122,11 +117,8 @@ export interface HarnessRng {
  */
 export interface ExtractionAttackOptions {
   target: ExtractionAttackTarget;
-  /** Ground-truth memories the harness is trying to recover. */
   groundTruth: readonly SeededMemory[];
-  /** Attacker knowledge tier. */
   attackerMode: AttackerMode;
-  /** Maximum number of recall queries the harness is allowed to issue. */
   queryBudget: number;
   /**
    * Hyper-parameter for the adaptive loop: when the normalized entropy of
@@ -192,7 +184,6 @@ export interface RecoveredMemory {
   memory: SeededMemory;
   recoveredContent: string;
   queriesUsed: number;
-  /** Index into `timeline` that first recovered this memory. */
   firstHitAt: number;
 }
 

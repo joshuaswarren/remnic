@@ -8,8 +8,6 @@
  */
 
 // ──────────────────────────────────────────────────────────────────────────
-// Encoder — serialize a JSON-RPC message into a Content-Length frame.
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Encode a JSON-RPC message as a Content-Length-prefixed frame ready to

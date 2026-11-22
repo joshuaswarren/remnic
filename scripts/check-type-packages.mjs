@@ -1,19 +1,4 @@
 #!/usr/bin/env node
-/**
- * Manifest-derived enumeration of workspace packages that type checks cover
- * (issue #2851).
- *
- * A package is covered iff packages/<dir>/package.json exists and declares
- * scripts.check-types. Manifests without that script are the documented
- * no-check-type set (native platform shims and non-TypeScript host adapters);
- * scripts/check-package-typecheck-scripts.mjs is the rule that keeps the set
- * honest — every packages/* package WITH a tsconfig.json must declare the
- * script. Those packages are the only legitimate skips.
- *
- * Enumeration reads package manifests only, so the result is identical on a
- * clean CI checkout and a hydrated local clone regardless of node_modules,
- * build output, platform, or directory order.
- */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -21,7 +6,6 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
-/** Every packages/* directory that owns a package manifest, sorted by name. */
 export function manifestPackageDirs(packagesDir = join(repoRoot, "packages")) {
   const names = [];
   for (const entry of readdirSync(packagesDir)) {
@@ -35,35 +19,18 @@ function hasCheckTypesScript(packagesDir, name) {
   return Boolean(manifest.scripts?.["check-types"]);
 }
 
-/** Covered packages: manifest declares scripts.check-types. Sorted. */
 export function checkTypePackageDirs(packagesDir = join(repoRoot, "packages")) {
   return manifestPackageDirs(packagesDir).filter((name) => hasCheckTypesScript(packagesDir, name));
 }
 
-/** Documented no-check-type packages: manifest present, script absent. Sorted. */
 export function noCheckTypePackageDirs(packagesDir = join(repoRoot, "packages")) {
   return manifestPackageDirs(packagesDir).filter((name) => !hasCheckTypesScript(packagesDir, name));
 }
-/**
- * Workspace root that owns packagesDir: the parent directory, validated by
- * the pnpm workspace contract. `--filter ./packages/<name>` selectors are
- * cwd-relative, so pnpm must execute with this root as its working directory
- * (#2873) — running from the caller's cwd filters whatever workspace the
- * caller happens to sit in, never the enumerated one.
- */
 export function resolveWorkspaceRoot(packagesDir) {
   const root = dirname(resolve(packagesDir));
   return existsSync(join(root, "pnpm-workspace.yaml")) ? root : null;
 }
 
-/**
- * Run check-types in exactly the covered packages through the pinned pnpm
- * wrapper, one explicit --filter per package, with the enumerated workspace
- * root as pnpm's cwd — never the caller's (#2873). Replaces the environment-
- * dependent `--filter="./packages/*"` glob sweep, whose matched set followed
- * pnpm workspace-resolution state and skipped covered packages on clean CI
- * checkouts (#2851).
- */
 export function runCheckTypePackages(packagesDir = join(repoRoot, "packages")) {
   const workspaceRoot = resolveWorkspaceRoot(packagesDir);
   if (!workspaceRoot) {
@@ -94,13 +61,6 @@ export function runCheckTypePackages(packagesDir = join(repoRoot, "packages")) {
 const USAGE =
   "usage: check-type-packages.mjs [--list | --list-manifests | --run] [--packages-dir <dir>]";
 
-/**
- * Strict grammar per USAGE (#2883): argv[0] is the single mode token (the
- * default list mode only when argv is empty), followed by at most one
- * `--packages-dir <dir>` pair. Every other token — a second mode, an unknown
- * flag, a positional — is a usage error, never silently ignored: a typo like
- * `--list --run` used to downgrade the gate to a non-running list operation.
- */
 function parseCliArgs(argv) {
   const mode = argv[0] ?? "--list";
   if (mode !== "--list" && mode !== "--list-manifests" && mode !== "--run") return null;

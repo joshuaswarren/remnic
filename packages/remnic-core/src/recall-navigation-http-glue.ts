@@ -1,18 +1,3 @@
-/**
- * Recall-navigation HTTP glue (issue #1956) — route body lives here so
- * access-http.ts stays at its structural ceiling (same seam as
- * deep-recall-http-glue.ts).
- *
- * Input errors map to 400; everything else rethrows to the global 500
- * handler. Config gating (`recallNavigation.enabled`) lives in the service
- * and returns a typed `error: "disabled"` refusal — this module only
- * translates transport shape. Namespace/sessionKey resolution flows through
- * the caller-supplied `scopeFor` gate so a body-supplied namespace passes
- * the SAME effective-namespace allow-list as the query string (issue #1850
- * finding 2), and `authenticatedPrincipal` reaches the service so
- * authorization derives from the presenting principal, never the
- * client-supplied sessionKey.
- */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 

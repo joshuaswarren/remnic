@@ -41,7 +41,6 @@ test("loadCodingGraphEngineFactory fresh-attempts regardless of probe state", as
     return;
   }
 
-  // Package present.
   assert.equal(installed, true);
   const factory = await loadCodingGraphEngineFactory();
   assert.equal(typeof factory, "function");
@@ -65,7 +64,6 @@ test("loader path is independent of the probe result", async () => {
   // for both present and absent packages.
   const probe = await tryLoadCodingGraphModule();
   if (probe === null) {
-    // Absent: loader throws install hint.
     let threw = false;
     try {
       await loadCodingGraphEngineFactory();
@@ -74,7 +72,6 @@ test("loader path is independent of the probe result", async () => {
     }
     assert.equal(threw, true, "loader throws when package is absent");
   } else {
-    // Present: loader returns a callable factory.
     const factory = await loadCodingGraphEngineFactory();
     assert.equal(typeof factory, "function");
     assert.throws(() => factory(), (err: unknown) => {

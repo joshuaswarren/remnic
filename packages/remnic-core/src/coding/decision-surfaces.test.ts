@@ -1,16 +1,3 @@
-/**
- * Decision-record surface tests (issue #1548 Track A PR 2).
- *
- * Covers:
- *  - Gate predicate: all three conditions (config.enabled + decisionRecords +
- *    coding context) checked identically.
- *  - Subcommand validation: invalid subcommand → error listing valid ones.
- *  - Unknown decision id → explicit not-found, not empty success (rule 34).
- *  - Prove-fail-before: `engram.coding_decision` absent from tools/list when
- *    the config gate is off; present when on (rule 39 byte-identical contract).
- *  - Three surfaces → one service method (rule 22 spirit).
- *  - Registry fitness: the operation resolves through the boundary.
- */
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EngramAccessInputError, type EngramAccessService } from "../access-service.js";
@@ -28,8 +15,6 @@ import {
 import { isCodingKnowledgeFeatureEnabled, isCodingKnowledgeFeatureVisible } from "./coding-knowledge-config.js";
 import type { CodingContext, CodingKnowledgeConfig, PluginConfig } from "../types.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Test helpers
 // ──────────────────────────────────────────────────────────────────────────
 
 const GATE_OFF_CONFIG: CodingKnowledgeConfig = {
@@ -99,7 +84,6 @@ function makeMockServiceWithConfig(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Gate predicate tests
 // ──────────────────────────────────────────────────────────────────────────
 
 test("gate: disabled when config.enabled is false", () => {
@@ -130,7 +114,6 @@ test("visibility gate: config-only check for tools/list construction", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Subcommand validation tests
 // ──────────────────────────────────────────────────────────────────────────
 
 test("subcommand: isDecisionSubcommand accepts all valid values", () => {
@@ -154,7 +137,6 @@ test("subcommand: formatDecisionSubcommands lists all valid options", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Prove-fail-before: tools/list gate (rule 39)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("tools/list: engram.coding_decision absent when gate off (byte-identical to main)", async () => {
@@ -172,7 +154,6 @@ test("tools/list: engram.coding_decision absent when gate off (byte-identical to
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Registry fitness: coding_decision operation is registered
 // ──────────────────────────────────────────────────────────────────────────
 
 test("registry: coding_decision operation is registered through the boundary", () => {
@@ -182,7 +163,6 @@ test("registry: coding_decision operation is registered through the boundary", (
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Three surfaces → one service method (rule 22 spirit)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("MCP surface: engram.coding_decision dispatches through the boundary to service.codingDecision", async () => {

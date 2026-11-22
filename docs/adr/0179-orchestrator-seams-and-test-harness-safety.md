@@ -1,0 +1,77 @@
+# Coordinator seams use thin delegation and live accessors, and tests reach private internals only through safety-guarded surfaces
+
+Status: accepted
+
+## Context
+The orchestrator was decomposed into coordinators (issue #1526) to keep it tractable, but naive extraction either froze a private API in place or let modules import storage internals directly, and tests that poke private fields can fire real side effects.
+
+## Decision
+Extracted coordinators are thin delegations that keep the orchestrator's private API stable, with dependencies injected as live accessors so late rebinding propagates; orchestration modules import StorageManager only as a type from the package barrel, never directly from storage.ts — the import ratchet enforces this. Long-running artifact recall supports cancellation and is composed with step deadlines so late observer callbacks cannot land after the snapshot is recorded. Tests access private methods only through unknown-cast surfaces on a fresh prototype instance, and cast-based stubs document exactly which dependencies the exercised path reads.
+
+## Consequences
+The private API stays stable but every consumer must go through the delegation; direct storage imports fail the ratchet. Late-binding dependencies mean a coordinator can observe a different dependency instance than at construction.
+
+## Origin comments
+- `packages/remnic-core/src/orchestration/recall-rerank-coordinator.ts:1` — "/** * Recall rerank coordinator — extracted from the orchestrator (issue #1526). * * Owns the post-retrieval result-rank"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.test.ts:18` — "/** Unit stub: only search/hybridSearch are exercised by hybrid top-up tests. */"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.test.ts:32` — "// SAFETY: hybrid top-up tests call fetchQmdMemoryResultsWithArtifactTopUp only; other deps are never read."
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:1` — "Recall search-pipeline coordinator — extracted from the orchestrator (issue #1526, seam 19). Owns the QMD search post-"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:624` — "// Invoked when the deadline abandons this step (before it started or"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:625` — "// while it runs), so callers can report the abandonment and gate off"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:626` — "// late observer callbacks (#1536, cursor round-6 on #1544)."
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:631` — "// Step-level deadline abort (#1907): compose the caller's request signal with"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:632` — "// a per-step controller so a disconnect OR this step's deadline stops the task."
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:694` — "// Deadline-gated observer (#1536, cursor round-6 on #1544): when the"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:695` — "// shared assembly deadline abandons this lookup, the still-running"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:696` — "// fetch's LATE reports must not land after the recall snapshot has"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:697` — "// been recorded — gate them off and report the abandonment itself"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:698` — "// deterministically at resolution time instead."
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:737` — "// Normal completion also closes the gate: a deadline that fires"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:738` — "// after this await has nothing left to suppress, and a fetch that"
+- `packages/remnic-core/src/orchestration/recall-search-pipeline.ts:739` — "// limps home later cannot mutate a recorded recall's collector."
+- `packages/remnic-core/src/orchestration/recall-search-prefilter.ts:47` — "Cancellation for the artifact recall path (issue #2291). Artifact recall re-scans and re-tokenizes every stored artifa"
+- `packages/remnic-core/src/orchestration/recall-search-prefilter.ts:84` — "// The status snapshot rebuild reads every memory in the namespace; do not"
+- `packages/remnic-core/src/orchestration/recall-search-prefilter.ts:85` — "// start one for a recall that has already been abandoned."
+- `packages/remnic-core/src/orchestration/recall-section-coordinator.ts:1` — "Recall section coordinator — extracted from the orchestrator (issue #1526). Owns the recall-output section-budgeting s"
+- `packages/remnic-core/src/orchestration/recall-section-coordinator.ts:53` — "Coordinator for the recall section budgeting + assembly subsystem. All methods are pure with respect to the coordinato"
+- `packages/remnic-core/src/orchestration/recall-section-coordinator.ts:76` — "// Default to the coordinator's own config-based check so standalone usage"
+- `packages/remnic-core/src/orchestration/recall-section-coordinator.ts:77` — "// (e.g. config-recall-pipeline tests) keeps self-gating. The orchestrator"
+- `packages/remnic-core/src/orchestration/recall-section-coordinator.ts:78` — "// injects its own resolver so appendRecallSection flows through the same"
+- `packages/remnic-core/src/orchestration/recall-section-coordinator.ts:79` — "// overridable isRecallSectionEnabled that the recallInternal computation"
+- `packages/remnic-core/src/orchestration/recall-section-coordinator.ts:80` — "// gates use — keeping compute-side and append-side enablement coherent"
+- `packages/remnic-core/src/orchestration/recall-section-coordinator.ts:81` — "// (seam 13). This preserves the recall-hardening test seam where tests"
+- `packages/remnic-core/src/orchestration/recall-section-coordinator.ts:82` — "// override orchestrator.isRecallSectionEnabled to isolate sections."
+- `packages/remnic-core/src/orchestration/self-deps.ts:1` — "Live self-deps factory (issue #1526 seam 27). Every coordinator extracted from the orchestrator (seams 4–26) takes a d"
+- `packages/remnic-core/src/orchestration/self-deps.ts:31` — "// Bind ONLY prototype/concise methods (they have no own `prototype`"
+- `packages/remnic-core/src/orchestration/self-deps.ts:32` — "// property). Class-valued deps (e.g. `storageManagerClass`, used by"
+- `packages/remnic-core/src/orchestration/self-deps.ts:33` — "// the storage decomposition to reach shared static caches) must pass"
+- `packages/remnic-core/src/orchestration/self-deps.ts:34` — "// through unbound: Function.prototype.bind returns a bound function"
+- `packages/remnic-core/src/orchestration/self-deps.ts:35` — "// WITHOUT the original's own static properties, which silently"
+- `packages/remnic-core/src/orchestration/self-deps.ts:36` — "// strips the class's statics. Plain data and arrows also pass"
+- `packages/remnic-core/src/orchestration/self-deps.ts:37` — "// through unchanged (arrows ignore bind receivers anyway)."
+- `packages/remnic-core/src/orchestration/self-deps.ts:44` — "// Fail fast on writes to properties the orchestrator does not"
+- `packages/remnic-core/src/orchestration/self-deps.ts:45` — "// declare (Kilo review on PR #1801): returning false makes the"
+- `packages/remnic-core/src/orchestration/self-deps.ts:46` — "// assignment throw a TypeError in strict mode, matching the"
+- `packages/remnic-core/src/orchestration/self-deps.ts:47` — "// error-safety of the hand-written accessor blocks this factory"
+- `packages/remnic-core/src/orchestration/self-deps.ts:48` — "// replaced. Legitimate gate-field writes (deferredReady,"
+- `packages/remnic-core/src/orchestration/self-deps.ts:49` — "// lastXraySnapshot, …) all target existing members."
+- `packages/remnic-core/src/orchestration/semantic-consolidation-coordinator.ts:1` — "Semantic-consolidation coordinator — extracted from the orchestrator (issue #1526, seam 5). Owns the semantic-consolid"
+- `packages/remnic-core/src/orchestration/semantic-consolidation-coordinator.ts:80` — "Coordinates semantic consolidation. Holds no mutable state of its own — all persistence flows through the injected sto"
+- `packages/remnic-core/src/orchestration/tier-migration-coordinator.ts:24` — "StorageManager type comes from the package barrel (type-only) so this module does not add a direct storage.ts import"
+- `packages/remnic-core/src/orchestration/tier-migration-coordinator.ts:25` — "module does not add a direct storage.ts import (#1533 ratchet)."
+- `packages/remnic-core/src/orchestration/tier-migration-coordinator.ts:39` — "Dependencies injected by the orchestrator. All stable references or live accessors (the orchestrator reassigns `qmd`"
+- `packages/remnic-core/src/orchestration/tier-migration-coordinator.ts:44` — "Live accessor — the orchestrator reassigns this.qmd to NoopSearchBackend after construction when the collection is"
+- `packages/remnic-core/src/orchestration/tier-migration-coordinator.ts:48` — "Live accessor — loaded asynchronously during init, null before that."
+- `packages/remnic-core/src/orchestration/tier-migration-coordinator.ts:50` — "Live accessor — undefined when compounding is disabled."
+- `packages/remnic-core/src/orchestration/tier-migration-coordinator.ts:52` — "Constructs the cold-tier StorageManager for a given parent memory dir. Injected so this module owns no direct storage.ts"
+- `packages/remnic-core/src/orchestrator-chunked-hash-durability.test.ts:34` — "persistExtraction is private; reach it through an unknown-cast surface."
+- `packages/remnic-core/src/orchestrator-convergence-refresh.test.ts:44` — "// SAFETY: fresh prototype instance under test; every internals field is"
+- `packages/remnic-core/src/orchestrator-convergence-refresh.test.ts:45` — "// provided here before refreshNamespacesAfterConvergence runs."
+- `packages/remnic-core/src/orchestrator-entity-write-failure.test.ts:148` — "// Bracket access is TypeScript's typed escape hatch for the private method; the spy only wraps and restores i"
+- `packages/remnic-core/src/orchestrator-flush.test.ts:28` — "// SAFETY: the constraint above declares exactly the loadMeta/saveMeta shape every"
+- `packages/remnic-core/src/orchestrator-flush.test.ts:29` — "// stub here provides; re-typing to `S & { updateMeta }` adds one member and keeps"
+- `packages/remnic-core/src/orchestrator-flush.test.ts:30` — "// all other members of S unchanged."
+- `packages/remnic-core/src/orchestrator-flush.test.ts:52` — "/** * Writable orchestrator double for `ingestBulkImportBatch` slice tests: the * real prototype methods run, "
+- `packages/remnic-core/src/orchestrator-flush.test.ts:481` — "// SAFETY: fixture deps stub — only the queued-extraction path fields are exercised."
+- `packages/remnic-core/src/orchestrator-flush.test.ts:1540` — "// SAFETY: runExtraction is driven only through the stub members assigned below;"
+- `packages/remnic-core/src/orchestrator-flush.test.ts:1541` — "// the prototype harness leaves the rest of Orchestrator unreachable in this test."

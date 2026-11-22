@@ -1,17 +1,8 @@
-/**
- * Stop a projection-rebuild child when its parent is gone.
- *
- * A non-detached fork is reparented, not killed, when the daemon exits. The
- * IPC channel closes first. The child must observe that and refuse to publish,
- * or it can rename `memory-projection.sqlite.tmp` over a projection the
- * replacement daemon has already started serving.
- */
 
 export function projectionRebuildParentDisconnected(): Error {
   return new Error("projection rebuild runner parent disconnected");
 }
 
-/** Abort when this process loses its parent IPC channel. */
 export function watchProjectionRebuildParent(): AbortSignal {
   const abort = new AbortController();
   const stop = () => {

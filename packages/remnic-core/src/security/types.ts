@@ -1,6 +1,3 @@
-/**
- * Shared types for issue #1955 security settings and origin metadata.
- */
 
 import type { InjectionScreenProfile } from "./injection-screen.js";
 export type MemoryInjectionDefenseMode =

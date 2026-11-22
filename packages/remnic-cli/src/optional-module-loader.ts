@@ -1,11 +1,3 @@
-// Shared helpers for the CLI's optional-package dynamic-import loaders.
-//
-// Every optional @remnic/* companion package uses the same "swallow only
-// when this specific package is missing, otherwise re-throw" pattern, so
-// extracting the check here removes the duplication between
-// optional-bench.ts and optional-weclone-export.ts (Cursor review
-// feedback on PR #545) and gives us one place to get the specifier-
-// matching logic right.
 
 /**
  * Return true when `err` is a module-not-found failure for exactly the

@@ -1,10 +1,3 @@
-/**
- * Seed-sequence generation for benchmark runs.
- *
- * Factored out of `benchmark.ts` so individual runners can reuse it without
- * triggering a circular import through `benchmark.ts -> registry.ts ->
- * runner.ts -> benchmark.ts`.
- */
 
 export function buildBenchmarkRunSeeds(
   runCount: number,

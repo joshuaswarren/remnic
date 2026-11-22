@@ -57,7 +57,6 @@ export interface ChatHttpHandlerOptions {
 }
 
 // ---------------------------------------------------------------------------
-// In-flight request dedup (issue #1687 Thread 18 / #1685)
 // ---------------------------------------------------------------------------
 
 /**
@@ -75,30 +74,15 @@ export interface ChatHttpHandlerOptions {
  */
 const chatInFlight = new Map<string, Promise<ChatTurnResult>>();
 
-/**
- * Encode the principal into a fingerprint component where an absent principal
- * occupies a distinct namespace from any real principal string (control-byte
- * prefix), so a no-principal request can never coalesce with a request whose
- * principal is literally `"_"` (or any other string) and reuse its authorized
- * promise (codex P2 review thread).
- */
 function principalFingerprintComponent(principal: string | undefined): string {
   return principal === undefined ? "\x00absent" : `\x01${principal}`;
 }
 
 function chatDedupFingerprint(memoryDir: string, chatSessionId: string, principal: string | undefined, message: string): string {
-  // sha256 keeps the key bounded for long messages; the principal component
-  // is distinct per principal (incl. absent) so two callers targeting the
-  // same session id can never share a result — the wrong principal still
-  // independently hits access_denied inside processChatMessage.
   const messageHash = createHash("sha256").update(message, "utf8").digest("hex").slice(0, 32);
   return `${memoryDir}:${chatSessionId}:${principalFingerprintComponent(principal)}:${messageHash}`;
 }
 
-/**
- * Run `processChatMessage` with concurrent-identical-request coalescing.
- * Distinct messages (or distinct sessions / principals / stores) never collide.
- */
 function processChatMessageDedup(opts: {
   service: EngramAccessService;
   config: ChatConfig | undefined;
@@ -107,7 +91,6 @@ function processChatMessageDedup(opts: {
   chatSessionId?: string;
   principal?: string;
 }): Promise<ChatTurnResult> {
-  // No session id → no coalescing (each request creates its own session).
   if (!opts.chatSessionId) {
     return processChatMessage(opts);
   }
@@ -122,7 +105,6 @@ function processChatMessageDedup(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// POST /engram/v1/chat/message
 // ---------------------------------------------------------------------------
 
 /**
@@ -176,11 +158,6 @@ export async function handleChatMessage(
       ...(principal ? { principal } : {}),
     });
   } catch (err) {
-    // processChatMessage throws tagged errors for the session/LLM/engine
-    // paths; map each back to its HTTP status.  Dedup coalescing means a
-    // concurrent duplicate shares the same rejection.  A 'chat_session_expired'
-    // means the session was swept by the TTL cleanup mid-turn (codex P2) —
-    // tell the client to start a fresh session (410 Gone).
     const code = err instanceof Error ? err.message : String(err);
     if (code === "chat_session_not_found") {
       respondJson(res, 404, { error: "chat_session_not_found", code: "chat_session_not_found" });
@@ -201,8 +178,6 @@ export async function handleChatMessage(
     return;
   }
 
-  // Build the public response field-by-field.  Never serialize the engine
-  // result wholesale: an engine failure may carry internal error metadata.
   const wireResult = {
     reply: result.reply,
     chatSessionId: result.chatSessionId,
@@ -222,7 +197,6 @@ export async function handleChatMessage(
 }
 
 // ---------------------------------------------------------------------------
-// GET /engram/v1/chat/events/:chatSessionId (SSE)
 // ---------------------------------------------------------------------------
 
 /**
@@ -258,12 +232,8 @@ export async function handleChatEventsSSE(
     return;
   }
 
-  // Liveness flag + handle, both closed over by the disconnect cleanup. The
-  // cleanup is idempotent (guarded by `closed`) so a repeat close is harmless.
   let heartbeat: NodeJS.Timeout | undefined;
   let closed = false;
-  // Every SSE write goes through this helper so a closed connection is never
-  // written to (cursor Low review). Returns false when the write was skipped.
   const writeSse = (chunk: string): boolean => {
     if (closed) return false;
     try {
@@ -274,11 +244,6 @@ export async function handleChatEventsSSE(
     }
   };
 
-  // Subscribe BEFORE reading the transcript so a concurrent append between
-  // the snapshot read and subscription is never missed (cursor Bugbot race).
-  // During the initial burst entries are buffered; after the burst the
-  // listener switches to writing straight to the response. A `closed` check
-  // short-circuits pushes to a connection that is already gone.
   const pending: ChatTranscriptEntry[] = [];
   let bursting = true;
   const unsubscribe = subscribeChatTranscript(opts.memoryDir, chatSessionId, (entry) => {
@@ -290,20 +255,12 @@ export async function handleChatEventsSSE(
     writeSse(`data: ${JSON.stringify(entry)}\n\n`);
   });
 
-  // Register disconnect cleanup IMMEDIATELY so a close during loadChatSession
-  // or the burst still releases the subscription (cursor Bugbot). The flag
-  // gates every later write so the handler never touches an ended response
-  // (kilo review thread) and never sets up a heartbeat for a dead socket
-  // (cursor review thread).
   const doCleanup = (): void => {
     closed = true;
     clearInterval(heartbeat);
     unsubscribe();
     try { res.end(); } catch { /* already ended */ }
   };
-  // Register with the host server's stop() cleanup set (cursor Medium) so an
-  // HTTP shutdown forcibly releases the subscription + heartbeat even when a
-  // lingering client never emits 'close'. Unregistered again on normal close.
   const unregisterServerCleanup = opts.registerSseCleanup?.(doCleanup) ?? ((): void => {});
   req.on("close", () => {
     doCleanup();
@@ -311,13 +268,8 @@ export async function handleChatEventsSSE(
   });
 
   const session = await loadChatSession(opts.memoryDir, chatSessionId);
-  // If the client disconnected during the load, cleanup already ran — bail
-  // out before touching the response (prevents "headers after end").
   if (closed) return;
   if (!session) {
-    // No SSE stream is established — release the server stop() registration
-    // alongside the subscription so sseCleanupFns does not retain a stale
-    // callback for this JSON error response (cursor Medium: error-path leak).
     unsubscribe();
     unregisterServerCleanup();
     respondJson(res, 404, { error: "chat_session_not_found", code: "chat_session_not_found" });
@@ -330,30 +282,20 @@ export async function handleChatEventsSSE(
     return;
   }
 
-  // SSE headers.
   res.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
     connection: "keep-alive",
   });
 
-  // Ask reconnecting clients to wait 5 s before retrying (reconnect-safe:
-  // the initial burst below replays the full transcript on rejoin).
   writeSse("retry: 5000\n\n");
 
-  // Send the transcript snapshot as the initial burst, recording delivered
-  // seqs so buffered concurrent appends are not double-delivered.
   const deliveredSeqs = new Set<number>();
   for (const entry of session.transcript) {
     writeSse(`data: ${JSON.stringify(entry)}\n\n`);
     deliveredSeqs.add(entry.seq);
   }
 
-  // Switch to live push FIRST, THEN drain buffered appends. Ordering matters:
-  // if an append lands between the drain and the mode switch it would be
-  // buffered (bursting still true) and never re-drained (cursor Medium). With
-  // live mode on, appends during the drain write straight through and the
-  // buffer is emptied once.
   bursting = false;
   for (const entry of pending) {
     if (!deliveredSeqs.has(entry.seq)) {
@@ -361,13 +303,6 @@ export async function handleChatEventsSSE(
     }
   }
 
-  // Heartbeat. Unref'd so a lingering connection never blocks process
-  // exit (rule 47 — no shared mutable objects keep the loop alive). Cleared
-  // by the close handler above when the client disconnects. Guard against
-  // arming after a disconnect during the burst/drain: the close handler
-  // already ran doCleanup (clearing any prior handle and unregistering the
-  // server callback), so an interval armed here would be untracked and never
-  // cleared — bail out instead (codex P2).
   if (closed) return;
   heartbeat = setInterval(() => {
     writeSse(`data: ${JSON.stringify({ type: "heartbeat" })}\n\n`);
@@ -376,7 +311,6 @@ export async function handleChatEventsSSE(
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
 function respondJson(res: ServerResponse, status: number, body: unknown): void {

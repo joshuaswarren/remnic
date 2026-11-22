@@ -143,8 +143,6 @@ test("loadLongMemEvalS prefers oracle when alternate cleaned split also exists",
 
 test("loadLongMemEvalS falls back from unreadable file to next probed filename", async () => {
   await withTempDir(async (dir) => {
-    // longmemeval_oracle.json intentionally has invalid JSON; loader should
-    // record the parse error and fall through to the next filename.
     await writeFile(
       path.join(dir, "longmemeval_oracle.json"),
       "{ not valid json",
@@ -187,7 +185,6 @@ test("loadLongMemEvalS falls back to smoke fixture in quick mode when dataset mi
     });
     assert.equal(result.source, "smoke");
     assert.ok(result.items.length >= 1);
-    // Errors should include ENOENT for every probed filename.
     assert.equal(result.errors.length, LONG_MEM_EVAL_DATASET_FILENAMES.length);
     for (const filename of LONG_MEM_EVAL_DATASET_FILENAMES) {
       assert.ok(
@@ -297,7 +294,6 @@ test("loadLongMemEvalS rejects non-array payload", async () => {
       mode: "full",
       datasetDir: dir,
     });
-    // Parse error recorded, no subsequent files, fall through to missing.
     assert.equal(result.source, "missing");
     assert.ok(result.errors.some((entry) => /must contain an array/.test(entry)));
   });
@@ -314,8 +310,6 @@ test("loadLongMemEvalS rejects entries missing haystack_sessions array", async (
           question: "q",
           answer: "a",
           question_date: "2025-01-01",
-          // haystack_sessions missing — runner would later crash on
-          // `item.haystack_sessions.length`.
           haystack_session_ids: [],
           haystack_dates: [],
           answer_session_ids: [],
@@ -344,7 +338,6 @@ test("loadLongMemEvalS rejects entries missing a scalar answer", async () => {
           question_id: 1,
           question_type: "x",
           question: "q",
-          // no answer
           question_date: "2025-01-01",
           haystack_sessions: [],
           haystack_session_ids: [],
@@ -372,7 +365,6 @@ test("loadLoCoMo10 default parser rejects entries missing conversation object", 
       JSON.stringify([
         {
           sample_id: "bad-1",
-          // conversation missing — runner iterates conversation.session_*
           qa: [],
         },
       ]),
@@ -666,7 +658,6 @@ test("loadLoCoMo10 uses custom parseFile when provided", async () => {
       mode: "full",
       datasetDir: dir,
       parseFile: (raw, filename) => {
-        // Custom parser that enforces a stricter invariant.
         const parsed = JSON.parse(raw) as Array<Record<string, unknown>>;
         if (parsed.length === 0) {
           throw new Error(`${filename} must have at least one conversation`);

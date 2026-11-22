@@ -126,7 +126,6 @@ test("detected meetings never overlap and stay ordered after merge", () => {
       audioWindows: [
         audio({ startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:40:00.000Z" }),
         audio({ startUtc: "2026-03-10T14:30:00.000Z", endUtc: "2026-03-10T15:10:00.000Z" }),
-        // A second, well-separated meeting so the ordering assertion is non-vacuous.
         audio({
           source: "granola",
           startUtc: "2026-03-10T18:00:00.000Z",
@@ -144,14 +143,12 @@ test("detected meetings never overlap and stay ordered after merge", () => {
 });
 
 test("sub-threshold overlap does not pair an app span with a conversation", () => {
-  // Only 1 minute of overlap; minOverlapMinutes default is 2 → audio-only rules apply.
   const meetings = detectMeetings(
     input({
       appSpans: [span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T14:10:00.000Z")],
       audioWindows: [audio({ startUtc: "2026-03-10T14:09:00.000Z", endUtc: "2026-03-10T14:16:00.000Z", distinctNonWearerSpeakers: 2 })],
     }),
   );
-  // 7-min conversation < 15-min audio-only floor and no qualifying app overlap → no meeting.
   assert.equal(meetings.length, 0);
 });
 
@@ -161,7 +158,6 @@ test("ids are stable across a re-run with 10% more fixture data appended", () =>
     audioWindows: [audio({ startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:55:00.000Z" })],
   });
   const first = detectMeetings(base);
-  // Re-run with an extra, later meeting appended (more data, same early meeting).
   const more = detectMeetings(
     input({
       appSpans: [...base.appSpans, span("Zoom", "2026-03-10T17:00:00.000Z", "2026-03-10T17:30:00.000Z")],
@@ -178,7 +174,6 @@ test("meetingId is deterministic and anchored on the exact start instant", () =>
   const a = meetingId(DATE, "2026-03-10T14:00:05.000Z");
   assert.equal(a, meetingId(DATE, "2026-03-10T14:00:05.000Z")); // same start instant → same id
   assert.match(a, /^mtg-2026-03-10-[0-9a-f]{8}$/);
-  // Distinct start instants — even within the same minute — get distinct ids.
   assert.notEqual(a, meetingId(DATE, "2026-03-10T14:00:06.000Z"));
   assert.notEqual(a, meetingId(DATE, "2026-03-10T14:01:00.000Z"));
 });
@@ -192,8 +187,6 @@ test("two short provider meetings in the same minute get distinct ids", () => {
       ],
     }),
   );
-  // Provider candidates bypass the duration floors and don't merge (no shared
-  // app, disjoint), so both survive — and must not collide on id.
   assert.equal(meetings.length, 2);
   assert.notEqual(meetings[0]?.id, meetings[1]?.id);
 });
@@ -207,7 +200,6 @@ test("a rolled-over calendar timestamp is dropped, not silently shifted", () => 
       ],
     }),
   );
-  // Feb 30 is invalid → dropped, never rolled into Mar 2.
   assert.equal(meetings.length, 1);
   assert.equal(meetings[0]?.startUtc, "2026-03-10T10:00:00.000Z");
 });
@@ -261,7 +253,6 @@ test("app+audio exactly at the 2-min overlap threshold qualifies", () => {
       ],
     }),
   );
-  // Exactly 2 min overlap (14:10–14:12) → pairs as app+audio.
   assert.equal(meetings.length, 1);
   assert.equal(meetings[0]?.detectionSource, "app+audio");
   assert.equal(meetings[0]?.app, "Zoom");
@@ -277,7 +268,6 @@ test("disjoint app + audio never pair even when minOverlapMinutes is 0", () => {
     }),
     { ...DEFAULT_MEETINGS_DETECTION_CONFIG, minOverlapMinutes: 0 },
   );
-  // Disjoint windows (overlap 0) must not pair; 7-min audio < 15-min floor → no meeting.
   assert.equal(meetings.length, 0);
 });
 
@@ -303,7 +293,6 @@ test("a malformed timestamp is skipped defensively without dropping valid meetin
       ],
     }),
   );
-  // The malformed window is dropped; the valid conversation is still detected.
   assert.equal(meetings.length, 1);
   assert.equal(meetings[0]?.startUtc, "2026-03-10T10:00:00.000Z");
 });

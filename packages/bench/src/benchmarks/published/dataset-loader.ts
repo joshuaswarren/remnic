@@ -146,9 +146,6 @@ async function loadDataset<T>(
     return { source: "missing", items: [], errors };
   }
 
-  // Quick mode: fall back to the bundled smoke fixture. This keeps CI green
-  // when `datasetDir` is absent or unreadable while still surfacing the
-  // probe errors so operators can tell why the real dataset wasn't used.
   return {
     source: "smoke",
     sha256: hashCanonicalJson(options.smokeFixture),
@@ -195,10 +192,6 @@ function parseLongMemEvalFile(raw: string, filename: string): LongMemEvalItem[] 
         `${filename} entry ${index} is missing a scalar answer field.`,
       );
     }
-    // Required arrays that the runner dereferences directly. Missing any
-    // of these silently would surface as a runtime error deep inside
-    // `runLongMemEvalBenchmark`; catch them here so the probe error
-    // message points at the dataset file.
     if (!Array.isArray(record.haystack_sessions)) {
       throw new Error(
         `${filename} entry ${index} is missing a haystack_sessions array.`,
@@ -219,10 +212,6 @@ function parseLongMemEvalFile(raw: string, filename: string): LongMemEvalItem[] 
         `${filename} entry ${index} is missing an answer_session_ids array.`,
       );
     }
-    // Walk each haystack session to validate its turn shape. The
-    // runner maps over `turn.role` + `turn.content` — catch missing
-    // fields at parse time so runtime failures surface at the dataset
-    // boundary.
     for (
       let sessionIndex = 0;
       sessionIndex < record.haystack_sessions.length;
@@ -258,8 +247,6 @@ function parseLongMemEvalFile(raw: string, filename: string): LongMemEvalItem[] 
         }
       }
     }
-    // Haystack session IDs and dates must be strings; `filter(Boolean)`
-    // in the runner would otherwise silently drop non-string entries.
     for (
       let stringIndex = 0;
       stringIndex < record.haystack_session_ids.length;
@@ -406,7 +393,6 @@ function normalizeLimit(limit: number | undefined): number | undefined {
       "Dataset limit must be a non-negative integer when provided.",
     );
   }
-  // CLAUDE.md rule 27: slice(-0) returns all items. Treat `0` as "empty".
   return limit;
 }
 

@@ -14,8 +14,6 @@ import type { CodingGraphLanguage } from "@remnic/core";
 import type { ResolutionResult } from "./resolution.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Status entry — one per configured language
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Per-language LSP status. Surfaced in `index_status` and rendered as a
@@ -36,7 +34,6 @@ export interface LspStatusEntry {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Status computation
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -88,7 +85,6 @@ export function getLspStatus(input: LspStatusInput): readonly LspStatusEntry[] {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Doctor rendering — one line per language
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -117,7 +113,6 @@ export function formatLspStatusLine(entry: LspStatusEntry): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Resolution result → status input adapter
 // ──────────────────────────────────────────────────────────────────────────
 
 /**

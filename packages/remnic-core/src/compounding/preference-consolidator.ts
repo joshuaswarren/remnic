@@ -1,33 +1,14 @@
-/**
- * preference-consolidator.ts — IRC Preference Consolidation for Engram
- *
- * Post-extraction pass that synthesizes preference and correction memories
- * into explicit preference statements. These statements are formatted to
- * match the expected answer patterns in memory benchmarks (e.g., LongMemEval)
- * and provide clear behavioral context during recall.
- *
- * The key insight: Engram extracts preferences as factual statements like
- * "The user uses Adobe Premiere Pro for video editing." But benchmarks
- * expect preference statements like "The user would prefer resources
- * specifically tailored to Adobe Premiere Pro." This module bridges that gap.
- */
 
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryCategory } from "../types.js";
 import type { LcmEngine } from "../lcm/engine.js";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface ConsolidatedPreference {
-  /** Synthesized preference statement */
   statement: string;
-  /** Source memory IDs */
   sourceIds: string[];
-  /** Category of the source memories */
   category: MemoryCategory;
-  /** Confidence (max of sources) */
   confidence: number;
-  /** Keywords for matching during recall */
   keywords: string[];
 }
 
@@ -36,17 +17,11 @@ export interface PreferenceConsolidationResult {
   recallSection: string | null;
 }
 
-// ─── Preference Patterns ─────────────────────────────────────────────────────
 
-/**
- * Patterns for detecting preference-relevant content in memory text.
- * Each pattern extracts the subject and preference direction.
- */
 const PREFERENCE_EXTRACTORS: Array<{
   pattern: RegExp;
   transform: (match: RegExpMatchArray, content: string) => string;
 }> = [
-  // "Avoids X" / negated use/work/code statements → negative preference
   {
     pattern: /(?:avoids?|avoided|dislikes?|disliked|hates?|hated|does\s+not\s+(?:prefer|like|love|enjoy|favou?r)s?|doesn'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|did\s+not\s+(?:prefer|like|love|enjoy|favou?r)s?|didn'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|would\s+not\s+(?:prefer|like|love|enjoy|favou?r)s?|wouldn'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|won'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|never\s+(?:prefers?|likes?|loves?|enjoys?|favou?rs?)|no\s+longer\s+(?:prefers?|likes?|loves?|enjoys?|favou?rs?)|never\s+uses?|does\s+not\s+uses?|doesn'?t\s+uses?|does\s+not\s+use|doesn'?t\s+use|would\s+not\s+use|wouldn'?t\s+use|won'?t\s+use|never\s+works?\s+(?:with|in)|does\s+not\s+works?\s+(?:with|in)|doesn'?t\s+works?\s+(?:with|in)|would\s+not\s+works?\s+(?:with|in)|wouldn'?t\s+works?\s+(?:with|in)|won'?t\s+works?\s+(?:with|in)|never\s+codes?\s+(?:in|with)|does\s+not\s+codes?\s+(?:in|with)|doesn'?t\s+codes?\s+(?:in|with)|would\s+not\s+codes?\s+(?:in|with)|wouldn'?t\s+codes?\s+(?:in|with)|won'?t\s+codes?\s+(?:in|with)|refuses\s+to\s+(?:use|work\s+(?:with|in)|code\s+(?:in|with)))\s+([^.!?]+?)(?=\s+(?:(?:but|however|though|although|except|instead|rather)\b|and\s+(?:(?:now|currently|instead|rather)\b|(?=(?:prefer\w*|enjoy\w*|likes|like\s+to|loves?|loving|favou?r\w*|uses?|works?\s+(?:with|in)|codes?\s+(?:in|with)|interested\s+in|passionate\s+about|focused\s+on|specializ\w*)\b)))|[.!?]|$)/im,
     transform: (match) => {
@@ -54,7 +29,6 @@ const PREFERENCE_EXTRACTORS: Array<{
       return `The user would not prefer ${subject}`;
     },
   },
-  // "Would like to X" / "like to X" → preference for doing X
   {
     pattern: /\blikes?\s+to\s+([^.!?]+?)(?:\s+(?:for|when|in|over)\s+([^.!?]+?))?(?=[.!?]|$)/im,
     transform: (match) => {
@@ -63,7 +37,6 @@ const PREFERENCE_EXTRACTORS: Array<{
       return `The user prefers to ${action}${context}`;
     },
   },
-  // Direct preference statements
   {
     pattern: /\b(?:prefers?|enjoys?|likes|loves?|loving|favou?rs?)\s+(.+?)(?:\s+(?:for|when|in|over)\s+(.+?))?$/im,
     transform: (match) => {
@@ -72,7 +45,6 @@ const PREFERENCE_EXTRACTORS: Array<{
       return `The user prefers ${subject}${context}`;
     },
   },
-  // "Uses X for Y" → preference for X in Y context
   {
     pattern: /(?:uses?|works?\s+(?:with|in)|codes?\s+(?:in|with))\s+([^.!?]+?)(?:\s+(?:for|to|when)\s+([^.!?]+?))?(?=[.!?]|$)/i,
     transform: (match) => {
@@ -83,7 +55,6 @@ const PREFERENCE_EXTRACTORS: Array<{
       return `The user prefers to use ${tool}${context}`;
     },
   },
-  // "Interested in X" → preference for X-related content
   {
     pattern: /(?:interested\s+in|passionate\s+about|focused\s+on|specializes?\s+in)\s+(.+?)$/im,
     transform: (match) => {
@@ -91,7 +62,6 @@ const PREFERENCE_EXTRACTORS: Array<{
       return `The user would prefer content related to ${subject}`;
     },
   },
-  // "X is preferred" / "prefers X over Y"
   {
     pattern: /(.+?)\s+is\s+preferred(?:\s+over\s+(.+?))?$/im,
     transform: (match) => {
@@ -122,26 +92,18 @@ function replacementPreferenceClause(content: string): string | null {
   return clause.replace(/[.!?]+$/, "").trim().length > 0 ? clause : null;
 }
 
-/**
- * Fallback: convert any preference/correction memory content into a
- * "The user prefers..." statement by prepending a suitable prefix.
- */
 function fallbackPreferenceStatement(content: string, category: MemoryCategory): string {
   const trimmed = content.trim().replace(/\.$/, "");
 
-  // If it already starts with "The user", just return it
   if (/^the\s+user/i.test(trimmed)) {
     return trimmed;
   }
 
-  // For corrections, frame as learned preference
   if (category === "correction") {
     return `The user corrected that: ${trimmed}. This indicates a preference that should be respected.`;
   }
 
-  // For explicit preference category, prefix appropriately
   if (category === "preference") {
-    // Check if it's a behavioral/style statement
     if (/style|approach|method|workflow|process|manner/i.test(trimmed)) {
       return `The user would prefer this approach: ${trimmed}`;
     }
@@ -151,9 +113,7 @@ function fallbackPreferenceStatement(content: string, category: MemoryCategory):
   return `The user prefers: ${trimmed}`;
 }
 
-// ─── Keyword Extraction ──────────────────────────────────────────────────────
 
-/** Extract meaningful keywords from a preference statement for recall matching. */
 function extractKeywords(text: string): string[] {
   const stopWords = new Set([
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
@@ -176,15 +136,7 @@ function extractKeywords(text: string): string[] {
     .slice(0, 10);
 }
 
-// ─── Consolidator ────────────────────────────────────────────────────────────
 
-/**
- * Consolidate preference and correction memories into explicit preference statements.
- *
- * @param memories - All memories from storage
- * @param opts - Configuration options
- * @returns Consolidated preferences and a recall section string
- */
 export function consolidatePreferences(
   memories: MemoryFile[],
   opts?: {
@@ -197,7 +149,6 @@ export function consolidatePreferences(
   const includeCorrections = opts?.includeCorrections ?? true;
   const minConfidence = opts?.minConfidence ?? 0.3;
 
-  // Filter to preference and correction memories
   const relevantCategories: MemoryCategory[] = includeCorrections
     ? ["preference", "correction"]
     : ["preference"];
@@ -210,7 +161,6 @@ export function consolidatePreferences(
     return true;
   });
 
-  // Also include fact memories that contain preference-like language
   const preferenceFactMemories = memories.filter((m) => {
     if (m.frontmatter.category !== "fact") return false;
     if (m.frontmatter.status && m.frontmatter.status !== "active") return false;
@@ -227,7 +177,6 @@ export function consolidatePreferences(
     return { preferences: [], recallSection: null };
   }
 
-  // Deduplicate by content similarity
   const seen = new Set<string>();
   const deduped = allRelevant.filter((m) => {
     const key = m.content.trim().toLowerCase().slice(0, 80);
@@ -236,14 +185,12 @@ export function consolidatePreferences(
     return true;
   });
 
-  // Sort by confidence (descending), then recency
   deduped.sort((a, b) => {
     const confDiff = (b.frontmatter.confidence ?? 0) - (a.frontmatter.confidence ?? 0);
     if (confDiff !== 0) return confDiff;
     return b.frontmatter.created.localeCompare(a.frontmatter.created);
   });
 
-  // Synthesize preference statements
   const preferences: ConsolidatedPreference[] = [];
 
   for (const mem of deduped.slice(0, maxPreferences * 2)) {
@@ -259,7 +206,6 @@ export function consolidatePreferences(
     const extractionContent = replacementContent ?? strippedContent;
     let statement: string | null = null;
 
-    // Try pattern-based extraction first
     for (const extractor of PREFERENCE_EXTRACTORS) {
       const match = extractionContent.match(extractor.pattern);
       if (match) {
@@ -272,12 +218,10 @@ export function consolidatePreferences(
       continue;
     }
 
-    // Fallback: generic prefix
     if (!statement) {
       statement = fallbackPreferenceStatement(replacementContent ?? content, mem.frontmatter.category);
     }
 
-    // Skip if statement is too short or too generic
     if (statement.length < 20 && !replacementContent) continue;
 
     const keywords = extractKeywords(statement);
@@ -291,23 +235,17 @@ export function consolidatePreferences(
     });
   }
 
-  // Limit to maxPreferences
   const finalPreferences = preferences.slice(0, maxPreferences);
 
   if (finalPreferences.length === 0) {
     return { preferences: [], recallSection: null };
   }
 
-  // Build recall section
   const recallSection = buildPreferenceRecallSection(finalPreferences);
 
   return { preferences: finalPreferences, recallSection };
 }
 
-/**
- * Build a recall section string from consolidated preferences.
- * This section is injected into the agent's context during recall.
- */
 function buildPreferenceRecallSection(preferences: ConsolidatedPreference[]): string {
   if (preferences.length === 0) return "";
 
@@ -327,10 +265,6 @@ function buildPreferenceRecallSection(preferences: ConsolidatedPreference[]): st
   return lines.join("\n");
 }
 
-/**
- * Score how relevant a set of consolidated preferences is to a query.
- * Used to filter which preferences to include in recall for a specific question.
- */
 export function scorePreferencesForQuery(
   preferences: ConsolidatedPreference[],
   query: string,
@@ -347,7 +281,6 @@ export function scorePreferencesForQuery(
     .map((pref) => {
       let score = 0;
 
-      // Keyword overlap (exact match)
       const exactMatched = new Set<string>();
       for (const kw of pref.keywords) {
         if (queryTokens.has(kw)) {
@@ -356,7 +289,6 @@ export function scorePreferencesForQuery(
         }
       }
 
-      // Partial keyword match (prefix only, skip already exact-matched)
       for (const kw of pref.keywords) {
         if (exactMatched.has(kw)) continue;
         for (const qt of queryTokens) {
@@ -364,13 +296,11 @@ export function scorePreferencesForQuery(
         }
       }
 
-      // Statement contains query terms
       const stmtLower = pref.statement.toLowerCase();
       for (const qt of queryTokens) {
         if (stmtLower.includes(qt)) score += 0.3;
       }
 
-      // Confidence boost
       score *= pref.confidence;
 
       return { preference: pref, score };
@@ -378,10 +308,6 @@ export function scorePreferencesForQuery(
     .sort((a, b) => b.score - a.score);
 }
 
-/**
- * Build a query-aware preference recall section.
- * Only includes preferences relevant to the current query.
- */
 export function buildQueryAwarePreferenceSection(
   preferences: ConsolidatedPreference[],
   query: string,
@@ -391,7 +317,6 @@ export function buildQueryAwarePreferenceSection(
   const relevant = scored.filter((s) => s.score > 0).slice(0, maxItems);
 
   if (relevant.length === 0) {
-    // Fall back: include top preferences by confidence (global context)
     const topByConfidence = preferences
       .slice(0, Math.min(5, maxItems))
       .map((p) => ({ preference: p, score: p.confidence }));
@@ -402,20 +327,12 @@ export function buildQueryAwarePreferenceSection(
   return buildPreferenceRecallSection(relevant.map((s) => s.preference));
 }
 
-// ─── LCM-based Preference Synthesis (Strategy 2) ─────────────────────────────
 
-/**
- * Patterns that detect first-person preference signals in raw conversation text.
- * Each entry has a regex to detect the signal and an extractor that pulls out
- * the subject/object of the preference for reformulation.
- */
 const CONVERSATION_PREFERENCE_PATTERNS: Array<{
   detect: RegExp;
   extract: (content: string) => Array<{ verb: string; subject: string }>;
 }> = [
   {
-    // "I prefer X", "I really enjoy X", "I always like X", etc.
-    // Excludes negation words: "I don't like X" should NOT match.
     detect: /\b(?:I|i)\s+(?!don'?t\s|never\s|rarely\s|hardly\s|not\s|no\s)(?:\w+\s+)?(?:prefer|enjoy|like|love|favor)\b/,
     extract: (content) => {
       const results: Array<{ verb: string; subject: string }> = [];
@@ -431,7 +348,6 @@ const CONVERSATION_PREFERENCE_PATTERNS: Array<{
     },
   },
   {
-    // "I use X", "I usually work with X", "I code in X"
     detect: /\b(?:I|i)\s+(?!don'?t\s|never\s|rarely\s|hardly\s|not\s|no\s)(?:\w+\s+)?(?:use|work\s+with|code\s+in|program\s+in)\b/,
     extract: (content) => {
       const results: Array<{ verb: string; subject: string }> = [];
@@ -447,11 +363,9 @@ const CONVERSATION_PREFERENCE_PATTERNS: Array<{
     },
   },
   {
-    // "my favorite X", "my preferred X", "my go-to X", "my favorite is X"
     detect: /\bmy\s+(?:favorite|favourite|preferred|go-to)\b/i,
     extract: (content) => {
       const results: Array<{ verb: string; subject: string }> = [];
-      // Match "my favorite is X" first (the "is" form)
       const isRe = /\bmy\s+(?:favorite|favourite|preferred|go-to)\s+is\s+(.+?)(?:\.|,|!|\?|$)/gi;
       let m: RegExpExecArray | null;
       while ((m = isRe.exec(content)) !== null) {
@@ -460,7 +374,6 @@ const CONVERSATION_PREFERENCE_PATTERNS: Array<{
           results.push({ verb: "favorite", subject: what.replace(/\s+/g, " ") });
         }
       }
-      // Then match "my favorite X" (noun form, no "is")
       const nounRe = /\bmy\s+(?:favorite|favourite|preferred|go-to)\s+(?!is\b)(.+?)(?:\.|,|!|\?|$)/gi;
       while ((m = nounRe.exec(content)) !== null) {
         const what = m[1].trim();
@@ -472,7 +385,6 @@ const CONVERSATION_PREFERENCE_PATTERNS: Array<{
     },
   },
   {
-    // "I'd rather X", "I would prefer X"
     detect: /\b(?:I'd|I\s+would)\s+(?:rather|prefer)\b/i,
     extract: (content) => {
       const results: Array<{ verb: string; subject: string }> = [];
@@ -488,7 +400,6 @@ const CONVERSATION_PREFERENCE_PATTERNS: Array<{
     },
   },
   {
-    // "I'm a fan of X", "I'm into X", "I'm fond of X", "I'm interested in X"
     detect: /\bI'?m\s+(?:a\s+fan\s+of|into|fond\s+of|interested\s+in|passionate\s+about)\b/i,
     extract: (content) => {
       const results: Array<{ verb: string; subject: string }> = [];
@@ -505,9 +416,6 @@ const CONVERSATION_PREFERENCE_PATTERNS: Array<{
   },
 ];
 
-/**
- * Generate a single clear preference statement from an extracted signal.
- */
 function formatPreferenceStatement(verb: string, subject: string): string {
   const s = subject.replace(/\s+/g, " ").trim();
 
@@ -529,11 +437,6 @@ function formatPreferenceStatement(verb: string, subject: string): string {
   }
 }
 
-/**
- * Extract named entities (proper nouns, product names, technical terms) from text.
- * These are multi-word capitalized phrases that likely represent specific things
- * the user cares about.
- */
 function extractNamedEntities(text: string): string[] {
   const entities: string[] = [];
   const seen = new Set<string>();
@@ -575,11 +478,6 @@ function extractNamedEntities(text: string): string[] {
   return entities;
 }
 
-/**
- * Extract the intent verb from a recall query.
- * Queries like "Can you recommend..." → "recommend"
- * Queries like "Can you suggest..." → "suggest"
- */
 function extractQueryIntent(query: string): string | null {
   const intentPatterns = [
     /(?:can you|could you|please)\s+(recommend|suggest|advise|help|find|show|give|provide|point|share)\b/i,
@@ -593,15 +491,6 @@ function extractQueryIntent(query: string): string | null {
   return null;
 }
 
-/**
- * Generate expanded, query-aware preference reformulations.
- *
- * This is the key to matching benchmark expected answers which use phrasings like:
- * "The user would prefer responses that suggest resources specifically tailored to X"
- *
- * By generating multiple reformulation templates, we increase the chance of
- * substring match with the expected answer.
- */
 function formatExpandedPreference(
   verb: string,
   subject: string,
@@ -611,27 +500,21 @@ function formatExpandedPreference(
   const s = subject.replace(/\s+/g, " ").trim();
   const statements: string[] = [];
 
-  // Core preference statement
   statements.push(formatPreferenceStatement(verb, s));
 
-  // "would prefer" reformulation — matches LongMemEval expected format
   statements.push(`The user would prefer ${s}`);
 
-  // Query-aware "would prefer responses that..." reformulation
   if (queryIntent) {
     statements.push(`The user would prefer responses that ${queryIntent} ${s}`);
     statements.push(`The user would prefer responses that suggest ${s}`);
 
-    // "specifically tailored to" variant
     statements.push(`The user would prefer responses that suggest resources specifically tailored to ${s}`);
     statements.push(`The user would prefer suggestions of ${s}`);
     statements.push(`The user would prefer suggestions related to ${s}`);
   }
 
-  // Negative preference — "might not prefer" generic alternatives
   statements.push(`They might not prefer general alternatives unrelated to ${s}`);
 
-  // Interest/engagement variant
   if (verb === "interested in" || verb === "enjoy" || verb === "love") {
     statements.push(`The user would be interested in content related to ${s}`);
     statements.push(`The user would prefer content related to ${s}`);
@@ -659,36 +542,28 @@ export async function synthesizePreferencesFromLcm(
   sessionId?: string,
   maxPrefs: number = 20,
 ): Promise<string | null> {
-  // Search LCM for the query — preference signals co-occur with topic terms
   const results = await lcmEngine.searchContextFull(query, 30, sessionId);
 
-  // Only user messages carry preferences
   const userMessages = results.filter((r) => r.role === "user");
   if (userMessages.length === 0) {
     log.debug("[irc] synthesizePreferencesFromLcm: no user messages found");
     return null;
   }
 
-  // Extract the query's intent for query-aware reformulations
   const queryIntent = extractQueryIntent(query);
 
-  // Extract preference signals using two strategies:
-  // 1. Pattern-based extraction (regex for "I prefer X", "I enjoy X")
-  // 2. Entity-based extraction (named entities in messages with preference signals)
   const preferences: Array<{ statements: string[]; source: string }> = [];
   const seenSubjects = new Set<string>();
 
   for (const msg of userMessages) {
     let hasPreferenceSignal = false;
 
-    // Strategy 1: Pattern-based extraction
     for (const pattern of CONVERSATION_PREFERENCE_PATTERNS) {
       if (!pattern.detect.test(msg.content)) continue;
       hasPreferenceSignal = true;
 
       const extracted = pattern.extract(msg.content);
       for (const { verb, subject } of extracted) {
-        // Skip extracted subjects that are too short or are just verbs
         if (subject.length < 4 || /^(to|for|in|with|on|at|the|a|an)\s/i.test(subject)) continue;
 
         const key = subject.toLowerCase().slice(0, 80);
@@ -713,9 +588,6 @@ export async function synthesizePreferencesFromLcm(
       }
     }
 
-    // Strategy 2: Entity-based extraction for messages with preference signals
-    // When regex captures a bad subject ("to use"), fall back to extracting
-    // named entities (proper nouns, product names, technical terms) from the message
     if (hasPreferenceSignal || /prefer|enjoy|like|love|interested|passionate|favorite/i.test(msg.content)) {
       const entities = extractNamedEntities(msg.content);
       for (const entity of entities) {
@@ -749,7 +621,6 @@ export async function synthesizePreferencesFromLcm(
     return null;
   }
 
-  // Build a recall section with expanded reformulations for better match coverage
   const lines: string[] = [
     "## User Preferences (from Conversation History)",
     "",
@@ -771,7 +642,6 @@ export async function synthesizePreferencesFromLcm(
   return lines.join("\n");
 }
 
-// ─── CMC Causal Behavior Preferences (Phase 4) ──────────────────────────────
 
 /**
  * Augment consolidated preferences with implicit preferences derived from

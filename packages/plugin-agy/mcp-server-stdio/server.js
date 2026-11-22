@@ -1,15 +1,9 @@
 #!/usr/bin/env node
-// @remnic/plugin-agy — stdio↔HTTP MCP proxy
-//
 // Bridges the Remnic HTTP MCP endpoint to a stdio MCP server Antigravity CLI (agy) can
 // speak. Same transport contract as @remnic/plugin-claude-code's proxy; the
 // difference is credential resolution (see below).
 //
 // URL: reads `REMNIC_PLUGIN_DAEMON_URL`, defaulting to `http://localhost:4318/mcp`
-// (matches the package's documented local daemon default). http:// is gated to
-// loopback hostnames (localhost, an IPv4 in 127.0.0.0/8, or ::1) so the bearer
-// token never travels cleartext to a non-loopback target; https:// is
-// unrestricted (the bearer is encrypted in transport).
 //
 // Transport: line-delimited JSON-RPC over stdin (with chunk-boundary safe
 // accumulation), JSON-RPC over stdout. The Remnic daemon's `/mcp` endpoint
@@ -48,12 +42,8 @@ function fatal(msg) {
 }
 
 function sanitizeMessage(msg) {
-  // Strip paths and control characters from upstream Node errors so they do
-  // not leak absolute filesystem paths or stack snippets into a JSON-RPC
-  // error envelope the client sees.
   if (!isString(msg)) return "internal error";
   let s = msg.replace(/[\p{Cc}]/gu, " ");
-  // Replace absolute paths with a generic token (defense-in-depth).
   s = s.replace(/\s(?:file:|\/)[^\s'"]+/g, " <path> ");
   if (s.length > 200) s = `${s.slice(0, 200)}…`;
   return s;
@@ -63,22 +53,12 @@ function isLoopbackHostname(hostname) {
   if (!hostname) return false;
   const h = hostname.toLowerCase();
   if (h === "localhost") return true;
-  // Reject bracketed literal IPv6 like "[::1]" — strip brackets first.
   const bare = h.startsWith("[") && h.endsWith("]") ? h.slice(1, -1) : h;
   if (bare === "::1") return true;
-  // IPv4 dotted: check 127.0.0.0/8 range.
   if (/^127(?:\.\d{1,3}){3}$/.test(bare)) return true;
-  // Defensive: anything that resolves through DNS that happens to be a
-  // loopback name (rare) is allowed by the URL constructor only if literally
-  // "localhost" so users must opt-in to LAN/external IPs explicitly.
   return false;
 }
 
-// Antigravity plugin: unlike the Claude Code package (which receives credentials
-// via userConfig at install time), this proxy resolves credentials from the
-// environment or the shared Remnic token store so hooks and MCP share one
-// `remnic token generate agy-cli` credential. Values that still contain an
-// unexpanded "${...}" placeholder are treated as unset.
 function envOrEmpty(name) {
   const v = readEnv(name, "");
   return v.includes("${") ? "" : v;
@@ -137,10 +117,6 @@ if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     `unsupported URL protocol in REMNIC_PLUGIN_DAEMON_URL: ${parsed.protocol} (expected http: or https:; refuse to send bearer token over plaintext to a non-loopback target)`
   );
 }
-// Plain http to a non-loopback host sends the bearer token cleartext, so it
-// is refused by default. Trusted-LAN/Tailscale deployments (the same shape
-// the hook runner only warns about) can opt in explicitly with
-// REMNIC_MCP_ALLOW_CLEARTEXT_HTTP=1; the refusal stays the default.
 const allowCleartextHttp = envOrEmpty("REMNIC_MCP_ALLOW_CLEARTEXT_HTTP") === "1";
 if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
   if (allowCleartextHttp) {
@@ -156,7 +132,6 @@ if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
 }
 const transport = parsed.protocol === "https:" ? https : http;
 
-// State: an in-flight count for graceful drain on stdin EOF.
 let inFlight = 0;
 let stdinEnded = false;
 let exiting = false;
@@ -165,8 +140,6 @@ let stdinTail = ""; // partial line carried across stdin data events
 const lineQueue = [];
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
-  // Concatenate with any prior tail (a JSON-RPC record split across chunks),
-  // split on \n, and carry the final fragment forward.
   const buf = `${stdinTail}${chunk}`;
   const parts = buf.split("\n");
   stdinTail = parts.pop();
@@ -178,14 +151,11 @@ process.stdin.on("data", (chunk) => {
 });
 process.stdin.on("end", () => {
   stdinEnded = true;
-  // Flush any trailing partial line; the boundary contract is that one
-  // newline-terminated line per JSON-RPC record.
   if (stdinTail.length > 0) {
     lineQueue.push(stdinTail);
     stdinTail = "";
     drain();
   }
-  // Drain in-flight forwards before exiting.
   tryExit();
 });
 
@@ -241,7 +211,6 @@ function handleLine(line) {
     writeError(null, -32700, `parse error: ${sanitizeMessage(err.message)}`);
     return;
   }
-  // Validate JSON-RPC shape: must be a non-null object with a string method.
   if (msg === null || Array.isArray(msg) || !(msg instanceof Object)) {
     writeError(null, -32600, "invalid request: not a JSON-RPC object");
     return;
@@ -250,7 +219,6 @@ function handleLine(line) {
     writeError(msg.id ?? null, -32600, "invalid request: missing or empty method");
     return;
   }
-  // Distinguish notification (no `id`) from request (has `id`).
   const isNotification = !Object.prototype.hasOwnProperty.call(msg, "id");
   inFlight += 1;
   forward(msg, isNotification).finally(() => {
@@ -271,9 +239,6 @@ function forward(msg, isNotification) {
   };
   if (!isNotification) payload.id = msg.id ?? null;
   const body = JSON.stringify(payload);
-  // Mirror the hook runner's namespace override: REMNIC_NAMESPACE (or the
-  // legacy ENGRAM_NAMESPACE) scopes every MCP call the same way it scopes
-  // hook observe/recall/flush bodies.
   const nsHeader = envOrEmpty("REMNIC_NAMESPACE") || envOrEmpty("ENGRAM_NAMESPACE");
   const headers = {
     "Content-Type": "application/json",
@@ -284,10 +249,6 @@ function forward(msg, isNotification) {
   };
   if (nsHeader) headers["X-Engram-Namespace"] = nsHeader;
   return new Promise((resolve) => {
-    // One-shot completion guard: req.destroy() can surface the same failure
-    // on both the request and response error channels (and a late socket
-    // error can follow a completed response). Only the first terminal path
-    // may write a JSON-RPC reply or resolve.
     let answered = false;
     const respond = (emit) => {
       if (answered) return;
@@ -302,9 +263,6 @@ function forward(msg, isNotification) {
         // request options want the bare address.
         hostname: parsed.hostname.replace(/^\[|\]$/g, ""),
         port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
-        // A bare base URL (REMNIC_DAEMON_URL without a path) targets the
-        // daemon's /mcp endpoint; an explicit path (subpath mount or the
-        // full endpoint) is preserved as configured.
         path:
           (parsed.pathname === "/" || !parsed.pathname
             ? "/mcp"
@@ -326,10 +284,6 @@ function forward(msg, isNotification) {
         res.on("end", () => {
           try {
             if (isNotification) {
-              // No reply expected. Either 2xx success or non-2xx-with-no-body
-              // both resolve silently; a 2xx body (some daemons return
-              // 202+JSON for non-streaming notifications) is also silently
-              // discarded because notifications never reply.
               if (res.statusCode < 200 || res.statusCode >= 300) {
                 process.stderr.write(
                   `remnic-mcp-proxy: notification ${msg.method} got HTTP ${res.statusCode}: ${sanitizeMessage(chunks).slice(0, 200)}\n`
@@ -431,7 +385,6 @@ function forward(msg, isNotification) {
         });
       }
     );
-    // One deadline for connect plus the full response. req.setTimeout() is an
     // idle timer: it does not arm until the socket connects and restarts on
     // every byte, so a daemon front that drops packets or trickles a reply
     // held the tool call open far past REQUEST_TIMEOUT_MS.
@@ -459,8 +412,6 @@ function tryExit() {
   if (exiting) return;
   if (!stdinEnded) return;
   if (inFlight > 0) {
-    // Wait for forwards to drain up to EXIT_DRAIN_TIMEOUT_MS, then exit anyway.
-    // Guard against an unbounded wait via a one-shot timer.
     setTimeout(() => {
       exiting = true;
       process.exit(0);

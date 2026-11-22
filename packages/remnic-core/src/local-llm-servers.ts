@@ -29,12 +29,6 @@ function explicitPortFromUrl(s: string): number | null {
   }
 }
 
-// LiteLLM must be recognised before the llama.cpp / vLLM probes: on a LiteLLM
-// proxy `GET /health` runs a live completion against EVERY deployment in its
-// pool, so a once-a-minute 2 s probe turns into a permanent load generator on
-// the backends (4,600 probe completions in 12 h observed). `GET /` is
-// auth-gated on LiteLLM and answers the JSON string "LiteLLM: RUNNING".
-// Not part of LOCAL_SERVERS: `orderedLocalServers` positions it explicitly.
 const LITELLM_SERVER: LocalServerConfig = {
   type: "litellm",
   defaultPort: 4000,
@@ -81,13 +75,6 @@ const LOCAL_SERVERS: LocalServerConfig[] = [
   },
 ];
 
-/**
- * Probe order for a configured base URL. Entries whose default port matches
- * the URL's explicit port go first, in the same order as before; the LiteLLM
- * entry is placed immediately ahead of the first entry that would probe
- * `GET /health`, so that request never reaches a LiteLLM proxy on any port.
- * LM Studio / Ollama / MLX probes are harmless on LiteLLM and keep their spot.
- */
 export function orderedLocalServers(configuredBaseUrl: string): LocalServerConfig[] {
   const configuredPort = explicitPortFromUrl(configuredBaseUrl);
   const matching = configuredPort === null

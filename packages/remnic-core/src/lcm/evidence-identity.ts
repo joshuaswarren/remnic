@@ -41,7 +41,6 @@ export function lcmEvidenceIdentity(
   };
 }
 
-/** Match a search hit to its expanded archive row without conflating siblings. */
 export function isSameLcmRow(
   left: LcmRowIdentity,
   leftFallbackSessionId: string,

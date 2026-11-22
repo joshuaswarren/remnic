@@ -1,29 +1,3 @@
-/**
- * Event-time resolver (issue #1578).
- *
- * Extraction can carry an optional per-fact `eventTime` expression — an ISO
- * date or a relative phrase verbatim from the source turn ("last March",
- * "yesterday", "since 2024").  This module resolves such expressions into a
- * `[validFrom, validUntil)` event-time interval, **anchored to the source
- * turn's timestamp** — never to `Date.now()`.
- *
- * Why anchor (not wall-clock): replay/import of old transcripts must resolve
- * "yesterday" against the *old* turn's yesterday, not today.  A relative
- * expression is meaningless without its anchor; resolving it against the
- * current time would silently rewrite history (AGENTS.md §39 — byte-identical
- * when the feature is off; rule 35 — half-open intervals; rule 51 — never
- * silently default invalid input).
- *
- * Resolution is **write-time-only**.  The on-disk frontmatter stores absolute
- * ISO timestamps strings (`valid_at` / `invalid_at`); readers never call back
- * into this module.  Anything unresolvable yields `ok: false` and the caller
- * records `eventTimeSource: "assumed"` with `valid_at` copied from the
- * ingestion anchor (`observedAt`).
- *
- * Interval semantics are `[validFrom, validUntil)` — inclusive start,
- * exclusive end (AGENTS.md §23).  A date-only expression resolving an *end*
- * bound converts to start-of-next-day so the end date itself is excluded.
- */
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 
 /**
@@ -234,23 +208,15 @@ function resolveSeasonYear(
   const anchorMonth = d.getUTCMonth() + 1;
 
   if (direction === -1) {
-    // "last <season>": go to the previous occurrence.
-    // If the season hasn't started yet this year (baseMonth > anchorMonth)
-    // or the anchor is currently INSIDE the season, roll back a year.
     if (baseMonth > anchorMonth || isInSeason(baseMonth, anchorMonth)) year -= 1;
-    // Winter tail (Jan/Feb): current winter started prev Dec, so "last"
-    // needs one more year back.
     if (baseMonth === 12 && anchorMonth <= 2) year -= 1;
   } else if (direction === +1) {
-    // "next <season>": go to the next occurrence.
-    // Winter from Jan/Feb: current winter started prev Dec; next is this Dec.
     if (baseMonth === 12 && anchorMonth <= 2) {
       // no year change — next winter is December of the anchor year
     } else if (baseMonth < anchorMonth || isInSeason(baseMonth, anchorMonth)) {
       year += 1;
     }
   } else if (direction === 0 && baseMonth === 12 && anchorMonth <= 2) {
-    // "this winter" from Jan/Feb: winter started in the previous December.
     year -= 1;
   }
   return buildDateMs(year, baseMonth, 1);
@@ -267,11 +233,6 @@ function resolveQuarter(
   let year = d.getUTCFullYear();
   const anchorMonth = d.getUTCMonth() + 1;
   const anchorQ = Math.floor((anchorMonth - 1) / 3) + 1;
-  // Roll back/forward when the target quarter hasn't started yet this year
-  // (startMonth past the anchor month) OR when the anchor is currently
-  // INSIDE the target quarter (review r2: "last Q2" from May returned 2026
-  // instead of 2025 because the quarter start month had already passed but
-  // the quarter was still ongoing).
   if (direction === -1 && (startMonth >= anchorMonth || anchorQ === qNumber))
     year -= 1;
   else if (direction === +1 && (startMonth <= anchorMonth || anchorQ === qNumber))
@@ -286,9 +247,6 @@ function resolveQuarter(
  */
 function resolveAbsolute(raw: string): number | null {
   const trimmed = raw.trim();
-  // YYYY-MM (ISO year-month, no day) → first day of that month, UTC
-  // (#1578 review r3: the prompt example "until 2025-06" must resolve, not
-  // fall back to "assumed").
   const ym = /^(\d{4})-(\d{2})$/.exec(trimmed);
   if (ym) {
     const ms = buildDateMs(Number(ym[1]), Number(ym[2]), 1);
@@ -296,7 +254,6 @@ function resolveAbsolute(raw: string): number | null {
   }
   const ms = parseFlexibleIsoTimestamp(trimmed);
   if (ms === null) return null;
-  // Date-only inputs (no T) anchor to start-of-day UTC.
   if (!/[Tt]/.test(trimmed)) return startOfDayUtc(ms);
   return ms;
 }
@@ -333,7 +290,6 @@ export function resolveEventTime(
 
   const lower = expr.toLowerCase();
 
-  // ── "since <x>" / "until <x>" / "through <x>" ──────────────────────────
   const sinceMatch = lower.match(/^since\s+(.+)$/);
   if (sinceMatch) {
     const inner = sinceMatch[1].trim();
@@ -342,10 +298,6 @@ export function resolveEventTime(
       resolveExplicitMonthYear(inner) ??
       resolveBareYear(inner) ??
       resolveAbsolute(inner);
-    // "since <bare month/season>": if the resolved start is future and the
-    // expression carries no explicit 4-digit year, the fact meant the most
-    // recent PAST occurrence of that period (codex review r2: "since March"
-    // from January produced a future validFrom).
     if (
       fromMs !== null &&
       fromMs > anchorMs &&
@@ -368,7 +320,6 @@ export function resolveEventTime(
     return { validUntil: untilIso, ok: true };
   }
 
-  // ── "yesterday" / "today" / "tomorrow" ─────────────────────────────────
   if (lower === "today") {
     const fromIso = toIsoUtc(startOfDayUtc(anchorMs));
     return fromIso ? { validFrom: fromIso, ok: true } : fallback;
@@ -382,7 +333,6 @@ export function resolveEventTime(
     return fromIso ? { validFrom: fromIso, ok: true } : fallback;
   }
 
-  // ── "last/this/next <period>" ──────────────────────────────────────────
   const relMatch = lower.match(/^(last|this|next)\s+(.+)$/);
   if (relMatch) {
     const direction = relMatch[1] === "last" ? -1 : relMatch[1] === "next" ? +1 : 0;
@@ -392,17 +342,12 @@ export function resolveEventTime(
     return fromIso ? { validFrom: fromIso, ok: true } : fallback;
   }
 
-  // ── bare month+year ("March 2025", "Dec 2024", "spring 2025") or
-  // bare four-digit year ("2024") ────────────────────────────────────────
-  // Explicit year is authoritative (never derived from the anchor). Shares
-  // resolveExplicitMonthYear / resolveBareYear with the since/until paths.
   const explicitMs = resolveExplicitMonthYear(lower) ?? resolveBareYear(lower);
   if (explicitMs !== null) {
     const fromIso = toIsoUtc(explicitMs);
     if (fromIso) return { validFrom: fromIso, ok: true };
   }
 
-  // ── absolute ISO date / datetime ───────────────────────────────────────
   const absMs = resolveAbsolute(expr);
   if (absMs !== null) {
     const fromIso = toIsoUtc(absMs);
@@ -424,16 +369,11 @@ function resolveRelativePeriod(
 ): number | null {
   const lower = period.trim().toLowerCase();
 
-  // Quarter token: "q1", "Q2", "quarter 3"
   const qTok = lower.match(/^q(?:uarter)?\s?([1-4])$/);
   if (qTok) {
     return resolveQuarter(anchorMs, Number(qTok[1]), direction);
   }
   if (lower === "quarter") {
-    // "last quarter" / "next quarter" move the quarter INDEX (with year
-    // wraparound), not just the year — resolveQuarter only nudges the year
-    // for an explicit quarter number, so routing "last quarter" through it
-    // returned the current quarter's start (review: bare last/next quarter).
     const d = new Date(anchorMs);
     let q = Math.floor(d.getUTCMonth() / 3) + 1;
     let year = d.getUTCFullYear();
@@ -447,12 +387,10 @@ function resolveRelativePeriod(
     return buildDateMs(year, QUARTER_START_MONTH[q], 1);
   }
 
-  // Relative unit: "week", "month", "year", "day"
   if (isRelativeUnit(lower)) {
     return shiftUnit(anchorMs, lower, direction);
   }
 
-  // Month or season name
   const monthMs = resolveMonthYear(anchorMs, lower, direction);
   if (monthMs !== null) return monthMs;
   const seasonMs = resolveSeasonYear(anchorMs, lower, direction);
@@ -467,18 +405,12 @@ function resolveRelativePeriod(
  * the start of the *following* period.
  */
 function resolveEndBound(anchorMs: number, period: string): number | null {
-  // Strip an optional "end of " prefix so "until end of March" resolves the
-  // same as "until March".  Review #1578 r2: previously the prefix was passed
-  // unchanged and resolveEndBound returned null for the full phrase.
   const trimmed = period.trim().replace(/^end\s+of\s+/i, "").trim();
 
-  // Bare four-digit year: exclusive end = January 1 of the FOLLOWING year.
   if (/^\d{4}$/.test(trimmed)) {
     return buildDateMs(Number(trimmed) + 1, 1, 1);
   }
 
-  // YYYY-MM (year-month) end bound: exclusive end = start of the FOLLOWING
-  // month, so "until 2025-06" spans all of June (#1578 review r3).
   const ymEnd = /^(\d{4})-(\d{2})$/.exec(trimmed);
   if (ymEnd) {
     const startMs = buildDateMs(Number(ymEnd[1]), Number(ymEnd[2]), 1);
@@ -488,19 +420,11 @@ function resolveEndBound(anchorMs: number, period: string): number | null {
     return startOfDayUtc(nd.getTime());
   }
 
-  // Absolute date/datetime end bound.
   const absMs = resolveAbsolute(trimmed);
   if (absMs !== null) {
-    // Date-only → start of next day (exclusive end).  Datetime → use as-is.
     if (!/[Tt]/.test(trimmed)) return startOfNextDayUtc(absMs);
     return absMs;
   }
-  // Explicit "<month|season> <year>" end bound (e.g. "until March 2025",
-  // "through spring 2025"). The explicit year is authoritative, so the
-  // exclusive end = start of the FOLLOWING month (for a single month) or the
-  // start of the month AFTER the season ends (for a 3-month season).
-  // Review r2: seasons previously advanced only 1 month, cutting off the
-  // last 2 months of the season.
   const explicitMs = resolveExplicitMonthYear(trimmed);
   if (explicitMs !== null) {
     const nd = new Date(explicitMs);
@@ -510,43 +434,26 @@ function resolveEndBound(anchorMs: number, period: string): number | null {
     return startOfDayUtc(nd.getTime());
   }
 
-  // Period-name end bound: month → exclusive end at start of the FOLLOWING
-  // month. "until <month>" is backwards-looking (the fact already stopped
-  // being true), so prefer the most recent PAST boundary: build it in the
-  // anchor year and roll back a year if that boundary is still future.
   const lower = trimmed.toLowerCase();
   const monthIdx = monthIndex(lower);
   if (typeof monthIdx === "number") {
     const d = new Date(anchorMs);
     const startMs = buildDateMs(d.getUTCFullYear(), monthIdx, 1);
     if (startMs === null) return null;
-    // Exclusive end = start of the month AFTER the named month.
     const nd = new Date(startMs);
     nd.setUTCMonth(nd.getUTCMonth() + 1);
     let endMs = startOfDayUtc(nd.getTime());
-    // Only roll back when the named month boundary is genuinely future
-    // relative to the anchor cycle.  When the anchor IS in the named month,
-    // the end of the current month is the right boundary — do not roll back
-    // (cursor review r2: "until March" from mid-March returned the prior year).
     if (endMs > anchorMs && d.getUTCMonth() + 1 !== monthIdx) {
       nd.setUTCFullYear(nd.getUTCFullYear() - 1);
       endMs = startOfDayUtc(nd.getTime());
     }
     return endMs;
   }
-  // Season end bound: advance by the full 3-month season.  Same
-  // backwards-looking rollback logic as month names, but do not roll back
-  // when the anchor is currently inside the season (codex review r2: bare
-  // season end bounds like "until spring" / "through summer" returned null).
   const seasonMonth = SEASON_TO_MONTH[lower];
   if (typeof seasonMonth === "number") {
     const d = new Date(anchorMs);
     const anchorMonth = d.getUTCMonth() + 1;
     let year = d.getUTCFullYear();
-    // Winter (Dec) from Jan/Feb: the current winter started in prev Dec,
-    // so build the season start from the previous year (codex review r2:
-    // bare winter end bounds used the anchor year's December, producing
-    // an exclusive end one year too far forward).
     if (seasonMonth === 12 && anchorMonth <= 2) year -= 1;
     const startMs = buildDateMs(year, seasonMonth, 1);
     if (startMs === null) return null;
@@ -654,7 +561,6 @@ export function pickFactEventTimeAnchor(
   fact: FactAnchorInput,
   batchAnchor: string | undefined,
 ): string | undefined {
-  // 1. Explicit per-fact source-turn timestamp (highest priority).
   if (
     typeof fact.sourceTurnTimestamp === "string" &&
     fact.sourceTurnTimestamp.trim().length > 0
@@ -662,7 +568,6 @@ export function pickFactEventTimeAnchor(
     const ms = parseFlexibleIsoTimestamp(fact.sourceTurnTimestamp.trim());
     if (ms !== null) return new Date(ms).toISOString();
   }
-  // 2. Earliest provenance span turn timestamp.
   if (fact.sources && fact.sources.length > 0) {
     let earliestMs: number | null = null;
     for (const src of fact.sources) {
@@ -673,6 +578,5 @@ export function pickFactEventTimeAnchor(
     }
     if (earliestMs !== null) return new Date(earliestMs).toISOString();
   }
-  // 3. Batch-wide anchor (legacy fallback).
   return batchAnchor;
 }

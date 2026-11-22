@@ -1,21 +1,3 @@
-/**
- * Per-session incremental buffer persistence (SmartBuffer layer).
- *
- * Pins the hot-path contract on top of the storage primitives tested in
- * storage-buffer-sessions.test.ts:
- *
- *   - a storage that exposes saveBufferSession/deleteBufferSession gets
- *     INCREMENTAL saves: only the sessions whose state actually changed are
- *     written, only on boundaries that need durability;
- *   - sessions whose state did not change are never rewritten;
- *   - eviction and resetToEmpty delete the corresponding session files;
- *   - a legacy storage (only loadBuffer/saveBuffer) keeps the exact old
- *     whole-state behavior — existing deployments and test doubles are
- *     unaffected.
- *
- * All saves flow through SmartBuffer's mutation chain, so there is exactly
- * one writer per session file.
- */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -32,11 +14,6 @@ interface SessionFileRecord {
   writeCount: number;
 }
 
-/**
- * Storage double implementing the incremental per-session surface. Records
- * per-session writes/deletes and whole-state saves separately so tests can
- * assert exactly which files the hot path touched.
- */
 class IncrementalStorage {
   readonly sessions = new Map<string, SessionFileRecord>();
   readonly deleted: string[] = [];
@@ -69,11 +46,6 @@ class IncrementalStorage {
   }
 }
 
-/**
- * Storage double implementing ONLY the legacy whole-state surface — every
- * pre-existing test double in the repo looks like this from SmartBuffer's
- * point of view, and must keep working unchanged.
- */
 class LegacyOnlyStorage {
   wholeStateSaves = 0;
   lastSaved: BufferState | null = null;
@@ -116,7 +88,6 @@ test("steady-state observe persists only the active session's file", async () =>
   await buffer.addTurn("thread-b", makeTurn("thread-b", "beta"));
   await buffer.flushPendingSave();
   assert.equal(storage.sessions.get("thread-b")?.writeCount, 1);
-  // Session A's turn did NOT touch session A's file again.
   assert.equal(storage.sessions.get("thread-a")?.writeCount, 1, "unchanged session file was rewritten");
 });
 
@@ -136,12 +107,10 @@ test("a second turn in the same session rewrites only that session's file", asyn
 
 test("extraction-boundary turn persists inline and durably", async () => {
   const storage = new IncrementalStorage(emptyState());
-  // bufferMaxTurns: 1 → the very first turn triggers extract_batch.
   const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 1 }), storage);
 
   const outcome = await buffer.addTurnWithOutcome("thread-a", makeTurn("thread-a", "trigger"));
   assert.equal(outcome.decision, "extract_batch");
-  // Inline save already ran inside the mutation — no flush needed.
   assert.equal(storage.sessions.get("thread-a")?.writeCount, 1);
   assert.equal(storage.wholeStateSaves, 0, "extraction boundary fell back to whole-state save");
 });
@@ -165,8 +134,6 @@ test("empty evicted sessions get their files deleted", async () => {
   const storage = new IncrementalStorage(emptyState());
   const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100, bufferMaxSessions: 4 }), storage);
 
-  // Clear one persisted entry to make it genuinely empty. Accepted-capture
-  // admission may reclaim this slot, but never a session with buffered turns.
   await buffer.addTurn("empty-old", makeTurn("empty-old", "will be extracted"));
   await buffer.flushPendingSave();
   await buffer.clearAfterExtraction("empty-old");
@@ -186,9 +153,6 @@ test("empty evicted sessions get their files deleted", async () => {
 });
 
 test("the default entry cap leaves headroom for live sessions during backlog drains (#3303)", async () => {
-  // w9C: live session captures were dropped when the extraction worker was busy
-  // on a backlog doc and the 200-session default cap refused new sessions. The
-  // default must leave enough headroom that live captures survive a backlog.
   const storage = new IncrementalStorage(emptyState());
   const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100 }), storage);
 
@@ -197,8 +161,6 @@ test("the default entry cap leaves headroom for live sessions during backlog dra
   }
   await buffer.flushPendingSave();
 
-  // A live session arriving while the backlog occupies 200 entries must be
-  // admitted, not dropped.
   const outcome = await buffer.addTurnBounded("live-session", makeTurn("live-session", "live turn"));
   assert.notEqual(outcome, null, "a live session at the default cap must not be dropped");
 });
@@ -242,7 +204,6 @@ test("buffer state survives a restart through per-session files", async () => {
     await first.addTurn("thread-b", makeTurn("thread-b", "beta"));
     await first.flushPendingSave();
 
-    // A fresh process reads the buffer back from the per-session files.
     const second = new SmartBuffer(config, storage);
     await second.load();
     assert.equal(second.getTurns("thread-a").length, 1);
@@ -273,7 +234,6 @@ test("durable capture at the entry cap is refused without evicting native backlo
     parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100, bufferMaxSessions: 4 }),
     storage,
   );
-  // default + 3 native sessions = 4 = cap.
   for (let i = 0; i < 3; i++) await buffer.addTurn(`native-${i}`, makeTurn(`native-${i}`, `native ${i}`));
   await buffer.flushPendingSave();
 
@@ -288,7 +248,6 @@ test("durable capture at the entry cap is refused without evicting native backlo
 });
 
 test("at-cap admission evicts nothing when eviction cannot free a slot (COS-244c)", async () => {
-  // Cap lowered below the accepted backlog: admission must refuse without dropping native work.
   const accepted = (key: string): BufferTurn => ({ ...makeTurn(key, "accepted"), acceptedCapture: true });
   const entry = (turn: BufferTurn): BufferEntryState => ({ turns: [turn], lastExtractionAt: null, extractionCount: 0 });
   const accKeys = ["acc-0", "acc-1", "acc-2", "acc-3"];

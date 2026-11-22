@@ -1,10 +1,3 @@
-/**
- * Tests for the extracted faithfulness + correction-intent config parser
- * (issue #1576 / #1585). Pins the behavior-preserving extraction: defaults
- * are byte-identical to the pre-extraction inline block, validation rejects
- * the same inputs with the same messages, and the new model-lab pointer keys
- * default empty (byte-identical pre-feature path, rule 39).
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -64,12 +57,9 @@ test("parseFaithfulnessGateConfig: timeout clamps to [1, 60000]; invalid rejects
 });
 
 test("parseFaithfulnessGateConfig: model-lab pointer keys default empty + accept strings (#1585)", () => {
-  // Defaults preserve the existing routing chain exactly.
   assert.equal(parseFaithfulnessGateConfig({}).extractionFaithfulnessBaseUrl, "");
   assert.equal(parseFaithfulnessGateConfig({}).extractionFaithfulnessModel, "");
-  // Non-string values are ignored → empty (not rejected; mirrors model key).
   assert.equal(parseFaithfulnessGateConfig({ extractionFaithfulnessBaseUrl: 123 }).extractionFaithfulnessBaseUrl, "");
-  // Real pointer values round-trip.
   const out = parseFaithfulnessGateConfig({
     extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
     extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",

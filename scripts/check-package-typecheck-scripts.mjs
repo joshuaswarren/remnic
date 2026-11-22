@@ -1,9 +1,4 @@
 #!/usr/bin/env node
-/**
- * Fail when a packages/* tsconfig package is missing check-types,
- * or missing precheck-types while it depends on @remnic/core.
- * Hit this run: connector-x failed tests (root) 10 minutes in.
- */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

@@ -95,24 +95,20 @@ test("scheduler stores on change+settle, dedups idle re-samples, captures new wi
   const clock = makeClock();
   const scheduler = new CaptureScheduler(fakeHelper(state), processor, spool, config, {}, clock);
 
-  // A foreground change opens a settle window — nothing stored yet.
   clock.nowMs = 0;
   await scheduler.tick();
   assert.equal(spool.countSnapshots(), 0);
   clock.nowMs = 50; // still within settleMs
   await scheduler.tick();
   assert.equal(spool.countSnapshots(), 0);
-  // Settled → the snapshot is stored.
   clock.nowMs = 200;
   await scheduler.tick();
   assert.equal(spool.countSnapshots(), 1);
 
-  // Idle re-sample of the identical window dedups (no new row).
   clock.nowMs = 200 + 1000 + 5; // past idleFallbackSeconds
   await scheduler.tick();
   assert.equal(spool.countSnapshots(), 1);
 
-  // A new (non-terminal) window → change → settle → a second row.
   state.snap = axWindow("Notes", "Meeting", "totally different meeting notes body");
   clock.nowMs += 10;
   await scheduler.tick(); // change
@@ -127,7 +123,6 @@ test("scheduler never stores a deny-listed window", async () => {
   const config = { ...defaultDaemonConfig(), settleMs: 0, idleFallbackSeconds: 1 };
   const spool = new Spool(":memory:");
   const processor = new CaptureProcessor(config);
-  // 1Password is a built-in deny default (see denylist.ts).
   const state = { snap: axWindow("1Password 8", "Vault", "secret vault contents"), ocr: "" };
   const clock = makeClock();
   const scheduler = new CaptureScheduler(fakeHelper(state), processor, spool, config, {}, clock);

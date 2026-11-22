@@ -1,14 +1,3 @@
-/**
- * Cross-process warm-cache revalidation for EmbeddingFallback (issue #3165,
- * the declined P1 on PR #3148). The warm search path trusts the in-memory
- * index because "every in-process mutation saves through saveIndex" — that
- * argument does not cover a second process publishing the generation on
- * disk (the offline-sync apply of remote-authoritative runtime state). Each
- * test spawns a real child process that writes through the normal
- * EmbeddingFallback mutation path, then asserts the parent's warm searches
- * revalidate against disk. Vectors are pure functions of the text so both
- * processes agree on them.
- */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -25,7 +14,6 @@ import {
 } from "./host-embedding-provider.js";
 import type { EmbeddingIndexStoreIo } from "./embedding-index-storage.js";
 
-/** Deterministic across processes: both sides embed with this exact function. */
 function vectorFor(text: string): number[] {
   const vec = [0, 0, 0, 0];
   for (let i = 0; i < text.length; i++) vec[i % 4] += text.charCodeAt(i) % 13;
@@ -43,7 +31,6 @@ function hostProvider(model: string): HostEmbeddingProvider {
 const PARENT_TEXT = "parent fact about database indexes";
 const CHILD_TEXT = "child fact about queue consumers";
 
-/** Spawn a real second process that indexes one memory under the given identity. */
 function runChildPeer(options: {
   memoryDir: string;
   hostModel: string;
@@ -253,8 +240,6 @@ test("an identity probe that raced an in-flight peer publication revalidates at 
   t.after(() => clearHostEmbeddingProvidersForTest());
   t.after(registerHostEmbeddingProvider(memoryDir, hostProvider("host-model-a")));
 
-  // The peer's io gate freezes its publication after the marker moved but
-  // before the index bytes are replaced: the window an unlocked reader sees.
   const { promise: release, resolve: unblock } = Promise.withResolvers<void>();
   const { promise: atWrite, resolve: reachedWrite } = Promise.withResolvers<void>();
   let peerGated = false;
@@ -285,9 +270,6 @@ test("an identity probe that raced an in-flight peer publication revalidates at 
   const peerWrite = peer.indexFile("mem-b", CHILD_TEXT, "namespaces/alpha/facts/child-b.md");
   await atWrite;
 
-  // Park the parent's probe on the in-flight window: its identity probe
-  // reads the old bytes, then its locked content load blocks on the peer's
-  // generation lock. Unblock only once the probe read has landed.
   const { promise: probeRead, resolve: probeReadLanded } = Promise.withResolvers<void>();
   const countingReadUtf8 = counting.io.readUtf8;
   counting.io.readUtf8 = async (filePath) => {
@@ -317,9 +299,6 @@ test("a failed completion marker keeps every probe revalidating until a publicat
   t.after(registerHostEmbeddingProvider(memoryDir, hostProvider("host-model-a")));
   const stateDir = path.join(memoryDir, "state");
 
-  // The peer's shard writes go through this shadow io so the injected
-  // state-dir permission failure hits ONLY the plain-fs completion marker
-  // write, never the content publication itself.
   const shadow: Record<string, string> = {};
   const { promise: release, resolve: unblock } = Promise.withResolvers<void>();
   const { promise: atWrite, resolve: reachedWrite } = Promise.withResolvers<void>();
@@ -343,16 +322,12 @@ test("a failed completion marker keeps every probe revalidating until a publicat
   await fallback.indexFile("mem-a", PARENT_TEXT, "namespaces/alpha/facts/parent-a.md");
   assert.equal((await fallback.search(PARENT_TEXT, 5))[0]?.id, "mem-a");
 
-  // Real publication whose completion marker write fails: the peer freezes
-  // at its first content write (marker already in-flight), the test makes
-  // the state dir unwritable, and the peer's completion write then fails.
   const peer = new EmbeddingFallback(parentConfig(memoryDir), peerIo);
   peerGated = true;
   const peerWrite = peer.indexFile("mem-b", CHILD_TEXT, "namespaces/alpha/facts/child-b.md");
   await atWrite;
 
   // Park the parent's probe on the in-flight window: its identity probe
-  // caches the in-flight stamp, then its locked load blocks on the peer.
   const { promise: probeRead, resolve: probeReadLanded } = Promise.withResolvers<void>();
   const countingReadUtf8 = counting.io.readUtf8;
   counting.io.readUtf8 = async (filePath) => {
@@ -369,8 +344,6 @@ test("a failed completion marker keeps every probe revalidating until a publicat
   await chmod(stateDir, prevMode);
   await parentSearch;
 
-  // With the completion write failed, the marker stays in-flight: the probe
-  // cached above must never match again — every search revalidates.
   const readsBeforeProbe = counting.reads();
   await fallback.search(CHILD_TEXT, 5);
   assert.ok(
@@ -378,8 +351,6 @@ test("a failed completion marker keeps every probe revalidating until a publicat
     "an in-flight stamp must never repeat: a probe that cached it must revalidate on the next search",
   );
 
-  // The next healthy publication completes its marker; the stamp then
-  // stabilizes and warm searches return to zero index reads.
   const healthyPeer = new EmbeddingFallback(parentConfig(memoryDir));
   await healthyPeer.indexFile("mem-c", CHILD_TEXT, "namespaces/alpha/facts/child-c.md");
   const settled = await fallback.search(CHILD_TEXT, 5);
@@ -401,8 +372,6 @@ test("a negative empty cache does not pin the store against a peer's first publi
   t.after(registerHostEmbeddingProvider(memoryDir, hostProvider("host-model-a")));
 
   const fallback = new EmbeddingFallback(parentConfig(memoryDir));
-  // Searching the empty store caches a fresh empty index (loadedFromDisk
-  // false): the negative-cache shape the invalidation block used to skip.
   assert.deepEqual(await fallback.search(PARENT_TEXT, 5), []);
 
   await runChildPeer({
@@ -444,14 +413,11 @@ test("a no-op removal after recovery leaves a stable stamp and no warm reload", 
   }
   await fallback.search(PARENT_TEXT, 5);
 
-  // Crash after the in-flight marker, before the staging publication.
   const stateDir = path.join(memoryDir, "state");
   const shardDir = path.join(stateDir, "embeddings");
   await rename(shardDir, path.join(stateDir, "embeddings.pre-replace.tmp"));
   await writeFile(path.join(stateDir, "embeddings.generation"), "in-flight");
 
-  // A no-op removal performs no persist: recovery alone must finalize the
-  // marker, or every search reloads the whole index forever.
   await fallback.removeFromIndex("mem-absent");
   const marker = (await readFile(path.join(stateDir, "embeddings.generation"), "utf-8")).trim();
   assert.notEqual(marker, "in-flight", "recovery with a no-op mutation must still finalize the marker");
@@ -491,10 +457,6 @@ test("a peer write that aliases the warm stamp's mtime tick still invalidates th
   }
   const shardDir = path.join(memoryDir, "state", "embeddings");
   assert.equal((await lstat(shardDir)).isDirectory(), true, "precondition: seed migrated to the published sharded generation");
-  // Pin the directory mtime to a whole-millisecond tick, warm the cache on
-  // it, then restore the SAME tick after the peer's write: on a coarse-tick
-  // filesystem the pre- and post-write stats are indistinguishable, so the
-  // revalidation stamp must still move through something that cannot alias.
   const aliasedTickSec = 1_700_000_000.5;
   await utimes(shardDir, aliasedTickSec, aliasedTickSec);
   assert.match(

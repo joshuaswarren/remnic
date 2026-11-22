@@ -209,31 +209,13 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected abstract bumpMemoryStatusVersion(): void;
   protected abstract bumpMemoryCorpusVersion(): void;
   protected abstract markFactHashIndexNotAuthoritative(): void;
-  /** #2837: durable unlink plus deletion-revision record, WITHOUT the CAS
-   * shard sweep — the concrete {@link deleteManagedStorageFile} composes the
-   * two so every deletion funnel (invalidation, maintenance purge, archive
-   * move, offline sync) sweeps. */
   protected abstract deleteManagedStorageFileDurable(filePath: string, deletionMtimeMs?: number | null): Promise<boolean>;
   protected abstract writeManagedStorageFile(filePath: string, write: () => Promise<void>): Promise<void>;
 
-  /** #2813 (P1 C, #2807): reserve the target's next durable CAS revision
-   * token as a two-phase receipt transaction — a PENDING write-ahead
-   * marker under the mutation's path lock, published COMMITTED only after
-   * the durable file write lands. Receipt identity lives in the per-target
-   * sidecar, never in public `frontmatter.updated`. The default host keeps
-   * no receipt identity; StorageManager records it. */
   protected async beginDurableMemoryRevision(_pathname: string, _expectedContent?: string | Buffer | null): Promise<CasRevisionTransaction | undefined> {
     return undefined;
   }
 
-  /** #2837 (shard cleanup): after a managed memory file is durably deleted,
-   * sweep its per-target CAS receipt shard so orphan shards cannot grow
-   * forever. The sweep runs under the shard's own lock and is best-effort —
-   * the memory file is already gone, so a sweep failure logs and never
-   * fails the delete. The sweeper is a second CasRevisionHost over the same
-   * memory dir; the host is stateless and every mutation serializes through
-   * the sidecar's file locks, so it shares the same shard files
-   * StorageManager's own host operates on. */
   private deletedMemoryShardSweeper: CasRevisionHost | null = null;
 
   protected async deleteManagedStorageFile(filePath: string, deletionMtimeMs?: number | null): Promise<boolean> {
@@ -543,12 +525,6 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     if (blockedKeySetMayHaveChanged) {
       await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath, ownedMarker);
     } else if (ownedMarker !== undefined) {
-      // The index only holds tombstone-blocked explicit-capture keys, so a
-      // write where neither side is blocked cannot have changed it. Rebuilding
-      // here re-reads the whole corpus per replicated file — measured 15-31s
-      // per write against a ~190k-file corpus, which turns a boot-scale
-      // `converge apply` into a multi-week run. Clear the committed marker and
-      // keep the index as-is.
       try {
         await this.getTombstoneBlockedCaptureIndex().clearCommittedWriteMarker(ownedMarker);
       } catch (err) {

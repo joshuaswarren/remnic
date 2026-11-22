@@ -33,7 +33,6 @@ const systemClock: SchedulerClock = {
 export interface SchedulerHooks {
   /** Called when a poll cycle throws (helper failure); the loop keeps running. */
   onError?: (err: unknown) => void;
-  /** Called after a snapshot is stored. */
   onStore?: (app: string, windowTitle: string) => void;
 }
 
@@ -102,14 +101,11 @@ export class CaptureScheduler {
       const context = await this.#helper.windowContext({ frontmost: true, maxNodes: this.#config.maxNodes });
       const key = `${context.app}\u0000${context.windowTitle}\u0000${context.browserUrl ?? ""}`;
       const now = this.#clock.now();
-      // Anchor the idle heartbeat to the first poll so the fallback measures from
-      // startup, not since epoch — otherwise it would preempt the settle window.
       if (this.#lastCaptureAt === Number.NEGATIVE_INFINITY) {
         this.#lastCaptureAt = now;
       }
 
       if (key !== this.#lastKey) {
-        // Foreground changed — open a settle window; capture only once stable.
         this.#lastKey = key;
         this.#changeAt = now;
         this.#pending = true;
@@ -117,8 +113,6 @@ export class CaptureScheduler {
       }
 
       const settled = this.#pending && now - this.#changeAt >= this.#config.settleMs;
-      // Idle is a heartbeat for an UNCHANGED foreground; it must not preempt a
-      // change that is still inside its settle window.
       const idle = !this.#pending && now - this.#lastCaptureAt >= this.#config.idleFallbackSeconds * 1000;
       if (!settled && !idle) return;
 

@@ -26,9 +26,6 @@ import type { StateLabel } from "./recall-state-view.js";
 import { isRecallDisclosure } from "./types.js";
 import type { RecallContextDegradation } from "./recall-context-composition.js";
 
-/**
- * Estimate token cost of a payload for X-ray disclosure accounting.
- */
 export function estimateRecallTokens(text: string | null | undefined): number {
   if (typeof text !== "string" || text.length === 0) return 0;
   return estimateTokenCount(text);
@@ -42,7 +39,6 @@ export interface RecallXrayDisclosureSummary {
   chunk: { count: number; estimatedTokens: number };
   section: { count: number; estimatedTokens: number };
   raw: { count: number; estimatedTokens: number };
-  /** Number of results without a recorded disclosure level. */
   unspecified: { count: number; estimatedTokens: number };
 }
 
@@ -105,9 +101,6 @@ export interface RecallXrayScoreDecomposition {
   final: number;
 }
 
-/**
- * Per-result breakdown inside an X-ray snapshot.
- */
 export interface RecallXrayResult {
   memoryId: string;
   path: string;
@@ -127,7 +120,6 @@ export interface RecallXrayResult {
   graphEdgeConfidences?: number[];
   /** Graph activation node ids recorded for path-scoring provenance. */
   pathNodeIds?: string[];
-  /** True when a graph path penalty was applied. */
   pathPenaltyApplied?: boolean;
   auditEntryId?: string;
   /** Human-readable list of filters the candidate *passed*. */
@@ -217,7 +209,6 @@ export interface RecallFilterTrace {
   name: string;
   considered: number;
   admitted: number;
-  /** Optional human-readable reason for any rejections. */
   reason?: string;
 }
 
@@ -234,7 +225,6 @@ export interface RecallFilterTrace {
  * disabled, or peer has no profile fields).
  */
 export interface RecallXrayPeerProfileInjection {
-  /** The peer id whose profile was injected. */
   peerId: string;
   /**
    * Number of profile fields included after the `peerProfileRecallMaxFields`
@@ -291,7 +281,6 @@ export interface RecallXraySnapshot {
   degradation?: RecallContextDegradation;
 }
 
-// ─── Builder ──────────────────────────────────────────────────────────────
 
 export interface BuildXraySnapshotInput {
   query: string;
@@ -305,13 +294,9 @@ export interface BuildXraySnapshotInput {
   sessionKey?: string;
   namespace?: string;
   traceId?: string;
-  /** Peer-profile injection metadata (issue #679 completion). */
   peerProfileInjection?: RecallXrayPeerProfileInjection | null;
-  /** Injected-context degradation (#2972). Omit on a healthy recall. */
   degradation?: RecallContextDegradation;
-  /** Optional injected timestamp for deterministic tests. */
   now?: () => number;
-  /** Optional injected id generator for deterministic tests. */
   snapshotIdGenerator?: () => string;
 }
 
@@ -348,9 +333,6 @@ export function buildXraySnapshot(
       ? cloneTierExplain(input.tierExplain)
       : null;
 
-  // Peer-profile injection annotation (issue #679 completion).
-  // Deep-copy via structuredClone so the caller can't mutate the snapshot
-  // after build. Accept null explicitly (no injection) or a valid object.
   let peerProfileInjection: RecallXrayPeerProfileInjection | null | undefined;
   if (input.peerProfileInjection && typeof input.peerProfileInjection === "object") {
     const raw = input.peerProfileInjection;
@@ -482,7 +464,6 @@ export class RecallXrayBuilder {
   }
 }
 
-// ─── Internals ────────────────────────────────────────────────────────────
 
 function cloneResult(result: RecallXrayResult): RecallXrayResult {
   if (!result || typeof result !== "object") {
@@ -503,22 +484,6 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
   const graphPath = Array.isArray(result.graphPath)
     ? result.graphPath.filter((x): x is string => typeof x === "string")
     : undefined;
-  // Issue #681 PR 3/3 — per-edge confidences alongside graph path.
-  // Each entry is clamped into [0, 1]; the array is rejected wholesale
-  // when alignment cannot be verified so downstream surfaces can rely
-  // on `graphEdgeConfidences[i]` describing the edge between
-  // `graphPath[i]` and `graphPath[i+1]`.
-  //
-  // Cursor review (#735): the input array length MUST match
-  // `graphPath.length - 1` *before* any per-element filtering. The
-  // earlier implementation skipped non-finite entries via `continue`
-  // and then length-checked the cleaned array — that would silently
-  // shift surviving values to earlier positions. Example: input
-  // `[0.5, NaN, 0.7]` for a 3-edge path would collapse to
-  // `[0.5, 0.7]`, length-check would pass against `expected = 2`, and
-  // the renderer would mis-attribute `0.7` to edge B→C when it really
-  // came from edge C→D. Reject on either size mismatch or any
-  // non-finite entry so misalignment is impossible.
   let graphEdgeConfidences: number[] | undefined;
   if (Array.isArray(result.graphEdgeConfidences) && graphPath && graphPath.length > 1) {
     const expected = graphPath.length - 1;
@@ -568,11 +533,6 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
   if (stateView !== undefined) out.stateView = stateView;
   if (auditEntryId !== undefined) out.auditEntryId = auditEntryId;
   if (rejectedBy !== undefined) out.rejectedBy = rejectedBy;
-  // Disclosure + token telemetry (issue #677 PR 3/4).  Only attach when
-  // present and well-formed; unknown disclosure values are dropped so a
-  // bad caller can't poison downstream renderers.  Uses the shared
-  // `isRecallDisclosure` guard so adding a fourth disclosure level
-  // requires touching only `types.ts`.
   if (isRecallDisclosure(result.disclosure)) {
     out.disclosure = result.disclosure;
   }
@@ -583,9 +543,6 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
   ) {
     out.estimatedTokens = Math.floor(result.estimatedTokens);
   }
-  // Tags from frontmatter (issue #689 PR 3/3).  Normalize identically to
-  // the recall-surface path: trim and drop empty strings so consumers can
-  // compare tags directly without a secondary normalization step.
   if (Array.isArray(result.tags)) {
     const cleanedTags = result.tags
       .filter((t): t is string => typeof t === "string")
@@ -599,9 +556,6 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
   if (provenance !== undefined) {
     out.provenance = provenance;
   }
-  // Claim-level provenance span (#1575 PR 3). Deep-copy the three scalar
-  // fields so the snapshot returned by getLastXraySnapshot is independent
-  // of the caller's object (matches the structuredClone contract).
   const ss = result.sourceSpan;
   if (
     ss &&
@@ -617,11 +571,6 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
       provenance: ss.provenance,
     };
   }
-  // Issue #1577 — preserve the trust projection through the clone so
-  // getLastXraySnapshot surfaces trust score/band/quarantine reason (review
-  // Oqg_o: cloneResult was silently dropping the field). Deep-copy the scalar +
-  // record fields so the snapshot is independent of the caller's object,
-  // matching the structuredClone contract used for every other field above.
   if (result.trust) {
     const t = result.trust;
     const components: Record<string, { value: number; weight: number }> = {};
@@ -711,9 +660,6 @@ function cloneScoreDecomposition(
 }
 
 function cloneTierExplain(tierExplain: RecallTierExplain): RecallTierExplain {
-  // Use structuredClone so future RecallTierExplain additions do not
-  // silently share references through hand-enumerated fields.  The
-  // payload is JSON-shaped.
   return structuredClone(tierExplain);
 }
 

@@ -1,11 +1,3 @@
-/**
- * Wearable connector registry.
- *
- * Concrete connectors live in optional à-la-carte packages and register
- * a factory here (directly, or via the built-in loader below which
- * dynamic-imports the known packages with computed specifiers so
- * bundlers and the dts resolver never require them at build time).
- */
 
 import { log } from "../logger.js";
 import type {
@@ -164,8 +156,5 @@ function isModuleNotFound(err: unknown, specifier: string): boolean {
     return false;
   }
   const message = (err as { message?: unknown }).message;
-  // Only treat the failure as "optional package absent" when the error
-  // names the specifier we asked for — a transitive resolution failure
-  // inside an installed connector is a broken install worth surfacing.
   return typeof message === "string" && message.includes(specifier);
 }

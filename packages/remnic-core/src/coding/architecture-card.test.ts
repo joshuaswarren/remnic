@@ -1,17 +1,3 @@
-/**
- * Tests for the architecture-card pure builder (issue #1548 Track A PR 3).
- *
- * Contract under test:
- *  - Deterministic: two runs over the same fixture produce byte-identical
- *    output (rule 38 — everything sorted before serialising).
- *  - Capped: card truncated with a visible marker when it exceeds the
- *    byte limit (rule 34 — never silently incomplete).
- *  - Invalid input rejected with a tagged failure (rule 51).
- *  - LLM summary: opt-in, deterministic card ships unchanged on failure
- *    (rules 13, 48).
- *
- * All fixtures are synthetic temp dirs — no real repos (public-repo policy).
- */
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,8 +11,6 @@ import {
   ARCHITECTURE_CARD_MAX_BYTES,
 } from "./architecture-card.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Fixture builder — synthetic repo tree in a temp dir
 // ──────────────────────────────────────────────────────────────────────────
 
 async function makeFixtureRepo(overrides: {
@@ -48,7 +32,6 @@ async function makeFixtureRepo(overrides: {
 const NOW = new Date("2026-07-05T12:00:00.000Z");
 
 // ──────────────────────────────────────────────────────────────────────────
-// Determinism — byte-stable across two runs (rule 38)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("deterministic: two runs over the same fixture produce byte-identical output", async () => {
@@ -79,7 +62,6 @@ test("deterministic: two runs over the same fixture produce byte-identical outpu
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Sorted output — directories, manifests, histogram all sorted (rule 38)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("sorted: top-level directories appear in lexicographic order", async () => {
@@ -116,7 +98,6 @@ test("sorted: language histogram by count desc, then ext alpha", async () => {
     const result = await buildArchitectureCard(repo, { now: NOW });
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    // .ts (3) should appear before .py (2) before .js (1)
     const tsIdx = result.card.content.indexOf(".ts:");
     const pyIdx = result.card.content.indexOf(".py:");
     const jsIdx = result.card.content.indexOf(".js:");
@@ -129,7 +110,6 @@ test("sorted: language histogram by count desc, then ext alpha", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Byte cap — truncation marker visible (rule 34)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("capped: card truncated with visible marker when exceeding maxBytes", async () => {
@@ -164,7 +144,6 @@ test("uncapped: normal fixture fits without truncation", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Invalid input — tagged failures (rule 51)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("invalid: empty repoRoot rejected with invalid_root", async () => {
@@ -209,14 +188,12 @@ test("invalid: unreadable root surfaces scan_failed, not a silent empty card (co
     if (result.ok) return;
     assert.equal(result.code, "scan_failed", "unreadable root is scan_failed, not a sparse success");
   } finally {
-    // Restore perms so rm can clean up.
     await chmod(repo, 0o755).catch(() => {});
     await rm(repo, { recursive: true, force: true });
   }
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Manifest parse — project name + entry points surface in the card
 // ──────────────────────────────────────────────────────────────────────────
 
 test("manifest: package.json name and entry points surface in card", async () => {
@@ -258,7 +235,6 @@ test("manifest: multiple manifests all listed sorted", async () => {
     const pkgIdx = result.card.content.indexOf("package.json");
     const goIdx = result.card.content.indexOf("go.mod");
     assert.ok(pkgIdx > -1 && goIdx > -1, "both manifests present");
-    // Alphabetical order: go.mod (g) before package.json (p)
     assert.ok(goIdx < pkgIdx, "go.mod before package.json (sorted)");
   } finally {
     await rm(repo, { recursive: true, force: true });
@@ -266,7 +242,6 @@ test("manifest: multiple manifests all listed sorted", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// LLM summary — opt-in, deterministic card on failure (rules 13, 48)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("llm summary: off by default — no summariser call", async () => {
@@ -373,10 +348,8 @@ test("llm summary: over-long summary clamped so deterministic card survives (cod
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// createArchitectureCardSummariser — factory wiring (rule 48)
 // ──────────────────────────────────────────────────────────────────────────
 
-/** Structural stub satisfying ArchitectureCardLlmClient — no cast needed. */
 function makeStubLlmClient(content: string | null): ArchitectureCardLlmClient {
   return {
     async chatCompletion() {
@@ -462,7 +435,6 @@ test("privacy: non-manifest file contents are not read (only extensions counted)
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Empty repo — graceful, not a crash
 // ──────────────────────────────────────────────────────────────────────────
 
 test("empty repo: produces a valid (if sparse) card without crashing", async () => {
@@ -479,16 +451,10 @@ test("empty repo: produces a valid (if sparse) card without crashing", async () 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// pyproject.toml [project.scripts] — EOF handling (codex P2 review)
 //
-// The scripts-table regex once used `\Z`, which JavaScript treats as a
-// literal `Z`. When `[project.scripts]` is the final section (the common
-// layout, with or without a trailing newline) the regex never matched and
-// every console-script entry point was dropped from the card.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("pyproject: scripts at EOF with no trailing newline surface as entry points", async () => {
-  // [project.scripts] is the LAST section and the file has NO trailing newline.
   const pyproject =
     '[project]\n' +
     'name = "demo-py"\n' +

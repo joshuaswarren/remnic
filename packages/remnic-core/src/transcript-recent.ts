@@ -1,7 +1,3 @@
-/**
- * Tail reads of daily transcript files for the unscoped `readRecent` (COS-666c). Split out of
- * transcript.ts to keep that file under its size cap.
- */
 
 import { open, stat } from "node:fs/promises";
 import path from "node:path";
@@ -113,7 +109,6 @@ export async function readNewestFromFiles(
       found = [];
       for (const line of lines) {
         try {
-          // SAFETY: the same cast the full-window read made here; `timestamp` is validated on the next line.
           const entry = JSON.parse(line) as TranscriptEntry;
           const entryTime = new Date(entry.timestamp);
           if (entryTime >= start && entryTime < end) found.push(entry);

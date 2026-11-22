@@ -148,9 +148,6 @@ export async function buildGraphSnapshot(opts: {
 
   const allEdges = await readAllEdges(opts.memoryDir, opts.graphConfig);
 
-  // Time-window filter (CLAUDE.md rule 35 — half-open `[since, +∞)`; equality
-  // is treated as inclusive because callers expect a single-point pin to
-  // surface edges stamped exactly at that instant).
   const timeFiltered = sinceMs === undefined
     ? allEdges
     : allEdges.filter((edge) => {
@@ -158,16 +155,10 @@ export async function buildGraphSnapshot(opts: {
         return Number.isFinite(ts) && ts >= sinceMs;
       });
 
-  // Focus-node neighborhood filter — restrict to edges incident on the node.
   const focusFiltered = focusNodeId
     ? timeFiltered.filter((edge) => edge.from === focusNodeId || edge.to === focusNodeId)
     : timeFiltered;
 
-  // Sort newest-first so the limit window keeps the most recent edges.  `ts`
-  // is an ISO string, so a string comparison agrees with chronological order
-  // for any well-formed timestamp; we still parse to avoid surprising
-  // ordering when timezones drift, falling back to lexicographic compare on
-  // tie / parse failure for stable ordering (CLAUDE.md rule 19).
   const sortedEdges = [...focusFiltered].sort((a, b) => {
     const aMs = Date.parse(a.ts);
     const bMs = Date.parse(b.ts);
@@ -175,21 +166,12 @@ export async function buildGraphSnapshot(opts: {
       return bMs - aMs;
     }
     if (a.ts !== b.ts) return a.ts < b.ts ? 1 : -1;
-    // Stable secondary key: from/to/type so identical-ts edges have a
-    // deterministic order across runs.
     const aKey = `${a.from}|${a.to}|${a.type}`;
     const bKey = `${b.from}|${b.to}|${b.type}`;
     if (aKey === bKey) return 0;
     return aKey < bKey ? -1 : 1;
   });
 
-  // Streaming category + limit pass.  Metadata is loaded lazily per
-  // endpoint with a memoization cache (`metadata`) so we never re-read the
-  // same memory file twice, never read more than `2 × limit` files, and
-  // never silently drop matching edges because a static cap fired before
-  // the category filter saw them — the bug Cursor flagged on PR #734
-  // when the pre-limit edge set referenced more than `2 × MAX_LIMIT`
-  // unique nodes.
   const metadata = new Map<string, GraphSnapshotNodeMetadata | null>();
   const trimmedEdges: GraphEdge[] = [];
 
@@ -199,8 +181,6 @@ export async function buildGraphSnapshot(opts: {
     try {
       resolved = await opts.loadNode(relPath);
     } catch {
-      // Loader errors are best-effort — leave the path absent so it
-      // falls through to the basename label / "unknown" category.
       resolved = null;
     }
     metadata.set(relPath, resolved);
@@ -220,10 +200,6 @@ export async function buildGraphSnapshot(opts: {
         continue;
       }
     } else {
-      // Even without a category filter we still want labels / kinds for
-      // the surfaced nodes, so warm the metadata cache for this edge.
-      // The cache is bounded by `2 × limit` because we stop iterating
-      // once `trimmedEdges` reaches `limit`.
       await ensureMetadata(edge.from);
       await ensureMetadata(edge.to);
     }
@@ -262,8 +238,6 @@ function normalizeCategoryFilter(
     const trimmed = value.trim();
     if (trimmed.length > 0) cleaned.add(trimmed);
   }
-  // Empty allow-list → reject everything.  We surface this as a 400 because
-  // the admin pane should never send `categories=` with no values.
   if (cleaned.size === 0) {
     throw new Error("graphSnapshot: categories must contain at least one non-empty value");
   }
@@ -301,7 +275,6 @@ function buildNodeIndex(
     bump(edge.to, edge);
   }
 
-  // Stable order: descending score, then ascending id for determinism.
   const ids = Array.from(aggregates.keys()).sort((a, b) => {
     const aScore = aggregates.get(a)?.score ?? 0;
     const bScore = aggregates.get(b)?.score ?? 0;

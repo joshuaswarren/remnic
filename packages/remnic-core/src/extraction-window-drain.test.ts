@@ -91,12 +91,10 @@ test("classifyDrainResult reports empty extraction results as failed", () => {
 test("mergeDrainResults sums counts, completes when any chunk completes, keeps the last skip reason", () => {
   const first = skippedResult("empty_extraction_result");
   const second: ExtractionRunResult = { status: "completed", persistedCount: 3, durableOutputCount: 4 };
-  // A completed chunk means the drain made durable progress.
   const merged = mergeDrainResults(mergeDrainResults(null, first), second);
   assert.equal(merged.status, "completed");
   assert.equal(merged.persistedCount, 3);
   assert.equal(merged.durableOutputCount, 4);
-  // All chunks skipped: the aggregate stays skipped with the last reason.
   const mergedFailed = mergeDrainResults(
     mergeDrainResults(null, skippedResult("provider_circuit_open")),
     first,

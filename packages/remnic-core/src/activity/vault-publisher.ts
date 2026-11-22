@@ -68,13 +68,6 @@ export interface PublishVaultNoteInput {
   dryRun?: boolean;
 }
 
-// Bounded whitespace runs: an unbounded `\s*` chain around a lazy capture is the
-// CodeQL js/polynomial-redos shape `check:regex-safety` rejects (issue #2439).
-// The name is captured up to the TERMINAL `:start`/`:end` suffix, so a marker
-// carrying a stray colon (`remnic:A:B:start`) is still seen by the scanner
-// instead of being silently invisible to it. `validateRegionName` rejects `:`
-// in a configured name, so such a marker can never be a legitimate pair and
-// always resolves to a refusal below.
 const START_MARKER_RE = /^<!--\s{0,8}remnic:(.+):start\s{0,8}-->$/;
 const END_MARKER_RE = /^<!--\s{0,8}remnic:(.+):end\s{0,8}-->$/;
 
@@ -103,16 +96,7 @@ export function publishVaultNote(input: PublishVaultNoteInput): VaultPublishStat
   }
 
 
-  // Issue #2917: input boundaries are total and run BEFORE any note byte
-  // is read or written, so a rejection can never leave a half-merged
-  // note behind.
 
-  // The heading strategy matches a section by scanning note headings with
-  // the shared ATX parser (`applyHeadingRegion`/`insertMarkersUnderHeading`).
-  // A name whose rendered heading parses back to something else — a
-  // trailing `#` run is stripped as a closing sequence (`## Timeline #`
-  // reads as `Timeline`) — can never be matched, so every publish would
-  // no-op or mis-scope. Reject it here rather than at match time.
   const headingsToProbe =
     strategy === "heading" ? input.sections.map((section) => section.name) : [];
   if (typeof input.insertUnderHeading === "string" && input.insertUnderHeading.length > 0) {
@@ -126,9 +110,6 @@ export function publishVaultNote(input: PublishVaultNoteInput): VaultPublishStat
     }
   }
 
-  // Property values land in note frontmatter or inline fields; validate
-  // their shape and bounds (vault-frontmatter.ts) against the final
-  // prefixed keys, in every mode, before any file access.
   const propertyEntries: Array<{ key: string; value: VaultPropertyValue }> = [];
   for (const section of input.sections) {
     if (!section.properties) continue;
@@ -156,8 +137,6 @@ function publishRelative(
 ): VaultPublishResult[] {
   const vault = expandTildePath(input.vaultPath);
   try {
-    // A symlinked vault root is rejected outright (security checklist §3):
-    // statSync follows links, lstatSync does not.
     const rootStat = lstatSync(vault);
     if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return refuse(relative, "error", "not_directory");
   } catch {
@@ -167,8 +146,6 @@ function publishRelative(
   const root = path.resolve(vault);
   const dest = path.resolve(root, relative);
   const lexical = path.relative(root, dest);
-  // `..notes/x.md` is an in-vault name, not parent traversal: only `..`
-  // exactly or a `..${path.sep}` prefix escapes.
   if (lexical.length === 0 || lexical === ".." || lexical.startsWith(`..${path.sep}`) || path.isAbsolute(lexical)) {
     return refuse(relative, "error", "path_escape");
   }
@@ -178,10 +155,6 @@ function publishRelative(
   let currentText: string | null = null;
   let expected: DestExpectation | null = null;
   try {
-    // A symlinked note is refused even when its target lives inside the
-    // vault (issue #1985): writeAtomic renames over the link itself, which
-    // would destroy the symlink and leave the target stale while the
-    // status still says `updated`.
     if (lstatSync(dest).isSymbolicLink()) {
       return refuse(relative, "error", "symlinked_note");
     }
@@ -250,11 +223,6 @@ function publishRelative(
     return [{ path: relative, outcome: "error", reason: failures.map((f) => f.reason).join("; ") }];
   }
 
-  // Partial publish (issue #1985 review): when some sections applied and
-  // others were skipped, the write covers ONLY the applied sections — their
-  // frontmatter properties, and the reported status. A skipped section's
-  // properties must never reach the file, and the omission must be surfaced
-  // as its own `skipped` row rather than reported as a plain `updated`.
   const skippedReason = failures.length > 0 ? failures.map((f) => f.reason).join("; ") : undefined;
   const withSkipped = (rows: VaultPublishResult[]): VaultPublishResult[] =>
     skippedReason === undefined ? rows : [...rows, { path: relative, outcome: "skipped", reason: skippedReason }];
@@ -279,11 +247,6 @@ function publishRelative(
     return withSkipped([{ path: relative, outcome: "updated" }]);
   }
   if (created) {
-    // A brand-new note may live in absent folders (Daily/{yyyy}/{MM}). Make
-    // the parent chain only here, after every refusal above has passed: the
-    // lexical path check and `containedBySymlinks` already proved the deepest
-    // existing ancestor is a real directory inside the vault, so every segment
-    // `mkdirSync` adds lands beneath that contained ancestor.
     try {
       mkdirSync(path.dirname(dest), { recursive: true });
     } catch {
@@ -293,8 +256,6 @@ function publishRelative(
 
   const write = writeAtomic(dest, text, expected);
   if (write === "concurrent") {
-    // The note changed after it was read (editor autosave): keep the user's
-    // bytes and surface the abort — never a silent overwrite, never `updated`.
     return [{ path: relative, outcome: "error", reason: "concurrent_write" }];
   }
   if (write !== "written") {
@@ -409,8 +370,6 @@ function findMarkerMismatch(text: string): string | null {
     }
     const end = match[1]!;
     if (begin === null) return `orphan_end:${end}`;
-    // A blank marker name cannot be paired at all: refuse rather than let
-    // assertBeginEndPair throw out of the publisher.
     if (begin.trim().length === 0 || end.trim().length === 0) return `name_mismatch:${begin}:${end}`;
     if (!assertBeginEndPair({ beginName: begin, endName: end }).ok) return `name_mismatch:${begin}:${end}`;
     begin = null;
@@ -457,9 +416,6 @@ export function mergeFrontmatterKeys(
 ): { ok: true; text: string } | { ok: false; reason: string } {
   const entries = Object.entries(updates);
   if (entries.length === 0) return { ok: true, text: noteText };
-  // The writer re-validates the same boundary the publisher entry checked
-  // (issue #2917): this function is exported, so a direct caller must not
-  // be able to smuggle a newline-bearing or unbounded value into a note.
   const checked = validateVaultProperties(entries.map(([key, value]) => ({ key, value })));
   if (!checked.ok) {
     return { ok: false, reason: "invalid_property" };
@@ -498,10 +454,6 @@ export function mergeFrontmatterKeys(
     const idx = line.indexOf(":");
     if (idx === -1) continue;
     const rawKey = line.slice(0, idx);
-    // Leading whitespace is exactly the signal that this is a nested,
-    // user-owned child key (`custom:` / `  remnic_focus: old`). Only an
-    // unindented top-level mapping may satisfy a pending update, so the
-    // key is NOT trimmed before that decision.
     if (rawKey !== rawKey.trimStart()) continue;
     const key = rawKey.trimEnd();
     if (!pending.has(key)) continue;
@@ -622,7 +574,6 @@ function writeAtomic(dest: string, text: string, expect: DestExpectation | null)
       return "concurrent";
     }
   } catch {
-    // Destination unreadable at verify time: refuse to replace.
     try {
       unlinkSync(tmpPath);
     } catch {

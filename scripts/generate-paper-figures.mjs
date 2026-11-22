@@ -56,24 +56,6 @@ const TRUST_SCORE_SRC = join(
   "trust-score.ts",
 );
 
-/**
- * Which artifact files under docs/benchmarks/results/ are COMMITTED (and thus
- * safe to plot). The dir is gitignored (root .gitignore line 44), so the
- * self-hosted CI runner accumulates UNTRACKED leftover artifacts there; a
- * newest-by-finishedAt sort would otherwise grab one and the byte-identical
- * regeneration test would fail in CI only.
- *
- * Source of truth: the committed manifest at docs/benchmarks/artifact-manifest.json
- * (a non-gitignored file listing tracked basenames). It is git-INDEPENDENT, so it
- * works in the CI test subprocess where `git ls-files` is not reliably callable.
- * `refreshArtifactManifest()` rewrites it from `git ls-files` when git is
- * available (local dev), keeping it self-maintaining.
- *
- * Returns `null` (no filtering) for an unmanaged results dir (a
- * REMNIC_FIGURES_RESULTS_DIR override — every file found there is a
- * candidate) or when neither the manifest nor git yields anything
- * (defensive: treat as unmanaged).
- */
 const ARTIFACT_MANIFEST = join(REPO_ROOT, "docs", "benchmarks", "artifact-manifest.json");
 
 function readManifestNames() {

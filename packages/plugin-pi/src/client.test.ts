@@ -289,8 +289,6 @@ test("RemnicClient reports invalid JSON clearly for successful daemon responses"
 });
 
 // ---------------------------------------------------------------------------
-// Issue #3257: liveness probes /engram/v1/live, legacy /health only on 404
-// ---------------------------------------------------------------------------
 
 function headerValue(headers: HeadersInit | undefined, name: string): string | undefined {
   if (!headers) return undefined;
@@ -386,7 +384,6 @@ test("RemnicClient.live surfaces 404 when the legacy path is also missing", asyn
 
 
 // ---------------------------------------------------------------------------
-// Issue #1600: 413 on large turns — observe chunking & truncation
 // ---------------------------------------------------------------------------
 
 test("chunkObservePayload splits a batch that exceeds the byte cap", () => {
@@ -455,7 +452,6 @@ test("observe 413 error message includes the body size for operator tuning (#160
 });
 
 // ---------------------------------------------------------------------------
-// Issue #1602: transient socket close — observe retries instead of dropping
 // ---------------------------------------------------------------------------
 
 test("isTransientNetworkError classifies connection-level failures", () => {
@@ -728,20 +724,16 @@ test("observe bodies carry a per-call random idempotencyKey that a replay nonce 
 
   const client = new RemnicClient(baseConfig());
   const message: ObserveMessage = { role: "user", content: "yes" };
-  // Two genuinely separate identical turns ("yes" twice) must NOT share an
-  // identity, or the daemon's idempotency record would drop the second as a replay.
   await client.observe("sess-a", "/tmp/work", [message]);
   await client.observe("sess-a", "/tmp/work", [message]);
   assert.match(String(bodies[0].idempotencyKey), /^obs-[0-9a-f-]{36}-[0-9a-f]{16}$/);
   assert.notEqual(bodies[0].idempotencyKey, bodies[1].idempotencyKey, "separate identical turns get distinct keys");
 
-  // A replay of the SAME enqueued entry reuses its nonce, so key and body match.
   const nonce = "11111111-2222-3333-4444-555555555555";
   await client.observe("sess-a", "/tmp/work", [message], { replayNonce: nonce });
   await client.observe("sess-a", "/tmp/work", [message], { replayNonce: nonce });
   assert.equal(bodies[2].idempotencyKey, bodies[3].idempotencyKey, "same nonce + same payload => same key");
 
-  // Same nonce but a re-split/different payload must not reuse a key (server would answer a payload conflict).
   await client.observe("sess-a", "/tmp/work", [{ role: "user", content: "different" }], { replayNonce: nonce });
   assert.notEqual(bodies[3].idempotencyKey, bodies[4].idempotencyKey, "same nonce + different payload => different key");
 });

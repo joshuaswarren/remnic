@@ -66,7 +66,6 @@ test("exact expiry boundary does not retain", () => {
   assert.deepEqual(result.stdout, ["retain=false"]);
 });
 
-// ---- delete (dry-run plan over stdin JSON-lines candidates) ----
 
 const NOW_MS = Date.parse("2026-02-01T00:00:00.000Z");
 const EXPIRED_MS = Date.parse("2026-01-01T00:00:00.000Z"); // 31 days old
@@ -152,7 +151,6 @@ test("delete rejects an unknown scope", () => {
   assert.match(result.stderr.join("\n"), /unknown activity delete scope/);
 });
 
-// ---- redact (drop keys from one JSON item on stdin) ----
 
 function captureRedact(rest: string[], itemJson: string): { code: number; stdout: string[]; stderr: string[] } {
   const stdout: string[] = [];
@@ -186,7 +184,6 @@ test("redact requires --keys and a JSON object item", () => {
   assert.match(notObject.stderr.join("\n"), /must be a JSON object/);
 });
 
-// ---- gates (master-off opt-out resolution) ----
 
 function captureGates(rest: string[]): { code: number; stdout: string[]; stderr: string[] } {
   const stdout: string[] = [];

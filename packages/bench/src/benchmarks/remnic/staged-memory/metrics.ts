@@ -1,15 +1,7 @@
-/**
- * Statistics extensions for the staged-memory benchmark (issue #2346):
- * paired sign-flip permutation p-values, Holm correction across declared
- * primary metrics, and zero-denominator `NA` accounting. `NA` values are
- * excluded from every mean, interval, permutation test, and correction —
- * they are recorded, never averaged around.
- */
 
 import { createSeededRandom } from "../../../seeded-random.js";
 
 export const STAGED_MEMORY_PERMUTATION_SAMPLES = 10_000;
-/** Pinned so repeated runs reproduce identical p-values (no Math.random). */
 export const STAGED_MEMORY_STATISTICS_SEED = 0x5eed5;
 
 export interface PairedPermutationResult {
@@ -39,7 +31,6 @@ export function pairedPermutationTest(
   for (let iteration = 0; iteration < samples; iteration += 1) {
     let flipped = 0;
     for (const difference of diffs) {
-      // Deterministic coin per pair; comparisons never touch Math.random.
       flipped += rng() < 0.5 ? difference : -difference;
     }
     if (Math.abs(flipped) >= observed) {

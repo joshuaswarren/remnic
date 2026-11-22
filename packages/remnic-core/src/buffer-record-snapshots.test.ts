@@ -1,18 +1,4 @@
 import assert from "node:assert/strict";
-/**
- * recordTurnUnlocked snapshot retention — issue: the per-turn mutation built
- * `priorTurns` + `activeTurnsSnapshot` + `retainedTurnsSnapshot` (two full
- * `copyBufferTurn` maps) on EVERY admitted turn, even when the decision path
- * consumes none of them: a plain `keep_buffering` turn with no surprise probe
- * eligible branch discards all three. The mutation now builds the snapshots
- * only when the decision path needs them (`keep_buffering` under an
- * eligible surprise branch, or any extraction decision), so steady-state
- * buffering performs no per-turn snapshot copies.
- *
- * Harness: an instance-level spy wraps the (private) recordTurnUnlocked and
- * captures each AddTurnMutationResult, so tests assert on exactly what the
- * mutation returned — no production instrumentation.
- */
 import test from "node:test";
 
 import { type BufferSurpriseProbe, SmartBuffer } from "./buffer.js";

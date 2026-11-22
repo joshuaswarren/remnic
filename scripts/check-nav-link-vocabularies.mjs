@@ -1,25 +1,4 @@
 #!/usr/bin/env node
-/**
- * Navigation link-type vocabulary agreement (issue #1956 review fallout).
- *
- * Three lists describe "what kinds of link can a traversal follow":
- *
- *   1. `RECALL_NAV_LINK_TYPES` in recall-navigate.ts      — the stepper
- *   2. `NAVIGATE_LINK_TYPES`  in recall-navigate-link.ts  — the shared parser
- *   3. `MemoryLinkType`       in types.ts                 — what is persisted
- *
- * They drifted apart silently, and it took two review rounds to find: the
- * shared parser rejected `follows`/`references`/`related` (which real
- * frontmatter carries, so a traversal over stored links dropped those
- * neighbors) and also rejected `supersedes` (which the stepper accepts, so
- * wiring the two together would have refused a relation the surface handles).
- *
- * The invariant this gate enforces: the shared parser's vocabulary must be a
- * SUPERSET of both the stepper's list and the persisted link types. It may
- * know extra names; it may never know fewer, because it is the front door.
- *
- * Run: node scripts/check-nav-link-vocabularies.mjs
- */
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -42,12 +21,6 @@ const PERSISTED = {
   symbol: "MemoryLinkType",
 };
 
-/**
- * Remove comments before any declaration is scanned. Without this, a
- * commented-out member (`// "related"`) reads as vocabulary the parser
- * supports, and the gate can pass while the real lists still diverge.
- * String-aware so a `//` inside a literal survives.
- */
 export function stripComments(text) {
   let out = "";
   let i = 0;
@@ -80,8 +53,6 @@ export function stripComments(text) {
       i += 2;
       while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i += 1;
       i += 2;
-      // A separator, not nothing: `export/* note */type X` must not collapse
-      // into `exporttype X`, which no declaration regex can match.
       out += " ";
       continue;
     }
@@ -91,15 +62,7 @@ export function stripComments(text) {
   return out;
 }
 
-/**
- * Fail closed when a declaration contains members this extractor cannot see.
- * A union or array composed through an alias or a spread (`| OtherLinkTypes`,
- * `...MORE_TYPES`) would otherwise be silently ignored, so the gate could
- * report agreement while the real vocabularies diverged — the exact failure
- * this gate exists to prevent.
- */
 export function assertOnlyLiteralMembers(body, literals, symbol, relFile, separator) {
-  // Remove every literal we DID extract, then check nothing substantive is left.
   let remainder = body;
   for (const literal of literals) remainder = remainder.replace(`"${literal}"`, "");
   const leftover = remainder
@@ -115,7 +78,6 @@ export function assertOnlyLiteralMembers(body, literals, symbol, relFile, separa
   }
 }
 
-/** Extract the string literals of a `const NAME = [...] as const` array. */
 function readArrayLiterals(relFile, symbol) {
   const text = stripComments(readFileSync(path.join(ROOT, relFile), "utf8"));
   const declaration = new RegExp(
@@ -137,7 +99,6 @@ function readArrayLiterals(relFile, symbol) {
   return literals;
 }
 
-/** Extract the members of a `type NAME = "a" | "b"` union. */
 function readUnionLiterals(relFile, symbol) {
   const text = stripComments(readFileSync(path.join(ROOT, relFile), "utf8"));
   const match = text.match(new RegExp(`export\\s+type\\s+${symbol}\\s*=\\s*([^;]+);`, "m"));
@@ -164,7 +125,6 @@ export function findVocabularyGaps({ stepper, parser, persisted }) {
   for (const name of persisted) {
     if (!known.has(name)) gaps.push({ missing: name, requiredBy: "persisted" });
   }
-  // Deterministic report: name, then which list demands it.
   gaps.sort((a, b) =>
     a.missing === b.missing
       ? a.requiredBy < b.requiredBy

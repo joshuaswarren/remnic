@@ -1,16 +1,3 @@
-/**
- * Surface glue for the two recall-diagnostics reads (issue #3033).
- *
- * `access-http.ts` is at its file-size ratchet ceiling, so the route bodies
- * live here and the router keeps only a thin dispatch line each (AGENTS.md:
- * extract the addition to a sibling module). The pre-existing X-ray route
- * body moved here unchanged for the same reason and because the two reads
- * belong together — `xray` explains the results a recall returned, `why`
- * explains the ones it did not.
- *
- * Both helpers return `{ status, body }` rather than writing to the response
- * so they stay unit-testable, matching `handleWhoKnowsHttpQuery`.
- */
 
 import { EngramAccessInputError } from "./access-errors.js";
 import type { McpTool } from "./access-mcp.js";
@@ -23,11 +10,6 @@ export interface RecallDiagnosticsHttpOutcome {
   body: unknown;
 }
 
-/**
- * `remnic.recall_why` / `engram.recall_why`. `withToolAliases` in
- * `access-mcp.ts` emits the canonical `remnic.` alias automatically
- * (dual-naming invariant for every new MCP tool).
- */
 export const RECALL_WHY_MCP_TOOLS: McpTool[] = [
   {
     name: "engram.recall_why",
@@ -61,14 +43,6 @@ export const RECALL_WHY_MCP_TOOLS: McpTool[] = [
   },
 ];
 
-/**
- * `GET /engram/v1/recall/why` (and the `/remnic/v1/...` spelling).
- *
- * Invalid input is a 400 rather than a silent default (Review Prevention
- * Checklist #1 / #39). Backend faults are NOT mapped here: an outage is
- * reported inside the 200 body as `backend_unavailable`, and a genuine
- * server-side fault rethrows so the router returns 500 and logs it.
- */
 export async function handleRecallWhyHttpQuery(deps: {
   getParam: (name: string) => string | null;
   resolveNamespace: (namespace: string | undefined) => string | undefined;
@@ -87,8 +61,6 @@ export async function handleRecallWhyHttpQuery(deps: {
       },
     };
   }
-  // `expect` is optional, but an explicitly-supplied blank value is a caller
-  // mistake, not a request for the whole-pipeline report.
   const expectParam = deps.getParam("expect");
   if (expectParam !== null && expectParam.trim().length === 0) {
     return {
@@ -102,9 +74,6 @@ export async function handleRecallWhyHttpQuery(deps: {
   }
   const sessionParam = deps.getParam("session");
   const namespaceParam = deps.getParam("namespace");
-  // Always resolve (and allow-list check) the effective namespace, even when
-  // the param is omitted — the implicit default namespace is still a
-  // namespace every other GET route gates the same way.
   const namespace = deps.resolveNamespace(
     namespaceParam !== null && namespaceParam.length > 0 ? namespaceParam : undefined
   );
@@ -131,13 +100,6 @@ export async function handleRecallWhyHttpQuery(deps: {
   }
 }
 
-/**
- * `GET /engram/v1/recall/xray`. Moved here verbatim from `access-http.ts`
- * (issue #570 PR 4 behaviour is unchanged): bearer auth and namespace scope
- * are still enforced by the router before this runs; the query comes from
- * `q` so GET stays cacheable, and `namespace` / `session` / `budget` /
- * `disclosure` stay optional.
- */
 export async function handleRecallXrayHttpQuery<TResponse>(deps: {
   getParam: (name: string) => string | null;
   resolveNamespace: (namespace: string | undefined) => string | undefined;
@@ -169,7 +131,6 @@ export async function handleRecallXrayHttpQuery<TResponse>(deps: {
   const namespace = deps.resolveNamespace(
     namespaceParam !== null && namespaceParam.length > 0 ? namespaceParam : undefined
   );
-  // Reject an invalid `budget` with 400 rather than silently defaulting.
   const budgetParam = deps.getParam("budget");
   let budget: number | undefined;
   if (budgetParam !== null && budgetParam !== "") {
@@ -186,9 +147,6 @@ export async function handleRecallXrayHttpQuery<TResponse>(deps: {
     }
     budget = parsedBudget;
   }
-  // Disclosure depth (issue #677 PR 3/4 telemetry plumbing). When present it
-  // must match the chunk|section|raw allow-list; an invalid value is a 400,
-  // never a silent fallback that quietly disables the per-disclosure summary.
   const disclosureParam = deps.getParam("disclosure");
   let disclosure: RecallDisclosure | undefined;
   if (disclosureParam !== null && disclosureParam.length > 0) {
@@ -204,13 +162,6 @@ export async function handleRecallXrayHttpQuery<TResponse>(deps: {
     }
     disclosure = disclosureParam;
   }
-  // Only validation errors become 400s. Backend faults (timeouts, storage
-  // errors, unexpected orchestrator failures) must bubble to the router's
-  // error handler so they return 500 and get logged. `service.recallXray`
-  // prefixes its validation errors with "recallXray:" so we key off that
-  // prefix rather than catching everything, and we surface only a real
-  // `Error.message` — never `String(err)` of an arbitrary throw, which
-  // CodeQL flags as stack-trace exposure (js/stack-trace-exposure).
   try {
     return {
       status: 200,

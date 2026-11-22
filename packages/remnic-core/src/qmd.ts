@@ -155,15 +155,8 @@ export { parseQmdStatusOutput } from "./qmd-status.js";
 export type { QmdStatusReport } from "./qmd-status.js";
 
 const QMD_TIMEOUT_MS = 30_000;
-// Daemon timeout for search calls. Keep under RECALL_TIMEOUT_MS (75s) so a slow
-// daemon fails fast. Default only — override via `qmdDaemonTimeoutMs` (#1335/#3098).
-// 60s covers multi-GB cold indexes that 8s missed; operators can still set 8s.
 const QMD_DAEMON_TIMEOUT_MS = 60_000;
-// Congestion degradation (#3476): when the daemon's embedding backend is
-// saturated by outside work, every hybrid query waits on the same serialized
-// resource. A query slower than this threshold marks the daemon congested…
 const QMD_DAEMON_SLOW_QUERY_MS = 10_000;
-// …and subsequent queries run lex-only (no embed legs) for this long.
 const QMD_DAEMON_CONGESTION_WINDOW_MS = 60_000;
 const QMD_UPDATE_BACKOFF_MS = 15 * 60 * 1000; // 15m
 const QMD_EMBED_BACKOFF_MS = 60 * 60 * 1000; // 60m
@@ -282,7 +275,6 @@ function isSqliteBusyError(msg: string): boolean {
 }
 
 function stripControlChars(s: string): string {
-  // Remove ANSI escapes and other control characters that explode logs.
   return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/[\u0000-\u001f\u007f]/g, "");
 }
 
@@ -354,16 +346,6 @@ function buildSyntheticHydeQuery(query: string, intent?: string): string {
   return base.length > QMD_STRUCTURED_HYDE_MAX_CHARS ? base.slice(0, QMD_STRUCTURED_HYDE_MAX_CHARS) : base;
 }
 
-/**
- * Build the structured sub-queries the daemon `query` tool runs in one request.
- *
- * The default `"hybrid"` plan (lex + vec + hyde) intentionally exercises QMD's
- * full RRF + rerank path for best recall. On CPU-only models the `hyde` leg
- * (1.7B generate + embed) dominates wall-clock — operators on constrained
- * hardware can trade recall for latency via `qmdSearchStrategy` (issue #1335)
- * without losing the default behavior. A per-call `structuredSearches` override
- * always wins so callers with stronger query-document structure stay in control.
- */
 export function buildDefaultStructuredSearches(
   query: string,
   options?: SearchQueryOptions,
@@ -485,8 +467,6 @@ function runQmd(
   signal?: AbortSignal,
   runtimeEnv?: QmdRuntimeEnv
 ): Promise<{ stdout: string; stderr: string }> {
-  // Serialize all qmd calls. This avoids SQLite lock contention when multiple
-  // channels/agents trigger QMD operations at nearly the same time.
   return QMD_MUTEX.runExclusive(async () => {
     throwIfAborted(signal, `qmd ${args.join(" ")} aborted before start`);
     const maxAttempts = isLikelyWriteCommand(args) ? 3 : 1;
@@ -497,15 +477,12 @@ function runQmd(
         if (isAbortError(err)) throw err;
         const msg = err instanceof Error ? err.message : String(err);
         if (attempt < maxAttempts && isSqliteBusyError(msg)) {
-          // Another qmd call (or an external qmd process) currently holds the DB.
-          // Back off briefly and retry.
           await sleepWithSignal(1500 * attempt, signal);
           continue;
         }
         throw err;
       }
     }
-    // unreachable
     throw new Error("qmd command failed");
   }, signal);
 }
@@ -568,10 +545,6 @@ function runCommandWithTimeout(
     const child = launchProcess(command, args, {
       env: mergeEnv({ NO_COLOR: "1", ...options.env }),
       stdio: ["ignore", "pipe", "pipe"],
-      // POSIX: own process group so a timeout/abort kill can take down qmd's
-      // grandchildren too (launcher scripts spawn workers that outlive the
-      // launcher itself). Issue #2456. Windows ignores this option here —
-      // kill falls back to a direct child.kill.
       detached: process.platform !== "win32",
     });
     if (!child.stdout || !child.stderr) {
@@ -587,8 +560,6 @@ function runCommandWithTimeout(
       settled = true;
       cleanup();
       killBoundedChild(child);
-      // Flag the deadline breach so classifyProbeFailure can tell a genuine
-      // timeout from a non-zero-exit error whose message merely embeds stderr.
       reject(
         Object.assign(new Error(`${label} timed out after ${options.timeoutMs}ms`), {
           timedOut: true as const,
@@ -673,12 +644,6 @@ export { runCommandWithTimeout as runCommandWithTimeoutForTest };
 /** Matches `#<hex-docid> <score>% <rest-of-line>` — rest is split in a second pass. */
 const QMD_RESULT_LINE_RE = /^#([0-9a-fA-F]+)\s+(\d+)%\s+(.+)/;
 
-/**
- * Splits `collection/path.ext - Title text` into path and title.
- * Non-greedy `.+?` finds the FIRST dot-extension (2+ alphabetic chars)
- * followed by ` - `, accepting any indexed file type while skipping
- * version-like segments (e.g. `v1.2` where `.2` is a single digit).
- */
 const QMD_PATH_TITLE_RE = /^(.+?\.[a-zA-Z]{2,10})\s+-\s+(.*)$/;
 
 function parseQmdMarkdownResultText(text: string, transport: QmdSearchResult["transport"]): QmdSearchResult[] {
@@ -687,7 +652,6 @@ function parseQmdMarkdownResultText(text: string, transport: QmdSearchResult["tr
     const m = QMD_RESULT_LINE_RE.exec(line.trim());
     if (!m) continue;
     const rest = m[3]; // "collection/path.md - Title with - dashes"
-    // Find the path by looking for known file extensions followed by " - "
     const pathTitleSplit = QMD_PATH_TITLE_RE.exec(rest);
     if (!pathTitleSplit) continue;
     results.push({
@@ -837,27 +801,16 @@ async function releaseSharedDaemonSession(session: QmdDaemonSession | null): Pro
   }
 }
 
-// Test-only seams (#1537): lifecycle tests assert the pool reaches zero after
-// every holder disposes — the property the stop()-teardown fix restores.
 export const sharedDaemonSessionCountForTest = (): number => SHARED_DAEMON_SESSIONS.size;
 export { retainSharedDaemonSession as retainSharedDaemonSessionForTest };
 export { releaseSharedDaemonSession as releaseSharedDaemonSessionForTest };
 
-// Congestion deadlines keyed by the shared daemon session itself, so every
-// QmdClient retaining the same session reads one window: a slow/timeout mark
-// from any sibling gates them all (#3476).
 const DAEMON_CONGESTED_UNTIL = new WeakMap<QmdDaemonSession, number>();
 
-// In-flight slow-call markers (#3499): a hybrid/vector daemon call that is
-// already past the slow-query threshold gates siblings on the same session
-// even before its result opens the congestion window above. Handles carry the
-// mocked-clock-friendly start time; the gate is a pure clock comparison.
 type DaemonInflightHandle = { since: number };
-/** What `watchDaemonCall` hands back: the settle that clears the handle. */
 type DaemonInflightWatch = { settle: () => void };
 const DAEMON_INFLIGHT_CALLS = new WeakMap<QmdDaemonSession, DaemonInflightHandle[]>();
 
-// Test-only seam: congestion tests drive a stub session object directly.
 export const daemonCongestionForTest = {
   get: (session: QmdDaemonSession): number => DAEMON_CONGESTED_UNTIL.get(session) ?? 0,
   set: (session: QmdDaemonSession, untilMs: number): void => {
@@ -867,7 +820,6 @@ export const daemonCongestionForTest = {
     (DAEMON_INFLIGHT_CALLS.get(session) ?? []).length,
 };
 
-// The `query`/`search` MCP tools take this shape; the daemon serializes it verbatim.
 type DaemonSearchToolArgs = {
   searches?: { type: string; query: string }[];
   query?: string;
@@ -880,8 +832,6 @@ type DaemonSearchToolArgs = {
   rerank?: boolean;
 };
 
-// ---------------------------------------------------------------------------
-// QmdClient
 // ---------------------------------------------------------------------------
 
 export class QmdClient implements SearchBackend {
@@ -933,7 +883,6 @@ export class QmdClient implements SearchBackend {
   private lastCliProbeError: string | null = null;
   private qmdCapabilities: QmdCapabilities = resolveQmdCapabilities(null);
 
-  // Daemon mode fields
   private daemonSession: QmdDaemonSession | null = null;
   /** Identical in-flight search() calls share one daemon query. Cancel fires only when every waiter aborts. */
   private readonly daemonSearchJoiner = createInflightJoiner<{
@@ -945,7 +894,6 @@ export class QmdClient implements SearchBackend {
   private lastDaemonCheckAtMs = 0;
   private readonly daemonEnabled: boolean;
   private readonly daemonRecheckIntervalMs: number;
-  /** Consecutive transient daemon failures before invalidating the session. */
   private daemonTransientFailures = 0;
   private shouldDegradeDaemonSearch(): boolean {
     const session = this.daemonSession;
@@ -1080,8 +1028,6 @@ export class QmdClient implements SearchBackend {
       this.daemonSessionPath = daemonSessionPath;
     }
     try {
-      // Race start() against a short window: fail fast if still loading; the
-      // underlying promise continues so the process is NOT killed.
       const PROBE_QUICK_TIMEOUT_MS = 3_000;
       const ok = await Promise.race([
         this.daemonSession.start(),
@@ -1166,7 +1112,6 @@ export class QmdClient implements SearchBackend {
 
     if (this.configuredQmdPath) {
       const configuredPath = this.configuredQmdPath;
-      // Retry only transient probes; ENOENT/EACCES is a hard misconfiguration (#1841).
       let failureKind: QmdProbeFailureKind = "other";
       let retries = 0;
       let callerCancelled = false;
@@ -1178,19 +1123,15 @@ export class QmdClient implements SearchBackend {
         } catch (err) {
           markProbeFailure(err);
           configuredProbeFailure = this.lastCliProbeError;
-          // Detect caller cancellation first — non-actionable noise (#1841).
           if (isCallerCancellation(err, options.signal)) {
             callerCancelled = true;
             break;
           }
           failureKind = classifyProbeFailure(err);
-          // Never retry a hard misconfiguration (missing/not-executable) — only
-          // transient slowness. (Caller cancellation is handled above.)
           if (failureKind === "transient" && attempt < QMD_PROBE_RETRY_BACKOFF_MS.length) {
             try {
               await sleepWithSignal(QMD_PROBE_RETRY_BACKOFF_MS[attempt] ?? 500, options.signal);
             } catch {
-              // Aborted mid-backoff: caller cancelled — stop, emit no warning.
               callerCancelled = true;
               break;
             }
@@ -1200,7 +1141,6 @@ export class QmdClient implements SearchBackend {
           break;
         }
       }
-      // Distinct warnings for slow binary vs misconfiguration; suppress on caller cancellation (#1841).
       if (!callerCancelled) {
         if (failureKind === "transient") {
           this.logCliProbeWarning(
@@ -1211,7 +1151,6 @@ export class QmdClient implements SearchBackend {
             `QMD: configured qmdPath not found or not executable (${configuredPath}): ${this.lastCliProbeError}`
           );
         } else {
-          // Preserve the historical generic message for exit-code/other failures.
           this.logCliProbeWarning(`QMD: configured qmdPath failed (${configuredPath}): ${this.lastCliProbeError}`);
         }
       }
@@ -1394,19 +1333,15 @@ export class QmdClient implements SearchBackend {
     }
     state.lastCliWarnAtMs = now;
     if (this.daemonAvailable) {
-      // Daemon mode is healthy; keep this as debug noise rather than warning.
       log.debug(message);
       return;
     }
     log.warn(message);
   }
 
-  /** Re-probe daemon if it was down and recheck interval has elapsed. */
   private async maybeProbeDaemon(): Promise<void> {
     if (!this.daemonEnabled) return;
-    // If daemon is marked healthy and session is active, nothing to do.
     if (this.daemonAvailable && this.daemonSession?.isActive()) return;
-    // If recently checked and failed, respect the recheck interval.
     if (this.daemonAvailable === false) {
       const elapsed = Date.now() - this.lastDaemonCheckAtMs;
       if (elapsed < this.daemonRecheckIntervalMs) return;
@@ -1419,7 +1354,6 @@ export class QmdClient implements SearchBackend {
     return this.available === true || this.daemonAvailable;
   }
 
-  /** Debug string for troubleshooting availability issues. */
   debugStatus(): string {
     const cliPath = this.available ? this.qmdPath : (this.configuredQmdPath ?? "unavailable");
     const cliVersion = this.cliVersion ?? "unknown";
@@ -1515,18 +1449,10 @@ export class QmdClient implements SearchBackend {
     this.daemonTransientFailures = 0;
   }
 
-  /**
-   * Record a daemon search success — resets the transient failure counter.
-   */
   private recordDaemonSuccess(): void {
     this.daemonTransientFailures = 0;
   }
 
-  /**
-   * Open the congestion window (#3476): while set, daemon searches run the
-   * lex-only plan instead of lex+vec+hyde so a saturated embedding backend
-   * cannot stall every recall stage serially.
-   */
   private markDaemonCongested(durationMs: number, reason: "slow query" | "timeout"): void {
     if (this.daemonSession) {
       DAEMON_CONGESTED_UNTIL.set(this.daemonSession, performance.now() + this.daemonCongestionWindowMs);
@@ -1557,16 +1483,7 @@ export class QmdClient implements SearchBackend {
     return handle;
   }
 
-  /**
-   * Handle a non-timeout, non-cancellation daemon error.
-   * Tolerates up to DAEMON_MAX_TRANSIENT_FAILURES consecutive failures
-   * before invalidating the session. This prevents a single transient
-   * error from pushing all concurrent searches through the subprocess
-   * mutex for the full recheck interval.
-   */
   private handleDaemonTransientError(label: string, err: unknown, durationMs: number): void {
-    // If daemon was already marked unavailable by a concurrent call, don't
-    // increment further — the counter will reset on the next successful probe.
     if (!this.daemonAvailable) {
       log.debug(`QMD daemon ${label} failed after ${durationMs}ms (daemon already unavailable, ignoring): ${err}`);
       return;
@@ -1744,13 +1661,8 @@ export class QmdClient implements SearchBackend {
     const n = maxResults ?? this.maxResults;
     const searchOptions = this.resolveSearchOptions(options);
 
-    // Short-lived search result cache — avoids redundant daemon calls for
-    // repeated queries within the same recall cycle (e.g., primary + hybrid
-    // top-up, or conversation recall using the same collection).
     const optionsFingerprint = searchOptions ? JSON.stringify(searchOptions) : "";
-    // Key must capture daemon/subprocess strategies to avoid cross-instance collisions (#1335).
     const strategyFingerprint = `${this.qmdSearchStrategy}:${this.qmdSubprocessStrategy}`;
-    // Cache and join only calls with the same plan (#3476, #3499).
     const makeCacheKey = (planFingerprint: string) =>
       createHash("sha256")
         .update(`${strategyFingerprint}:${planFingerprint}:${col}:${n}:${optionsFingerprint}:${trimmed}`)
@@ -1759,12 +1671,10 @@ export class QmdClient implements SearchBackend {
     const cacheKey = makeCacheKey(degrade ? "deg" : "std");
     const cached = getCachedQmdSearch(cacheKey);
     if (cached) {
-      // No degradation on cache hit by design (#1536): only trustworthy results are cached.
       log.debug(`QMD search cache hit (${cached.length} results)`);
       return cached as QmdSearchResult[];
     }
 
-    // Try daemon first (bypasses QMD_MUTEX — daemon handles its own concurrency)
     if (this.daemonAvailable) {
       let outcome: { results: QmdSearchResult[]; degraded: boolean } | null;
       try {
@@ -1777,13 +1687,6 @@ export class QmdClient implements SearchBackend {
         }
         throw err;
       }
-      // When the daemon is available, trust its outcome and skip the subprocess.
-      // The subprocess runs `qmd query` (BM25 + LLM expansion) which hangs at
-      // 99% CPU on large collections (75K+ files) making it strictly worse than
-      // the daemon for this workload. Specifically:
-      //   outcome !== null → daemon succeeded (even with 0 hits) → return as-is
-      //   outcome === null → daemon timed-out or errored → still skip subprocess
-      //                      because subprocess will also hang or timeout
       if (outcome !== null) {
         const { results, degraded } = outcome;
         if (results.length === 0) {
@@ -1792,23 +1695,17 @@ export class QmdClient implements SearchBackend {
         setCachedQmdSearch(makeCacheKey(degraded ? "deg" : "std"), results);
         return results;
       }
-      // Daemon timed out or had a transient error — skip subprocess for large
-      // collections. Return empty rather than hanging the caller.
       log.warn("QMD daemon search timed out/failed; skipping subprocess (daemon-only mode)");
       this.notifyDegradation(execution?.onDegradation, "daemon_timeout");
       return [];
     }
 
-    // If the daemon process is spawned but still loading (handshake not yet complete),
-    // skip subprocess — it would add load and block under QMD_MUTEX without helping.
-    // Return empty and let the next recheck cycle pick up the daemon once ready.
     if (this.daemonSession?.isLoading()) {
       log.debug("QMD search: daemon loading, skipping subprocess");
       this.notifyDegradation(execution?.onDegradation, "daemon_loading");
       return [];
     }
 
-    // Subprocess fallback (only reached when daemon is unavailable and not loading)
     let subprocessDegraded = false;
     const subprocessResults = await this.searchViaSubprocess(
       trimmed,
@@ -1821,9 +1718,6 @@ export class QmdClient implements SearchBackend {
         this.notifyDegradation(execution?.onDegradation, degradation.code, degradation.detail);
       }
     );
-    // Never cache a degraded empty result: a 60s TTL hit would serve the
-    // failure as a genuine no-matches WITHOUT re-reporting the degradation
-    // (codex review on #1544). Only trustworthy results are cacheable.
     if (!subprocessDegraded) {
       setCachedQmdSearch(cacheKey, subprocessResults);
     }
@@ -1846,9 +1740,7 @@ export class QmdClient implements SearchBackend {
     const n = maxResults ?? 6;
     const searchOptions = this.resolveSearchOptions();
 
-    // Try daemon first
     if (this.daemonAvailable) {
-      // Global search: no collection filter
       let outcome: { results: QmdSearchResult[]; degraded: boolean } | null;
       try {
         outcome = await this.searchViaDaemon(trimmed, undefined, n, searchOptions, execution?.signal);
@@ -1858,7 +1750,6 @@ export class QmdClient implements SearchBackend {
         }
         throw err;
       }
-      // Same rationale as search() — trust daemon outcome, skip subprocess.
       if (outcome !== null) {
         if (outcome.results.length === 0) {
           log.debug("QMD daemon global search returned 0 results; skipping subprocess");
@@ -1870,7 +1761,6 @@ export class QmdClient implements SearchBackend {
       return [];
     }
 
-    // If the daemon is spawned but still loading, skip subprocess — same as search().
     if (this.daemonSession?.isLoading()) {
       log.debug("QMD searchGlobal: daemon loading, skipping subprocess");
       this.notifyDegradation(execution?.onDegradation, "daemon_loading");
@@ -1900,7 +1790,6 @@ export class QmdClient implements SearchBackend {
     const col = collection ?? this.collection;
     const n = maxResults ?? this.maxResults;
 
-    // Try daemon first — BM25 via daemon is much faster than subprocess.
     if (this.daemonAvailable && this.daemonSession) {
       let results: QmdSearchResult[] | null;
       try {
@@ -1911,8 +1800,6 @@ export class QmdClient implements SearchBackend {
         }
         throw err;
       }
-      // When daemon is available, trust its outcome and skip subprocess (same
-      // rationale as search() — subprocess hangs at 99% CPU on 75K+ files).
       if (results !== null) {
         if (results.length === 0) {
           log.debug("QMD daemon bm25 returned 0 results; skipping subprocess");
@@ -1950,7 +1837,6 @@ export class QmdClient implements SearchBackend {
     const col = collection ?? this.collection;
     const n = maxResults ?? this.maxResults;
 
-    // Try daemon first — keeps models warm, avoids cold subprocess loads.
     if (this.daemonAvailable && this.daemonSession) {
       let results: QmdSearchResult[] | null;
       try {
@@ -2000,7 +1886,6 @@ export class QmdClient implements SearchBackend {
       this.vectorSearch(trimmed, collection, n, execution),
     ]);
 
-    // Merge by path, keeping best score
     const merged = new Map<string, QmdSearchResult>();
     for (const r of [...bm25Results, ...vectorResults]) {
       const key = r.path || r.docid;
@@ -2013,7 +1898,6 @@ export class QmdClient implements SearchBackend {
       }
     }
 
-    // Sort by score descending, take top N
     return [...merged.values()].sort((a, b) => b.score - a.score).slice(0, n);
   }
 
@@ -2027,7 +1911,6 @@ export class QmdClient implements SearchBackend {
   ): Promise<{ results: QmdSearchResult[]; degraded: boolean } | null> {
     if (!this.daemonSession || !this.daemonAvailable) return null;
 
-    // Keep the collection scope when falling back to lexical search.
     if (degrade) {
       const degraded = await this.bm25SearchViaDaemon(query, collection, maxResults, signal, options);
       return degraded === null ? null : { results: degraded, degraded: true };
@@ -2040,11 +1923,6 @@ export class QmdClient implements SearchBackend {
       let args: Record<string, unknown>;
       let usesModels = true; // The v1 tool chooses its own search legs.
       if (v2) {
-        // QMD v2: query tool expects { searches: [...], collections?: [...] }
-        // The MCP tool is structured-only in 2.x; use lex+vec+hyde by default
-        // to exercise QMD's RRF + rerank path and let callers override when
-        // they have stronger query-document structure. Operators on CPU-only
-        // models can downgrade the plan via qmdSearchStrategy (issue #1335).
         const searches = buildDefaultStructuredSearches(query, options, this.qmdSearchStrategy);
         args = { searches, limit: maxResults };
         if (collection) {
@@ -2083,22 +1961,17 @@ export class QmdClient implements SearchBackend {
     } catch (err) {
       const durationMs = performance.now() - startedAtMs;
       if (isCallerCancellation(err, signal)) {
-        // A call cancelled after the slow-query mark (e.g. a namespace leg
-        // deadline) is itself congestion evidence — the daemon really did
-        // stall. An explicit cancel of a fast call still skips the mark.
         if (durationMs >= this.daemonSlowQueryMs) {
           this.markDaemonCongested(durationMs, "slow query");
         }
         log.debug(`QMD daemon search aborted/cancelled after ${durationMs}ms`);
         throw isAbortError(err) ? err : abortError("QMD daemon search aborted");
       }
-      // Timeout: don't invalidate session — daemon is still running, just slow.
       if (isDaemonTimeoutError(err)) {
         this.markDaemonCongested(durationMs, "timeout");
         log.debug(`QMD daemon search timed out after ${durationMs}ms, falling back to subprocess`);
         return null;
       }
-      // Transient error: tolerate a few before invalidating.
       this.handleDaemonTransientError("search", err, durationMs);
       return null;
     } finally {
@@ -2129,8 +2002,6 @@ export class QmdClient implements SearchBackend {
         if (collection) {
           args.collections = [collection];
         }
-        // A lex-only plan never pays the remote rerank leg — congestion or
-        // dedicated bm25 alike. Forward supported options, then force it off.
         this.addResolvedSearchOptionsToMcpArgs(args, options);
         args.rerank = false;
         result = await this.daemonSession.callTool("query", args, this.daemonTimeoutMs, signal);
@@ -2170,7 +2041,6 @@ export class QmdClient implements SearchBackend {
   ): Promise<QmdSearchResult[] | null> {
     if (!this.daemonSession || !this.daemonAvailable) return null;
 
-    // Use lexical search here too so vector callers skip embedding.
     if (this.shouldDegradeDaemonSearch()) {
       return this.bm25SearchViaDaemon(query, collection, maxResults, signal);
     }
@@ -2230,12 +2100,6 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  /**
-   * Report a backend degradation to the caller's observer (#1536): an empty
-   * result caused by unavailability/loading/timeout is otherwise
-   * indistinguishable from "no matches" (CLAUDE.md rule 34). Observer
-   * failures are swallowed — observability must never break search.
-   */
   private notifyDegradation(
     onDegradation: SearchExecutionOptions["onDegradation"],
     code: SearchDegradation["code"],
@@ -2249,22 +2113,8 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  /**
-   * Condense an error into a degradation `detail` string that is safe to
-   * serialize on LastRecallSnapshot and expose via last-recall MCP/HTTP
-   * surfaces (cursor review on #1544): first line only, path-like tokens
-   * redacted (absolute, home-rooted, and Windows drive paths can leak
-   * usernames and filesystem layout), capped at 160 chars. The unredacted
-   * error still reaches operators via the warn log at the failure site.
-   */
   private degradationDetail(err: unknown, sensitive?: string[]): string {
     let message = String(err instanceof Error ? err.message : err);
-    // Strip known-sensitive strings BEFORE any line-splitting: runQmdCommand
-    // error labels embed the full command line including the raw recall
-    // query, and a multi-line query would otherwise leave its first-line
-    // prefix behind after the first-line cut (codex round-6 P1 on #1544).
-    // Whole values first, then their individual line fragments so truncated
-    // embeddings cannot leak partial prompt text either.
     for (const value of sensitive ?? []) {
       if (typeof value !== "string" || value.length === 0) continue;
       message = message.split(value).join("<query>");
@@ -2290,13 +2140,6 @@ export class QmdClient implements SearchBackend {
   ): Promise<QmdSearchResult[]> {
     if (this.available === false) return [];
 
-    // INTENTIONAL — DO NOT change the default command from `query` to `search`.
-    // `qmd query` performs LLM query expansion + reranking that Remnic depends on
-    // (Remnic's own reranking is disabled because `qmd query` handles it). This is
-    // CLAUDE.md gotcha #7. On very large collections `qmd query` can be slow/hang
-    // (issue #1335), so operators may opt into BM25-only `qmd search` by setting
-    // `qmdSubprocessStrategy: "search"` — but that trades away expansion + rerank,
-    // so it stays opt-in and the default remains `query`.
     if (this.qmdSubprocessStrategy === "search") {
       return this.bm25SearchViaSubprocess(query, collection, maxResults, signal, onDegradation);
     }
@@ -2320,8 +2163,6 @@ export class QmdClient implements SearchBackend {
       if (isCallerCancellation(err, signal)) {
         throw isAbortError(err) ? err : abortError("QMD subprocess search aborted");
       }
-      // Sanitized in the LOG too: the raw error label embeds the argv,
-      // which includes the user's recall query (codex round-5 P1 on #1544).
       const detail = this.degradationDetail(err, [query]);
       log.warn(`QMD subprocess search failed (returning empty): ${detail}`);
       this.notifyDegradation(onDegradation, "subprocess_error", detail);
@@ -2395,16 +2236,10 @@ export class QmdClient implements SearchBackend {
 
     const startedAtMs = Date.now();
     try {
-      // Mirror searchViaSubprocess: default `qmd query` keeps LLM expansion +
-      // rerank (gotcha #7); `qmdSubprocessStrategy: "search"` opts into BM25-only
-      // `qmd search` for both scoped AND global recall so the gate stays uniform
-      // across every subprocess path (gotcha #39). Issue #1335.
       const bm25 = this.qmdSubprocessStrategy === "search";
       const args = bm25 ? ["search", query] : ["query", query];
       this.addQmdJsonOutputArgs(args);
       args.push("-n", String(maxResults));
-      // BM25 `qmd search` takes no expansion/rerank options — only forward them
-      // for the `query` command.
       if (!bm25) {
         this.addResolvedSearchOptionsToArgs(args, options);
       }
@@ -2537,19 +2372,10 @@ export class QmdClient implements SearchBackend {
         this.lastUpdateRunAtMs = at;
         globalState.lastGlobalUpdateRunAtMs = at;
       }
-      // A successful index refresh makes newly-persisted facts searchable, so
-      // any cached pre-refresh QMD search/recall bundle is now stale. Clear the
-      // global QMD result caches here, at the single success point EVERY update
-      // path funnels through (direct calls, wearable/OpenClaw sync reindex, and
-      // the namespace router's per-backend update), so no caller can forget and
-      // serve a stale bundle past the refresh (#1904, Codex/Cursor).
       clearQmdResultCaches();
       log.debug(`QMD update completed for collection=${name}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Another qmd process holds the index. Arming the 15-minute failure
-      // backoff would make the next converge attempt fail even after the lock
-      // is gone. A real index failure still backs off.
       if (!/database is locked|SQLITE_BUSY/i.test(msg)) {
         const at = Date.now();
         if (options.perCollectionThrottle) {
@@ -2583,7 +2409,6 @@ export class QmdClient implements SearchBackend {
     await this.runEmbedForCollection(collection, { perCollectionThrottle: true, strict: true });
   }
 
-  /** Trigger a collection-level embed for fresh writes (debounced by prioritized-embed). */
   async embedFiles(filePaths: string[]): Promise<boolean> {
     if (this.available === false || filePaths.length === 0) {
       return false;
@@ -2661,8 +2486,6 @@ export class QmdClient implements SearchBackend {
         globalState.lastEmbedByCollectionMs[name] = at;
       }
       globalState.lastGlobalEmbedRunAtMs = at;
-      // A successful embed changes vector searchability, so cached pre-embed
-      // bundles may now be stale. Clear at this single success point (#1904).
       clearQmdResultCaches();
       log.debug(`QMD embed completed for collection=${name}`);
     } catch (err) {
@@ -2680,7 +2503,6 @@ export class QmdClient implements SearchBackend {
           }
           globalState.lastGlobalEmbedRunAtMs = recoveredAt;
           globalState.lastGlobalEmbedFailAtMs = null;
-          // Recovery also changed vector searchability — clear cached bundles.
           clearQmdResultCaches();
           log.warn(`QMD embed for collection ${name} recovered by forcing a full vector rebuild`);
           return;
@@ -2737,20 +2559,16 @@ export class QmdClient implements SearchBackend {
   ): Promise<"present" | "missing" | "unknown" | "skipped"> {
     const { collection, execution: effectiveExecution } = resolveEnsureCollectionArgs(collectionOrExecution, execution);
     if (this.available === false && !this.daemonAvailable) return "unknown";
-    // If only daemon is available (no CLI), skip collection check
     if (this.available === false) return "skipped";
     const targetCollection = collection ?? this.collection;
     try {
       const { stdout } = await this.runQmdCommand(["collection", "list"], QMD_TIMEOUT_MS, effectiveExecution?.signal);
-      // Parse text output: "openclaw-engram (qmd://openclaw-engram/)"
       const collectionRegex = new RegExp(`^${escapeRegExp(targetCollection)}\\s+\\(qmd://`, "m");
       if (collectionRegex.test(stdout)) {
         return "present";
       }
       return "missing";
     } catch (err) {
-      // Treat command/probe failures as unknown so callers do not disable features
-      // permanently after a transient CLI or daemon hiccup.
       log.debug(
         `QMD collection check unavailable for "${targetCollection}" (will not disable features): ${err instanceof Error ? err.message : String(err)}`
       );

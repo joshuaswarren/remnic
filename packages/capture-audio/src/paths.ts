@@ -1,4 +1,3 @@
-/** Filesystem layout for the capture working directory. */
 
 import os from "node:os";
 import path from "node:path";

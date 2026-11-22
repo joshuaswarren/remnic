@@ -1,30 +1,3 @@
-/**
- * Codex P2 PRRT_kwDORJXyws6zzdG4 (#3311) — promotion-target writes must share
- * the fact-dedup commit window.
- *
- * With extractionQueueConcurrency > 1 and shared auto-promotion enabled, two
- * sessions extracting the same fact into DIFFERENT source namespaces can both
- * pass the shared-namespace dedup gate (`hasFactContentHash`) before either
- * promotion writes: the persist-time gate runs outside the commit window that
- * protects the source writes, and the promotion destination write ran without
- * any window at all. writeMemory mints a fresh id per write, so both
- * promotions land distinct active shared copies — exactly the duplicate class
- * `persistUnderFactDedupWindow` exists to prevent for source writes.
- *
- * The fix wraps each promotion destination write in
- * `persistUnderFactDedupWindow` keyed on the DESTINATION storage dir, so the
- * second promotion's in-window recheck observes the first promotion's
- * committed hash and suppresses instead of duplicating. The invariant these
- * tests assert — exactly one active shared copy survives a concurrent
- * same-fact promotion pair — holds for every interleaving once the window is
- * in place, because recheck+write are atomic per destination dir; before the
- * fix the duplicate depends on the interleaving (two symmetric pipelines in
- * lockstep both gate-miss before either write commits).
- *
- * These tests drive the real persistExtraction path (no LLM network; every
- * gate that would call one is off) with two real source namespaces and the
- * real shared destination, and assert the durable outcome.
- */
 
 import assert from "node:assert/strict";
 import os from "node:os";
@@ -39,7 +12,6 @@ import type { LocalLlmClient } from "./local-llm.js";
 import type { PersistExtractionFn } from "./testing/orchestrator-lite.js";
 import type { StorageManager } from "./storage.js";
 
-// Fixture contract for the private Orchestrator surface this suite drives.
 interface OrchestratorFixture {
   localLlm?: unknown;
   chatCompletion?: unknown;
@@ -47,7 +19,6 @@ interface OrchestratorFixture {
   persistExtraction?: unknown;
 }
 
-// Named owner contract for the private internals this suite drives.
 interface OrchestratorInternals {
   localLlm: LocalLlmClient;
   getStorage: (ns: string) => Promise<StorageManager>;
@@ -55,8 +26,6 @@ interface OrchestratorInternals {
 }
 
 function asInternals<T extends object>(value: OrchestratorFixture): T {
-  // SAFETY: the fixture provides the members the persist path reads; the
-  // remaining contract members are unused by these tests.
   return value as T;
 }
 
@@ -73,8 +42,6 @@ async function makeHarness(): Promise<{
     openaiApiKey: "sk-test",
     memoryDir,
     workspaceDir: path.join(memoryDir, "workspace"),
-    // Minimize every gate that needs a model or corpus-scale machinery so the
-    // fact reaches the normal (non-chunked) write path.
     extractionJudgeEnabled: false,
     temporalSupersessionEnabled: false,
     contradictionDetectionEnabled: false,
@@ -84,9 +51,6 @@ async function makeHarness(): Promise<{
     extractionMinChars: 0,
     extractionMinImportanceLevel: "trivial",
     inlineSourceAttributionEnabled: false,
-    // Shared auto-promotion from every source namespace into the default
-    // "shared" namespace (both default off — the deployment profile this
-    // finding targets).
     namespacesEnabled: true,
     autoPromoteToSharedEnabled: true,
   });
@@ -106,8 +70,6 @@ function factResult(content: string): ExtractionResult {
       {
         content,
         category: "fact",
-        // confidenceTier(0.96) === "explicit", which the default
-        // autoPromoteMinConfidenceTier ("explicit") admits.
         confidence: 0.96,
         tags: [],
       },
@@ -117,8 +79,6 @@ function factResult(content: string): ExtractionResult {
     questions: [],
     profileUpdates: [],
   };
-  // SAFETY: literal carries the full extraction-result shape persistExtraction
-  // consumes for a single fact candidate.
   return result as ExtractionResult;
 }
 
@@ -153,8 +113,6 @@ test("the same fact promoted from two namespaces lands once in shared (serial ba
       "User mentioned that deployment rollbacks complete within five minutes.",
     );
 
-    // Each source namespace keeps its own copy (cross-namespace source writes
-    // never dedup), and the second promotion dedups through the shared gate.
     assert.equal(first.persistedIds.length, 1, "first source write persists");
     assert.equal(second.persistedIds.length, 1, "second source write persists in its own namespace");
     assert.equal(await activeFactCopies(teamA), 1);
@@ -169,11 +127,6 @@ test("concurrent same-fact promotions from different namespaces leave exactly on
   const { persist, memoryDir, shared, teamA, teamB } = await makeHarness();
   try {
     const sourceText = "User mentioned that deployment rollbacks complete within five minutes.";
-    // Two real sessions, different source namespaces, same fact, one shared
-    // destination. Before the fix this interleaving (both pipelines gate-miss
-    // in lockstep before either promotion writes) landed two distinct active
-    // shared copies; after the fix the destination window serializes the
-    // promotions and the invariant holds for every interleaving.
     const [a, b] = await Promise.all([
       persist.persistExtraction(
         factResult(FACT),
@@ -195,8 +148,6 @@ test("concurrent same-fact promotions from different namespaces leave exactly on
       ),
     ]);
 
-    // Each source namespace still persists its own copy — the window only
-    // serializes the shared DESTINATION.
     assert.equal(await activeFactCopies(teamA), 1, "team-a keeps its source copy");
     assert.equal(await activeFactCopies(teamB), 1, "team-b keeps its source copy");
     assert.equal(a.persistedIds.length, 1);

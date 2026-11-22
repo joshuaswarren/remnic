@@ -24,9 +24,6 @@ export interface ConvergeIdentityCacheEntry {
 
 const cacheWriteLocks = new Map<string, Promise<void>>();
 
-/** Serialize cache replacements per path; concurrent plans for the same
- * (peer, namespace) would otherwise each publish a whole-file snapshot where
- * the slower one clobbers the newer. */
 async function withCacheWriteLock(cachePath: string, write: () => Promise<void>): Promise<void> {
   const previous = cacheWriteLocks.get(cachePath) ?? Promise.resolve();
   const next = previous.then(write, write);
@@ -118,8 +115,6 @@ export async function saveConvergeIdentityCache(
   classifications?: ReadonlyMap<string, { statIdentity: string; excluded: boolean }>
 ): Promise<void> {
   if (!cachePath) return;
-  // Negative results persist too: a memory-shaped file that parses without an
-  // identity would otherwise be re-read on every warm run.
   const files: ConvergeIdentityCacheEntry[] = manifest.files.map((file) => ({
     path: file.path,
     sha256: file.sha256,
@@ -139,12 +134,6 @@ export async function saveConvergeIdentityCache(
     entry.statIdentity = classification.statIdentity;
     entry.excluded = classification.excluded;
   }
-  // Files the snapshot iterator excluded are classified but never reach the
-  // manifest. Persist their classifications as standalone entries — the walk
-  // saw them this cycle, so this resurrects nothing deleted and changes no
-  // identity decision; it only lets the next cycle's exclusion callback skip
-  // the read+parse. Their sha never matches a live file, so a later re-include
-  // is a cache miss and cold re-parse.
   for (const [pathName, classification] of classifications ?? []) {
     if (inManifest.has(pathName)) continue;
     files.push({
@@ -173,8 +162,6 @@ export async function saveConvergeIdentityCache(
   }
   try {
     await withCacheWriteLock(cachePath, async () => {
-      // Merge with the current on-disk set under the lock: another run may
-      // have published entries after this one loaded its snapshot.
       const merged = new Map(files.map((entry) => [entry.path, entry]));
       const dropped = new Set(
         [...(loaded?.keys() ?? [])].filter((pathName) => !merged.has(pathName))

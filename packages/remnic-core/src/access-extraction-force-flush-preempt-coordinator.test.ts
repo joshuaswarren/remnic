@@ -1,16 +1,3 @@
-/**
- * Keyed force-flush preemption must abort ONLY the armed slot matching the
- * caller's session key.
- *
- * Follow-up to the caller-key forwarding: `preemptRunning(preferredKey?)`
- * falls back to the newest armed slot whenever no key-matched slot is armed,
- * so a force-flush whose own extraction is not (yet) armed still killed an
- * unrelated background task - the exact failure PR #3468 reports. The
- * coordinator therefore gains `preemptKeyed(key)`: abort every armed slot
- * whose key matches, and abort nothing when none does. `preemptRunning`
- * keeps its newest-slot fallback for the keyless call sites (front-enqueue
- * flush path).
- */
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";

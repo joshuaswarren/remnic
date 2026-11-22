@@ -86,7 +86,6 @@ function makeMockSources(init: {
   };
 }
 
-// ── Disabled path: short-circuits without touching any source ───────────────
 
 test("tryDirectAnswer disabled-path does not call any source accessor", async () => {
   const sources = makeMockSources({ memories: [makeMemory()] });
@@ -104,14 +103,8 @@ test("tryDirectAnswer disabled-path does not call any source accessor", async ()
   assert.deepEqual(sources.calls.importance, []);
 });
 
-// ── One-resolution-per-op (#1523): `enabled` is the sole gate ──────────────
 
 test("tryDirectAnswer disabled when `enabled: false` even with matching candidates (caps wins over any config-derived value)", async () => {
-  // Issue #1523 contract: the resolved capability is the sole gate.
-  // `enabled` comes from `resolveCapabilities(config).recallDirectAnswer`,
-  // resolved ONCE at the recall entry. This test proves the gate value is
-  // authoritative — when it says disabled, the function short-circuits
-  // regardless of candidate quality.
   const sources = makeMockSources({
     memories: [makeMemory({ tags: ["pnpm"], content: "remnic uses pnpm" })],
     trustZones: { m1: "trusted" },
@@ -130,8 +123,6 @@ test("tryDirectAnswer disabled when `enabled: false` even with matching candidat
 });
 
 test("tryDirectAnswer proceeds when `enabled: true` and candidates match", async () => {
-  // Same contract, positive case: when the resolved capability says enabled,
-  // the function proceeds to materialize candidates.
   const sources = makeMockSources({
     memories: [makeMemory({ tags: ["pnpm"], content: "remnic uses pnpm" })],
     trustZones: { m1: "trusted" },
@@ -148,12 +139,8 @@ test("tryDirectAnswer proceeds when `enabled: true` and candidates match", async
   assert.equal(sources.calls.listCandidates, 1);
 });
 
-// ── Empty-query short-circuit: no I/O ───────────────────────────────────────
 
 test("tryDirectAnswer skips all I/O when query normalizes to zero searchable tokens", async () => {
-  // Regression for PR #533 second-round P2 review: isDirectAnswerEligible
-  // deterministically returns "empty-query" in that case, so the wiring
-  // must not materialize candidates or call trust-zone/importance first.
   const sources = makeMockSources({
     memories: [makeMemory({ tags: ["pnpm"], content: "remnic uses pnpm" })],
     trustZones: { m1: "trusted" },
@@ -172,7 +159,6 @@ test("tryDirectAnswer skips all I/O when query normalizes to zero searchable tok
   assert.deepEqual(sources.calls.importance, []);
 });
 
-// ── Empty memory list ───────────────────────────────────────────────────────
 
 test("tryDirectAnswer with empty memory list returns no-candidates", async () => {
   const sources = makeMockSources({ memories: [] });
@@ -187,7 +173,6 @@ test("tryDirectAnswer with empty memory list returns no-candidates", async () =>
   assert.equal(sources.calls.listCandidates, 1);
 });
 
-// ── Pre-filter: non-trusted memories don't trigger importance resolution ────
 
 test("tryDirectAnswer skips importance resolution for non-trusted memories", async () => {
   const memory = makeMemory({
@@ -209,8 +194,6 @@ test("tryDirectAnswer skips importance resolution for non-trusted memories", asy
   });
   assert.equal(result.eligible, false);
   assert.equal(result.reason, "no-candidates");
-  // Importance was never read because the memory was dropped at the
-  // trust-zone pre-filter.
   assert.deepEqual(sources.calls.importance, []);
 });
 
@@ -258,11 +241,8 @@ test("tryDirectAnswer skips importance when trust zone is missing (null)", async
   assert.deepEqual(sources.calls.importance, []);
 });
 
-// ── Pre-filter: ineligible taxonomy bucket ──────────────────────────────────
 
 test("tryDirectAnswer skips importance when taxonomy bucket is not eligible", async () => {
-  // "correction" maps to the "corrections" taxonomy bucket, not in the
-  // default eligible list.
   const memory = makeMemory({
     id: "correction-memory",
     category: "correction",
@@ -285,7 +265,6 @@ test("tryDirectAnswer skips importance when taxonomy bucket is not eligible", as
   assert.deepEqual(sources.calls.importance, []);
 });
 
-// ── Happy path ──────────────────────────────────────────────────────────────
 
 test("tryDirectAnswer returns eligible for a single trusted user-confirmed decision", async () => {
   const memory = makeMemory({
@@ -313,7 +292,6 @@ test("tryDirectAnswer returns eligible for a single trusted user-confirmed decis
   assert.deepEqual(sources.calls.importance, ["pm"]);
 });
 
-// ── Multi-candidate: eligibility module applies the ambiguity gate ──────────
 
 test("tryDirectAnswer defers to hybrid when two trusted candidates are within ambiguity margin", async () => {
   const a = makeMemory({
@@ -342,7 +320,6 @@ test("tryDirectAnswer defers to hybrid when two trusted candidates are within am
   assert.equal(result.reason, "ambiguous");
 });
 
-// ── Abort signal interrupts the resolution loop ─────────────────────────────
 
 test("tryDirectAnswer throws AbortError when signal aborts mid-loop", async () => {
   const first = makeMemory({
@@ -363,8 +340,6 @@ test("tryDirectAnswer throws AbortError when signal aborts mid-loop", async () =
     listCandidateMemories: async () => [first, second],
     trustZoneFor: async (id: string) => {
       if (id === "first") {
-        // Simulate the caller aborting recall while resolving the first
-        // candidate.  Abort between the accessor call and the loop guard.
         controller.abort();
         return "trusted";
       }
@@ -385,16 +360,10 @@ test("tryDirectAnswer throws AbortError when signal aborts mid-loop", async () =
       }),
     (err: Error) => err.name === "AbortError",
   );
-  // Second candidate must never have been consulted — abort should
-  // short-circuit before the next iteration.
   assert.equal(secondTrustZoneConsulted, false);
 });
 
 test("tryDirectAnswer throws when abort lands during trustZoneFor on the only memory", async () => {
-  // Regression for PR #533 P1 review: if abortSignal flips while the
-  // trust-zone await is in-flight on the last (or only) memory, the
-  // function must still throw — not fall through to eligibility with
-  // whatever was scored.
   const memory = makeMemory({
     id: "only",
     tags: ["package-manager", "remnic"],
@@ -469,11 +438,9 @@ test("tryDirectAnswer throws when signal is already aborted before I/O", async (
       }),
     (err: Error) => err.name === "AbortError",
   );
-  // listCandidateMemories must never have been called.
   assert.equal(sources.calls.listCandidates, 0);
 });
 
-// ── Namespace flows through to the source accessor ──────────────────────────
 
 test("tryDirectAnswer passes the requested namespace to listCandidateMemories", async () => {
   let observedNamespace: string | null = null;
@@ -496,7 +463,6 @@ test("tryDirectAnswer passes the requested namespace to listCandidateMemories", 
   assert.equal(observedNamespace, "project-x");
 });
 
-// ── Query entity refs are propagated to the eligibility module ──────────────
 
 test("tryDirectAnswer forwards queryEntityRefs to the eligibility gate", async () => {
   const match = makeMemory({

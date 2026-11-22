@@ -35,11 +35,6 @@ import {
 import type { CodingContext, PluginConfig } from "./types.js";
 import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "./write-envelope.js";
 
-// Sealed-write stub fidelity (issue #1989 PR2; AGENTS.md §21): production
-// callers now write via `writeSealedMemory`. Test doubles keep stubbing
-// `writeMemory`; this decorator adds a sealed entry that delegates through
-// the PRODUCTION mapping (`sealedWriteToLegacyArgs`), so mock behavior
-// cannot drift from the real envelope→options translation.
 function withSealedWrite<T extends { writeMemory: (...args: never[]) => unknown }>(stub: T): T {
   // SAFETY: the decorated stub only gains writeSealedMemory and dir, both assigned below before any caller reads them.
   const decorated = stub as T & {
@@ -90,7 +85,6 @@ function resolver(service: EngramAccessService) {
 }
 
 function projectNamespaceFor(tag: string): string {
-  // projectScope (no branch scope) overlay namespace == projectNamespaceName.
   return combineNamespaces("default", projectNamespaceName(projectTagProjectId(tag)));
 }
 
@@ -107,7 +101,6 @@ test("#1434 projectTag scopes the write to the project namespace, read-only", as
 
   assert.equal(resolved, projectNamespaceFor("Acme/Webshop"));
   assert.notEqual(resolved, "default", "project context must change the namespace");
-  // Read-only: resolving must NOT persist coding context on the session.
   assert.equal(
     orch.getCodingContextForSession("sess-1"),
     null,
@@ -116,11 +109,6 @@ test("#1434 projectTag scopes the write to the project namespace, read-only", as
 });
 
 test("#1434 a sessionless write with projectTag stays on the base namespace (recall symmetry)", async () => {
-  // Without a sessionKey the recall path can't attach or look up coding context
-  // (maybeAttachCodingContext / applyCodingNamespaceOverlay both no-op), so a
-  // sessionless recall searches the base namespace. A sessionless write must
-  // therefore also stay on the base — else the store would be hidden from the
-  // same client's recall (Codex review).
   const orch = makeOrchestratorStub();
   const service = new EngramAccessService(orch);
   const resolved = await resolver(service)({
@@ -150,11 +138,6 @@ test("#1434 an existing session coding context scopes the write (recall-then-sto
 });
 
 test("#1434 an existing session binding wins over per-call projectTag (recall symmetry)", async () => {
-  // Session is bound to project A; this write also passes per-call projectTag B.
-  // The write MUST resolve to A — the same project the session's recall searches
-  // (recall is session-first: maybeAttachCodingContext returns early when a
-  // context is already attached). A per-call-wins write would land in B, which
-  // that session's recall never searches, so the memory would be undiscoverable.
   const orch = makeOrchestratorStub();
   orch.setCodingContextForSession("sess-reuse", {
     projectId: projectTagProjectId("Project/A"),
@@ -187,11 +170,6 @@ test("#1434 explicit namespace wins and bypasses coding overlay", async () => {
 });
 
 test("#1434 unqualified write (self policy) stays on config.defaultNamespace", async () => {
-  // Even when principal "alice" has a self policy, an UNQUALIFIED write (no
-  // coding overlay) stays on config.defaultNamespace — exactly the pre-#1434
-  // behavior. #1434 only re-scopes project-identified writes; it must not
-  // silently move plain unqualified writes to a principal self namespace (Codex
-  // review). The symmetry fix applies to the coding-overlay path only.
   const orch = makeOrchestratorStub({
     namespacePolicies: [
       { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
@@ -207,8 +185,6 @@ test("#1434 unqualified write (self policy) stays on config.defaultNamespace", a
 });
 
 test("#1434 unqualified write with no principal policy stays on the default namespace", async () => {
-  // No policy named after the principal => base is defaultNamespace, so behavior
-  // is unchanged for the common deployment.
   const orch = makeOrchestratorStub();
   const service = new EngramAccessService(orch);
   const resolved = await resolver(service)({
@@ -220,10 +196,6 @@ test("#1434 unqualified write with no principal policy stays on the default name
 });
 
 test("#1434 project write overlays onto the principal self base (recall symmetry)", async () => {
-  // With a self policy, a project-scoped write overlays onto the principal self
-  // base (defaultNamespaceForPrincipal) — the SAME base recall/observe/buffer
-  // overlay onto — so the store is discoverable by that principal's
-  // project-scoped recall (Cursor review / rule 42).
   const orch = makeOrchestratorStub({
     namespacePolicies: [
       { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
@@ -243,10 +215,6 @@ test("#1434 project write overlays onto the principal self base (recall symmetry
 });
 
 test("#1434 an explicit coding-overlay namespace string is NOT a writable target", async () => {
-  // Project scoping is requested via cwd/projectTag, never by naming the derived
-  // overlay namespace. A caller naming an overlay-shaped namespace directly is
-  // authorized strictly through canWriteNamespace and rejected, so the persist
-  // allow-list can never be bypassed by guessing an overlay name.
   const orch = makeOrchestratorStub();
   const service = new EngramAccessService(orch);
   await assert.rejects(
@@ -261,10 +229,6 @@ test("#1434 an explicit coding-overlay namespace string is NOT a writable target
 });
 
 test("#1434 a prefix-colliding principal namespace cannot be written cross-tenant (Codex P1)", async () => {
-  // Policies for both `alice` and `alice-project-team`. An authenticated `alice`
-  // must NOT be able to write `alice-project-team-project-foo` (the OTHER
-  // principal's project-scoped namespace) by exploiting a shared `alice-project-`
-  // prefix. Strict canWriteNamespace authorization rejects it.
   const orch = makeOrchestratorStub({
     namespacePolicies: [
       { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
@@ -288,10 +252,6 @@ test("#1434 a prefix-colliding principal namespace cannot be written cross-tenan
 });
 
 test("#1434 a derived overlay base the principal cannot write is rejected (Codex P1)", async () => {
-  // The principal has a self policy but NO write access to the configured
-  // default namespace. An explicit `default-project-foo` must be rejected —
-  // overlay namespaces are never accepted as caller strings, and the base must
-  // pass canWriteNamespace.
   const orch = makeOrchestratorStub({
     defaultNamespace: "default",
     namespacePolicies: [
@@ -312,9 +272,6 @@ test("#1434 a derived overlay base the principal cannot write is rejected (Codex
 });
 
 test("#1434 a forged cross-principal namespace cannot widen access", async () => {
-  // A caller naming a namespace that is not writable for this principal is
-  // rejected by canWriteNamespace — it can't escalate to another principal's
-  // namespace.
   const orch = makeOrchestratorStub();
   const service = new EngramAccessService(orch);
   await assert.rejects(
@@ -385,10 +342,6 @@ function storeRequest(
 }
 
 test("#1434 a real memory_store attaches coding context so a later bare recall on the session is scoped (Cursor review)", async () => {
-  // A store with sessionKey + per-call projectTag must seed the session's
-  // coding binding (like recall's maybeAttachCodingContext), so a SUBSEQUENT
-  // bare recall on the same session — one that omits cwd/projectTag — is scoped
-  // to the same project and finds the memory.
   const { orch, contexts, getStorageCalls } = makeAttachOrchestrator();
   const service = new EngramAccessService(orch);
 
@@ -398,7 +351,6 @@ test("#1434 a real memory_store attaches coding context so a later bare recall o
 
   assert.equal(res.status, "stored");
   assert.equal(res.namespace, projectNamespaceFor("Acme/Webshop"));
-  // The store attached the coding context the recall path reads.
   assert.equal(
     contexts.get("sess-attach")?.projectId,
     projectTagProjectId("Acme/Webshop"),
@@ -407,8 +359,6 @@ test("#1434 a real memory_store attaches coding context so a later bare recall o
     getStorageCalls.every((ns) => ns === projectNamespaceFor("Acme/Webshop")),
     `expected all getStorage calls on the project namespace, got ${JSON.stringify(getStorageCalls)}`,
   );
-  // A later BARE resolve (no per-call context) on the same session — what a
-  // subsequent recall on this session uses — is now scoped to the same project.
   const bare = await resolver(service)({
     sessionKey: "sess-attach",
     authenticatedPrincipal: "alice",
@@ -418,9 +368,6 @@ test("#1434 a real memory_store attaches coding context so a later bare recall o
 });
 
 test("#1434 an explicit-namespace store does NOT bind the session to a project (Codex review)", async () => {
-  // An explicit `namespace` bypasses the coding overlay, so the write must not
-  // seed a project binding the session never wrote to — else later bare recalls
-  // would search a project namespace with no committed memory.
   const { orch, contexts } = makeAttachOrchestrator();
   const service = new EngramAccessService(orch);
   const res = await service.memoryStore(
@@ -432,7 +379,6 @@ test("#1434 an explicit-namespace store does NOT bind the session to a project (
 });
 
 test("#1434 a dryRun store does NOT bind the session to a project (Codex review)", async () => {
-  // A dryRun is a read-only preview; it must not mutate session coding context.
   const { orch, contexts } = makeAttachOrchestrator();
   const service = new EngramAccessService(orch);
   const res = await service.memoryStore(
@@ -442,8 +388,6 @@ test("#1434 a dryRun store does NOT bind the session to a project (Codex review)
   assert.equal(contexts.get("sess-dry"), undefined, "dryRun must not bind the session");
 });
 
-// ── Persist layer (#1434 P1/High): a pre-resolved project namespace must reach
-// storage instead of being rejected by the static policy allow-list. ──────────
 
 function makePersistOrchestrator() {
   const getStorageCalls: Array<string | undefined> = [];
@@ -485,8 +429,6 @@ test("#1434 persistExplicitCapture routes a pre-resolved project namespace to st
     "memory_store",
   );
   assert.equal(res.id, "mem-1");
-  // The dynamic project namespace must be used verbatim (dup-check + write),
-  // never rewritten or rejected.
   assert.ok(
     getStorageCalls.every((ns) => ns === "default-project-tag-abc123"),
     `expected all getStorage calls on the project namespace, got ${JSON.stringify(getStorageCalls)}`,

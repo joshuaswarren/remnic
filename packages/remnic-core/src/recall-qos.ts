@@ -1,15 +1,6 @@
 import { abortError, isAbortError } from "./abort-error.js";
 import { log, type LoggerBackend } from "./logger.js";
 
-/**
- * Hand the event loop one macrotask.
- *
- * A recall section deadline is a timer, and a timer cannot fire while a
- * synchronous scan holds the loop — so a provider that iterates the whole corpus
- * must call this periodically or its budget is unenforceable (issue #2291).
- * `setImmediate` (check phase) is used rather than a `0ms` timer so the yield
- * cannot be starved by the timer queue it exists to let run.
- */
 export function yieldToEventLoop(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setImmediate(resolve);
@@ -17,12 +8,6 @@ export function yieldToEventLoop(): Promise<void> {
 }
 
 export type RecallSectionPriority = "core" | "enrichment";
-/**
- * `timeout` records a section that started, exceeded its deadline, and was
- * degraded to its neutral value (issue #2291).  It is distinct from `skip`
- * (never ran: disabled or zero-limit) so operators can tell a configuration
- * choice from a budget breach in the section metric log.
- */
 export type RecallSectionSource = "fresh" | "stale" | "skip" | "timeout";
 
 export interface RecallSectionMetric {
@@ -106,12 +91,6 @@ export function createRecallSectionMetricRecorder(options: {
   };
 }
 
-/**
- * Fraction of the request's REMAINING budget that a single core section may
- * consume.  The remainder is what makes degradation possible at all: time to
- * assemble and return the sections that did arrive before the outer timeout
- * kills the request outright.
- */
 const CORE_SECTION_MAX_SHARE_OF_REQUEST = 0.8;
 
 /**
@@ -189,28 +168,6 @@ export function resolveRecallOuterDeadlineAtMs(options: {
   return configured === null ? client : Math.min(configured, client);
 }
 
-/**
- * Effective per-section deadline for optional core recall providers.
- *
- * Two things make the configured value unusable as-is (issue #2291):
- *
- *  - `recallCoreDeadlineMs` and `recallOuterTimeoutMs` both default to 75s, so a
- *    section budget taken at face value can never fire before the request ceiling
- *    that cancels everything — the caller loses the whole recall rather than one
- *    section.
- *  - Sections start *after* planning, namespace resolution, and mode selection.
- *    Capping against the original ceiling would let a section that starts 20s in
- *    still be running when the request is aborted, which is the same failure.
- *
- * So the cap is taken against `remainingOuterMs` — the request budget left when
- * the section actually starts. An operator who lowers `recallCoreDeadlineMs`
- * below that still gets exactly what they asked for.
- *
- * `remainingOuterMs === null` means the request is unbounded and there is nothing
- * to reserve headroom against. A non-positive remainder means the request is
- * already over budget, so the section degrades immediately rather than starting
- * work that cannot be delivered.
- */
 export function resolveRecallCoreSectionDeadlineMs(options: {
   configuredCoreDeadlineMs: number;
   remainingOuterMs: number | null;
@@ -233,25 +190,6 @@ export interface RecallSectionDeadlineOutcome<T> {
   durationMs: number;
 }
 
-/**
- * Run one recall section under a deadline, degrading to `fallback` instead of
- * blocking the phase it belongs to (issue #2291).
- *
- * Before this existed, `deadlineMs` was recorded in the section metric but
- * never enforced for core sections: a provider doing a multi-minute scan on a
- * slow filesystem blocked the whole phase-one `Promise.all`, and kept scanning
- * after the caller aborted.  Two guarantees fix that:
- *
- *  1. The returned promise settles within `deadlineMs`, with `timedOut: true`
- *     and the caller's neutral value, so one slow optional provider degrades
- *     independently rather than holding the response.
- *  2. `run` receives a signal that fires on the deadline AND on the caller's
- *     abort, so the section can stop its own work at its next checkpoint.
- *
- * `deadlineMs <= 0` (or non-finite) means unbounded, matching the config
- * contract that a zero budget disables the limit.  The section signal is still
- * created and still tracks the parent, so cancellation propagates either way.
- */
 export async function runRecallSectionWithinDeadline<T>(options: {
   deadlineMs: number;
   fallback: T;
@@ -274,8 +212,6 @@ export async function runRecallSectionWithinDeadline<T>(options: {
   let timer: NodeJS.Timeout | undefined;
 
   try {
-    // Wrap in a tagged result rather than racing raw values against a sentinel:
-    // T is caller-chosen and must never be mistaken for the timeout marker.
     const work = options.run(controller.signal).then(
       (value) => ({ kind: "value" as const, value }),
     );
@@ -284,14 +220,10 @@ export async function runRecallSectionWithinDeadline<T>(options: {
       return { value: settled.value, timedOut: false, durationMs: now() - startedAtMs };
     }
     const deadline = Promise.withResolvers<{ kind: "timeout" }>();
-    // Deliberately NOT unref'd: the caller is awaiting this bound, so the timer
-    // must keep the loop alive until it fires or `finally` clears it.
     timer = setTimeout(() => deadline.resolve({ kind: "timeout" }), options.deadlineMs);
     const settled = await Promise.race([work, deadline.promise]);
     if (settled.kind === "timeout") {
       controller.abort(abortError("recall section deadline exceeded"));
-      // The abandoned work outlives this call; swallow its settlement so a
-      // late rejection is not reported as unhandled.
       void work.catch(() => {});
       return { value: options.fallback, timedOut: true, durationMs: now() - startedAtMs };
     }
@@ -302,30 +234,6 @@ export async function runRecallSectionWithinDeadline<T>(options: {
   }
 }
 
-/**
- * Runs one *optional* core recall section, bounded and accounted for.
- *
- * Binds a section's deadline, the caller's abort signal, and the QoS recorder
- * once so each provider is one call (issue #2291).  A breach degrades the
- * section to `fallback`, warns with the section name and budget, and records the
- * section as `timeout` — so a slow provider costs its own section, not the
- * response.
- *
- * The budget is resolved when each section STARTS, against the request budget
- * still left at that moment (`outerDeadlineAtMs`), not against the original
- * configured ceiling: sections begin after planning and namespace resolution, and
- * a section sized to the full request would otherwise still be running when the
- * request itself is aborted.
- *
- * Cancellation degrades too, and must: the section signal fires on the caller's
- * abort, and the phase this section belongs to is awaited through a race that the
- * caller's abort also wins.  A rejection here would therefore land on a promise
- * nobody is awaiting any more — an unhandled rejection rather than a signal.  The
- * caller learns of its own abort from that race, not from a section result.
- *
- * Only sections whose absence leaves recall coherent belong here: the fallback
- * IS the degraded contract.
- */
 export function createBoundedCoreSectionRunner(options: {
   configuredDeadlineMs: number;
   /** Absolute time the whole request is aborted, or null when unbounded. */

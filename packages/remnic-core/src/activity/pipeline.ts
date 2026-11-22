@@ -27,9 +27,6 @@ export function activityCursorKey(machine: string, date: string): string {
   return `${machine}\u0000${date}`;
 }
 
-// Serializes the list -> compose -> write digest section per (memoryDir, date)
-// so two sources syncing the same day cannot lose-update each other's digest:
-// the last writer in the chain lists every row present and wins.
 const digestLocks = new Map<string, Promise<unknown>>();
 
 function withDigestLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
@@ -146,10 +143,6 @@ export async function syncActivitySource(
     fetched += page.snapshots.length;
 
     for (const snapshot of page.snapshots) {
-      // Persist every row keyed by its own timestamp: an out-of-window snapshot
-      // (replay file, timezone-boundary bug) is durable under its own day and
-      // never lost, while the day digest below is a window query so it never
-      // pollutes options.date. A malformed instant is rejected loudly here.
       const result = options.store.insertSnapshot(snapshotForMachine(snapshot, source.machineLabel));
       if (result.inserted) inserted += 1;
       else duplicates += 1;
@@ -168,15 +161,10 @@ export async function syncActivitySource(
     cursor = page.nextCursor;
   }
 
-  // Only a loop that ran out of its page budget without seeing a terminal
-  // null cursor is a runaway; completing on the final allowed page is normal.
   if (!completed) {
     throw new Error(`activity source exceeded ${maxPages} pages`);
   }
 
-  // Re-check abort before the durable write section: stop() may have fired after
-  // the last page returned, or while this date waited behind digestLocks. An
-  // aborted tick must not compose/write a digest or advance the cursor.
   options.signal?.throwIfAborted();
   const digestWritten = await withDigestLock(`${options.memoryDir}\u0000${options.date}`, async () => {
     options.signal?.throwIfAborted();
@@ -193,17 +181,11 @@ export async function syncActivitySource(
   options.signal?.throwIfAborted();
   options.store.setCursor(cursorKey, cursor);
 
-  // Rows and digest are durable and the cursor has advanced; refresh the search
-  // index so the new digest is discoverable (rule 31). Best-effort: a failure
-  // is reported, not thrown — the data indexes on the next update.
   let reindexError: string | undefined;
   if (digestWritten && options.afterWrites !== undefined) {
     try {
       await options.afterWrites(options.signal);
     } catch (error: unknown) {
-      // reindexError is part of the exported ActivitySyncResult. Keep our
-      // controlled QMD strict messages, but reduce opaque backend errors (which
-      // can embed absolute paths / loader stacks) to a sanitized name+code.
       reindexError =
         error instanceof Error && error.message.startsWith("QMD ")
           ? error.message

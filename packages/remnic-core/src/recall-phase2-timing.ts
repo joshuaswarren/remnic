@@ -1,13 +1,3 @@
-/**
- * Phase-2 await timing fields for the recall-timings attempt record (issue
- * #1830). Each instrumented phase-2 await contributes three optionally-named
- * fields: `phase2<Name>Ms` (monotonic elapsed of the await itself),
- * `phase2<Name>Status` (ok | timeout | error | skipped), and — for promises
- * started earlier in phase 1 and awaited later — `phase2<Name>TotalMs`
- * (monotonic time since the promise was created). The await fields are
- * OVERLAPPING, not additive: awaits of promises started earlier include time
- * spent doing other phase-2 work.
- */
 
 export type Phase2AwaitStatus = "ok" | "timeout" | "error" | "skipped";
 

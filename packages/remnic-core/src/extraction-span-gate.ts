@@ -1,12 +1,3 @@
-/**
- * Span-mode Phase B gate (issue #2333).
- *
- * Phase A must earn >= 20% extraction wall-clock reduction, keep the LLM-judge
- * score drop under 2 points, and keep the span fallback rate under 15% before
- * Phase B wiring starts. A failed gate is reported, never rounded into a pass.
- *
- * Pure. No I/O, no clock, no randomness.
- */
 
 export const SPAN_GATE_MIN_WALLCLOCK_REDUCTION_PCT = 20;
 export const SPAN_GATE_MAX_JUDGE_DROP_POINTS = 2;
@@ -19,7 +10,6 @@ export interface SpanGateConditions {
 }
 
 export interface SpanGateVerdict {
-  /** True only when every condition passes. */
   pass: boolean;
   conditions: SpanGateConditions;
   /** Condition names that failed, in declaration order. Empty when pass. */

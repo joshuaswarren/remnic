@@ -1,30 +1,3 @@
-/**
- * Transactional review-round gate driver (issue #1992, umbrella #1988 decision E).
- *
- * Turns the pure round state machine in review-rounds.mjs into a PR-scoped
- * ledger + dispatch decision. The gate:
- *
- *   1. Recovers prior round state from an owned PR comment (the ledger).
- *   2. Detects current-head bot activity and folds pushes/threads into the
- *      SAME round (commits stay incremental — see umbrella non-goal), so a
- *      push during an open round updates the head but does NOT re-dispatch
- *      reviewers.
- *   3. Dispatches the next bot round only when every round thread is addressed
- *      and the head has been stable for the debounce window, when a maintainer
- *      applies the force-dispatch label, or when the round exceeds its max age.
- *   4. Tracks micro-push telemetry ("pushes this round: N", warning at N>3).
- *
- * v1 is visibility-first (umbrella decision C): the ledger comment is always
- * written, but reviewer dispatch is a no-op unless REVIEW_ROUND_ENFORCE is
- * explicitly enabled. The enforcement flip and the review-thread-guard
- * pending-state change are deferred to PR3 (shadow data must land first,
- * decision D), so this driver never blocks a merge and never hides an
- * unresolved thread — it surfaces the open thread set in its summary.
- *
- * The decision core (computeRoundGateDecision) is pure so fixture replay can
- * validate it without GitHub. runRoundGate is the thin actions/github-script
- * wrapper; the workflow imports this module directly (no inline mirror).
- */
 
 import {
   DEFAULT_ROUND_DEBOUNCE_MS,
@@ -39,18 +12,10 @@ import {
 
 export const FORCE_DISPATCH_LABEL = "review-round:force-dispatch";
 export const AUTO_CLOSED_LABEL = "review-round:auto-closed";
-/** Micro-push telemetry warns once the round crosses this many pushes (issue #1992 §4). */
 export const PUSH_WARN_THRESHOLD = 3;
-/** Round-budget ledger (issue #2442): a one-time warning reply posts at this many fix rounds. */
 export const FIX_ROUND_WARN_THRESHOLD = 3;
-/** At the cap, ONE backlog issue is filed listing still-open non-critical threads. */
 export const FIX_ROUND_CAP = 4;
-/** Label stamped on the PR when the cap backlog issue is filed (issue #2442). */
 export const CAP_LABEL = "review-round:cap";
-// Threads matching this stay actionable at the cap (AGENTS.md "Budget the
-// review loop, then decline": correctness, security, data-integrity defects
-// and perf/capacity/reliability regressions are never declined). Over-matching
-// errs safe: the thread stays on the PR instead of the backlog.
 const CRITICAL_THREAD_PATTERN =
   /\b(security|vulnerab(?:le|ility)|exploit|injection|remote code execution|data[ -]integrity|correctness|unbounded|memory leak|n\+1|performance|capacity|reliability|regression)\b/i;
 export const DEFAULT_REQUIRED_AI_REVIEWER_GROUPS =
@@ -76,19 +41,12 @@ function threadLabel(thread) {
   return `${author} on ${path}`;
 }
 
-// Shadow mode "changes nothing" (issue #1992 decision C): reopen the round the
-// reducer closed for a would-be dispatch, so the persisted ledger never records
-// a real dispatch that did not happen.
 function reopenRoundForShadow(state) {
   const reopened = { ...state, status: "open", dispatchIssuedAt: null, closeReason: null, autoClosed: false };
   delete reopened.closedAt;
   return reopened;
 }
 
-/**
- * Pure round-gate decision from an activity snapshot. Returns the next state,
- * the fully-rendered ledger comment body, telemetry, and a human summary.
- */
 export function computeRoundGateDecision({
   ledgerBody = "",
   headSha,
@@ -128,10 +86,6 @@ export function computeRoundGateDecision({
     maxAgeMs,
   });
 
-  // In shadow (dry-run) mode a would-be dispatch is LOGGED via telemetry + the
-  // summary, but the persisted ledger stays OPEN: recording a closed/dispatched
-  // round would claim a dispatch that never happened and, once enforcement flips
-  // on, make the gate wait for bot activity that was never requested (codex).
   const decisionState = decision.state;
   const dryRunDispatch =
     !enforce && decision.action === "dispatch" && decisionState?.status === "closed";
@@ -220,8 +174,6 @@ function renderRoundComment({ state, telemetry, unresolved }) {
   return `${summary}\n\n${ledger}\n`;
 }
 
-// Trust only the workflow bot's own ledger comment: another commenter pasting
-// the marker must never become the authoritative round state (issue #1992).
 const LEDGER_COMMENT_AUTHORS = new Set(["github-actions[bot]", "github-actions"]);
 
 function isWorkflowLedgerComment(comment) {
@@ -262,7 +214,6 @@ async function fetchReviewThreads(github, owner, repo, prNumber) {
   `;
   const threads = [];
   let after = null;
-  // Paginate to completion: the worst observed PR had 59 threads (issue #1992).
   for (;;) {
     const result = await github.graphql(query, { owner, repo, pr: prNumber, after });
     const conn = result.repository.pullRequest.reviewThreads;
@@ -274,10 +225,6 @@ async function fetchReviewThreads(github, owner, repo, prNumber) {
 }
 
 function resolvePullNumber(context) {
-  // Resolve the SINGLE PR this run is serialized for. The order matches the
-  // workflow concurrency-group key exactly (pull_request.number →
-  // check_run.pull_requests[0].number → issue.number), so the PR we process is
-  // always the one the group serializes.
   const candidate =
     context.payload?.pull_request?.number ??
     context.payload?.check_run?.pull_requests?.[0]?.number ??
@@ -287,13 +234,6 @@ function resolvePullNumber(context) {
   return Number.isInteger(pr) && pr > 0 ? pr : null;
 }
 
-/**
- * actions/github-script entrypoint. Processes ONLY the PR the run's concurrency
- * group serializes. A GitHub Actions run belongs to exactly one concurrency
- * group, so a check_run attached to several PRs sharing a head SHA must NOT
- * fan out and write secondary PRs' ledgers outside their own serialized group
- * (codex) — those PRs advance through their own (separately serialized) events.
- */
 export async function runRoundGate({ github, context, core, env = {} } = {}) {
   const owner = context.repo.owner;
   const repo = context.repo.repo;
@@ -305,16 +245,12 @@ export async function runRoundGate({ github, context, core, env = {} } = {}) {
   return runRoundGateForPr({ github, core, env, owner, repo, prNumber });
 }
 
-/** Run the round gate for a single resolved pull request. */
 async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
   const enforce = String(env.REVIEW_ROUND_ENFORCE ?? "").toLowerCase() === "true";
   const botAliases = parseReviewerAliases(
     env.REQUIRED_AI_REVIEWER_GROUPS || DEFAULT_REQUIRED_AI_REVIEWER_GROUPS,
   );
 
-  // The read path must never fail the (non-blocking) gate: any GitHub API error
-  // degrades to a warning + no-op rather than an uncaught exception that would
-  // fail the github-script step (issue #1992 — the gate never fails a check).
   let pull;
   let reviews;
   let issueComments;
@@ -361,9 +297,6 @@ async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
   );
   const forceDispatch = labels.includes(FORCE_DISPATCH_LABEL);
 
-  // decideRound throws on an empty headSha; guard here so a PR with no
-  // resolvable head degrades to a no-op instead of failing the non-blocking
-  // gate (cursor).
   if (typeof headSha !== "string" || headSha.length === 0) {
     core.notice(`review-round gate: PR #${prNumber} has no resolvable head SHA; skipping.`);
     return null;
@@ -384,14 +317,6 @@ async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
     now: new Date().toISOString(),
   });
 
-  // Order matters for the non-atomic multi-write (issue #1992):
-  //  1) under enforcement, REQUEST the bot round before recording the round as
-  //     dispatched, so a trigger failure leaves the round open to retry (codex);
-  //  2) PERSIST the ledger;
-  //  3) only AFTER a durable persist, consume the one-shot force-dispatch label
-  //     and stamp the auto-closed label. Consuming the label before the write
-  //     would drop the maintainer's force intent (and its manual retry) if the
-  //     write then failed transiently (Main).
   let persist = true;
   let dispatchedThisRun = false;
   const forceConsumed =
@@ -412,11 +337,6 @@ async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
     );
   }
 
-  // Round-budget enforcement (issue #2442) runs BEFORE the ledger persist so
-  // the one-shot warning/cap stamps land in the same single ledger write; a
-  // failed side effect leaves the stamp unset and retries on the next event.
-  // It is independent of REVIEW_ROUND_ENFORCE (which gates reviewer dispatch
-  // only) and, like dispatch, is non-blocking by contract.
   if (persist) {
     await enforceRoundBudget({
       github,
@@ -429,10 +349,6 @@ async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
       threads,
     });
   }
-  // The ledger comment is the visibility mechanism in v1: upsert it (even in
-  // shadow mode) unless an enforced dispatch failed above. Writes can fail on
-  // fork PRs (read-only token) — that degrades to a log line, never a failed
-  // (non-blocking) gate.
   let persisted = false;
   if (persist) {
     try {
@@ -459,10 +375,6 @@ async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
     }
   }
 
-  // Consume/stamp labels ONLY after the dispatched state is durably recorded, so
-  // a transient ledger-write failure never removes the force-dispatch label
-  // (and its manual retry) without recording the dispatch, and never leaves an
-  // auto-closed label on a round whose closure was not persisted (Main).
   if (persisted && result.telemetry.dispatch) {
     if (enforce && result.telemetry.autoClosed) {
       await addLabelSafely(github, owner, repo, prNumber, AUTO_CLOSED_LABEL, core);
@@ -551,12 +463,6 @@ function renderCapIssueBody({ prNumber, threads, fixRounds }) {
   return lines.join("\n");
 }
 
-/**
- * Round-budget ledger enforcement (issue #2442): one-time warning reply at
- * FIX_ROUND_WARN_THRESHOLD, ONE cap backlog issue at FIX_ROUND_CAP. Every side
- * effect is stamped into the ledger state so it never re-fires; every failure
- * degrades to a log line (the gate never fails a check).
- */
 async function enforceRoundBudget({ github, core, owner, repo, prNumber, prTitle, result, threads }) {
   const state = result.state;
   if (!state) return;
@@ -582,9 +488,6 @@ async function enforceRoundBudget({ github, core, owner, repo, prNumber, prTitle
 
   if (fixRounds >= FIX_ROUND_CAP && !state.capIssueUrl) {
     const declined = openNonCriticalThreads(threads);
-    // Nothing still-open to backlog: skip only the FILING (the cap re-evaluates
-    // next event) — never return early, or a warning stamp written above would
-    // be dropped from the persisted commentBody and re-post every event (cursor).
     if (declined.length > 0) {
       try {
         const issue = await github.rest.issues.create({
@@ -616,9 +519,6 @@ async function enforceRoundBudget({ github, core, owner, repo, prNumber, prTitle
   });
 }
 async function dispatchReviewers({ github, owner, repo, prNumber, core }) {
-  // Request a fresh bot round against the settled head. Returns true only when
-  // the trigger comment is posted, so the caller can withhold the dispatched
-  // ledger state on failure and retry (issue #1992).
   try {
     await github.rest.issues.createComment({
       owner,

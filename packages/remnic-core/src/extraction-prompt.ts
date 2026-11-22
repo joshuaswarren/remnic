@@ -1,11 +1,3 @@
-/**
- * Extraction prompt construction (issue #1995 sibling extraction).
- *
- * The system prompt, its JSON response shape, and the placeholder table
- * derived from that shape are prompt DATA, not engine behavior. They live here
- * so `extraction.ts` holds the pipeline and one module owns the text every
- * extraction path — local LLM, direct client, gateway fallback — sends.
- */
 
 import { AMBIENT_CAPTURE_PROMPT_SECTION, AMBIENT_SPECULATIVE_TIER_CLAUSE } from "./ambient-provenance.js";
 import { resolveMemoryLifecycleCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
@@ -65,11 +57,6 @@ export const CUE_ANCHOR_PROMPT_INSTRUCTION = `- For each fact, emit at most 3 "c
 - Omit cue anchors when the conversation does not support a useful search hook.
 - Example: "Alice booked Bistro Max for Mike's surprise party" can use {"type":"entity","value":"Mike surprise party"} and {"type":"entity","value":"Alice restaurant booking"}.`;
 
-/**
- * Output-language policy (issue #2190). Every prompt that produces memory
- * content embeds this verbatim so non-English conversations are not silently
- * translated to English — translated memories fail later lexical recall.
- */
 export const OUTPUT_LANGUAGE_POLICY = `Output language: write facts, profile updates, entity names and aliases, tags, questions, and any rewritten or merged memory content in the source language of the conversation or input memories. Never translate into English or another language unless the user explicitly asked for a translation.`;
 
 /**
@@ -238,11 +225,6 @@ export const PROFILE_CONSOLIDATION_RESPONSE_SCHEMA = `{
   "summary": "brief summary of what was consolidated"
 }`;
 
-/**
- * System prompt shared by every consolidation path (gateway, direct client,
- * local LLM). Owns the causal-rule clause and the output-language policy so
- * the three paths cannot drift (issue #2190).
- */
 export function buildConsolidationSystemPrompt(config: PluginConfig): string {
   return `You are a memory consolidation system. Compare new memories against existing ones and decide what to do with each.
 
@@ -260,10 +242,6 @@ Also:
 - ${OUTPUT_LANGUAGE_POLICY}`;
 }
 
-/**
- * System prompt shared by every profile-consolidation path (gateway, direct
- * client, local LLM). Owns the output-language policy (issue #2190).
- */
 export function buildProfileConsolidationSystemPrompt(targetLines: number): string {
   return `You are a profile consolidation system. You are given a behavioral profile (markdown) that has grown too large. Your job is to produce a CONSOLIDATED version that:
 

@@ -1,19 +1,3 @@
-/**
- * recall-rerank-coordinator.test.ts — issue #1905.
- *
- * Pins the O(candidates) inversion of the Memory-Worth / TrustScore recall
- * stage:
- *   - when the hot path's already-loaded frontmatter covers the candidates,
- *     the stage does ZERO `readAllMemories()` / direct-read calls and its
- *     counters come from that frontmatter;
- *   - the preloaded (candidates) path produces byte-identical ranking to the
- *     old corpus-map path for the same data (golden parity);
- *   - cold-tier candidates absent from the preloaded map fall back to a
- *     bounded-parallel (<=16) direct read whose counters match a reference;
- *   - the corpus-fallback cache is invalidated by the shared corpus version,
- *     not a wall-clock TTL (no stale counters after a mutation);
- *   - with both feature flags off the stage touches storage zero times.
- */
 
 import assert from "node:assert/strict";
 import os from "node:os";
@@ -46,9 +30,6 @@ function result(id: string, score: number): QmdSearchResult {
   return { docid: id, path: `/facts/${id}.md`, snippet: id, score };
 }
 
-// Only mw_* / lastAccessed are read by the counter builder; the fixture stays
-// narrow. The frontmatter cast is a deliberate test double for a value inference
-// cannot unify with the full MemoryFrontmatter shape.
 function mem(id: string, mw_success?: number, mw_fail?: number): MemoryFile {
   const frontmatter = { mw_success, mw_fail } as unknown as MemoryFile["frontmatter"];
   return { path: `/facts/${id}.md`, frontmatter, content: id };
@@ -59,11 +40,9 @@ interface FakeStorageState {
   version: number;
 }
 
-/** Fake storage that counts corpus scans and reads its set from mutable state. */
 function makeFakes(initial: MemoryFile[], version = 1) {
   const calls = { readAll: 0, corpusVersion: 0 };
   const state: FakeStorageState = { memories: initial, version };
-  // Test double: only readAllMemories/getMemoryCorpusVersion are exercised.
   const storage = {
     readAllMemories: async () => {
       calls.readAll += 1;
@@ -90,8 +69,6 @@ test("O(candidates): preloaded frontmatter covers candidates → no corpus scan,
     },
   });
 
-  // Input order [bad, good]; only Memory-Worth counters differ. good must
-  // overtake bad purely from its preloaded counters.
   const results = [result("bad", 2), result("good", 1)];
   const preloaded = new Map<string, MemoryFile>([
     ["/facts/bad.md", mem("bad", 0, 10)],
@@ -122,12 +99,6 @@ test("preloaded-but-neutral candidates do not trigger the corpus scan or direct 
     },
   });
 
-  // Both candidates are preloaded but carry NO mw counters — the typical
-  // uninstrumented hot-QMD result. They are neutral priors: the stage must
-  // treat them as EXAMINED, not "missing", so neither the corpus fallback nor
-  // the direct-read fallback fires. Before this guard, every neutral candidate
-  // re-triggered readAllMemories() after each corpus-version bump, defeating
-  // the O(candidates) fast path.
   const results = [result("a", 2), result("b", 1)];
   const preloaded = new Map<string, MemoryFile>([
     ["/facts/a.md", mem("a")],
@@ -150,7 +121,6 @@ test("golden parity: preloaded path ranks identically to the corpus-scan path (#
   const results = [result("bad", 3), result("mid", 2), result("good", 1)];
   const memories = [mem("bad", 0, 8), mem("mid", 2, 2), mem("good", 12, 0)];
 
-  // Corpus path: no preloaded map, storage.readAllMemories supplies counters.
   const corpus = makeFakes(memories);
   const corpusCoord = new RecallRerankCoordinator({
     getConfig: () => config,
@@ -160,7 +130,6 @@ test("golden parity: preloaded path ranks identically to the corpus-scan path (#
   const viaCorpus = await corpusCoord.applyMemoryWorthRerank(results, ["default"]);
   assert.equal(corpus.calls.readAll, 1, "corpus path performs exactly one scan");
 
-  // Preloaded path: same counters supplied inline.
   const preloaded = new Map<string, MemoryFile>(memories.map((m) => [m.path, m]));
   const warm = makeFakes([]);
   const warmCoord = new RecallRerankCoordinator({
@@ -189,7 +158,6 @@ test("cold-tier miss → bounded-parallel direct read (<=16 concurrent), counter
   for (let i = 0; i < N; i += 1) {
     const id = `cold${i}`;
     results.push(result(id, N - i));
-    // Alternate success/fail so ordering depends on the direct-read counters.
     byPath.set(`/facts/${id}.md`, mem(id, i % 2 === 0 ? 9 : 0, i % 2 === 0 ? 0 : 9));
   }
 
@@ -199,9 +167,6 @@ test("cold-tier miss → bounded-parallel direct read (<=16 concurrent), counter
     readQmdResultMemory: async (p) => {
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
-      // Microtask yield (no wall clock): lets every callback in the current
-      // Promise.all batch reach this point before any resolves, so maxInFlight
-      // observes the true batch width deterministically.
       await Promise.resolve();
       inFlight -= 1;
       return byPath.get(p) ?? null;
@@ -211,8 +176,6 @@ test("cold-tier miss → bounded-parallel direct read (<=16 concurrent), counter
   const reordered = await coord.applyMemoryWorthRerank(results, ["default"]);
   assert.ok(maxInFlight > 1, "direct reads run in parallel");
   assert.ok(maxInFlight <= 16, `direct-read concurrency must stay <=16 (saw ${maxInFlight})`);
-  // Every even-index (high mw_success) candidate must outrank its odd-index
-  // (high mw_fail) neighbor → the counters from the direct read were applied.
   const rank = new Map(reordered.map((r, i) => [r.path, i]));
   for (let i = 0; i + 1 < N; i += 2) {
     assert.ok(
@@ -225,7 +188,6 @@ test("cold-tier miss → bounded-parallel direct read (<=16 concurrent), counter
 test("version-keyed cache: a corpus-version bump invalidates the cached counter map (#1905)", async () => {
   const config = await baseConfig();
   const results = [result("a", 2), result("b", 1)];
-  // Stage 1: b is low-worth (mw_fail) so a stays ahead.
   const corpus = makeFakes([mem("a", 5, 0), mem("b", 0, 5)], 1);
   const coord = new RecallRerankCoordinator({
     getConfig: () => config,
@@ -236,17 +198,14 @@ test("version-keyed cache: a corpus-version bump invalidates the cached counter 
   const first = await coord.applyMemoryWorthRerank(results, ["default"]);
   assert.equal(corpus.calls.readAll, 1, "first recall scans");
 
-  // Second recall, SAME version → served from cache (no new scan).
   await coord.applyMemoryWorthRerank(results, ["default"]);
   assert.equal(corpus.calls.readAll, 1, "same version → cache hit, no rescan");
 
-  // Mutate the corpus (b becomes high-worth) and bump the version.
   corpus.state.memories = [mem("a", 0, 5), mem("b", 5, 0)];
   corpus.state.version += 1;
   const third = await coord.applyMemoryWorthRerank(results, ["default"]);
   assert.equal(corpus.calls.readAll, 2, "version bump forces a rescan (no stale counters)");
 
-  // Ordering must reflect the NEW counters: b now outranks a.
   assert.deepEqual(first.map((r) => r.path), ["/facts/a.md", "/facts/b.md"]);
   assert.deepEqual(third.map((r) => r.path), ["/facts/b.md", "/facts/a.md"]);
 });
@@ -346,11 +305,6 @@ test("post-MMR partition exposes ordered headroom without changing admitted resu
   );
 });
 
-/**
- * Write a fact into the default-namespace storage dir (mirrors the
- * trust-score-recall-paths helper) so recall's recent-memory-scan branch has
- * candidates to rank.
- */
 async function writeFact(memoryDir: string, body: string, extra: string[] = []): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const id = `fact-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -373,12 +327,6 @@ async function writeFact(memoryDir: string, body: string, extra: string[] = []):
 }
 
 test("deadline-bound: a trust stage exceeding the assembly budget returns the pass-through fallback (#1905)", async () => {
-  // Integration test of the awaitAssemblyStep wrap: this deliberately exercises
-  // the real wall-clock enrichment-assembly deadline (deterministic time
-  // control is not available through the public recall API). A modest 400ms
-  // budget is far above the 2-file recent-scan yet the injected trust stage
-  // never resolves, so the deadline must fire and the recall must fall back to
-  // the unfiltered results without hanging or throwing.
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-1905-deadline-"));
   const config = parseConfig({
     openaiApiKey: "sk-test",
@@ -410,12 +358,6 @@ test("deadline-bound: a trust stage exceeding the assembly budget returns the pa
       "mw_fail: 0",
     ]);
 
-    // Inject a trust stage that NEVER resolves on the recent-scan branch (the
-    // branch that actually produces candidates here). Other branches (e.g. the
-    // disabled embedding fallback) run the real stage so control reaches
-    // recent-scan normally. The deadline wrap must win the race and substitute
-    // the pass-through fallback rather than await this forever — if the
-    // bare-await regression returned, recall would hang on this promise.
     const stuck = Promise.withResolvers<{
       results: QmdSearchResult[];
       trustByPath: null;
@@ -446,16 +388,12 @@ test("deadline-bound: a trust stage exceeding the assembly budget returns the pa
 
     assert.equal(typeof recall, "string", "recall resolves to a string (does not hang) despite the never-resolving trust stage");
     assert.ok(recentScanStalled, "the never-resolving trust stage ran on the recent-scan branch");
-    // The stage never produced output, so the recalled memories can ONLY come
-    // from the deadline fallback (the pre-trust recent-scan results).
     const snapshot = orchestrator.getLastXraySnapshot();
     assert.ok(snapshot, "X-ray snapshot captured");
     assert.ok(
       (snapshot!.results ?? []).length > 0,
       "unfiltered recent-scan results survive as the deadline fallback",
     );
-    // Bounded by the deadline (with generous slack for a loaded CI machine),
-    // proving the recall did not wait on the never-resolving stage.
     assert.ok(elapsed < 30_000, `recall completed within a bounded window (took ${elapsed}ms)`);
   } finally {
     await orchestrator.destroy();
@@ -464,11 +402,6 @@ test("deadline-bound: a trust stage exceeding the assembly budget returns the pa
 });
 
 test("#1907: assembly deadline aborts the losing task's injected signal but not the request signal", async () => {
-  // awaitAssemblyStep now injects a per-step AbortSignal into the task so the
-  // losing task cooperatively stops instead of running to completion after the
-  // Promise.race is lost. A task-level deadline must abort ONLY that injected
-  // step signal — never the request-level signal, which alone is allowed to
-  // reject the whole recall (#1907, fail-open guardrail).
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-1907-assembly-"));
   const config = parseConfig({
     openaiApiKey: "sk-test",
@@ -571,8 +504,6 @@ test("trust rerank preserves duplicate paths owned by different namespaces (#202
 });
 
 test("#2859 state-view cap: pairs reconcile before cap/MMR and count as one evidence packet", () => {
-  // MMR off so the ordered pool equals the input order — the packet
-  // semantics under test are then fully deterministic.
   const config = parseConfig({ recallMmrEnabled: false });
   const corpus = makeFakes([]);
   const coordinator = new RecallRerankCoordinator({
@@ -594,8 +525,6 @@ test("#2859 state-view cap: pairs reconcile before cap/MMR and count as one evid
   ];
   const caps = resolveCapabilities(config);
 
-  // Packet view: [p1+s1], [f1], [f2] — the orphan is reconciled away
-  // BEFORE the cap, and the admitted pair consumes a single slot.
   const partition = coordinator.diversifyRecallResultsWithHeadroom(
     "memories",
     rows,
@@ -615,8 +544,6 @@ test("#2859 state-view cap: pairs reconcile before cap/MMR and count as one evid
     "headroom is the remainder of the reconciled pool",
   );
 
-  // The slice never splits a packet at the boundary: even with the
-  // successor ranked LAST, the pair is admitted together.
   const splitRisk: QmdSearchResult[] = [
     sv("p1", 0.95, { status: "superseded", supersededBy: "s1" }),
     sv("f1", 0.9),
@@ -637,7 +564,6 @@ test("#2859 state-view cap: pairs reconcile before cap/MMR and count as one evid
     "no underfill: the boundary keeps the evidence packet complete",
   );
 
-  // Flag absent → the legacy row slice, byte-identical (zero-diff default).
   const legacy = coordinator.diversifyAndLimitRecallResults(
     "memories",
     rows,
@@ -665,8 +591,6 @@ test("#2859 packet cap after filter: a quarantined successor does not consume bu
     score: number,
     chain: Partial<QmdSearchResult> = {},
   ): QmdSearchResult => ({ ...result(id, score), id, status: "active", ...chain });
-  // Trust already removed s1. Cap-after-filter must drop the orphaned
-  // predecessor and promote the next live packet instead of returning empty.
   const afterTrust: QmdSearchResult[] = [
     sv("p1", 0.95, { status: "superseded", supersededBy: "s1" }),
     sv("f1", 0.8),
@@ -724,22 +648,11 @@ test("#2859 linkless superseded status does not consume a packet slot", () => {
 });
 
 
-// ─── #3226 — the rerank stages' relevance survives the MMR pass ───────────
-/**
- * The rerank stages decide an order, but the MMR pass re-derived relevance
- * from the RAW retrieval score and undid it. Each stage now carries its own
- * relevance (`QmdSearchResult.effectiveScore`) forward and MMR ranks by that.
- *
- * The raw scores are WIDELY SEPARATED (100 vs 0.1) on purpose: a fix that
- * approximates the stage's decision with `raw score × multiplier` still fails.
- */
 
-/** Frontmatter double at an explicit path (the cast mirrors `mem` above). */
 function memAt(memPath: string, frontmatter: Record<string, unknown>): MemoryFile {
   return { path: memPath, frontmatter: frontmatter as unknown as MemoryFile["frontmatter"], content: memPath };
 }
 
-/** `/facts/<id>.md` frontmatter map from `[id, mw_success?, mw_fail?]` rows. */
 function facts(rows: Array<[string, number?, number?]>): Map<string, MemoryFile> {
   return new Map(rows.map(([id, ok, fail]) => [`/facts/${id}.md`, mem(id, ok, fail)]));
 }
@@ -823,8 +736,6 @@ for (const scenario of SCENARIOS) {
 
 test("#3226: MMR off leaves the branch order verbatim", async () => {
   const coord = coordinatorFor(await baseConfig({ recallMmrEnabled: false }));
-  // Two near-duplicates plus one orthogonal candidate: with MMR on, lambda 0.3
-  // promotes the orthogonal candidate into slot 2 — this pins that MMR was off.
   const branch: QmdSearchResult[] = [
     { docid: "d1", path: "p/d1", snippet: "rocket thrust vectoring", score: 0.99 },
     { docid: "d2", path: "p/d2", snippet: "rocket thrust vectoring", score: 0.98 },
@@ -879,8 +790,6 @@ for (const boostCase of [
   },
 ]) {
   test(`#3226: the reasoning-trace boost — ${boostCase.name}`, async () => {
-    // The boost capability is off here: the boost is applied explicitly so the
-    // MMR pass sees exactly the boosted array.
     const coord = coordinatorFor(await baseConfig({ recallMmrEnabled: true, recallMmrLambda: 1 }));
     const staged = await coord.applyMemoryWorthRerank(
       [

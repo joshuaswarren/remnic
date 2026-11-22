@@ -213,7 +213,6 @@ test("range bound: spans past the default 366 days fail with the limit", () => {
     { error: result.error, limit: result.limit },
     { error: "range_too_large", limit: DEFAULT_RECAP_RANGE_MAX_DAYS },
   );
-  // Exactly the bound still passes.
   const atBound = exportDeterministicRecapRange({
     startDate: "2026-01-01",
     endDate: "2026-12-31",
@@ -268,8 +267,6 @@ test("a card spanning midnight attributes only to its stored dayKey", () => {
     range.days.map((d) => d.cards.map((c) => c.id)),
     [["spans"], []],
   );
-  // The markdown render clips the spanning card to each day window: it
-  // contributes 60m to day 1 and nothing to day 2.
   const day2 = renderDeterministicJournalRange({
     startDate: "2026-08-18",
     endDate: "2026-08-18",

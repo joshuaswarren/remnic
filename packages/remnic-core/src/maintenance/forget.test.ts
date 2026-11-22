@@ -1,10 +1,3 @@
-/**
- * Unit tests for `forgetMemory` (issue #686 PR 4/6).
- *
- * Pure helper-level coverage — uses a minimal in-memory storage stub
- * so the test focuses on the forget pipeline (find by id → write
- * frontmatter → return result) without booting an orchestrator.
- */
 
 import assert from "node:assert/strict";
 import os from "node:os";

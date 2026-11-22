@@ -1,24 +1,5 @@
 import type { MemoryFile } from "./types.js";
 
-/**
- * In-flight readAllMemories() dedup registry (issue #1902).
- *
- * NOT a cache layer — it holds transient per-(directory, secure-store key) scan
- * promises so temporally-overlapping reads collapse onto ONE disk scan; the slot
- * is deleted when the promise settles. It lives in its own module (not
- * memory-cache.ts) so it is not swept by the ALL_CACHE_LAYERS invalidation
- * contract, yet remains importable by both StorageManager and the out-of-band
- * corpus-bump helper (memory-corpus-version.ts).
- *
- * Keyed by baseDir AND secure-store key identity (Codex P1 / Cursor Medium):
- * an unlocked manager's decrypted scan must NOT be handed to a locked or
- * differently-keyed manager for the same dir — that would bypass the keyId
- * isolation getCachedMemories enforces. Locked/plaintext stores use keyId "".
- *
- * Since issue #2307 the registry also owns the scan's CANCELLATION, because
- * whether a shared scan may be cancelled is purely a question of who is still
- * attached to it — see `beginCoalescedScan`.
- */
 type InFlightEntry = {
   read: Promise<MemoryFile[]>;
   /** Readers still awaiting this scan. At zero the scan has no reason to finish. */
@@ -44,19 +25,6 @@ export interface CoalescedScanWaiter {
   leave(): void;
 }
 
-/**
- * Cancellation lifecycle for a coalesced corpus scan (issue #2307).
- *
- * The rule is reference counting, not ownership: **the scan is cancelled when its
- * LAST waiter leaves, and never before.** One reader can therefore not cancel work
- * another still needs, and two readers that both give up do not leave a full disk
- * scan running for nobody — which was the abandoned I/O this whole change exists to
- * remove.
- *
- * On the last leave the slot is withdrawn from the registry BEFORE the controller
- * fires, so a reader arriving later cannot attach to a promise already doomed to
- * reject with an `AbortError` it never asked for; it starts a fresh scan instead.
- */
 export interface CoalescedScan extends CoalescedScanWaiter {
   /** The signal the shared scan itself observes. */
   readonly scanSignal: AbortSignal;
@@ -64,7 +32,6 @@ export interface CoalescedScan extends CoalescedScanWaiter {
   arm(read: Promise<MemoryFile[]>): void;
 }
 
-/** Build the per-reader `leave` closure: decrement once, cancel at zero. */
 function trackWaiter(entry: InFlightEntry, callerSignal?: AbortSignal): CoalescedScanWaiter {
   let left = false;
   const leave = () => {
@@ -74,8 +41,6 @@ function trackWaiter(entry: InFlightEntry, callerSignal?: AbortSignal): Coalesce
     entry.waiters -= 1;
     if (entry.waiters <= 0) entry.cancel?.();
   };
-  // Named so the listener can be removed again; `once` alone would leak the
-  // reference for a reader that leaves normally.
   function onAbort() {
     leave();
   }
@@ -109,8 +74,6 @@ export function beginCoalescedScan(
   return {
     scanSignal: controller.signal,
     arm(read: Promise<MemoryFile[]>): void {
-      // `waiters: 1` IS the starter; trackWaiter only builds its leave closure
-      // (attaching readers do their own increment).
       const entry: InFlightEntry = {
         read,
         waiters: 1,

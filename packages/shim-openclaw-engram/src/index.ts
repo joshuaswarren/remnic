@@ -1,7 +1,5 @@
-// Re-export everything from @remnic/plugin-openclaw (types, named exports).
 export * from "@remnic/plugin-openclaw";
 
-// The shim intentionally advertises the legacy plugin id "openclaw-engram"
 // so existing OpenClaw configs with `plugins.entries["openclaw-engram"]`
 // keep working. The manifest in this package also declares the legacy id;
 // keep the runtime default export in sync so loaders that read

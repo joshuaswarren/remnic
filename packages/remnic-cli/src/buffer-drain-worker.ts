@@ -91,8 +91,6 @@ async function main(): Promise<number> {
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 
-  // A session is drained once per worker run: a deferred session keeps its
-  // claim and is resumed by the NEXT run, not retried in a loop here.
   const attempted = new Set<string>();
   let failures = 0;
   try {
@@ -121,9 +119,6 @@ async function main(): Promise<number> {
       if (!next) break;
       attempted.add(next.key);
 
-      // Claim the session if it still has a session file; a session that is
-      // already claimed (a previous run, or a crashed worker) is adopted by
-      // the drain itself.
       await runner.claim(next.key, ownerId);
       const outcome = await runner.drainSession(next.key, {
         ownerId,
@@ -142,8 +137,6 @@ async function main(): Promise<number> {
     failures += 1;
   }
 
-  // The claim files are the durable record: teardown is best effort and the
-  // next run picks up whatever is left.
   try {
     await orchestrator.destroy();
   } catch {

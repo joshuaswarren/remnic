@@ -118,14 +118,11 @@ test("keeps many Unknown-labeled utterances as distinct segments with end timing
       },
     ],
   });
-  // No mega-collapse at the normalizer: every utterance is its own segment.
   assert.equal(conversation.segments.length, 6);
-  // Full transcript text is preserved across all segments.
   assert.deepEqual(
     conversation.segments.map((segment) => segment.text),
     Array.from({ length: 6 }, (_, index) => `Utterance number ${index + 1}.`),
   );
-  // End timing is carried through for every segment.
   for (const [index, segment] of conversation.segments.entries()) {
     assert.equal(segment.speakerKey, "Unknown");
     assert.equal(segment.startIso, new Date(BASE_MS + index * 10_000).toISOString());

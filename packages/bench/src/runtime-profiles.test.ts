@@ -723,7 +723,6 @@ test("runtime profile routes OpenAI internal LLM calls through Responses API", a
 });
 
 test("local-lab runtime profile applies requestTimeout/max429WaitMs/disableThinking to providers (cursor review: #1573 PR2)", async () => {
-  // Regression: the local-lab branch built ProviderConfig values only from the
   // manifest and never applied --request-timeout / --max-429-wait / --disable-thinking,
   // so those flags silently no-op'd on local-lab runs. Other profiles route through
   // resolveProviderConfig which honours them; local-lab must match that contract.
@@ -762,12 +761,10 @@ test("local-lab runtime profile applies requestTimeout/max429WaitMs/disableThink
   });
 
   assert.equal(resolved.profile, "local-lab");
-  // System (responder) provider carries the runtime options layered on top of
   // the manifest's provider/model/baseUrl/temperature/seed.
   assert.equal(resolved.systemProvider?.retryOptions?.timeoutMs, 12_000);
   assert.equal(resolved.systemProvider?.retryOptions?.max429WaitMs, 5_000);
   assert.equal(resolved.systemProvider?.disableThinking, true);
-  // Judge provider honours the same contract.
   assert.equal(resolved.judgeProvider?.retryOptions?.timeoutMs, 12_000);
   assert.equal(resolved.judgeProvider?.retryOptions?.max429WaitMs, 5_000);
   assert.equal(resolved.judgeProvider?.disableThinking, true);
@@ -812,7 +809,6 @@ test("baseline manifest-bound judge matches the calibration resolver exactly", a
     systemModel: "opus",
     judgeProvider: "ollama",
     judgeModel: "qwen2.5-7b-32k:latest",
-    // The explicit /api form used by run-tierf-opus.sh is an identity
     // assertion; the manifest remains the full config source.
     judgeBaseUrl: "http://127.0.0.1:11434/api",
     localLabManifestPath: manifestPath,
@@ -882,7 +878,6 @@ test("baseline manifest-bound judge rejects identity and normalized endpoint dri
     /baseUrl flag does not match/,
   );
 
-  // Bare host and trailing slash forms normalize to the same Ollama /api URL.
   const matching = await resolveBenchRuntimeProfile({
     ...base,
     judgeBaseUrl: "http://127.0.0.1:11434/",
@@ -891,7 +886,6 @@ test("baseline manifest-bound judge rejects identity and normalized endpoint dri
 });
 
 test("local-lab runtime profile leaves providers unchanged when no runtime options are set", async () => {
-  // The manifest-only common case must not sprout empty retryOptions or
   // disableThinking — applyLocalLabRuntimeOptions returns the config as-is.
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-local-lab-"));
   const manifestPath = path.join(root, "local-lab.json");
@@ -931,7 +925,6 @@ test("local-lab runtime profile leaves providers unchanged when no runtime optio
 });
 
 test("local-lab runtime profile applies lcmObserveConcurrency to the effective config (cursor review: #1573 PR2 round 4)", async () => {
-  // Regression: resolveLocalLabRuntimeProfile built effectiveRemnicConfig from
   // buildBenchBaselineRemnicConfig() only and never merged lcmObserveConcurrency,
   // so --ingest-concurrency silently no-op'd on local-lab (unlike baseline/real).
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-local-lab-"));

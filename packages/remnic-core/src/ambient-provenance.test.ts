@@ -278,13 +278,11 @@ test("isHighImpactPersonalFact flags family, milestone, and medical content", ()
     "He was diagnosed with diabetes last spring.",
     "Her surgery is scheduled for Tuesday.",
     "The funeral is on Saturday.",
-    // The health wording an earlier term list missed (review round 1).
     "The user is HIV-positive.",
     "He has depression.",
     "She suffered a heart attack in March.",
     "He is in remission after chemotherapy.",
     "Her blood pressure medication was changed.",
-    // Everyday wording an earlier expansion still missed (review round 3).
     "Dana has COVID-19.",
     "She caught the flu last week.",
   ]) {
@@ -351,7 +349,6 @@ test("isHighImpactPersonalFact leaves ordinary content alone", () => {
     "The team uses PostgreSQL for the primary store.",
     "Deploys run every Thursday at 9am.",
     "The build cache lives under the workspace root.",
-    // Technical and business speech an earlier term list mis-flagged
     // (review round 1): bare kinship-adjacent words are not personal.
     "The child process inherits the parent environment.",
     "Render the sibling node before the parent component.",

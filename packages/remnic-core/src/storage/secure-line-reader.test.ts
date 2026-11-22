@@ -50,9 +50,6 @@ test("readMemoryLifecycleEventsFromLines admits any structurally valid eventType
   const unknown = { eventId: "bad", memoryId: "m", eventType: "exploded", timestamp: "2026-01-01T00:00:00.000Z", actor: "test", ruleVersion: "1" };
   const empty = { eventId: "empty", memoryId: "m", eventType: "", timestamp: "2026-01-02T00:00:00.000Z", actor: "test", ruleVersion: "1" };
   const rows = [
-    // Unknown/typoed and empty-string eventTypes are structurally valid, so the
-    // bounded governance read MUST keep them — it has to match readAll, which
-    // admits any string eventType. Only genuinely malformed rows are dropped.
     JSON.stringify(unknown),
     JSON.stringify(empty),
     JSON.stringify(event("keep", "m", "2026-01-03T00:00:00.000Z")),
@@ -124,8 +121,6 @@ test("readMaybeEncryptedLines refuses an oversized encrypted file before decrypt
         const message = err instanceof Error ? err.message : String(err);
         assert.match(message, /whole-file decrypt limit/);
         assert.match(message, /rebuild-memory-lifecycle-ledger|doctor/);
-        // The remedy is namespace-aware (#2033): an oversized encrypted ledger
-        // under namespaces/<ns>/state must not be pointed at a root-only command.
         assert.match(message, /--namespace/);
         assert.ok(message.includes(filePath));
         return true;
@@ -147,9 +142,6 @@ test("readMaybeEncryptedLines does not refuse an oversized encrypted file withou
   await handle.close();
   await truncate(filePath, STATE_FILE_MAX_DECRYPT_BYTES + 1);
   try {
-    // No maxDecryptBytes argument: the caller (e.g. the memory-actions ledger)
-    // has no compaction remedy, so the size guard must NOT fire — decryption is
-    // attempted exactly as before the lifecycle-only ceiling was added.
     let decryptCalled = false;
     const lines: string[] = [];
     for await (const line of readMaybeEncryptedLines(filePath, async () => {

@@ -114,20 +114,11 @@ export async function computeSurprise(
   }
   const candidates = Array.isArray(recentMemories) ? recentMemories : [];
 
-  // Empty corpus → maximally surprising. Document decision: we prefer
-  // "novelty by default" over "silence" because the surprise score is meant
-  // to *promote* flushing, and an empty buffer of recent memories is the
-  // clearest case of "we have no basis to call this redundant".
   if (candidates.length === 0) return 1;
 
   const kRaw = typeof options.k === "number" ? options.k : DEFAULT_SURPRISE_K;
-  // Clamp k to [1, candidates.length]. Non-integer / non-finite values fall
-  // back to the default, then get re-clamped below.
   const kClamped = clampK(kRaw, candidates.length);
 
-  // Embed the turn and every candidate. Rejections propagate — that's the
-  // caller's decision to handle. Run candidate embeddings in parallel so a
-  // slow embedder does not serialize the whole pass.
   const turnEmbedding = await options.embedFn(turn);
   const candidateEmbeddings = await Promise.all(
     candidates.map((c) => options.embedFn(c.content)),
@@ -139,14 +130,10 @@ export async function computeSurprise(
     sims.push(safeCosine(turnEmbedding, candEmbedding));
   }
 
-  // Sort similarities descending and take the top-k (the nearest neighbors).
   sims.sort((a, b) => b - a);
   const top = sims.slice(0, kClamped);
 
   if (top.length === 0) {
-    // Defensive — with `candidates.length >= 1` and `kClamped >= 1`, we
-    // should always have at least one similarity. If we somehow do not,
-    // treat as maximally surprising rather than returning NaN.
     return 1;
   }
 
@@ -155,17 +142,12 @@ export async function computeSurprise(
   const nearestSim = sum / top.length;
 
   const surprise = 1 - nearestSim;
-  // Numerical safety: clamp the final value. Cosine is clamped to [0, 1]
-  // per-pair already, so the mean cannot escape that range under normal
-  // arithmetic, but floating-point drift is cheap to guard against.
   if (!Number.isFinite(surprise)) return 1;
   if (surprise < 0) return 0;
   if (surprise > 1) return 1;
   return surprise;
 }
 
-// -----------------------------------------------------------------------------
-// Internals
 // -----------------------------------------------------------------------------
 
 function clampK(k: number, ceiling: number): number {

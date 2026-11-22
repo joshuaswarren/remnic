@@ -1,6 +1,3 @@
-/**
- * Unit tests for tier-stats helpers (issue #686 PR 5/6).
- */
 
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -80,12 +77,10 @@ test("summarizeTiers: counts tiers, statuses, and categories", async () => {
   assert.equal(summary.total, 5);
   assert.equal(summary.byTier.hot, 3);
   assert.equal(summary.byTier.cold, 2);
-  // 3 active: a, b, e (e has no explicit status → defaults to active).
   assert.equal(summary.byStatus.active, 3);
   assert.equal(summary.byStatus.archived, 1);
   assert.equal(summary.byStatus.forgotten, 1);
   assert.equal(summary.forgottenCount, 1);
-  // 3 preference: a, c, e (e inherits the makeMemory default).
   assert.equal(summary.byCategory.preference, 3);
   assert.equal(summary.byCategory.decision, 1);
   assert.equal(summary.byCategory.fact, 1);

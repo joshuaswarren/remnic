@@ -49,35 +49,20 @@ describe("parseGeminiExport", () => {
     assert.equal(parsed.filePath, "/tmp/takeout/my-activity.json");
   });
 
-  // Cursor review on PR #600 — parseGeminiExport MUST reject undefined /
-  // null input (what runImportCommand passes when --file is omitted) with
-  // a user-facing error. Silently returning 0 memories masks bad CLI
-  // invocations.
   it("rejects missing input with a user-facing error (CLAUDE.md rule 51)", () => {
     assert.throws(() => parseGeminiExport(undefined), /requires a file/);
     assert.throws(() => parseGeminiExport(null), /requires a file/);
   });
 
-  // Cursor review on PR #600 — the strict-mode error used `typeof raw`
-  // which reports "object" for null (JS trap). The message must say
-  // "null" instead.
   it("strict mode reports 'null' for JSON null input, not 'object'", () => {
     assert.throws(() => parseGeminiExport("null", { strict: true }), /received null/);
   });
 
-  // Codex review on PR #600 — pointing --file at a random JSON object
-  // (e.g. a config file) was reported as "0 memories imported" instead
-  // of surfacing an error. Now throws for objects that lack any of the
-  // recognized activity keys.
   it("rejects object payloads without a recognized activity key", () => {
     assert.throws(() => parseGeminiExport({ foo: "bar" }), /no recognized activity key/);
     assert.throws(() => parseGeminiExport(JSON.stringify({ random: [1, 2] })), /no recognized activity key/);
   });
 
-  // Codex review on PR #600 — a JSON primitive payload (number, boolean,
-  // quoted string) must always throw regardless of strict mode. Silently
-  // returning 0 memories on `true`, `123`, or `"text"` would let an
-  // automation pipeline treat an obviously broken invocation as healthy.
   it("rejects primitive JSON payloads in every mode", () => {
     assert.throws(() => parseGeminiExport("true"), /must be a JSON array or object/);
     assert.throws(() => parseGeminiExport("123"), /must be a JSON array or object/);

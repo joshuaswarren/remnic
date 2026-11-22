@@ -60,7 +60,6 @@ export async function runCodingRecallBenchmark(
     const expectedJson = JSON.stringify(sample.expectedIds);
     const actualJson = JSON.stringify(retrieved.map((m) => m.id));
 
-    // Precision@k against the ordered expected list.
     const retrievedIds = retrieved.map((m) => m.id);
 
     // Isolation metric — 1.0 when no forbidden id leaks, 0.0 on any leak.
@@ -151,33 +150,18 @@ export async function runCodingRecallBenchmark(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Scoring
-// ──────────────────────────────────────────────────────────────────────────
 //
-// The benchmark delegates the actual review-context ranking logic to
-// `@remnic/core`'s `rankReviewCandidates` so that the benchmark verdict
-// exercises the SAME code path production does. Previously the benchmark
-// reimplemented the boost + sort logic locally and could have diverged from
-// the shipped behavior; now an accidental change to production ranking
-// would be caught by the benchmark instead of hidden by a parallel copy.
 
 function scoreCase(sample: CodingRecallCase): CodingRecallCaseMemory[] {
-  // 1. Filter candidates to the session's readable namespaces (rule 42).
   const allowedNs = new Set(sample.sessionNamespaces);
   const filtered = sample.candidates.filter((c) => allowedNs.has(c.namespace));
 
-  // 2. Delegate review-context boosting + deterministic ordering to the
-  //    canonical production ranker. When no touched files are supplied the
-  //    boost is 0 for every candidate and the original sort order is
-  //    preserved with the stable-id tiebreak.
   const touched = sample.touchedFiles ?? [];
   const ranked = rankReviewCandidates(
     filtered.map((c) => ({ id: c.id, score: c.score, entityRefs: c.entityRefs })),
     touched,
   );
 
-  // 3. Re-project the candidate back to the benchmark's result shape
-  //    (rankReviewCandidates returns only the subset it needs).
   const byId = new Map(filtered.map((c) => [c.id, c]));
   return ranked
     .map((r) => byId.get(r.id))
@@ -193,7 +177,6 @@ function collectWorkflowFacets(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Fixture selection
 // ──────────────────────────────────────────────────────────────────────────
 
 function loadCases(

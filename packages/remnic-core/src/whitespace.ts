@@ -31,7 +31,6 @@ function getGraphemeSegmenter(): Intl.Segmenter | null {
 export function truncateGraphemeSafe(value: string, maxChars: number): string {
   if (maxChars <= 0) return "";
   if (value.length <= maxChars) return value;
-  // Clusters are produced lazily, so the walk stops at the budget instead of
   // segmenting the whole string first (#3427: a 180-unit budget on a long fact).
   let end = 0;
   for (const unit of iterateGraphemeUnits(value)) {
@@ -51,7 +50,6 @@ export function graphemeUnits(value: string): string[] {
   return Array.from(segmenter.segment(value), (segment) => segment.segment);
 }
 
-/** The units of graphemeUnits, produced one at a time on demand. */
 function* iterateGraphemeUnits(value: string): Generator<string> {
   const segmenter = getGraphemeSegmenter();
   if (segmenter === null) {
@@ -68,7 +66,6 @@ const FORMAT_CHAR = /\p{Cf}/u;
 const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
 const EMOJI_PRESENTATION_SELECTOR = "\uFE0F";
 
-// ponytail: pragmatic East_Asian_Width Wide/Fullwidth subset - contiguous
 // block ranges plus the emoji presentation planes. Sparse exceptions inside
 // those ranges (narrow unassigned code points, U+303F) do not matter for
 // terminal column alignment; switch to a full EAW table only if drift shows.

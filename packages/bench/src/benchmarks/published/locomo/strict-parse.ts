@@ -1,10 +1,3 @@
-/**
- * Strict LoCoMo dataset parsing for the runner path (extracted from
- * runner.ts under the structural ratchet, issue #1995).
- *
- * Unlike the lenient shared loader, this parser rejects malformed
- * conversations with location-annotated errors instead of skipping them.
- */
 
 import { normalizeLoCoMoQa } from "../dataset-loader.js";
 import type { LoCoMoConversation, LoCoMoQA, LoCoMoTurn } from "./fixture.js";

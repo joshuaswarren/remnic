@@ -64,12 +64,10 @@ test("invalid thresholds throw RangeError", () => {
 
 test("updateThreshold 0 is honored, never coerced up", () => {
   const zero = { updateThreshold: 0, duplicateThreshold: 0.92 };
-  // similarity 0 is >= 0 -> update, not create and not default-band behavior
   assert.deepEqual(
     decideMergeOnWrite([candidate({ similarity: 0 })], zero),
     { action: "update", targetId: "fact-1" },
   );
-  // no candidates still creates
   assert.deepEqual(decideMergeOnWrite([], zero), { action: "create" });
 });
 
@@ -89,7 +87,6 @@ test("malformed candidates are ignored, never thrown on", () => {
     ),
     { action: "update", targetId: "good" },
   );
-  // all-malformed behaves like no candidates
   assert.deepEqual(
     decideMergeOnWrite([{ id: "nan", similarity: Number.NaN, updatedAt: "x" }], OPTS),
     { action: "create" },
@@ -114,7 +111,6 @@ test("unparseable updatedAt sorts last", () => {
     candidate({ id: "good-date", similarity: 0.9, updatedAt: "2026-03-01T00:00:00.000Z" }),
   ];
   assert.deepEqual(decideMergeOnWrite(candidates, OPTS), { action: "update", targetId: "good-date" });
-  // newer timestamp wins when both parse
   assert.deepEqual(
     decideMergeOnWrite(
       [
@@ -127,9 +123,6 @@ test("unparseable updatedAt sorts last", () => {
   );
 });
 
-// Two unparseable timestamps must not make the comparator asymmetric: testing
-// each side against NaN independently returned 1 for both orderings, so the
-// winner depended on array order.
 test("two unparseable updatedAt values break the tie by id, whatever the order", () => {
   const options = { updateThreshold: 0.5, duplicateThreshold: 0.95 };
   const alpha = { id: "alpha", similarity: 0.7, updatedAt: "not-a-date" };

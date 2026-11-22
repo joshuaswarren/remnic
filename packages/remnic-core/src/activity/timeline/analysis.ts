@@ -342,7 +342,6 @@ export async function analyzeTimelineCards(input: TimelineAnalysisInput): Promis
   }
   if (input.cards.length === 0 && input.observations.length === 0) {
     // Caller-side guard, not a provider failure: nothing to analyze and zero
-    // calls must be made, so no typed response failure is attached.
     return {
       status: "invalid_output",
       cards,

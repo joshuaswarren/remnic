@@ -72,7 +72,6 @@ export class SpeakerClusterer {
     }
   }
 
-  /** Register an enrolled self profile (its embedding seeds the `self` cluster). */
   enrollSelf(embedding: Embedding): void {
     const existing = this.#clusters.find((c) => c.id === SELF_ID);
     if (existing) {
@@ -90,7 +89,6 @@ export class SpeakerClusterer {
     });
   }
 
-  /** Best cosine over a cluster's centroid + examples. */
   #score(cluster: SpeakerCluster, embedding: Embedding): number {
     let best = cosineSimilarity(cluster.centroid, embedding);
     for (const ex of cluster.examples) {
@@ -101,7 +99,6 @@ export class SpeakerClusterer {
   }
 
   #update(cluster: SpeakerCluster, embedding: Embedding): void {
-    // Running mean centroid.
     const n = cluster.embeddingCount;
     for (let i = 0; i < cluster.centroid.length && i < embedding.length; i++) {
       cluster.centroid[i] = (cluster.centroid[i] * n + embedding[i]) / (n + 1);
@@ -110,8 +107,6 @@ export class SpeakerClusterer {
     if (cluster.examples.length < MAX_EXAMPLES) {
       cluster.examples.push([...embedding]);
     } else {
-      // Keep the set diverse: replace the example most similar to the
-      // incoming one, so the cluster spans more of the speaker's range.
       let mostSimilar = 0;
       let mostSimilarScore = -Infinity;
       for (let i = 0; i < cluster.examples.length; i++) {
@@ -125,7 +120,6 @@ export class SpeakerClusterer {
     }
   }
 
-  /** Match `embedding` to an existing cluster or create a new `spk_<n>`. */
   assign(embedding: Embedding): string {
     let best: SpeakerCluster | null = null;
     let bestScore = -Infinity;
@@ -152,14 +146,6 @@ export class SpeakerClusterer {
     return cluster.id;
   }
 
-  /**
-   * Replace every cluster with `snapshot` (issue #2145).
-   *
-   * `assign` mutates centroids and counts in place, so a diarization commit
-   * that rolls back in SQLite must roll back here too — otherwise the retry
-   * counts the same embeddings twice. Deep-copied, so the caller's snapshot
-   * cannot alias internal state.
-   */
   restore(snapshot: readonly SpeakerCluster[]): void {
     this.#clusters = snapshot.map((cluster) => ({
       ...cluster,
@@ -174,7 +160,6 @@ export class SpeakerClusterer {
     this.#next = highest + 1;
   }
 
-  /** Snapshot for persistence. */
   clusters(): SpeakerCluster[] {
     return this.#clusters.map((c) => ({
       id: c.id,

@@ -166,7 +166,6 @@ export async function finalizeExtractionCommittedWrites(options: {
     log.warn(`content-hash index save failed: ${err}`);
   });
 
-  // Snapshot once — Map iterators are single-pass.
   const behaviorEntries = [...options.behaviorSignalsByStorage];
   for (const { storage: targetStorage, events } of behaviorEntries) {
     const dedupedSignals = dedupeBehaviorSignalsByMemoryAndHash(events);
@@ -298,7 +297,6 @@ export function promotionScanNamespaces(
         namespaces.push(target.namespace);
       }
     }
-    // Round N+12 (B): enumerate EVERY resolvable layer, not only today's
     // promotionTargets. A namespace that received promoted copies while its
     // layer was selected keeps serving them after the operator removes the
     // layer from the selection — the layer stays resolvable through
@@ -355,7 +353,6 @@ export function createBatchPromotedCopyProbe(
           const active = await readActiveMemoriesBothTiers(storage);
           return {
             dir: storage.dir,
-            // Round N+11 (A): only ACTIVE copies count as promoted (§41 —
             // enumerate the active set). readActiveMemoriesBothTiers returns
             // every hot+cold copy, superseded ones included; a superseded
             // copy serves no body, so counting it made targetHasPromotedCopies
@@ -454,7 +451,6 @@ export async function promoteAndReconcileMergedTarget(args: {
   normalize: (content: string) => string;
   onReconciled?: () => void;
 }): Promise<void> {
-  // #2807 (finding 1): an unreadable payload is not a no-promotion
   // verdict. Reconciling anyway rereads the record successfully a moment
   // later and interprets the missing payload as "no promotion warranted" —
   // retiring a concurrently published PRE-merge copy with no current-body
@@ -483,7 +479,6 @@ export async function promoteAndReconcileMergedTarget(args: {
       );
       return;
     }
-    // #2813 (P1 A, P1 B) + #2870: confirm the cached payload against a
     // TRUTHFUL receipt read and a SEMANTIC fingerprint check. An
     // unavailable sidecar or revision mismatch abandons the promotion —
     // the previous undefined-vs-undefined comparison confirmed any payload
@@ -589,7 +584,6 @@ export async function retireStaleMergedTargetPromotionCopies(args: {
     .getMemoryByIdIncludingArchived(args.sourceMemoryId)
     .catch(() => null);
   const canonicalBody = canonicalRecord?.content;
-  // Round N+13 (A): the guard's outcomes are "keep copies" and "retire
   // copies", so an unreadable canonical record MUST resolve to keep. A
   // failed re-read degrading to "" made every non-empty active copy compare
   // stale against normalize("") and superseded the whole copy set with no
@@ -602,7 +596,6 @@ export async function retireStaleMergedTargetPromotionCopies(args: {
     return 0;
   }
   const canonicalForm = args.normalize(canonicalBody);
-  // Round N+15 (A): the just-written copy is the supersession target only
   // while it still carries the canonical body. When the re-read record has
   // moved past the promoted body (a newer writer committed mid-flight), the
   // SOURCE target is the live canonical record and every stale copy — this

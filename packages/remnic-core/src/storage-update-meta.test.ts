@@ -16,7 +16,6 @@ function delay(ms: number): Promise<void> {
   return promise;
 }
 
-/** Await the real signal "holder owns the lock file", not a guessed duration. */
 async function waitForLockFile(lockPath: string): Promise<void> {
   const deadline = Date.now() + 2_000;
   for (;;) {

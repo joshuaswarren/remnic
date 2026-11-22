@@ -18,21 +18,16 @@ type RecordedCall = { pathname: string; body: unknown };
 type DaemonStub = {
   port: number;
   calls: RecordedCall[];
-  /** Runs when a health request is served, so a test can advance its clock. */
   onHealth?: () => void;
-  /** Replaces the health body from the next request on. */
   healthOverride?: unknown;
-  /** Runs when a search request is served, so a test can advance its clock. */
   onSearch?: () => void;
   close: () => Promise<void>;
 };
 
 type StubRoutes = {
   health?: unknown;
-  /** A literal response body, for shapes `JSON.stringify` would normalize. */
   healthRaw?: string;
   healthStatus?: number;
-  /** Delay the health response, so a test can observe a shared deadline. */
   healthDelayMs?: number;
   search?: unknown;
   searchStatus?: number;
@@ -64,17 +59,11 @@ async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
           : (routes.healthStatus ?? 200);
         res.writeHead(status, { "content-type": "application/json" });
         if (!isSearch && routes.healthRaw !== undefined) {
-          // A literal body, so a test can send a 200 that is valid JSON but not
-          // a record — the shape `?? {}` would otherwise paper over.
           res.end(routes.healthRaw);
           return;
         }
-        // A test may swap the health body mid-run, to model a daemon that
-        // restarts onto another corpus.
         let payload = isSearch ? routes.search : (stub?.healthOverride ?? routes.health);
         if (isSearch && payload !== null && typeof payload === "object") {
-          // Honor `maxResults` the way a real daemon does, so a client-side
-          // top-up sees a genuinely truncated page.
           const requested = (
             calls[calls.length - 1]?.body as { maxResults?: number } | undefined
           )?.maxResults;
@@ -125,7 +114,6 @@ async function makeCorpus(): Promise<{
     path.join(memoryDir, "facts", "alice.md"),
     "one\ntwo\nthree\nfour\n",
   );
-  // Exists ONLY under the gateway's workspace - the daemon never saw it.
   await writeFile(
     path.join(workspaceDir, "memory", "notes.md"),
     "gateway-only\n",
@@ -168,7 +156,6 @@ function optionsFor(
   };
 }
 
-/** A daemon serving the SAME corpus as the plugin under test. */
 function healthyDaemon(memoryDir: string): Record<string, unknown> {
   return {
     ok: true,
@@ -537,7 +524,6 @@ test("delegate status keeps the configured backend when the daemon health probe 
       cfg: {},
       agentId: "main",
     });
-    // A failed probe must not fabricate an outage — the seeded config wins.
     assert.equal(manager?.status().backend, "qmd");
     assert.equal(manager?.status().dbPath, memoryDir);
   } finally {
@@ -556,15 +542,11 @@ test("delegate health is cached and refreshed on the injected clock", async () =
     );
     const healthCalls = () =>
       stub.calls.filter((call) => call.pathname.endsWith("/health")).length;
-    // The FIRST handout waits: `status()` is synchronous, so an unprobed
-    // snapshot has nothing truthful to report.
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     assert.equal(healthCalls(), 1, "the first handout probes");
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     assert.equal(healthCalls(), 1, "a warm snapshot is reused");
 
-    // An expired snapshot converges in the BACKGROUND — later handouts never
-    // block, so the request lands after the call returns.
     clock += 60_000;
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     for (let attempt = 0; attempt < 100 && healthCalls() < 2; attempt += 1) {
@@ -774,7 +756,6 @@ test("registerDelegateMemoryCapability is a no-op on a host with no memory surfa
 
 test("delegate accepts a daemon serving a namespace under the corpus root", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // Health reports the namespace-RESOLVED storage dir, not the corpus root.
   const namespaceDir = path.join(memoryDir, "namespaces", "generalist");
   await mkdir(path.join(namespaceDir, "facts"), { recursive: true });
   await writeFile(path.join(namespaceDir, "facts", "alice.md"), "one\ntwo\n");
@@ -848,8 +829,6 @@ test("delegate roots reads and artifacts on the daemon's namespace directory", a
       cfg: {},
       agentId: "main",
     });
-    // The daemon's hits are relative to ITS storage dir, so the read scope must
-    // be rooted there, not on the configured corpus root.
     const page = await manager?.readFile({ relPath: "facts/scoped.md" });
     assert.equal(page?.text.trim(), "namespace fact");
     const artifacts = (await built.listArtifacts()) as Array<{
@@ -939,8 +918,6 @@ test("delegate reads a hit from another namespace's storage directory", async ()
   await mkdir(defaultDir, { recursive: true });
   await mkdir(path.join(otherDir, "facts"), { recursive: true });
   await writeFile(path.join(otherDir, "facts", "scoped.md"), "team-a fact\n");
-  // Health answers for the DEFAULT namespace, but a session bound to team-a
-  // gets hits under team-a's directory; the host must be able to open them.
   const stub = await startDaemonStub({
     health: healthyDaemon(defaultDir),
     search: {
@@ -988,8 +965,6 @@ test("delegate refuses file-backed surfaces for a remote daemon with an identica
   try {
     const built = createDelegateMemoryCapability(
       optionsFor(stub.port, memoryDir, workspaceDir, {
-        // Canonicalizing two strings on THIS host says nothing about a remote
-        // daemon that happens to use the same absolute pathname.
         target: {
           host: "10.0.0.9",
           port: stub.port,
@@ -1039,8 +1014,6 @@ test("delegate readFile refuses artifact paths", async () => {
 
 test("delegate search caps AFTER dropping artifacts, not before", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // Every one of the top-ranked hits is an artifact. Capping first would
-  // return an empty page even though valid memories rank right behind them.
   const stub = await startDaemonStub({
     health: healthyDaemon(memoryDir),
     search: {
@@ -1087,15 +1060,11 @@ test("delegate search caps AFTER dropping artifacts, not before", async () => {
 
 test("delegate health backs off on a 200 with a malformed body", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // A persistently malformed 200 must not turn every later refresh into an
-  // immediate re-fetch; it backs off exactly like a transport failure.
   const stub = await startDaemonStub({ healthRaw: "null" });
   try {
     const built = createDelegateMemoryCapability(
       optionsFor(stub.port, memoryDir, workspaceDir),
     );
-    // Every entry point that consults health goes through the same refresh, so
-    // three back-to-back handouts would mean three probes with no backoff.
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -1107,7 +1076,6 @@ test("delegate health backs off on a 200 with a malformed body", async () => {
       1,
       "later handouts reuse the backoff, they do not re-probe",
     );
-    // And the malformed payload never becomes a corpus claim.
     const { manager } = await built.runtime.getMemorySearchManager({
       cfg: {},
       agentId: "main",
@@ -1149,13 +1117,11 @@ test("delegate search with no budget keeps the daemon's page size on the wire", 
     const searchCalls = stub.calls.filter((call) =>
       call.pathname.includes("/memories/search"),
     );
-    // First request carries no cap - the caller accepted the daemon's page.
     assert.equal(
       (searchCalls[0]?.body as { maxResults?: number }).maxResults,
       undefined,
       "no invented budget on the wire",
     );
-    // The artifact thinned that page, so it tops up against what was served.
     assert.deepEqual(
       searchCalls.map(
         (call) => (call.body as { maxResults?: number }).maxResults,
@@ -1174,9 +1140,6 @@ test("delegate search with no budget keeps the daemon's page size on the wire", 
 
 test("delegate search rejects a malformed result entry instead of inventing a memory", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // A 200 whose entries are not memories is a version-skewed or corrupt
-  // daemon. Synthesizing `memory-N` would hand the host a path it can then
-  // try to open (AGENTS.md #22).
   for (const bad of [
     "not-an-object",
     { score: 0.9 },
@@ -1211,13 +1174,6 @@ test("delegate search rejects a malformed result entry instead of inventing a me
 
 test("delegate file surfaces refuse a namespace-partitioned daemon", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // `readFile` and `listArtifacts` carry NO session, and health answers
-  // without a namespace, so on a partitioned daemon there is nothing to
-  // authorize the local walk against. A per-registration fallback would open
-  // one namespace's disk for sessions bound to another.
-  // `undefined` from the daemon now falls back to the plugin's own posture, so
-  // the unreported case is paired with a partitioned config - "nobody says it
-  // is flat" must still fail closed.
   for (const namespacesEnabled of [true, undefined]) {
     const stub = await startDaemonStub({
       health: {
@@ -1248,7 +1204,6 @@ test("delegate file surfaces refuse a namespace-partitioned daemon", async () =>
         [],
         "artifacts are withheld, not cross-published",
       );
-      // Search is unaffected: it carries the session and the daemon enforces.
       assert.ok(
         Array.isArray(await manager?.search("q", { sessionKey: "s2" })),
       );
@@ -1286,8 +1241,6 @@ test("delegate file surfaces stay available on a single-corpus daemon", async ()
 
 test("delegate reads do not fall back to the gateway's own workspace", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // The daemon reports only its memoryDir. A file that exists solely under the
-  // gateway's <workspaceDir>/memory was never searched or authorized by it.
   const stub = await startDaemonStub({
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
   });
@@ -1304,7 +1257,6 @@ test("delegate reads do not fall back to the gateway's own workspace", async () 
       /memory read rejected/,
       "a workspace-only file is not readable through the delegate",
     );
-    // The daemon's own corpus is unaffected.
     const read = await manager?.readFile({ relPath: "facts/alice.md" });
     assert.equal(read?.path, path.join("facts", "alice.md"));
   } finally {
@@ -1315,9 +1267,6 @@ test("delegate reads do not fall back to the gateway's own workspace", async () 
 
 test("delegate refuses a substituted default namespace the token cannot use", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // A fresh session has no binding, so the daemon default is SUBSTITUTED. On a
-  // token scoped elsewhere that would 403 on the very first search; the
-  // refusal must name the fix instead.
   const stub = await startDaemonStub({
     health: {
       ...healthyDaemon(memoryDir),
@@ -1430,9 +1379,6 @@ test("delegate does not second-guess an explicit namespace", async () => {
 
 test("swapping in an authorized token recovers unbound delegate search", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // Daemon requests resolve credentials dynamically. Caching a refusal against
-  // the namespace alone would keep rejecting search locally after an operator
-  // replaced an under-scoped token, while recall and observe recovered.
   const stub = await startDaemonStub({
     health: {
       ...healthyDaemon(memoryDir),
@@ -1475,9 +1421,6 @@ test("swapping in an authorized token recovers unbound delegate search", async (
 
 test("a failed probe leaves the posture unknown, so unbound calls fail closed", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // Nothing answers. The plugin's own config describes the PLUGIN, never the
-  // daemon's partitioning, so there is no local evidence that an absent
-  // namespace is safe - and an unrestricted token would otherwise fan out.
   const built = createDelegateMemoryCapability({
     ...optionsFor(1, memoryDir, workspaceDir),
     resolveSearchNamespace: async () => undefined,
@@ -1487,7 +1430,6 @@ test("a failed probe leaves the posture unknown, so unbound calls fail closed", 
       () => built.resolveScopedNamespace(undefined),
       /default namespace is unknown/,
     );
-    // An explicit scope is the caller's own and still resolves.
     assert.equal(await built.resolveScopedNamespace("team-a"), "team-a");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -1496,10 +1438,6 @@ test("a failed probe leaves the posture unknown, so unbound calls fail closed", 
 
 test("a daemon that ANSWERS without a posture is unknown, not flat", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // The plugin config describes the PLUGIN's deployment. A partitioned daemon
-  // on a legacy build would otherwise be marked flat by a flat plugin config,
-  // permitting an absent namespace and fanning search across everything the
-  // token can read.
   const stub = await startDaemonStub({
     health: { ok: true, memoryDir },
     search: { query: "q", count: 0, results: [] },
@@ -1550,9 +1488,6 @@ test("a partitioned plugin config still fails closed before the first probe", as
 
 test("a health 200 without memoryDir leaves the corpus unconfirmed", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // An unknown memoryDir is NEVER a match. Substituting the plugin's own path
-  // would compare it to itself and enable file-backed reads with no proof the
-  // daemon serves that corpus at all.
   const stub = await startDaemonStub({
     health: { ok: true, namespacesEnabled: false },
     search: { query: "q", count: 0, results: [] },
@@ -1571,7 +1506,6 @@ test("a health 200 without memoryDir leaves the corpus unconfirmed", async () =>
       /daemon serves an unknown memoryDir/,
       "file-backed reads stay disabled until the daemon names its corpus",
     );
-    // Search is unaffected - it runs through the daemon, which enforces.
     assert.ok(Array.isArray(await manager?.search("q")));
   } finally {
     await stub.close();
@@ -1592,8 +1526,6 @@ test("delegate readFile rejects invalid offsets instead of serving another range
       cfg: {},
       agentId: "main",
     });
-    // Non-finite AND finite-but-invalid: a clamp or truncation would return a
-    // different range while looking like a correct answer.
     for (const from of [
       Number.NaN,
       Number.POSITIVE_INFINITY,
@@ -1619,7 +1551,6 @@ test("delegate readFile rejects invalid offsets instead of serving another range
         `lines: ${String(lines)} must be rejected`,
       );
     }
-    // A real range still works.
     const read = await manager?.readFile({
       relPath: "facts/alice.md",
       from: 2,
@@ -1633,8 +1564,6 @@ test("delegate readFile rejects invalid offsets instead of serving another range
 });
 
 test("delegate search keeps hits when the corpus sits under an `artifacts` ancestor", async () => {
-  // <root>/artifacts/remnic is an ordinary corpus. Judging the ABSOLUTE hit
-  // path would discard every result the daemon returned.
   const root = await realpath(
     await mkdtemp(path.join(os.tmpdir(), "remnic-cap-ancestor-")),
   );
@@ -1703,7 +1632,6 @@ test("delegate search rejects an out-of-range maxResults instead of coercing it"
         `maxResults: ${String(maxResults)} must be rejected`,
       );
     }
-    // The exact-zero short circuit and ordinary budgets are unchanged.
     assert.deepEqual(await manager?.search("q", { maxResults: 0 }), []);
     assert.deepEqual(await manager?.search("q", { maxResults: 3 }), []);
   } finally {
@@ -1714,21 +1642,15 @@ test("delegate search rejects an out-of-range maxResults instead of coercing it"
 
 test("a spent caller budget skips the health probe instead of overrunning it", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // The lifecycle flushes share one deadline. Starting a fresh probe with its
-  // own full timeout would overrun the hook and get it abandoned before the
-  // buffer drains.
   const stub = await startDaemonStub({
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
   });
   try {
-    // A controllable clock so the cached snapshot can be aged out without a
-    // test-only hook in production code.
     let clock = 1_000;
     const built = createDelegateMemoryCapability({
       ...optionsFor(stub.port, memoryDir, workspaceDir),
       now: () => clock,
     });
-    // A real budget probes once and caches the daemon's flat posture.
     assert.equal(
       await built.resolveScopedNamespace(undefined, 5_000),
       undefined,
@@ -1737,9 +1659,6 @@ test("a spent caller budget skips the health probe instead of overrunning it", a
       stub.calls.filter((call) => call.pathname.includes("/health")).length,
       1,
     );
-    // Snapshot expired, budget spent: no request is started (it would overrun
-    // the shared deadline) AND an unscoped call fails closed, because the
-    // posture on hand was never confirmed by this call.
     clock += 10 * 60_000;
     await assert.rejects(
       () => built.resolveScopedNamespace(undefined, 0),
@@ -1750,13 +1669,11 @@ test("a spent caller budget skips the health probe instead of overrunning it", a
       1,
       "no second probe once the shared deadline is gone",
     );
-    // An explicit scope is the caller's own and still resolves unprobed.
     assert.equal(await built.resolveScopedNamespace("team-a", 0), "team-a");
     assert.equal(
       stub.calls.filter((call) => call.pathname.includes("/health")).length,
       1,
     );
-    // With budget again, it re-probes and the unscoped call works.
     assert.equal(
       await built.resolveScopedNamespace(undefined, 5_000),
       undefined,
@@ -1773,8 +1690,6 @@ test("a spent caller budget skips the health probe instead of overrunning it", a
 
 test("a spent budget skips the authorization probe too", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // The remaining-budget argument must reach the authorization probe, not stop
-  // at health: its own fixed timeout would overrun a nearly-spent flush.
   const stub = await startDaemonStub({
     health: {
       ...healthyDaemon(memoryDir),
@@ -1793,8 +1708,6 @@ test("a spent budget skips the authorization probe too", async () => {
         return true;
       },
     });
-    // Health is already cached by this first call, so the spent-budget path
-    // below is exercised against the authorization probe specifically.
     assert.equal(
       await built.resolveScopedNamespace(undefined, 5_000),
       "default",
@@ -1814,9 +1727,6 @@ test("a spent budget skips the authorization probe too", async () => {
       },
     });
     await fresh.resolveScopedNamespace(undefined, 5_000).catch(() => undefined);
-    // A spent budget cannot revalidate, and an unscoped request will not run
-    // on an unconfirmed posture - so it fails closed WITHOUT reaching the
-    // authorization probe (which would throw if it were attempted).
     await assert.rejects(
       () => fresh.resolveScopedNamespace(undefined, 0),
       /namespace posture could not be confirmed/,
@@ -1829,8 +1739,6 @@ test("a spent budget skips the authorization probe too", async () => {
 
 test("a failed probe un-proves a previously flat posture", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // A flat daemon can restart PARTITIONED. Holding the old `false` through the
-  // failure backoff would send an unbound search across the new corpus.
   let healthy = true;
   const server = http.createServer((req, res) => {
     if ((req.url ?? "").includes("/health") && !healthy) {
@@ -1859,9 +1767,7 @@ test("a failed probe un-proves a previously flat posture", async () => {
       resolveSearchNamespace: async () => undefined,
       now: () => clock,
     });
-    // Proven flat: an absent namespace is safe.
     assert.equal(await built.resolveScopedNamespace(undefined), undefined);
-    // The daemon comes back partitioned and health starts failing.
     healthy = false;
     clock += 10 * 60_000;
     await assert.rejects(
@@ -1877,9 +1783,6 @@ test("a failed probe un-proves a previously flat posture", async () => {
 
 test("a probe failure un-proves the default namespace too", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // A partitioned daemon can change its default across a restart. A retained
-  // stale default is NOT undefined, so it would slip past the unknown-posture
-  // guard and bind a fresh session to the previous tenant.
   let healthy = true;
   const server = http.createServer((req, res) => {
     if ((req.url ?? "").includes("/health") && !healthy) {
@@ -1945,12 +1848,10 @@ test("delegate search rejects a malformed score and an invalid minScore", async 
       cfg: {},
       agentId: "main",
     });
-    // A missing score is a protocol failure, not a zero ranking.
     await assert.rejects(
       () => manager?.search("q") ?? Promise.resolve(),
       /malformed result entry/,
     );
-    // An unusable threshold must not silently disable the filter.
     for (const minScore of [Number.NaN, Number.POSITIVE_INFINITY]) {
       await assert.rejects(
         () => manager?.search("q", { minScore }) ?? Promise.resolve(),
@@ -1966,9 +1867,6 @@ test("delegate search rejects a malformed score and an invalid minScore", async 
 
 test("an unscoped request revalidates the posture instead of trusting the cache", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // A flat posture LICENSES an unscoped request. A daemon that restarts
-  // partitioned inside the TTL would otherwise keep that license with no probe
-  // failure to notice it.
   const stub = await startDaemonStub({
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
   });
@@ -1986,8 +1884,6 @@ test("an unscoped request revalidates the posture instead of trusting the cache"
       2,
       "each unscoped resolution confirms the posture, cache or not",
     );
-    // An EXPLICIT scope is the caller's own and the daemon enforces it, so it
-    // rides the cache and costs no extra probe.
     const before = stub.calls.filter((call) =>
       call.pathname.includes("/health"),
     ).length;
@@ -2005,9 +1901,6 @@ test("an unscoped request revalidates the posture instead of trusting the cache"
 
 test("the authorization probe names the operation the caller is performing", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // A token may grant recall/observe/flush but not memory_search. Probing a
-  // hard-coded operation would reject those locally before their own route
-  // could authorize them.
   const stub = await startDaemonStub({
     health: {
       ...healthyDaemon(memoryDir),
@@ -2023,7 +1916,6 @@ test("the authorization probe names the operation the caller is performing", asy
       resolveSearchNamespace: async () => undefined,
       verifyNamespaceAuthorization: async (_ns, _timeout, operations) => {
         asked.push(operations);
-        // Only memory_search is denied for this token.
         return !(operations ?? []).includes("memory_search");
       },
     });
@@ -2036,7 +1928,6 @@ test("the authorization probe names the operation the caller is performing", asy
       /is not authorized for the delegate token/,
       "search names memory_search and is correctly refused",
     );
-    // A flush-scoped resolution names its own operation and is allowed.
     assert.equal(
       await built.resolveScopedNamespace(undefined, undefined, [
         "lcm_compaction_flush",
@@ -2073,9 +1964,6 @@ test("an invalid caller budget is rejected at the boundary", async () => {
 });
 
 test("a health-failure backoff is honored even by an unscoped request", async () => {
-  // The posture is already unknown during the backoff, so an immediate second
-  // probe cannot prove anything — it would just spend the hook budget on a
-  // daemon that is down, once per recall/search/observe.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ healthStatus: 500, health: {} });
   try {
@@ -2115,8 +2003,6 @@ test("a health-failure backoff is honored even by an unscoped request", async ()
 });
 
 test("a zero-budget search is authorized before it answers empty", async () => {
-  // Shrinking the requested count must not be a way to get a successful
-  // answer for a namespace the session may not read.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
     health: {
@@ -2153,8 +2039,6 @@ test("a zero-budget search is authorized before it answers empty", async () => {
 });
 
 test("the posture and authorization probes share one deadline", async () => {
-  // Billing each probe the full remaining budget lets namespace resolution
-  // alone overrun a hook before its own request runs.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
     health: {
@@ -2189,9 +2073,6 @@ test("the posture and authorization probes share one deadline", async () => {
 });
 
 test("an explicit scope needs no probe at all", async () => {
-  // `requireScopedNamespace` returns an explicit scope untouched and the
-  // daemon enforces it on the operation endpoint, so a cold health cache must
-  // not spend the prompt deadline before the recall POST runs.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
@@ -2214,19 +2095,12 @@ test("an explicit scope needs no probe at all", async () => {
 });
 
 test("a spent budget refuses an unverified substituted default", async () => {
-  // The substituted default is an AUTHORIZATION fact. Running the hook under
-  // it because the deadline ran out is fail-open: a partitioned daemon would
-  // serve recall/observe/flush under a scope this token was never verified
-  // for. A CACHED verdict still answers for free.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
   });
   try {
     let probes = 0;
-    // A clock the posture probe advances past the caller's whole budget, so
-    // the posture is FRESH but nothing is left for authorization — the only
-    // shape that reaches this branch.
     let clock = 1_000_000;
     const built = createDelegateMemoryCapability({
       ...optionsFor(stub.port, memoryDir, workspaceDir, { now: () => clock }),
@@ -2246,7 +2120,6 @@ test("a spent budget refuses an unverified substituted default", async () => {
     );
     assert.equal(probes, 0, "and it did not send a doomed request either");
 
-    // Once a verdict is cached, a spent budget rides it rather than refusing.
     stub.onHealth = undefined;
     assert.equal(await built.resolveScopedNamespace(undefined, 5_000), "default");
     assert.equal(probes, 1);
@@ -2260,10 +2133,6 @@ test("a spent budget refuses an unverified substituted default", async () => {
 });
 
 test("an explicitly scoped search never waits on the health route", async () => {
-  // The daemon enforces an explicit scope on `/memories/search`, so a slow or
-  // dead `/health` must not delay a search it would serve. A cached manager
-  // must also cost at most ONE probe, never an eager one plus a revalidating
-  // one.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
@@ -2279,7 +2148,6 @@ test("an explicitly scoped search never waits on the health route", async () => 
     const probes = (): number =>
       stub.calls.filter((call) => call.pathname.includes("/health")).length;
     const afterHandout = probes();
-    // Expire the posture cache: an explicit scope must STILL not probe.
     clock += 10 * 60 * 1_000;
     assert.deepEqual(await manager?.search("q"), []);
     assert.deepEqual(await manager?.search("q"), []);
@@ -2296,9 +2164,6 @@ test("an explicitly scoped search never waits on the health route", async () => 
 });
 
 test("a local read revalidates the corpus instead of trusting the cache", async () => {
-  // A daemon that restarts onto ANOTHER corpus inside the cache window leaves
-  // no probe failure behind, so a cached `corpusShared: true` would let a read
-  // return a file from the corpus that is no longer served.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const otherCorpus = await mkdtemp(path.join(os.tmpdir(), "remnic-other-corpus-"));
   let served = memoryDir;
@@ -2307,8 +2172,6 @@ test("a local read revalidates the corpus instead of trusting the cache", async 
     stub.healthOverride = { ...healthyDaemon(served), memoryDir: served };
   };
   try {
-    // Each surface gets its OWN warmed capability: one revalidation would
-    // otherwise invalidate the shared cache and mask the other's behavior.
     const reader = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     const { manager } = await reader.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     await manager?.readFile({ relPath: "facts/alice.md" });
@@ -2316,7 +2179,6 @@ test("a local read revalidates the corpus instead of trusting the cache", async 
     const lister = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     assert.ok((await lister.listArtifacts()).length >= 0, "the listing warms its own snapshot");
 
-    // The daemon restarts onto a different corpus, well inside the TTL.
     served = otherCorpus;
     await assert.rejects(
       () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
@@ -2336,10 +2198,6 @@ test("a local read revalidates the corpus instead of trusting the cache", async 
 });
 
 test("only the first manager handout waits on health", async () => {
-  // `status()` is synchronous, so the first handout must have a probed
-  // snapshot to report. Every later handout returns immediately: the
-  // operations that need a current posture refresh on their own, and blocking
-  // per handout delays an explicitly scoped search that needs none.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ health: healthyDaemon(memoryDir), healthDelayMs: 200 });
   try {
@@ -2353,7 +2211,6 @@ test("only the first manager handout waits on health", async () => {
     assert.ok(firstElapsed >= 150, `the first handout probed (${firstElapsed}ms)`);
     assert.equal(manager?.status().backend, "qmd", "and status has a real posture to report");
 
-    // EXPIRE the posture, so a handout that still awaited would pay the probe.
     clock += 10 * 60 * 1_000;
     const laterStarted = Date.now();
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -2366,10 +2223,6 @@ test("only the first manager handout waits on health", async () => {
 });
 
 test("a local read is refused when the token cannot read memories", async () => {
-  // Corpus containment proves co-location and the single-namespace check
-  // proves there is one namespace — neither proves this token may READ. A
-  // token with `memory_search` but not `memory_get` must not open files
-  // straight off disk, which is the gate delegating to the daemon preserves.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
@@ -2397,9 +2250,6 @@ test("a local read is refused when the token cannot read memories", async () => 
 });
 
 test("a local read fails closed when authorization cannot be confirmed", async () => {
-  // `undefined` is a probe that could not answer — a timeout, or an older
-  // daemon with no authorization route. A local read bypasses the daemon
-  // entirely, so an UNCONFIRMED verdict is not permission.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
@@ -2422,9 +2272,6 @@ test("a local read fails closed when authorization cannot be confirmed", async (
 });
 
 test("pagination shares one search budget instead of restarting it", async () => {
-  // A fresh timer per top-up page let a slow daemon stretch a single
-  // `search()` across minutes while each request looked well inside its own
-  // timeout. One deadline covers the whole call.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const excluded = Array.from({ length: 12 }, (_, index) => ({
     path: `artifacts/a-${index}.md`,
@@ -2442,7 +2289,6 @@ test("pagination shares one search budget instead of restarting it", async () =>
       searchTimeoutMs: 1_000,
     });
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
-    // Each page "takes" 600ms of the shared 1000ms budget.
     stub.onSearch = () => {
       clock += 600;
     };
@@ -2458,9 +2304,6 @@ test("pagination shares one search budget instead of restarting it", async () =>
 });
 
 test("the posture probe comes out of the search budget, not before it", async () => {
-  // Opening the deadline after scope resolution let a slow `/health` spend the
-  // whole budget while every later request still started a fresh one — a
-  // 25-second search taking fifty.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
@@ -2474,7 +2317,6 @@ test("the posture probe comes out of the search budget, not before it", async ()
       searchTimeoutMs: 1_000,
     });
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
-    // The unscoped posture probe alone consumes the whole budget.
     stub.onHealth = () => {
       clock += 1_200;
     };

@@ -27,8 +27,6 @@ import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { OUTPUT_LANGUAGE_POLICY } from "./extraction-prompt.js";
 
 // ---------------------------------------------------------------------------
-// Public interfaces
-// ---------------------------------------------------------------------------
 
 export interface JudgeCandidate {
   text: string;
@@ -53,16 +51,6 @@ export interface JudgeCandidate {
  */
 export type JudgeVerdictKind = "accept" | "reject" | "defer";
 
-/**
- * Judge verdict shape.
- *
- * Back-compat note: `kind` is optional. Verdicts serialized before PR 1
- * (both in-memory cache entries and any persisted caches) only carry
- * `{ durable, reason }`. Downstream consumers must either read `durable`
- * directly, or use {@link getVerdictKind} / {@link isDurableVerdict} which
- * gracefully fall back to the boolean when `kind` is missing, and ignore
- * unknown future `kind` values rather than crashing.
- */
 export interface JudgeVerdict {
   /**
    * True iff the fact should be persisted. For `"defer"` verdicts this is
@@ -72,11 +60,6 @@ export interface JudgeVerdict {
    */
   durable: boolean;
   reason: string;
-  /**
-   * Optional explicit verdict kind. Added in PR 1 of issue #562. Legacy
-   * verdicts (including cache entries produced before this field existed)
-   * do not set `kind`; use {@link getVerdictKind} to read this safely.
-   */
   kind?: JudgeVerdictKind;
 }
 
@@ -107,20 +90,6 @@ export function isDurableVerdict(verdict: JudgeVerdict): boolean {
   return getVerdictKind(verdict) === "accept";
 }
 
-/**
- * Validate a cache entry loaded from persistence / another process.
- *
- * Strict: accepts legacy `{ durable, reason }` entries and new entries
- * whose `kind` is one of the three known `JudgeVerdictKind` values.
- * Rejects structurally wrong types and unknown `kind` strings so the
- * type-guard narrowing is sound — callers that receive
- * `value is JudgeVerdict` can safely treat `kind` as the declared
- * union.
- *
- * Forward-compat is handled by {@link normalizeCachedVerdict}, which
- * drops unknown `kind` strings before validation so a newer build's
- * cache entry still loads instead of being rejected.
- */
 export function isValidCachedVerdict(value: unknown): value is JudgeVerdict {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
@@ -134,15 +103,6 @@ export function isValidCachedVerdict(value: unknown): value is JudgeVerdict {
   return true;
 }
 
-/**
- * Forward-compatible cache-entry loader.
- *
- * Drops unknown `kind` strings to `undefined` (so `getVerdictKind` can
- * fall back to `durable`), then validates structurally. Non-string
- * `kind` values are still treated as structural violations and rejected.
- * Returns the sanitised verdict, or `null` when the entry is structurally
- * unusable.
- */
 export function normalizeCachedVerdict(value: unknown): JudgeVerdict | null {
   if (typeof value !== "object" || value === null) return null;
   const v = value as Record<string, unknown>;
@@ -197,7 +157,6 @@ export interface JudgeVerdictObservation {
   candidate: JudgeCandidate;
   /** SHA-256 of `text\0category`, same key the cache/deferCounter use. */
   contentHash: string;
-  /** Verdict resolution path. Useful for debugging + dashboards. */
   source: "auto-approve" | "cache" | "llm" | "llm-cap-rejected" | "fail-open";
   /**
    * How many times this candidate had already been deferred before this
@@ -240,35 +199,18 @@ Example output:
 {"verdicts": [{"index": 0, "kind": "accept"}, {"index": 1, "kind": "reject"}, {"index": 2, "kind": "defer"}]}`;
 
 // ---------------------------------------------------------------------------
-// Judge request assembly (PR 3264 follow-up)
 // ---------------------------------------------------------------------------
 
-/** Completion tokens reserved per candidate verdict (measured 13 on a small judge model). */
 const JUDGE_TOKENS_PER_CANDIDATE = 24;
-/** Ceiling on one judge reply: the old flat budget. */
 export const MAX_JUDGE_TOKENS = 2048;
-/**
- * Extra completion tokens for a judge call routed through the Responses API. Reasoning tokens count against
- * `max_output_tokens`, so the compact verdict budget alone can be spent before a reasoning-enabled model answers; the
- * unparsed batch would then fail open as durable. A cap, not a target: a non-reasoning model still writes a short reply.
- */
 export const JUDGE_REASONING_HEADROOM_TOKENS = 1024;
 /** Largest batch whose verdict array fits MAX_JUDGE_TOKENS; a larger configured batch is split. */
 export const MAX_JUDGE_BATCH = Math.floor(MAX_JUDGE_TOKENS / JUDGE_TOKENS_PER_CANDIDATE);
 
-/**
- * Compact completion budget for one judge call. A verdict is
- * `{"index":12,"kind":"reject"}` (~14 tokens), so the old flat 2048 only gave
- * a slow model room to produce 59-305s replies that hid inside the timeout.
- * Scales with the batch size (about 24 tokens per candidate verdict, measured
- * 13 per verdict on a small judge model) so a large batch is never truncated;
- * capped at 2048, the old flat budget.
- */
 export function judgeMaxTokens(batchSize: number): number {
   return Math.min(MAX_JUDGE_TOKENS, Math.max(64, batchSize * JUDGE_TOKENS_PER_CANDIDATE));
 }
 
-/** One indexed candidate entry in a judge request payload. */
 export interface JudgeRequestEntry {
   index: number;
   text: string;
@@ -276,13 +218,11 @@ export interface JudgeRequestEntry {
   confidence: number;
 }
 
-/** Full judge LLM request: messages plus the completion budget. */
 export interface JudgeRequest {
   messages: Array<{ role: "system" | "user"; content: string }>;
   maxTokens: number;
 }
 
-/** Build a full judge request body: messages plus the completion budget. */
 export function buildJudgeRequest(entries: readonly JudgeRequestEntry[]): JudgeRequest {
   return {
     messages: [
@@ -294,7 +234,6 @@ export function buildJudgeRequest(entries: readonly JudgeRequestEntry[]): JudgeR
 }
 
 // ---------------------------------------------------------------------------
-// Content-hash cache (in-memory, per-process fallback)
 // ---------------------------------------------------------------------------
 
 /** Maximum entries before evicting the oldest half. */
@@ -303,17 +242,6 @@ const VERDICT_CACHE_MAX_SIZE = 10_000;
 /** Module-level fallback cache, used when callers do not pass their own. */
 const defaultVerdictCache = new Map<string, JudgeVerdict>();
 
-/**
- * Per-content-hash deferral counter (issue #562, PR 2).
- *
- * When the judge emits a `"defer"` verdict for a candidate whose content
- * has already been deferred `extractionJudgeMaxDeferrals` times, the verdict
- * is forcibly converted to `"reject"` so a pathological LLM response cannot
- * produce an infinite defer loop.
- *
- * Module-level with a size cap so stale test state cannot leak between runs
- * in the unlikely case a caller does not clear it between processes.
- */
 const defaultDeferCounts = new Map<string, number>();
 const DEFER_COUNT_MAX_SIZE = 20_000;
 
@@ -334,11 +262,6 @@ function resolveDeferCap(config: PluginConfig): number {
   return 2;
 }
 
-/**
- * Enforce the max-size invariant on a verdict cache. When the cache exceeds
- * VERDICT_CACHE_MAX_SIZE, the oldest half of entries are deleted (Map
- * iteration order is insertion order).
- */
 function enforceMaxCacheSize(cache: Map<string, JudgeVerdict>): void {
   if (cache.size <= VERDICT_CACHE_MAX_SIZE) return;
   const deleteCount = Math.floor(cache.size / 2);
@@ -351,12 +274,10 @@ function enforceMaxCacheSize(cache: Map<string, JudgeVerdict>): void {
 }
 
 // ---------------------------------------------------------------------------
-// Categories that bypass the judge (safety / correctness)
 // ---------------------------------------------------------------------------
 
 const AUTO_APPROVE_CATEGORIES = new Set(["correction", "principle"]);
 
-/** Explicit trigger phrasing — procedures must match to persist (issue #519). */
 const PROCEDURE_TRIGGER_RE =
   /(when you|whenever|before you|before running|always\s|first\b.*\bthen|to deploy|to ship|run these steps|follow these steps|how (i|we)\s|recipe for|workflow|each time you)/i;
 
@@ -380,7 +301,6 @@ export function validateProcedureExtraction(input: {
 }
 
 // ---------------------------------------------------------------------------
-// Core judge function
 // ---------------------------------------------------------------------------
 
 /**
@@ -407,19 +327,10 @@ export async function judgeFactDurability(
   let deferred = 0;
   let deferredCappedToReject = 0;
 
-  // Use caller-provided cache for per-orchestrator scoping, or fall back
-  // to the module-level default cache.
   const verdictCache = cache ?? defaultVerdictCache;
   const deferCountMap = deferCounts ?? defaultDeferCounts;
   const deferCap = resolveDeferCap(config);
 
-  // Lazy emit (Codex P2): when `onVerdict` is undefined (default path —
-  // telemetry off), payload construction is skipped entirely. Callers
-  // pass a factory instead of a pre-built observation so the `sha256`
-  // `contentHash` and surrounding object allocation only run when a
-  // subscriber is present. For large batches with telemetry off this
-  // removes per-verdict overhead that would otherwise fire on every
-  // auto-approved / cache / fail-open path.
   const emit = (build: () => JudgeVerdictObservation): void => {
     if (!onVerdict) return;
     let observation: JudgeVerdictObservation;
@@ -434,7 +345,6 @@ export async function judgeFactDurability(
     try {
       onVerdict(observation);
     } catch (err) {
-      // Fail-open: telemetry errors must never block extraction.
       log.debug(
         `extraction-judge: onVerdict callback threw (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -452,13 +362,11 @@ export async function judgeFactDurability(
     };
   }
 
-  // Indices that need LLM judgment
   const pendingIndices: number[] = [];
 
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
 
-    // Auto-approve safety categories
     if (AUTO_APPROVE_CATEGORIES.has(c.category)) {
       const v: JudgeVerdict = {
         durable: true,
@@ -476,7 +384,6 @@ export async function judgeFactDurability(
       continue;
     }
 
-    // Auto-approve critical importance
     if (c.importanceLevel === "critical") {
       const v: JudgeVerdict = {
         durable: true,
@@ -494,7 +401,6 @@ export async function judgeFactDurability(
       continue;
     }
 
-    // Check cache
     const key = cacheKey(c.text, c.category);
     const cachedVerdict = verdictCache.get(key);
     if (cachedVerdict) {
@@ -514,7 +420,6 @@ export async function judgeFactDurability(
     pendingIndices.push(i);
   }
 
-  // If all resolved without LLM, return early
   if (pendingIndices.length === 0) {
     return {
       verdicts,
@@ -526,10 +431,7 @@ export async function judgeFactDurability(
     };
   }
 
-  // Batch the pending candidates up to batchSize
   const batchSize = Math.min(config.extractionJudgeBatchSize, MAX_JUDGE_BATCH);
-  // Defer bookkeeping spans the WHOLE call, not one batch: identical candidates can land in different batches, and each key
-  // must advance the defer cap once and decide against the same prior count (the snapshot taken at its first sighting).
   const deferredThisCall = new Set<string>();
   const priorDefersSeen = new Map<string, number>();
   for (let batchStart = 0; batchStart < pendingIndices.length; batchStart += batchSize) {
@@ -548,11 +450,6 @@ export async function judgeFactDurability(
 
       if (llmResponse) {
         const parsed = parseJudgeResponse(llmResponse, batchIndices);
-        // Per-call defer-increment dedupe (codex P2): a single extraction
-        // pass must not advance the cap more than once for identical
-        // candidate content, even if the same text appears several times in
-        // one LLM response or in different batches of one call. Duplicate
-        // hits share the first sighting's `priorDeferrals` snapshot.
         for (const [idx, rawVerdict] of parsed.entries()) {
           const c = candidates[idx];
           const key = cacheKey(c.text, c.category);
@@ -561,9 +458,6 @@ export async function judgeFactDurability(
           if (!priorDefersSeen.has(key)) priorDefersSeen.set(key, deferCountMap.get(key) ?? 0);
           const priorDefers = priorDefersSeen.get(key) ?? 0;
 
-          // Defer cap (issue #562, PR 2). A candidate that has already been
-          // deferred `deferCap` times is forcibly rejected so a pathological
-          // LLM response cannot produce an infinite defer loop.
           if (getVerdictKind(verdict) === "defer") {
             if (priorDefers >= deferCap) {
               verdict = {
@@ -572,9 +466,6 @@ export async function judgeFactDurability(
                 kind: "reject",
               };
               source = "llm-cap-rejected";
-              // Only clear + count the cap conversion once per batch for
-              // this key — duplicates in the same response all resolve to
-              // reject but should not inflate the cap-rejection counter.
               if (!deferredThisCall.has(key)) {
                 deferCountMap.delete(key);
                 deferredCappedToReject++;
@@ -584,7 +475,6 @@ export async function judgeFactDurability(
               deferCountMap.set(key, priorDefers + 1);
               deferred++;
               deferredThisCall.add(key);
-              // Bound the per-process defer-counter map.
               if (deferCountMap.size > DEFER_COUNT_MAX_SIZE) {
                 const drop = Math.floor(deferCountMap.size / 2);
                 let dropped = 0;
@@ -598,8 +488,6 @@ export async function judgeFactDurability(
             // else: duplicate defer for a key already counted this call —
             // no additional counter increment, verdict still marked defer.
           } else {
-            // On accept/reject, clear any outstanding defer counter so a
-            // future reappearance of the same text starts fresh.
             deferCountMap.delete(key);
             priorDefersSeen.set(key, 0);
             deferredThisCall.delete(key);
@@ -607,9 +495,6 @@ export async function judgeFactDurability(
 
           verdicts.set(idx, verdict);
           judged++;
-          // Cache non-defer verdicts. Defer is intentionally NOT cached:
-          // caching it would short-circuit the re-evaluation pass that is
-          // the entire point of the defer verdict.
           if (getVerdictKind(verdict) !== "defer") {
             verdictCache.set(key, verdict);
           }
@@ -622,25 +507,18 @@ export async function judgeFactDurability(
             elapsedMs: Date.now() - startMs,
           }));
         }
-        // Evict oldest entries if cache exceeds max size
         enforceMaxCacheSize(verdictCache);
       }
     } catch (err) {
-      // Fail-open: if the LLM call fails, approve all candidates in this batch
       log.warn(
         `extraction-judge: LLM call failed, approving batch (fail-open): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
 
-    // Fill in any missing verdicts from this batch (fail-open: approve).
-    // Clear defer counts so a transient outage doesn't leave stale state
-    // that causes later defers to hit the cap early.
     for (const idx of batchIndices) {
       if (!verdicts.has(idx)) {
         const c = candidates[idx];
         const hash = cacheKey(c.text, c.category);
-        // Capture the prior deferral count BEFORE clearing so the
-        // telemetry event reflects the true state rather than always 0.
         const priorDefers = deferCountMap.get(hash) ?? 0;
         deferCountMap.delete(hash);
         priorDefersSeen.set(hash, 0);
@@ -675,7 +553,6 @@ export async function judgeFactDurability(
 }
 
 // ---------------------------------------------------------------------------
-// LLM call helpers
 // ---------------------------------------------------------------------------
 
 async function callJudgeLlm(
@@ -688,24 +565,15 @@ async function callJudgeLlm(
 
   const modelOverride = config.extractionJudgeModel || undefined;
 
-  // When modelSource is "gateway", skip localLlm and go directly to fallback
-  // (the gateway-routed backend). This respects the operator's explicit
-  // routing preference.
   const skipLocal = config.modelSource === "gateway";
 
-  // Route judge-gated extractions through the SAME shared resolution as every
-  // other background task (taskModelChain > gatewayAgentId in gateway mode), so
-  // the judge never silently falls back to the persona/default chain when a
-  // task chain is configured (gotcha #22, #39). Issue #1365 / PR #1425.
   const gatewayChain = gatewayTaskChainOptions(config);
 
-  // Try local LLM first (unless modelSource says gateway)
   if (localLlm && !skipLocal) {
     try {
       const result = await (localLlm as any).chatCompletion(messages, {
         temperature: 0.1,
         maxTokens,
-        // A verdict needs no reasoning: keep a thinking-capable model from spending the compact budget on it.
         disableThinking: true,
         responseFormat: { type: "json_object" },
         timeoutMs: config.extractionJudgeTimeoutMs,
@@ -725,7 +593,6 @@ async function callJudgeLlm(
     }
   }
 
-  // Try fallback LLM
   if (fallbackLlm) {
     try {
       const result = await fallbackLlm.chatCompletion(
@@ -785,7 +652,6 @@ function unwrapJudgeEnvelope(parsed: ParsedJudgeJson): JudgeVerdictItem[] | null
 }
 
 // ---------------------------------------------------------------------------
-// Response parsing
 // ---------------------------------------------------------------------------
 
 function parseJudgeResponse(
@@ -796,7 +662,6 @@ function parseJudgeResponse(
   const expectedSet = new Set(expectedIndices);
 
   try {
-    // Try direct parse first, then fall back to JSON extraction
     let parsed: ParsedJudgeJson;
     try {
       parsed = JSON.parse(raw);
@@ -827,9 +692,6 @@ function parseJudgeResponse(
       const idx = (item as any).index as number;
       if (!expectedSet.has(idx)) continue;
 
-      // Parse kind first — it's the primary signal in PR 2 and above.
-      // Fall back to durable for pre-PR-2 model responses that only return
-      // the boolean.
       let kind: JudgeVerdictKind | undefined;
       const rawKind = (item as any).kind;
       const rawAction = (item as any).action;
@@ -850,8 +712,6 @@ function parseJudgeResponse(
         ? ((item as any).durable as boolean)
         : undefined;
 
-      // Resolve the durable flag from kind when present; otherwise trust
-      // the model's boolean; otherwise fail-open to durable=true.
       let durable: boolean;
       if (kind === "accept") {
         durable = true;
@@ -882,16 +742,13 @@ function parseJudgeResponse(
 }
 
 // ---------------------------------------------------------------------------
-// Cache management (exposed for testing)
 // ---------------------------------------------------------------------------
 
-/** Clear the in-memory default verdict cache. Primarily for tests. */
 export function clearVerdictCache(): void {
   defaultVerdictCache.clear();
   defaultDeferCounts.clear();
 }
 
-/** Return the current default verdict cache size. Primarily for tests. */
 export function verdictCacheSize(): number {
   return defaultVerdictCache.size;
 }

@@ -1,20 +1,3 @@
-/**
- * Provenance-scoped stale-edge deletion (issue #1891).
- *
- * The reindex pipeline re-derives heuristic edges from every fresh parse
- * and asserts them via `StoreFileIR.edges`. Without scoping, that
- * assertion would delete OTHER provenances' edges owned by the same file
- * (trace edges from `ingest_traces`, lsp-upgraded edges) on every
- * re-ingest — destroying state the parse says nothing about (rule 25).
- *
- * Contract under test:
- *  - `assertedEdgeProvenances: ["heuristic"]` + `edges: []` deletes stale
- *    heuristic edges but PRESERVES trace/lsp edges owned by the file;
- *  - absent `assertedEdgeProvenances` keeps the legacy behavior (all
- *    stale src-owned edges deleted) so existing callers are unchanged;
- *  - `edges` undefined keeps the existing early return (no deletes at
- *    all), regardless of the new field.
- */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -67,7 +50,6 @@ function readEdgeProvenances(dbPath: string): string[] {
 test("scoped assertion preserves trace edges while deleting stale heuristic edges", async () => {
   const { store, dir } = await openTempStore();
   try {
-    // Seed: file with a heuristic edge asserted by ingest.
     const seeded = await store.upsertFileBatch([
       {
         ...twoSymbolFile(),
@@ -83,7 +65,6 @@ test("scoped assertion preserves trace edges while deleting stale heuristic edge
       },
     ]);
     assert.ok(seeded.ok);
-    // Add a trace edge owned by the same file via the standalone path.
     const traced = await store.upsertEdges([
       {
         srcQualifiedName: "greet",
@@ -99,8 +80,6 @@ test("scoped assertion preserves trace edges while deleting stale heuristic edge
     assert.ok(stats.ok);
     assert.equal(stats.stats.edges, 2, "seed state: heuristic CALLS + trace HTTP_CALLS");
 
-    // Re-ingest: fresh parse supports NO heuristic edges (call removed),
-    // asserted with provenance scoping.
     const reingested = await store.upsertFileBatch([
       {
         ...twoSymbolFile({ contentHash: "hash-2" }),
@@ -178,7 +157,6 @@ test("legacy behavior unchanged: absent assertedEdgeProvenances deletes all stal
     ]);
     assert.ok(traced.ok);
 
-    // Legacy caller: empty edges array, NO provenance scoping.
     const reingested = await store.upsertFileBatch([
       { ...twoSymbolFile({ contentHash: "hash-2" }), edges: [] },
     ]);
@@ -212,8 +190,6 @@ test("edges undefined still preserves all prior edges (early return)", async () 
     ]);
     assert.ok(seeded.ok);
 
-    // Bare IR re-upsert (no edges field): must not wipe anything, even
-    // with the scoping field present — the early return wins.
     const reingested = await store.upsertFileBatch([
       { ...twoSymbolFile({ contentHash: "hash-2" }), assertedEdgeProvenances: ["heuristic"] },
     ]);
@@ -240,15 +216,11 @@ test("scoped re-assertion never downgrades an lsp-upgraded row on the same key",
     };
     const seeded = await store.upsertFileBatch([{ ...twoSymbolFile(), edges: [heuristicEdge] }]);
     assert.ok(seeded.ok);
-    // LSP layer upgrades the same (src, dst, type) row.
     const upgraded = await store.upsertEdges([
       { ...heuristicEdge, confidence: 1, provenance: "lsp" },
     ]);
     assert.ok(upgraded.ok);
 
-    // Reindex re-derives the same heuristic key with provenance scoping:
-    // the assertion keeps the row alive but must NOT overwrite the
-    // stronger out-of-scope provenance back to heuristic.
     const reingested = await store.upsertFileBatch([
       {
         ...twoSymbolFile({ contentHash: "hash-2" }),
@@ -288,8 +260,6 @@ test("an lsp row is retired when the call disappears from the parse (codex revie
     ]);
     assert.ok(upgraded.ok);
 
-    // Fresh parse no longer supports the call: scoped assertion includes
-    // lsp, so the upgraded row retires with its heuristic ancestor.
     const reingested = await store.upsertFileBatch([
       {
         ...twoSymbolFile({ contentHash: "hash-2" }),
@@ -310,8 +280,6 @@ test("an lsp row is retired when the call disappears from the parse (codex revie
 test("a path-hinted edge binds only inside its declared target file", async () => {
   const { store, dir } = await openTempStore();
   try {
-    // Two files each declaring a `greet`; the hinted edge must bind the
-    // one in lib/main.ts, never the decoy.
     const seeded = await store.upsertFileBatch([
       twoSymbolFile(),
       {
@@ -351,7 +319,6 @@ test("a path-hinted edge whose target file is not indexed is dropped, never glob
   const { store, dir } = await openTempStore();
   try {
     const seeded = await store.upsertFileBatch([
-      // A decoy `greet` exists in an UNRELATED file...
       twoSymbolFile(),
       {
         ...twoSymbolFile({ path: "util.ts", contentHash: "hash-util" }),
@@ -365,7 +332,6 @@ test("a path-hinted edge whose target file is not indexed is dropped, never glob
             type: "CALLS",
             confidence: 0.8,
             provenance: "heuristic",
-            // ...but the import pointed at ./missing, which is not indexed.
             dstPathHint: "missing",
           },
         ],
@@ -385,8 +351,6 @@ test("a path hint never matches test/declaration filename variants (codex review
   const { store, dir } = await openTempStore();
   try {
     const seeded = await store.upsertFileBatch([
-      // main.test.ts exports a greet too — a module resolver would never
-      // load it for "./main", so the hint must ignore it.
       {
         ...twoSymbolFile({ path: "main.test.ts", contentHash: "hash-test" }),
         symbols: [

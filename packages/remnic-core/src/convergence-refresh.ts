@@ -15,8 +15,6 @@ export async function refreshConvergedNamespaces(
   const targetNamespaces = Array.from(new Set(namespaces.map((namespace) => namespace.trim()).filter(Boolean)));
   if (targetNamespaces.length === 0) return;
 
-  // Forced so a min-interval skip cannot masquerade as proof that the
-  // converged writes are indexed; a real failure still fails the refresh.
   const searchResult = await namespaceSearchRouter.updateNamespacesDetailed(
     targetNamespaces,
     undefined,

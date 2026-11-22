@@ -30,7 +30,6 @@ export interface CorrectionApplication {
   applied: number;
 }
 
-/** Hard cap on rule pattern length (bounds hostile/pathological regexes). */
 const MAX_PATTERN_LENGTH = 256;
 
 function escapeRegExp(value: string): string {
@@ -66,7 +65,6 @@ export function compileCorrectionRule(
       // (rules live in the operator's own config / state file, never in
       // request input); the length cap above bounds pathological
       // patterns. CodeQL js/regex-injection is dismissed by design for
-      // this site.
       pattern = new RegExp(rule.match, flags);
     } catch (err) {
       throw new Error(
@@ -93,7 +91,6 @@ export function compileCorrectionRule(
   return { rule, pattern };
 }
 
-/** Compile a rule list, labeling errors with their index. */
 export function compileCorrectionRules(
   rules: WearableCorrectionRule[],
   labelPrefix: string,
@@ -103,7 +100,6 @@ export function compileCorrectionRules(
   );
 }
 
-/** Apply every applicable rule to a piece of transcript text. */
 export function applyCorrections(
   text: string,
   rules: CompiledCorrectionRule[],
@@ -122,7 +118,6 @@ export function applyCorrections(
     pattern.lastIndex = 0;
     result = result.replace(pattern, () => {
       applied += 1;
-      // Replacement via function: `$` in rule.replace stays literal.
       return rule.replace;
     });
   }
@@ -180,12 +175,10 @@ export async function loadCorrectionsFile(
   }
   const rules = (parsed as CorrectionsFileShape).rules;
   // Validate every persisted rule up front so a hand-edited bad rule
-  // fails at load with its index, not mid-sync.
   compileCorrectionRules(rules, "state corrections");
   return rules;
 }
 
-/** Persist CLI-managed rules atomically (temp file + rename). */
 export async function saveCorrectionsFile(
   memoryDir: string,
   rules: WearableCorrectionRule[],
@@ -204,7 +197,6 @@ export async function saveCorrectionsFile(
     await fsPromises.rename(tmpPath, filePath);
   } catch (err) {
     // Clean up the temp file on rename failure; the original (if any)
-    // is untouched.
     await fsPromises.unlink(tmpPath).catch(() => undefined);
     throw err;
   }

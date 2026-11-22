@@ -23,7 +23,6 @@ type StorageWriteOptions = {
 
 export interface RuntimeSurfaceStorage {
   readAllMemories(): Promise<MemoryFile[]>;
-  /** Sealed-envelope write entry point (issue #1989 PR4). */
   writeSealedMemory(
     envelope: import("@remnic/core/write-envelope").SealedMemoryEnvelope,
     extras: { memoryKind?: MemoryFrontmatter["memoryKind"] },
@@ -374,8 +373,6 @@ export async function syncDreamSurfaceEntries(params: {
     };
     const existing = findSurfaceMemoryByAttribute(memories, DREAM_ENTRY_ID_KEY, entry.id);
     if (!existing) {
-      // Sealed-envelope write (issue #1989 PR4): journal-file content is
-      // replayed machine data — salvage; drops warn-logged by the helper.
       const { id: memoryId } = await storage.writeSealedMemory(
         composeSalvagedEnvelope(
           "dreams-surface",

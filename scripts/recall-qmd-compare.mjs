@@ -1,17 +1,3 @@
-/**
- * Compare two ranked QMD result sets.
- *
- * Each JSON file is `{ results: [{ docid, score, rank? }], timings?: { totalMs } }`.
- * The report prints overlap and correlation only. It does not print queries,
- * paths, or document bodies.
- *
- *   node scripts/recall-qmd-compare.mjs <before-dir> <after-dir>
- *   node scripts/recall-qmd-compare.mjs --rerank-off <dir>
- *
- * --rerank-off pairs `<stem>-daemon.json` with `<stem>-norerank.json` in one
- * directory. That is the harness self-check against a captured rerank-on
- * baseline, not a live timing run.
- */
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -45,9 +31,6 @@ export function compareRankedLists(before, after) {
 
 export function spearman(xs, ys) {
   const n = Math.min(xs.length, ys.length);
-  // Too few points have no correlation: equal inputs agree, anything else is
-  // undefined. One constant side against a varying one is undefined too, never
-  // a perfect score; two constant sides tie everything and agree.
   const same = xs.slice(0, n).every((value, i) => value === ys[i]);
   if (n < 2) return same ? 1 : null;
   let meanX = 0;
@@ -99,7 +82,6 @@ function pairRow(name, before, after) {
     return { name, missing: true, beforeMs: before?.totalMs ?? null, afterMs: after?.totalMs ?? null };
   }
   return {
-    // Exactly one side empty is a failed query, not a comparison.
     oneSidedEmpty: (before.results.length === 0) !== (after.results.length === 0),
     name,
     ...compareRankedLists(before.results, after.results),
@@ -108,15 +90,12 @@ function pairRow(name, before, after) {
   };
 }
 
-// A counterpart that is absent or unreadable becomes an explicit `missing` row,
-// so an incomplete run cannot look healthy.
 export function compareDirectories(beforeDir, afterDir) {
   const names = [...new Set([...listJson(beforeDir), ...listJson(afterDir)])].sort();
   return names.map((name) => pairRow(name, tryLoad(join(beforeDir, name)), tryLoad(join(afterDir, name))));
 }
 
 export function compareRerankOff(dir) {
-  // Stems come from either suffix, so a capture with only one side still shows up.
   const daemonSuffix = "-daemon.json";
   const offSuffix = "-norerank.json";
   const stems = new Set();

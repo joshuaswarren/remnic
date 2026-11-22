@@ -1,9 +1,3 @@
-/**
- * Resolution Verbs — executes user-chosen resolution actions on contradiction pairs (issue #520).
- *
- * All resolution paths delegate to StorageManager.supersedeMemory. Do not
- * reimplement supersession logic here (rule 22: deduplicate resolution).
- */
 
 import { log } from "../logger.js";
 import { composeMemoryEnvelope } from "../write-envelope.js";
@@ -21,16 +15,12 @@ import { resolvePreferenceDrift } from "../preferences/preference-drift.js";
 export interface ResolutionResult {
   pairId: string;
   verb: ResolutionVerb;
-  /** Memory IDs affected by the resolution. */
   affectedIds: string[];
-  /** Human-readable status. */
   message: string;
 }
 
 export interface ExecuteResolutionOptions {
-  /** Existing merged memory to supersede both source memories to. */
   mergedMemoryId?: string;
-  /** Content for a new merged memory. Required for merge when mergedMemoryId is omitted. */
   mergedContent?: string;
   /** Category for a newly created merged memory. Defaults to the shared source category, or fact. */
   mergedCategory?: MemoryCategory;
@@ -56,13 +46,6 @@ export interface ExecuteResolutionOptions {
   onMergedMemoryWritten?: (namespace: string | undefined, storageDir: string) => void;
 }
 
-/**
- * Every verb the `review_resolve` surface accepts, across both review-item
- * kinds (issue #2371). This is a *surface-level* gate only: per-kind validity
- * is enforced inside {@link executeResolution}, which is the first place the
- * item's `kind` is known. Callers therefore reject an unknown verb early and
- * a cross-kind verb precisely.
- */
 const VALID_VERBS: readonly ResolutionVerb[] = [...CONTRADICTION_VERBS, ...PREFERENCE_DRIFT_VERBS];
 
 export function isValidResolutionVerb(value: string): value is ResolutionVerb {
@@ -107,11 +90,6 @@ export async function executeResolution(
   if (pair.resolution && pair.resolution !== "needs-more-context") {
     return { pairId, verb, affectedIds: [], message: `Pair already resolved with verb "${pair.resolution}"` };
   }
-  // Verb validity is per review-item kind (issue #2371). A preference-drift
-  // item never accepts keep-a/keep-b/merge (there is no "B" to keep — the
-  // second id is witness evidence, not a competing claim), and a contradiction
-  // pair never accepts keep/supersede/archive. Rejecting the cross-kind verb
-  // here, after the record is loaded, is the only place both kinds are known.
   const isDriftItem = pair.kind === "preference-drift";
   const verbMatchesKind = isDriftItem
     ? PREFERENCE_DRIFT_VERBS.includes(verb)
@@ -136,8 +114,6 @@ export async function executeResolution(
         onMemoryWritten: options.onMergedMemoryWritten,
       },
     );
-    // Only record the terminal resolution when memories actually changed;
-    // a refused resolution must stay actionable in the queue.
     if (outcome.affectedIds.length > 0) resolvePair(memoryDir, pairId, verb);
     return { pairId, verb, affectedIds: outcome.affectedIds, message: outcome.message };
   }
@@ -148,17 +124,7 @@ export async function executeResolution(
   let message = "";
   let supersedeFailed = false;
   let rollbackAfterResolveFailure: (() => Promise<boolean>) | null = null;
-  // Deferred catalog-write touch for any resolution that leaves durable namespace
-  // memory mutations (issue #1499 sweep, NH1dX / NH3X3). Rule #25: never record a
-  // catalog touch for a write that is fully rolled back. Successful mutating
-  // resolutions invoke it after `resolvePair` persists. Failed paths invoke it
-  // only when rollback inspection shows the namespace still differs from the
-  // pre-mutation snapshot.
   let recordCatalogWriteTouch: (() => void) | null = null;
-  // Returns the deferred touch fn for a mutating verb (or null when the caller
-  // wired no catalog hook), so each branch assigns `recordCatalogWriteTouch`
-  // directly in the function body — keeping TS control-flow narrowing intact at
-  // the post-commit invocation below.
   const buildCatalogTouch = (): (() => void) | null => {
     if (!options.onMergedMemoryWritten) return null;
     const onMergedMemoryWritten = options.onMergedMemoryWritten;
@@ -207,8 +173,6 @@ export async function executeResolution(
         affectedIds.push(idB);
         rollbackAfterResolveFailure = async () =>
           restoreMemorySnapshot(resolutionStorage, sourceB!, "contradiction-resolution:keep-a-rollback");
-        // keep-a superseded idB in this namespace — record a catalog touch once
-        // the resolution durably commits (NH3X3).
         recordCatalogWriteTouch = catalogWriteTouch;
         message = `Kept ${idA}, superseded ${idB}`;
       }
@@ -241,7 +205,6 @@ export async function executeResolution(
         affectedIds.push(idA);
         rollbackAfterResolveFailure = async () =>
           restoreMemorySnapshot(resolutionStorage, sourceA!, "contradiction-resolution:keep-b-rollback");
-        // keep-b superseded idA in this namespace — record a catalog touch once
         // the resolution durably commits (NH3X3).
         recordCatalogWriteTouch = catalogWriteTouch;
         message = `Kept ${idB}, superseded ${idA}`;
@@ -317,16 +280,6 @@ export async function executeResolution(
         }
         return rolledBackA && rolledBackB;
       };
-      // Catalog write touch (issue #1499 sweep): the merge supersedes BOTH sources
-      // (and, when created, writes a fresh merged memory) in the pair's (possibly
-      // dynamic) namespace storage — but the resolution is not durable yet
-      // (resolvePair persists below, and a failure rolls the merge back). Defer
-      // the touch so it fires ONLY after the resolution commits past the rollback
-      // point (NH1dX, rule #25). Arm it for EVERY successful merge — even reusing
-      // an existing merged-id still supersedes both sources, a namespace mutation
-      // that must refresh `lastWriteAt` (NH3X3). Otherwise a dynamic namespace
-      // whose only durable mutation is a contradiction merge stays invisible to
-      // QMD maintenance / `writtenSince`. Best-effort on the caller side.
       recordCatalogWriteTouch = catalogWriteTouch;
       message = `Both memories superseded by merged ${replacement.mergedId}`;
       break;
@@ -367,11 +320,6 @@ export async function executeResolution(
         message = "Resolution persistence failed; pair is not resolved";
       }
     } else if (recordCatalogWriteTouch) {
-      // The resolution durably committed (memory mutated AND the resolution
-      // persisted past the rollback point). Only now is it safe to record the
-      // catalog write for the namespace mutation (NH1dX / NH3X3, rule #25).
-      // Best-effort: the caller's callback swallows errors; guard here so a
-      // throwing callback never derails a successful resolution.
       recordCatalogWriteTouchSafely("resolved", recordCatalogWriteTouch);
     }
   }
@@ -435,8 +383,6 @@ async function prepareMergeReplacement(
   const category = options.mergedCategory ?? mergedMemoryCategory(sourceA, sourceB);
   let mergedId: string;
   try {
-    // Sealed-envelope write (issue #1989 PR4): merged content is
-    // LLM-produced — salvage; drops are warn-logged.
     const mergeEnvelope = composeMemoryEnvelope(
       {
         content: mergedContent,
@@ -457,9 +403,6 @@ async function prepareMergeReplacement(
     });
     mergedId = mergeResult.id;
     if (mergeResult.tombstoneBlocked) {
-      // #1645: merged content matched a tombstone (pending_review). Don't
-      // supersede both sources to a non-active replacement — that retires
-      // the only active copies. Clean up the pending merge and abort the pair.
       await cleanupMemoryId(storage, mergedId);
       return { ok: false, message: `Merged memory for ${pairId} was tombstone-blocked (pending_review); not resolving — sources kept active` };
     }

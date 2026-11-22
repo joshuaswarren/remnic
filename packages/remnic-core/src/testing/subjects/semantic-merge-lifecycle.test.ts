@@ -1,24 +1,3 @@
-/**
- * Semantic merge-on-write lifecycle subject for the scenario-matrix harness
- * (PR #2771 review finding B, issue #2330).
- *
- * The lifecycle-matrix gate previously accepted changes to
- * `orchestration/semantic-merge-persist.ts` through the `extraction-lifecycle`
- * subject, which builds every configuration with `semanticMerge` disabled —
- * the required gate passed without ever exercising the merge path it claimed
- * to cover. This subject runs the REAL orchestrator + storage persist path
- * (turn ingestion → buffer → flush → `ExtractionPersistCoordinator` →
- * `applySemanticMergeAtPersist` → `StorageManager` compare-and-swap) with
- * `semanticMerge` ENABLED for all nine canonical rows, and asserts the merge
- * outcome survives each lifecycle transition.
- *
- * Deterministic sensors use the established field-level seams (never
- * production hooks): the extraction client (`stubExtraction`), the embedding
- * neighbor index (`embeddingFallback`), and the local-llm judge client
- * (`localLlm`, answering only the merge-judge system prompt). Storage,
- * versioning, the merge decision, the CAS writes, the rollback data, and the
- * index repair are all production code.
- */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -45,7 +24,6 @@ import {
 } from "../orchestrator-lite.js";
 import { queryTemporalTimelineAsync } from "../../temporal-index.js";
 
-// ── Fixtures (synthetic; no real paths, hosts, or memory content) ─────────────
 
 const SEED_A = "The billing service deploys on a Tuesday cadence.";
 const INCOMING_A = "The billing service deploys at 09:00 UTC sharp.";
@@ -98,15 +76,12 @@ interface SemanticMergeLifecycleState {
   callsBeforeForceFlush?: number;
 }
 
-// ── Configs ───────────────────────────────────────────────────────────────────
 
-/** Merge-on-write lifecycle config: semanticMerge ON, embedding + versioning ON. */
 function mergeLifecycleConfig(memoryDir: string, overrides: Record<string, unknown> = {}): PluginConfig {
   return makeLifecycleConfig(memoryDir, {
     semanticMerge: { enabled: true },
     embeddingFallbackEnabled: true,
     versioningEnabled: true,
-    // Round N+12 (CI-0): the commit-effects sibling (snapshot staging, prune
     // finalization, durable thread-episode persist) runs on this subject's
     // merge path — threading ON gives the thread-episode helper a real
     // thread id so every exported function of that module executes here.
@@ -147,7 +122,6 @@ function rememberedBindingConfig(memoryDir: string): PluginConfig {
   });
 }
 
-// ── Deterministic sensors (field-level seams) ─────────────────────────────────
 
 /** The embedding-fallback field seam replaced by {@link installNeighbors}. */
 interface EmbeddingFallbackSeam {
@@ -163,11 +137,6 @@ interface EmbeddingFallbackSeam {
   };
 }
 
-/**
- * Serve in-band nearest neighbors for EXACT incoming fact contents only.
- * Recall queries and any other content get an empty index, so the stub can
- * never fabricate a recall hit.
- */
 function installNeighbors(
   orchestrator: Orchestrator,
   neighborsFor: (query: string) => Array<{ id: string; score: number }>,
@@ -191,13 +160,6 @@ interface LocalLlmSeam {
   };
 }
 
-/**
- * Answer ONLY the merge-judge prompt (the production callMergeJudge routing
- * reaches this field through the late-binding `getLocalLlm` dep). Every other
- * caller gets `null` — the same "no backend answered" they already handle.
- * The verdict merges the top candidate's CURRENT body with the incoming text,
- * so replays merge into the already-merged target.
- */
 function installJudge(orchestrator: Orchestrator, judge: { calls: number }): void {
   (orchestrator as unknown as LocalLlmSeam).localLlm = {
     chatCompletion: async (messages) => {
@@ -225,13 +187,7 @@ function installJudge(orchestrator: Orchestrator, judge: { calls: number }): voi
   };
 }
 
-// ── Seeding ───────────────────────────────────────────────────────────────────
 
-/**
- * Seed a merge TARGET directly on disk with PAST timestamps and a high
- * importance score, so an incoming fact's own importance never bypasses the
- * merge as unpreservable metadata. Returns the file path.
- */
 async function seedMergeTarget(
   root: string,
   id: string,
@@ -629,7 +585,6 @@ test("the fact after a merge chains time/causal adjacency through the merged tar
   }
 });
 
-// ── Subject ───────────────────────────────────────────────────────────────────
 
 const subject: LifecycleSubject<SemanticMergeLifecycleState> = {
   async setup(row: MatrixRow): Promise<SemanticMergeLifecycleState> {
@@ -684,7 +639,6 @@ const subject: LifecycleSubject<SemanticMergeLifecycleState> = {
       };
       installNeighbors(primary, neighbors);
 
-      // Seed the merge targets AFTER construction (cold caches) so the
       // orchestrator's own storage instances discover them on first read.
       if (row.id === "explicit-provider-identity" || row.id === "provider-rebinding") {
         state.aliceRoot = await resolveNamespaceStorageRoot(cfg, "alice");
@@ -709,7 +663,6 @@ const subject: LifecycleSubject<SemanticMergeLifecycleState> = {
       }
       return state;
     } catch (err) {
-      // Transactional setup: a partial build must not leak the orchestrator or temp dir.
       await primary?.destroy().catch(() => undefined);
       await cleanupDir(memoryDir);
       throw err;
@@ -957,7 +910,6 @@ test("a merged target's new claims reach the temporal timeline index (round N+7 
     installNeighbors(orch, () => []);
     await orch.processTurn("user", `Please remember: ${FIRST}`, "session-temporal-1");
     assert.equal(await orch.waitForExtractionIdle(15_000), true);
-    // Turn 1's temporal-index bootstrap is fire-and-forget: wait until it
     // has COMPLETED (the created fact's row is served) so turn 2 runs the
     // INCREMENTAL id-filtered update instead of re-bootstrapping the whole
     // corpus — a re-bootstrap would index the already-merged target even
@@ -970,7 +922,6 @@ test("a merged target's new claims reach the temporal timeline index (round N+7 
       if (!bootstrapped) await sleep(250);
     }
     assert.ok(bootstrapped, "turn 1's temporal index bootstrap must complete");
-    // Turn 2: the merge commits "09:00 UTC sharp" into the target.
     stubExtraction(orch, () => ({
       facts: [{ category: "fact", content: INCOMING_A, confidence: 0.9, tags: [] }],
       entities: [],
@@ -985,7 +936,6 @@ test("a merged target's new claims reach the temporal timeline index (round N+7 
     assert.equal(await orch.waitForExtractionIdle(15_000), true);
     assert.equal(judge.calls, 1);
     await assertMerged(targetFile, ["Tuesday cadence", "09:00 UTC sharp"], 1);
-    // Membership in the returned rows is not evidence on its own: with few
     // rows the query returns the chronology unfiltered (and the no-match
     // fallback returns both edges). Assert the merged token's HASH is on the
     // target's own row — the exact contract queryTemporalTimelineAsync
@@ -1026,7 +976,6 @@ test("a cold-tier merged target's new claims reach the temporal timeline index (
     const coldFile = await seedMergeTarget(memoryDir, "merge-target-cold-temporal", SEED_A, {
       tier: "cold",
     });
-    // Turn 1 bootstraps the index from a hot fact so turn 2 runs the
     // INCREMENTAL id-filtered update (a re-bootstrap would index the cold
     // target even without the fix, masking the defect).
     const FIRST = "The audit service tracks quarterly access reviews.";
@@ -1048,7 +997,6 @@ test("a cold-tier merged target's new claims reach the temporal timeline index (
       if (!bootstrapped) await sleep(250);
     }
     assert.ok(bootstrapped, "turn 1's temporal index bootstrap must complete");
-    // Turn 2: the merge commits "09:00 UTC sharp" into the COLD target.
     stubExtraction(orch, () => ({
       facts: [{ category: "fact", content: INCOMING_A, confidence: 0.9, tags: [] }],
       entities: [],
@@ -1063,7 +1011,6 @@ test("a cold-tier merged target's new claims reach the temporal timeline index (
     assert.equal(await orch.waitForExtractionIdle(15_000), true);
     assert.equal(judge.calls, 1);
     await assertMerged(coldFile, ["Tuesday cadence", "09:00 UTC sharp"], 1);
-    // Same token-hash contract as the hot-tier test above: the merged
     // token's HASH must sit on the cold target's own row.
     const sharpToken = crypto.createHash("sha256").update("sharp").digest("hex");
     let served = false;

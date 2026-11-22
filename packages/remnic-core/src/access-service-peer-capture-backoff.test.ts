@@ -13,13 +13,9 @@ import { Orchestrator } from "./orchestrator.js";
 import { buildExplicitCaptureDedupKey } from "./storage/tombstone-blocked-capture-index.js";
 import { OFFLINE_SYNC_CHANGESET_FORMAT } from "./offline-sync.js";
 
-// Real contention exceeds the legacy deadline but fits inside the configured peer budget.
 
-/** Longer than the legacy 3s capture-lock deadline, shorter than the converge deadline. */
 const CONTENTION_HOLD_MS = 3_600;
-/** The converge deadline a peer apply is scoped to. */
 const CONVERGE_DEADLINE_MS = 8_000;
-/** An ordinary capture must still give up near the legacy 3s bound. */
 const LEGACY_BOUND_MS = 4_500;
 
 const PEER_REL_PATH = "facts/2026-08-13/peer-apply-target.md";
@@ -60,7 +56,6 @@ async function createPeerService(root: string) {
   return { storage, service: new EngramAccessService(orchestrator) };
 }
 
-/** Hold a capture lock and release it after `holdMs`. */
 function holdCaptureLock(stateDir: string, identity: string, holdMs: number) {
   const holder = new TombstoneBlockedCaptureWriteLock({ stateDir });
   const released = Promise.withResolvers<void>();

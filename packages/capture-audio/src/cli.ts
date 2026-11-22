@@ -66,7 +66,6 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-/** Flags that consume the next argv token as their value. */
 const VALUE_FLAGS: Record<string, true> = {
   replay: true,
   host: true,
@@ -78,7 +77,6 @@ const VALUE_FLAGS: Record<string, true> = {
   label: true,
 };
 
-/** Standalone boolean flags. Any other `--flag` is rejected loudly. */
 const BOOLEAN_FLAGS: Record<string, true> = {
   foreground: true,
   force: true,
@@ -87,7 +85,6 @@ const BOOLEAN_FLAGS: Record<string, true> = {
   uninstall: true,
 };
 
-/** Non-global flags each subcommand accepts; anything else is rejected. */
 const COMMAND_FLAGS: Record<string, Record<string, true>> = {
   init: { force: true },
   start: { foreground: true, replay: true, host: true, port: true, listen: true, capture: true },
@@ -102,20 +99,15 @@ const COMMAND_FLAGS: Record<string, Record<string, true>> = {
   help: {},
 };
 
-/** Flags accepted regardless of subcommand. */
 const GLOBAL_FLAGS: Record<string, true> = { "base-dir": true, help: true };
 
-/** How long background start waits for the child daemon to bind before failing. */
 const READINESS_TIMEOUT_MS = 10_000;
 
-/** How long `stop` waits for the daemon to exit + remove its pid file before returning. */
 const STOP_TIMEOUT_MS = 10_000;
 
 function parseArgs(argv: string[]): ParsedArgs {
   const tokens: string[] = [];
   const flags: Record<string, string | boolean> = {};
-  // Collect flags anywhere (so global flags may precede the subcommand); the
-  // first non-flag token is the command, the rest are positionals.
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg.startsWith("--")) {
@@ -169,8 +161,6 @@ function applyBindingOverrides(
   if (typeof flags.port === "string") {
     next.port = coerceNumber(flags.port, "--port", { integer: true, min: 1, max: 65535 });
   }
-  // Normalize a bracketed IPv6 authority host ([::1]) to its bare form (::1) so
-  // the loopback check and the actual listen() bind both see a valid address.
   next.host = stripIpv6Brackets(next.host);
   return next;
 }
@@ -179,12 +169,6 @@ function healthUrlFor(host: string, port: number): string {
   return `http://${formatHostForUrl(host)}:${port}/v1/health`;
 }
 
-/**
- * Health URL for the running daemon: prefer the effective binding persisted
- * in the pid record, falling back to on-disk config. This lets status/stop
- * reach a daemon started with --host/--port/--listen even when the config
- * file on disk says something else.
- */
 function recordHealthUrl(record: PidRecord, paths: CapturePaths, stderr: (l: string) => void): string {
   if (record.host !== null && record.port !== null) return healthUrlFor(record.host, record.port);
   const config = loadConfigOrDefault(paths, stderr);
@@ -196,7 +180,6 @@ function tokenHeader(paths: CapturePaths): Record<string, string> {
   return { authorization: `Bearer ${readFileSync(paths.tokenPath, "utf8").trim()}` };
 }
 
-/** Create the capture dir owner-only (transcript spool + token live here). */
 function ensurePrivateDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   try {
@@ -206,7 +189,6 @@ function ensurePrivateDir(dir: string): void {
   }
 }
 
-/** Operator-safe error description — never echoes foreign message text/paths. */
 function describeError(err: unknown): string {
   const code = (err as NodeJS.ErrnoException).code;
   if (typeof code === "string" && code) return code;
@@ -218,7 +200,6 @@ interface DaemonIdentity {
   pid: number;
 }
 
-/** Authenticated health probe; returns the serving daemon's identity or null. */
 async function probeIdentity(paths: CapturePaths, url: string): Promise<DaemonIdentity | null> {
   try {
     const res = await fetch(url, { headers: tokenHeader(paths), signal: AbortSignal.timeout(2000) });
@@ -245,11 +226,6 @@ export function recordChildPidOrTerminate(
   stderr: (l: string) => void,
 ): boolean {
   const existing = readPidRecord(paths.pidPath);
-  // If the detached child was scheduled first and already published its OWN
-  // full ready record (its pid + a non-null instanceId), don't clobber it with
-  // this provisional write. A record for a DIFFERENT pid (or our pid without an
-  // instanceId yet) is stale by this point — cmdStart's start guard already
-  // refused a real prior daemon — so we overwrite it.
   if (existing !== null && existing.pid === pid && existing.instanceId !== null) {
     return true;
   }
@@ -267,14 +243,6 @@ export function recordChildPidOrTerminate(
   }
 }
 
-/**
- * True when the recorded pid is (as far as we can tell) our daemon.
- * Without a recorded instanceId we cannot verify, so we conservatively
- * assume yes and refuse to double-start. With an instanceId we treat the
- * pid as a reused stranger only on a CONFIRMED mismatch from its health
- * endpoint; an unreachable probe stays conservative so we never race a new
- * daemon onto a port a live one may still hold.
- */
 async function isOwnRunningDaemon(
   record: PidRecord,
   paths: CapturePaths,
@@ -286,12 +254,6 @@ async function isOwnRunningDaemon(
   return live.instanceId === record.instanceId && live.pid === record.pid;
 }
 
-/**
- * True when the pid record denotes a DIFFERENT, currently-running daemon that a
- * new start must not run over. A record whose pid is our OWN process (the
- * background parent's prewritten record for this child) is never treated as a
- * running prior daemon, so the child can proceed to bind and overwrite it.
- */
 export async function recordedDaemonIsRunning(
   record: PidRecord,
   paths: CapturePaths,
@@ -302,20 +264,12 @@ export async function recordedDaemonIsRunning(
   return isOwnRunningDaemon(record, paths, stderr);
 }
 
-/**
- * Run replay ingestion as a supervised task AFTER the daemon is ready. Never
- * throws: success/failure is surfaced via the spool's `replay_status` meta
- * (also exposed on /v1/health) and the daemon log, so a failed or slow replay
- * never kills the daemon or retracts its readiness.
- */
 export async function superviseReplay(
   spool: Spool,
   replayDir: string,
   io: { stdout: (l: string) => void; stderr: (l: string) => void },
   signal?: AbortSignal,
 ): Promise<void> {
-  // Yield first so the caller returns to serving before the (synchronous)
-  // ingest runs — readiness is already established.
   await Promise.resolve();
   spool.setMeta("replay_status", "running");
   try {
@@ -333,8 +287,6 @@ export async function superviseReplay(
   } catch (err) {
     const message =
       err instanceof CaptureConfigError || err instanceof CaptureInputError ? err.message : describeError(err);
-    // Sanitize before it reaches the spool meta / /v1/health: strip any
-    // filesystem paths from the surfaced status; the full detail goes to the log.
     const sanitized = message.replace(/\/\S+/g, "<path>");
     spool.setMeta("replay_status", `failed: ${sanitized}`);
     io.stderr(`replay ingestion failed: ${message}`);
@@ -401,9 +353,6 @@ async function cmdStart(
       stdout(`daemon already running (pid ${previousRecord.pid})`);
       return 0;
     }
-    // Not a running prior daemon. Reclaim a stale/foreign record, but never our
-    // OWN prewritten record — the background parent wrote it for this child, and
-    // the child overwrites it with the full record after it binds.
     if (previousRecord.pid !== process.pid) {
       removePidFile(paths.pidPath);
     }
@@ -431,13 +380,9 @@ async function cmdStart(
       stderr("failed to spawn daemon process");
       return 1;
     }
-    // Record pid + effective binding now; the child adds instanceId once bound.
-    // If persistence fails, kill the child so it isn't orphaned unrecorded.
     if (!recordChildPidOrTerminate(child.pid, paths, { host: config.host, port: config.port }, stderr)) {
       return 1;
     }
-    // Do not report success until the child actually binds: it writes an
-    // instanceId into the pid record only after the HTTP server is listening.
     const deadline = Date.now() + READINESS_TIMEOUT_MS;
     while (Date.now() < deadline) {
       if (!isProcessAlive(child.pid)) {
@@ -451,8 +396,6 @@ async function cmdStart(
       }
       await delay(100);
     }
-    // Readiness timed out: the child never bound. Terminate it and fail loudly
-    // so automation never observes a false success.
     try {
       process.kill(child.pid, "SIGTERM");
     } catch {
@@ -469,9 +412,6 @@ async function cmdStart(
   const token = loadOrCreateToken(paths.tokenPath);
   const spool = new Spool(paths.spoolPath);
 
-  // Start live native capture (opt-in) BEFORE binding so the daemon's reported
-  // `capturing` reflects whether the helper actually started. A missing or
-  // unavailable helper degrades honestly — the daemon still serves the spool.
   let live: LiveCapture | null = null;
   if (flags.capture === true) {
     try {
@@ -495,10 +435,8 @@ async function cmdStart(
 
   let handle: DaemonHandle;
   try {
-    // Bind and report the HTTP service; `capturing` mirrors the live runner.
     handle = await startDaemon({ spool, config, token, capturing: () => live !== null && live.running });
   } catch (err) {
-    // Don't leak the live runner or spool handle if the bind fails.
     if (live) await live.stop().catch(() => undefined);
     spool.close();
     throw err;
@@ -510,7 +448,6 @@ async function cmdStart(
       port: handle.port,
     });
   } catch (err) {
-    // Bound but couldn't persist the record: release everything half-started.
     if (live) await live.stop().catch(() => undefined);
     await handle.close();
     spool.close();
@@ -518,9 +455,6 @@ async function cmdStart(
   }
   stdout(`listening on ${handle.url}`);
   if (live) stdout("live capture started");
-  // Supervised AFTER readiness: replay volume/failure never delays or fails
-  // readiness, and never kills the daemon. The task is tracked so shutdown can
-  // cancel and drain it before the spool closes.
   const replayAbort = new AbortController();
   const replayTask: Promise<void> = replayDir
     ? superviseReplay(spool, replayDir, { stdout, stderr }, replayAbort.signal)
@@ -531,17 +465,11 @@ async function cmdStart(
     const shutdown = () => {
       if (closing) return;
       closing = true;
-      // Cancel any in-flight replay and drain it (bounded: ingestion stops at
-      // the next commit-batch boundary) BEFORE closing the spool, so no
-      // ingestion write can ever hit a closed database.
       replayAbort.abort();
       void replayTask
         .catch(() => undefined)
         .then(() => (live ? live.stop().then(() => undefined) : undefined))
         .catch((error: unknown) => {
-          // A failed shutdown flush means chunks are still held in memory and
-          // their raw audio is still on disk. Swallowing that silently made a
-          // recoverable state look like a clean exit (issue #2145).
           process.stderr.write(
             `[capture-audio] shutdown flush failed; retained raw audio was NOT ingested: ${describeError(error)}\n`,
           );
@@ -573,16 +501,9 @@ async function cmdStop(
     stdout("daemon not running");
     return 0;
   }
-  // Identity guard: when we know which instance owns the pid, confirm the
-  // live process really is that daemon before signalling.
   if (record.instanceId !== null) {
     const live = await probeIdentity(paths, recordHealthUrl(record, paths, stderr));
     if (live !== null && (live.instanceId !== record.instanceId || live.pid !== record.pid)) {
-      // Verified NOT the recorded process: the daemon answering this endpoint
-      // reports a different instance id or pid than the record. Never signal an
-      // unverified pid, and never reclaim before a safe stop — either could kill
-      // an unrelated process or orphan the serving daemon. --force does not
-      // override a verified mismatch.
       stderr(
         `recorded pid ${record.pid} does not match the daemon serving this endpoint (identity/pid mismatch); ` +
           `not signalling and preserving ${paths.pidPath}. Stop the serving daemon via its own controls, ` +
@@ -591,8 +512,6 @@ async function cmdStop(
       return 1;
     }
     if (live === null && flags.force !== true) {
-      // Cannot confirm identity (health unreachable): refuse to signal a pid we
-      // can't prove is ours, unless the operator forces it.
       stderr(
         `cannot confirm daemon identity for pid ${record.pid} (health unreachable); not signalling. ` +
           `Re-run \`stop --force\` to stop it anyway, or remove ${paths.pidPath}.`,
@@ -600,8 +519,6 @@ async function cmdStop(
       return 1;
     }
   } else if (flags.force !== true) {
-    // No recorded instance id -> identity is unverifiable; refuse to signal a
-    // pid we can't prove is ours (guards against PID reuse) unless forced.
     stderr(
       `cannot verify daemon identity for pid ${record.pid} (no recorded instance id); not signalling. ` +
         `Re-run \`stop --force\` to stop it anyway, or remove ${paths.pidPath}.`,
@@ -623,12 +540,6 @@ async function cmdStop(
     }
     throw err;
   }
-  // The daemon's own shutdown handler removes the pid file once it has
-  // finalized conversations and released the spool/socket — don't delete it
-  // here (valid state must survive until replacement is confirmed). Wait
-  // boundedly for that so automation (a following `start`/`status`) doesn't
-  // see the old pid as still running, and callers don't observe `stop` as
-  // done before final conversations are persisted.
   const deadline = Date.now() + STOP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (!isProcessAlive(record.pid) || readPidRecord(paths.pidPath) === null) {
@@ -667,8 +578,6 @@ async function cmdStatus(
 }
 
 async function cmdDevices(env: NodeJS.ProcessEnv, stdout: (l: string) => void): Promise<number> {
-  // A missing/unsupported helper throws a CaptureConfigError with an actionable
-  // message; the runCapture handler surfaces it verbatim and exits nonzero.
   const { binaryPath } = resolveHelperBinary({ env });
   const devices = await enumerateDevices(binaryPath);
   stdout(JSON.stringify({ devices }, null, 2));
@@ -685,8 +594,6 @@ function cmdInstallService(
   const platform = process.platform;
   const home = homedir();
   const label = typeof flags.label === "string" ? flags.label : undefined;
-  // Persist the env the daemon needs under launchd/systemd: PATH (to find
-  // whisper-cli) and any REMNIC_CAPTURE_HELPER_BIN override the operator set.
   const environment: Record<string, string> = {};
   if (typeof env.PATH === "string" && env.PATH !== "") environment.PATH = env.PATH;
   const helperBin = env.REMNIC_CAPTURE_HELPER_BIN;
@@ -716,8 +623,6 @@ function cmdInstallService(
     stdout(removed ? `removed ${plan.path}` : `no capture-audio service installed at ${plan.path}`);
     return 0;
   }
-  // The unit's StandardOut/Err path is under baseDir; create it now so launchd/
-  // systemd can write logs even when install-service is the first command run.
   ensurePrivateDir(paths.baseDir);
   const plan = installService({
     platform,

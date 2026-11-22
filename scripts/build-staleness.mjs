@@ -49,11 +49,7 @@ export function ensurePackageBuild(repoRoot, pkgName, distPath, sourcePaths, opt
     if (fs.existsSync(distPath) && recordedFingerprintMatches(repoRoot, sourcePaths, distPath)) {
       return;
     }
-    // Snapshot before building: an edit landing mid-build changes the tree,
-    // so the recorded fingerprint no longer matches and the next run rebuilds.
     const fingerprint = computeSourceFingerprint(repoRoot, sourcePaths);
-    // Drop the marker before the spawn so a signaled or failed build cannot
-    // leave a fingerprint that would skip a later rebuild of partial dist.
     removeFingerprintSidecar(distPath);
     if (options.runBuild) {
       options.runBuild();
@@ -134,7 +130,6 @@ function hashFileContents(entryPath) {
 
 function writeFingerprintSidecar(distPath, fingerprint) {
   if (fingerprint === null) {
-    // Unreadable source: leave nothing recorded so the next run rebuilds.
     return;
   }
   const sidecarPath = fingerprintSidecarPath(distPath);
@@ -158,14 +153,6 @@ function removeFingerprintSidecar(distPath) {
   }
 }
 
-// Cross-process lock so concurrent ensurePackageBuild calls for one package
-// trigger at most one build: the waiter re-checks freshness under the lock and
-// skips. A lock whose owning pid is dead, whose start identity no longer
-// matches, whose age exceeds the wait bound, or that a crash left ownerless
-// past its creation grace window is reclaimed by renaming the observed dir
-// aside — never by recursive-deleting a live lock path.
-// ponytail: on timeout we run the build without the lock — a duplicate build
-// beats a stuck workflow; per-package finer locking if waiting ever matters.
 function withBuildLock(repoRoot, pkgName, fn) {
   const lockRoot = path.join(repoRoot, "node_modules", ".cache", "remnic-build-locks");
   fs.mkdirSync(lockRoot, { recursive: true });
@@ -237,10 +224,6 @@ export function isLockHeldByLiveProcess(lockDir) {
   return isLockHeld(lockDir, readLockOwner(lockDir));
 }
 
-// Held means: an inspectable owner is alive, or an ownerless dir is still
-// inside its creation grace window, because a live creator may be between
-// mkdir and its owner write. Past that window an ownerless dir is a crashed
-// partial creation and is reclaimable like any stale lock.
 function isLockHeld(lockDir, owner) {
   if (owner == null) {
     return !isOwnerlessLockReclaimable(lockDir);
@@ -260,7 +243,6 @@ function isOwnerlessLockReclaimable(lockDir) {
   } catch {
     return false; // Dir vanished; the caller's retry loop handles it.
   }
-  // A future mtime (clock skew) counts as inside the grace window: fail safe.
   return Date.now() - mtimeMs > ownerlessGraceMs();
 }
 
@@ -313,9 +295,6 @@ export function quarantineLockIfOwnerMatches(lockDir, expected) {
   return true;
 }
 
-// A null expected identity means the dir must still be ownerless after the
-// rename: ownerlessness is the identity an ownerless reclaim verifies, so a
-// creator that completes its owner write mid-reclaim is detected and restored.
 function lockIdentityMatches(expected, actual) {
   if (expected == null) {
     return actual == null;
@@ -390,9 +369,6 @@ function readProcessStartTicks(pid) {
   }
 }
 
-// Release only the identity the handle owns. Quarantine first, occupy the
-// live path, then delete or restore the aside copy so a stale reclaimer
-// cannot install a new owner into a vacant path. Never rmSync the live path.
 export function releaseLockDir(handle, testHooks) {
   if (!handle || typeof handle.lockDir !== "string") {
     return;

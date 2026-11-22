@@ -22,8 +22,6 @@ export function parseStandupDate(raw: unknown, now = new Date()): string {
   }
   const value = String(raw);
   if (!isValidActivityDate(value)) {
-    // Typed so the HTTP surface maps it to 400 (EngramAccessInputError);
-    // subclasses Error, so the CLI still prints the message verbatim.
     throw new EngramAccessInputError(`invalid --date ${value}; expected YYYY-MM-DD`);
   }
   return value;
@@ -111,7 +109,6 @@ function readOptional(filePath: string): string | null {
   }
 }
 
-/** Drop a leading `--- … ---` frontmatter block so its fields never render. */
 function stripFrontmatter(body: string): string {
   const lines = body.split("\n");
   if (lines[0]?.trim() !== "---") return body;
@@ -148,7 +145,6 @@ function extractBlockers(body: string | null): string[] {
     .slice(0, 5);
 }
 
-// ── Activity grid (24 hour buckets, byte-stable) ────────────────────────────
 
 const GRID_GLYPHS = ["░", "▁", "▂", "▃", "▄", "█"] as const;
 
@@ -184,7 +180,6 @@ function renderGrid(yesterday: string, body: string | null): string {
   );
 }
 
-// ── Open commitments (deterministic facts scan) ─────────────────────────────
 
 interface OpenCommitment {
   id: string;
@@ -240,9 +235,6 @@ function readOpenCommitments(memoryDir: string): OpenCommitment[] {
 
 function sortCommitments(list: OpenCommitment[]): OpenCommitment[] {
   return [...list].sort((a, b) => {
-    // Due-ness first: a commitment with a concrete expiry outranks an
-    // undated one; earlier expiry is more due. Created, then id, as the
-    // stable tiebreak (§12).
     const aDated = a.expiresAt !== undefined ? 0 : 1;
     const bDated = b.expiresAt !== undefined ? 0 : 1;
     if (aDated !== bDated) return aDated - bDated;

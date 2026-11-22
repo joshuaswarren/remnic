@@ -1,30 +1,3 @@
-/**
- * Issue #1497 — Recall: scan all memory category directories when the QMD
- * filesystem fallback reads from disk.
- *
- * The filesystem fallback recall path (orchestrator `recent_scan`) calls
- * `StorageManager.readAllMemories()` per namespace, which scans the disk via
- * `collectActiveMemoryPaths()`. The old implementation only scanned four
- * directories (facts, procedures, reasoning-traces, corrections), so on-disk
- * memories in any other recall category directory (preferences, decisions,
- * moments, commitments, principles, rules, skills, relationships) were silently
- * missed when QMD was unavailable.
- *
- * These tests seed `.md` memory files directly into the on-disk category
- * directories (the way an external seed, a migration, or a future routing
- * change would leave them) and assert the disk-scan recall returns them.
- *
- * They FAIL on the old four-directory behavior and PASS once
- * `collectActiveMemoryPaths()` iterates the shared `RECALL_FALLBACK_DIRS`.
- *
- * PR #1503 review (chatgpt-codex-connector, cursor): `questions/` is NOT a
- * recall memory dir. It holds operational question-QUEUE items written by
- * `writeQuestion()` and surfaced only through the dedicated, disabled-by-default
- * `injectQuestions` pipeline stage. The QMD primary recall corpus excludes them,
- * so the fallback must exclude them too (corpus parity; CLAUDE.md rule #39).
- * `RECALL_FALLBACK_DIRS` = `ALL_CATEGORY_DIRS` minus `RECALL_NON_MEMORY_DIRS`
- * (currently just `questions`).
- */
 
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
@@ -39,7 +12,6 @@ import {
   RECALL_NON_MEMORY_DIRS,
 } from "./utils/category-dir.js";
 
-/** Build a minimal-but-valid memory markdown file body. */
 function memoryFile(id: string, category: string, content: string): string {
   const now = new Date().toISOString();
   return [
@@ -93,18 +65,12 @@ async function makeStorage(prefix = "engram-1497-"): Promise<{
   };
 }
 
-/**
- * Singular-category-key -> {dir} for every RECALL category dir the fallback
- * scan must cover. This is `ALL_CATEGORY_DIRS` minus `RECALL_NON_MEMORY_DIRS`
- * (the `questions/` queue dir is intentionally absent — see the file header).
- */
 const CATEGORY_CASES: ReadonlyArray<{ key: string; dir: string }> = [
   { key: "fact", dir: "facts" },
   ...Object.entries(CATEGORY_DIR_MAP).map(([key, dir]) => ({ key, dir })),
 ].filter(({ dir }) => !RECALL_NON_MEMORY_DIRS.has(dir));
 
 test("collectActiveMemoryPaths source-of-truth: every RECALL_FALLBACK_DIRS entry is covered", () => {
-  // Guards against the dir list drifting away from the shared source of truth.
   const expected = new Set(RECALL_FALLBACK_DIRS);
   const covered = new Set(CATEGORY_CASES.map((c) => c.dir));
   assert.deepEqual(
@@ -112,7 +78,6 @@ test("collectActiveMemoryPaths source-of-truth: every RECALL_FALLBACK_DIRS entry
     [...expected].sort(),
     "test cases must cover exactly RECALL_FALLBACK_DIRS",
   );
-  // questions/ must NOT be a recall fallback dir.
   assert.ok(
     !expected.has("questions"),
     "questions/ is a queue dir and must be excluded from recall fallback",
@@ -142,7 +107,6 @@ test("fallback disk recall returns a memory from EVERY category directory", asyn
           `got ids: ${[...foundIds].join(", ")}`,
       );
     }
-    // Exactly one per category directory — no over-counting / double scan.
     assert.equal(memories.length, CATEGORY_CASES.length);
   } finally {
     await cleanup();
@@ -186,7 +150,6 @@ test("missing category directories are ignored without throwing", async () => {
     const memories = await storage.readAllMemories();
     assert.deepEqual(memories, []);
 
-    // Now create exactly one non-legacy dir and confirm partial presence works.
     await seedMemory(baseDir, "rules", "only-rule", "rule", "Only a rule exists.");
     storage.invalidateAllMemoriesCacheForDir();
     const after = await storage.readAllMemories();
@@ -201,23 +164,19 @@ test("missing category directories are ignored without throwing", async () => {
 test("non-memory markdown in category dirs is ignored safely (no crash)", async () => {
   const { storage, baseDir, cleanup } = await makeStorage();
   try {
-    // A valid memory plus several garbage markdown files in category dirs.
     await seedMemory(baseDir, "skills", "good-skill", "skill", "A valid skill memory.");
 
     await mkdir(path.join(baseDir, "principles"), { recursive: true });
-    // No frontmatter at all.
     await writeFile(
       path.join(baseDir, "principles", "README.md"),
       "# Just a heading\n\nNo frontmatter here.\n",
       "utf-8",
     );
-    // Broken / truncated frontmatter.
     await writeFile(
       path.join(baseDir, "principles", "broken.md"),
       "---\nid: broken\n(no closing delimiter)\n",
       "utf-8",
     );
-    // Empty file.
     await writeFile(path.join(baseDir, "principles", "empty.md"), "", "utf-8");
 
     const memories = await storage.readAllMemories();
@@ -237,7 +196,6 @@ test("filesystem fallback is namespace-aware across more than one namespace", as
   const nsA = await makeStorage("engram-1497-nsA-");
   const nsB = await makeStorage("engram-1497-nsB-");
   try {
-    // Seed non-legacy category dirs in each namespace.
     await seedMemory(nsA.baseDir, "relationships", "rel-a", "relationship", "NS A relationship.");
     await seedMemory(nsA.baseDir, "commitments", "com-a", "commitment", "NS A commitment.");
     await seedMemory(nsB.baseDir, "moments", "mom-b", "moment", "NS B moment.");
@@ -247,7 +205,6 @@ test("filesystem fallback is namespace-aware across more than one namespace", as
 
     assert.ok(a.has("rel-a") && a.has("com-a"), "namespace A must surface its memories");
     assert.ok(b.has("mom-b"), "namespace B must surface its memories");
-    // No cross-namespace bleed.
     assert.ok(!a.has("mom-b"), "namespace A must not read namespace B");
     assert.ok(!b.has("rel-a") && !b.has("com-a"), "namespace B must not read namespace A");
   } finally {
@@ -263,10 +220,8 @@ test("non-category content dirs are deliberately EXCLUDED from fallback recall",
   // must NOT appear in readAllMemories() — they have dedicated read paths.
   const { storage, baseDir, cleanup } = await makeStorage();
   try {
-    // A real memory so the corpus is non-empty.
     await seedMemory(baseDir, "facts", "real-fact", "fact", "A genuine fact.");
 
-    // Drop markdown that *looks* like a memory into the excluded dirs.
     for (const excluded of ["entities", "state", "artifacts", "identity", "config"]) {
       await mkdir(path.join(baseDir, excluded), { recursive: true });
       await writeFile(
@@ -275,7 +230,6 @@ test("non-category content dirs are deliberately EXCLUDED from fallback recall",
         "utf-8",
       );
     }
-    // profile.md at the root is also excluded.
     await writeFile(
       path.join(baseDir, "profile.md"),
       memoryFile("excluded-profile", "fact", "Profile should not be recalled."),
@@ -313,7 +267,6 @@ test("question-queue items written by writeQuestion() do NOT leak into fallback 
   // RECALL_FALLBACK_DIRS fix.
   const { storage, baseDir, cleanup } = await makeStorage();
   try {
-    // A genuine recall memory so the corpus is non-empty.
     await seedMemory(baseDir, "facts", "real-fact", "fact", "A genuine fact.");
 
     // Real operational question-queue items (frontmatter { id, created,
@@ -321,12 +274,10 @@ test("question-queue items written by writeQuestion() do NOT leak into fallback 
     const qId1 = await storage.writeQuestion("What is the user's timezone?", "ctx1", 0.9);
     const qId2 = await storage.writeQuestion("Does the user prefer dark mode?", "ctx2", 0.5);
 
-    // Queue items remain readable via the dedicated queue surface.
     const queue = await storage.readQuestions();
     const queueIds = new Set(queue.map((q) => q.id));
     assert.ok(queueIds.has(qId1) && queueIds.has(qId2), "readQuestions() must still return the queue");
 
-    // ...but they must NOT appear in the recall corpus.
     storage.invalidateAllMemoriesCacheForDir();
     const memories = await storage.readAllMemories();
     const foundIds = new Set(memories.map((m) => m.frontmatter.id));
@@ -343,30 +294,6 @@ test("question-queue items written by writeQuestion() do NOT leak into fallback 
   }
 });
 
-/**
- * QMD-DISABLED config path.
- *
- * A full end-to-end orchestrator recall with QMD disabled requires a large
- * fixture (gateway API stubs, config, search-collection wiring) that the core
- * Node test runner does not bootstrap here. The orchestrator's QMD-unavailable
- * recall fallback (`recent_scan`) routes through
- * `readAllMemoriesForNamespaces(ns)` -> `StorageManager.readAllMemories()` ->
- * `collectActiveMemoryPaths()` (see orchestrator.ts readAllMemoriesForNamespaces
- * and the recent-memory-read step). We therefore exercise that exact collector
- * directly with a config object that explicitly disables QMD, proving the disk
- * scan a QMD-disabled deployment relies on returns every category.
- */
-/**
- * Symlink containment (same walker-hardening class as PR #1563 / issue #1546).
- *
- * `collectActiveMemoryPaths()` walks the RECALL_FALLBACK_DIRS category dirs for
- * the QMD-unavailable filesystem recall fallback. A category dir symlinked
- * outside `memoryDir` (e.g. `decisions/` -> an external directory) must NOT be
- * followed — otherwise out-of-store files leak into recall results. The walker
- * now `lstat`s each dir (skipping symlinks/non-dirs), realpaths it, and asserts
- * it stays inside the memory root; per entry it skips symlinks and asserts the
- * file resolves inside the root before including it.
- */
 test("category dir symlinked outside memoryDir does NOT leak files into fallback recall", async (t) => {
   if (process.platform === "win32") {
     t.skip("directory symlink setup is platform-specific");
@@ -378,16 +305,13 @@ test("category dir symlinked outside memoryDir does NOT leak files into fallback
   StorageManager.clearAllStaticCaches();
   storage.invalidateAllMemoriesCacheForDir();
   try {
-    // A genuine in-store memory that MUST still be recalled.
     await seedMemory(baseDir, "facts", "real-fact", "fact", "A genuine in-store fact.");
 
-    // An out-of-store memory reachable only via a symlinked category dir.
     await writeFile(
       path.join(outsideDir, "leaked.md"),
       memoryFile("leaked-secret", "decision", "Out-of-store file must never be recalled."),
       "utf-8",
     );
-    // `decisions/` is a RECALL_FALLBACK_DIRS category dir; point it outside the store.
     await symlink(outsideDir, path.join(baseDir, "decisions"), "dir");
 
     storage.invalidateAllMemoriesCacheForDir();
@@ -418,7 +342,6 @@ test("symlinked entry nested inside a category dir does NOT leak into fallback r
   StorageManager.clearAllStaticCaches();
   storage.invalidateAllMemoriesCacheForDir();
   try {
-    // A genuine in-store memory in the same category dir that holds the symlink.
     await seedMemory(baseDir, "facts", "real-fact", "fact", "A genuine in-store fact.");
 
     await writeFile(
@@ -426,7 +349,6 @@ test("symlinked entry nested inside a category dir does NOT leak into fallback r
       memoryFile("nested-leak", "fact", "Out-of-store nested file must never be recalled."),
       "utf-8",
     );
-    // A symlinked *entry* inside facts/ that escapes the store.
     await symlink(outsideDir, path.join(baseDir, "facts", "escape"), "dir");
 
     storage.invalidateAllMemoriesCacheForDir();
@@ -446,15 +368,6 @@ test("symlinked entry nested inside a category dir does NOT leak into fallback r
   }
 });
 
-/**
- * Regression for Cursor Bugbot "Poisoned md skips sibling subdirs".
- *
- * Per-entry containment/realpath failures must be isolated so they cannot drop
- * sibling `.md` files or, crucially, the nested-subdir recursion. This asserts
- * that a category dir which also contains a symlinked-out entry still recurses
- * into its real nested subdirectory and returns every in-store memory, while
- * the out-of-store target stays excluded.
- */
 test("a guarded/skipped sibling entry does NOT drop nested in-store memories", async (t) => {
   if (process.platform === "win32") {
     t.skip("directory symlink setup is platform-specific");
@@ -484,7 +397,6 @@ test("a guarded/skipped sibling entry does NOT drop nested in-store memories", a
       memoryFile("leaked-secret", "fact", "Out-of-store file must never be recalled."),
       "utf-8",
     );
-    // A symlinked-out sibling entry alongside the real files/subdir.
     await symlink(outsideDir, path.join(factsDir, "escape"), "dir");
 
     storage.invalidateAllMemoriesCacheForDir();
@@ -507,7 +419,6 @@ test("a guarded/skipped sibling entry does NOT drop nested in-store memories", a
 
 test("QMD-disabled deployment: disk-scan collector returns all categories", async () => {
   const baseDir = await mkdtemp(path.join(os.tmpdir(), "engram-1497-qmd-off-"));
-  // entitySchemas is the only other constructor arg; QMD is never constructed by
   // StorageManager — the fallback recall path is pure filesystem. This models a
   // deployment configured with `qmdEnabled: false` (no QMD process at all).
   const qmdDisabledConfig = { qmdEnabled: false } as const;

@@ -48,12 +48,10 @@ function fatal(msg) {
 }
 
 function sanitizeMessage(msg) {
-  // Strip paths and control characters from upstream Node errors so they do
   // not leak absolute filesystem paths or stack snippets into a JSON-RPC
   // error envelope the client sees.
   if (!isString(msg)) return "internal error";
   let s = msg.replace(/[\p{Cc}]/gu, " ");
-  // Replace absolute paths with a generic token (defense-in-depth).
   s = s.replace(/\s(?:file:|\/)[^\s'"]+/g, " <path> ");
   if (s.length > 200) s = `${s.slice(0, 200)}…`;
   return s;
@@ -63,10 +61,8 @@ function isLoopbackHostname(hostname) {
   if (!hostname) return false;
   const h = hostname.toLowerCase();
   if (h === "localhost") return true;
-  // Reject bracketed literal IPv6 like "[::1]" — strip brackets first.
   const bare = h.startsWith("[") && h.endsWith("]") ? h.slice(1, -1) : h;
   if (bare === "::1") return true;
-  // IPv4 dotted: check 127.0.0.0/8 range.
   if (/^127(?:\.\d{1,3}){3}$/.test(bare)) return true;
   // Defensive: anything that resolves through DNS that happens to be a
   // loopback name (rare) is allowed by the URL constructor only if literally
@@ -156,7 +152,6 @@ if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
 }
 const transport = parsed.protocol === "https:" ? https : http;
 
-// State: an in-flight count for graceful drain on stdin EOF.
 let inFlight = 0;
 let stdinEnded = false;
 let exiting = false;
@@ -185,7 +180,6 @@ process.stdin.on("end", () => {
     stdinTail = "";
     drain();
   }
-  // Drain in-flight forwards before exiting.
   tryExit();
 });
 
@@ -241,7 +235,6 @@ function handleLine(line) {
     writeError(null, -32700, `parse error: ${sanitizeMessage(err.message)}`);
     return;
   }
-  // Validate JSON-RPC shape: must be a non-null object with a string method.
   if (msg === null || Array.isArray(msg) || !(msg instanceof Object)) {
     writeError(null, -32600, "invalid request: not a JSON-RPC object");
     return;
@@ -250,7 +243,6 @@ function handleLine(line) {
     writeError(msg.id ?? null, -32600, "invalid request: missing or empty method");
     return;
   }
-  // Distinguish notification (no `id`) from request (has `id`).
   const isNotification = !Object.prototype.hasOwnProperty.call(msg, "id");
   inFlight += 1;
   forward(msg, isNotification).finally(() => {
@@ -425,7 +417,6 @@ function forward(msg, isNotification) {
         });
       }
     );
-    // One deadline for connect plus the full response. req.setTimeout() is an
     // idle timer: it does not arm until the socket connects and restarts on
     // every byte, so a daemon front that drops packets or trickles a reply
     // held the tool call open far past REQUEST_TIMEOUT_MS.
@@ -453,7 +444,6 @@ function tryExit() {
   if (exiting) return;
   if (!stdinEnded) return;
   if (inFlight > 0) {
-    // Wait for forwards to drain up to EXIT_DRAIN_TIMEOUT_MS, then exit anyway.
     // Guard against an unbounded wait via a one-shot timer.
     setTimeout(() => {
       exiting = true;

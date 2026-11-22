@@ -233,9 +233,7 @@ test("verifyAuth reduces foreign network failures to name + code", async () => {
   const { client } = makeClient([pathy, pathy, pathy, pathy]);
   const result = await client.verifyAuth();
   assert.equal(result.ok, false);
-  // The exhausted-retry OmiApiError message carries the scrubbed code…
   assert.match(result.detail ?? "", /ETIMEDOUT|Error/);
-  // …and never the raw path.
   assert.ok(!(result.detail ?? "").includes("/home/someone"));
 });
 

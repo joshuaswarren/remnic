@@ -21,7 +21,6 @@ import {
 } from "./import-dispatch.js";
 import type { DetectedBundleEntry } from "./import-bundle-detect.js";
 
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -191,7 +190,6 @@ describe("parseImportArgs", () => {
     assert.equal(parsed.file, "/tmp/okf-bundle");
   });
 
-  // Cursor bugbot on PR #583: boolean flags must not be consumed before
   // value flags, otherwise `--batch-size --dry-run 10` silently collapses
   // into `--batch-size 10` + `--dry-run`, violating rule 14.
   it("rejects --batch-size when the following token is another --flag", () => {
@@ -271,7 +269,6 @@ describe("runImportCommand — slice 1 integration", () => {
     assert.equal(result.memoriesPlanned, 3);
     assert.equal(result.memoriesWritten, 0);
     assert.equal(received.length, 0);
-    // Dry-run must NOT instantiate the real write target (Cursor review).
     assert.equal(
       getWriteTargetCalls.count,
       0,
@@ -342,7 +339,6 @@ describe("runImportCommand — slice 1 integration", () => {
         ),
       /optional @remnic\/import-chatgpt/,
     );
-    // Install-hint miss must happen before any write target is requested.
     assert.equal(writeTargetCalls, 0);
   });
 
@@ -385,12 +381,10 @@ describe("parseImportArgs tilde expansion", () => {
       "~/exports/chatgpt.json",
     ]);
     assert.ok(parsed.file);
-    // Expanded path must no longer begin with the tilde.
     assert.ok(
       !parsed.file!.startsWith("~/"),
       `expected ~ expansion, got: ${parsed.file}`,
     );
-    // Resolved to an absolute path somewhere under the user's home.
     assert.ok(parsed.file!.includes("/exports/chatgpt.json"));
   });
 
@@ -411,7 +405,6 @@ describe("parseImportArgs tilde expansion", () => {
 
 describe("cmdImport dispose contract", () => {
   it("install-hint miss does NOT invoke dispose (no target was materialized)", async () => {
-    // `cmdImport` sets process.exitCode when the adapter load fails (install
     // hint path). Snapshot and restore around the test so tsx's
     // exit-code reporting is not polluted.
     const savedExitCode = process.exitCode;
@@ -510,7 +503,6 @@ describe("parseImportBundleArgs", () => {
   });
 
   it("rejects --all-from-bundle without a directory argument", () => {
-    // `takeValue` throws the generic "--all-from-bundle requires a value"
     // before parseImportBundleArgs can produce the more specific message.
     // Either form satisfies CLAUDE.md rule 14 (no silent defaults).
     assert.throws(
@@ -593,7 +585,6 @@ describe("runBundleImportCommand", () => {
     );
     assert.equal(outcome.results.length, 2);
     assert.equal(outcome.failedCount, 0);
-    // Every entry invoked runImportCommand → one getWriteTarget per entry.
     assert.equal(getWriteTargetCalls.count, 2);
     assert.ok(
       stdoutLines.some((l) => l.includes("Detected 2 imports")),
@@ -621,7 +612,6 @@ describe("runBundleImportCommand", () => {
   });
 
   it("surfaces per-entry errors to stderr without aborting remaining entries", async () => {
-    // First entry will fail (adapter loader throws), second one succeeds.
     let callCount = 0;
     const goodAdapter = makeFakeAdapter([
       { content: "ok", sourceLabel: "claude" },
@@ -652,9 +642,7 @@ describe("runBundleImportCommand", () => {
         { adapter: "claude", filePath: "/bundle/projects.json" },
       ],
     );
-    // Only the good adapter's result is collected.
     assert.equal(outcome.results.length, 1);
-    // Failure count must reflect the one that threw — this is what
     // cmdImport uses to set a non-zero exit code for automation.
     assert.equal(outcome.failedCount, 1);
     assert.ok(

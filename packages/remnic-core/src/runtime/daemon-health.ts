@@ -16,9 +16,6 @@ export function checkDaemonHealth(
     if (!Number.isFinite(safePort) || safePort < 1 || safePort > 65535) return false;
 
     const bareHost = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-    // One 3 s aggregate budget: /engram/v1/live, and only a 404 (daemon older
-    // than the live route) retries the legacy diagnostic path with the
-    // remaining time. 401/503/other statuses are final answers, never re-probed.
     const script = [
       "const env = process['env'];",
       "const protocol = env.REMNIC_HEALTH_PROTOCOL;",

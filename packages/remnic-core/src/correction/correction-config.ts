@@ -1,13 +1,3 @@
-/**
- * Correction-contract config (issue #1580 plus classify timeout).
- *
- * Extracted from config.ts so the grandfathered parser file does not grow.
- * Nested `correction.<key>` wins over the flat `correction<Key>` legacy key.
- * Invalid values throw — they are never clamped or silently defaulted.
- *
- * Reads stay inline on `cfg` so the parsed-key extractor records the same
- * paths the plugin schema declares.
- */
 import { coerceBool, coerceNumber } from "../connectors/coerce.js";
 
 export const DEFAULT_CORRECTION_CLASSIFY_TIMEOUT_MS = 45_000;

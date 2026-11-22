@@ -402,8 +402,6 @@ test("offline sync defers a whole locally diverged shard generation, preserving 
   const localRoot = await tempDir("remnic-offline-embgen-local");
   const remoteRoot = await tempDir("remnic-offline-embgen-remote");
   try {
-    // Local: generation drifted since the shared base + a local-only shard
-    // + an unrelated namespace shard that must stay local-authoritative.
     await write(localRoot, "facts/a.md", "alpha");
     await write(localRoot, "state/embeddings/shard-0000.json", JSON.stringify({
       version: 1, provider: "openai", model: "local-drift", entries: {},
@@ -411,14 +409,11 @@ test("offline sync defers a whole locally diverged shard generation, preserving 
     await write(localRoot, "state/embeddings/shard-0050.json", "local only extra");
     await write(localRoot, "namespaces/team/state/embeddings/shard-0009.json", "team local");
 
-    // Remote generation: base-unchanged 0000 + new 0001.
     await write(remoteRoot, "facts/a.md", "alpha");
     await write(remoteRoot, "state/embeddings/shard-0000.json", JSON.stringify({
       version: 1, provider: "openai", model: "base", entries: {},
     }));
 
-    // The shared base is REQUIRED for the base-unchanged shortcut below
-    // (CodeRabbit round 4: supply the base so the branch is really tested).
     const baseSnapshot = await buildOfflineSyncSnapshot({
       root: remoteRoot,
       sourceId: "remote",
@@ -440,9 +435,6 @@ test("offline sync defers a whole locally diverged shard generation, preserving 
       baseFiles: baseSnapshot.files,
     });
 
-    // An unchanged remote base must not erase local indexing. Deferral is
-    // generation-wide: neither the incoming addition nor deletion of local
-    // extras may partially replace the preserved generation.
     assert.equal(JSON.parse(await readUtf8(localRoot, "state/embeddings/shard-0000.json")).model, "local-drift");
     assert.equal(await exists(localRoot, "state/embeddings/shard-0037.json"), false);
     assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0050.json"), "local only extra");
@@ -484,8 +476,6 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
     await write(root, "state/lcm.sqlite-shm", "live shm");
     await write(root, "state/lcm.sqlite-wal", "live wal");
 
-    // Push-side enumeration: node-local sqlite state is excluded by default
-    // so the local node does not broadcast its live sqlite WAL/SHM to peers.
     const snapshot = await buildOfflineSyncSnapshot({
       root,
       sourceId: "remote",
@@ -496,18 +486,13 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/lcm.sqlite-shm"), true);
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/lcm.sqlite-wal"), true);
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/last_qmd_recall.json"), true);
-    // Sharded embedding index files (#3146) are remote-authoritative like
-    // the legacy single-file index.
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/embeddings/shard-0003.json"), true);
     assert.equal(
       shouldPreferIncomingOfflineRuntimeFile("namespaces/team/state/embeddings/shard-0042.json"),
       true,
     );
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/embeddings/other.json"), false);
-    // Shard preference is scoped to the embedding index directory.
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/other/shard-0000.json"), false);
-    // Per-session buffer files are remote-authoritative like the legacy
-    // single state/buffer.json they replaced.
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/buffer/session-a.json"), true);
     assert.equal(
       shouldPreferIncomingOfflineRuntimeFile("namespaces/team/state/buffer/session-a.json"),
@@ -516,8 +501,6 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/buffer/notes.txt"), false);
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/buffer-other/session-a.json"), false);
 
-    // buildOfflineSyncSnapshotForPaths still rejects explicitly excluded
-    // paths so callers cannot bypass the default exclude via path lists.
     await assert.rejects(
       () =>
         buildOfflineSyncSnapshotForPaths({
@@ -529,9 +512,6 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
       /offline sync snapshot path is excluded/,
     );
 
-    // Apply-side: the remote is authoritative for lcm.sqlite and we must
-    // still accept the file content when an upstream snapshot includes it
-    // (e.g. first sync bootstrapping the LCM DB).
     const remoteSnapshot = {
       format: "remnic.offline-sync.snapshot.v1" as const,
       schemaVersion: 1 as const,
@@ -558,18 +538,12 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
       }],
     });
 
-    // Corrected apply contract (#1793 review): the apply-side view SEES the
-    // local sqlite (identical content -> no write, no conflict), the local
-    // sidecars survive (node-local guard: absence from a push-filtered
-    // snapshot is not a delete instruction), and nothing is deleted.
     assert.equal(pull.deleted, 0);
     assert.deepEqual(pull.conflicts, []);
     assert.equal(await readUtf8(root, "state/lcm.sqlite"), "live db");
     assert.equal(await readUtf8(root, "state/lcm.sqlite-shm"), "live shm");
     assert.equal(await readUtf8(root, "state/lcm.sqlite-wal"), "live wal");
 
-    // The apply-side acceptance is real, not vacuous: a node with NO local
-    // sqlite must bootstrap it from the incoming snapshot.
     const freshRoot = await tempDir("remnic-offline-lcm-sqlite-bootstrap");
     try {
       const bootstrap = await applyOfflineSyncSnapshot({
@@ -583,8 +557,6 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
       await rm(freshRoot, { recursive: true, force: true });
     }
 
-    // The push-side changeset excludes lcm.sqlite and friends so the
-    // local node never pushes the live sqlite state up.
     const changeset = await buildOfflineSyncChangeset({
       root,
       sourceId: "laptop",
@@ -638,9 +610,6 @@ test("offline sync apply never lets an incoming marker overwrite the local one",
     await write(root, "facts/a.md", "alpha");
     await write(root, "state/embeddings.generation", localMarker);
 
-    // A hostile or pre-exclusion remote snapshot carries the marker as an
-    // ordinary file; the pinned-`in-flight` payload would make every local
-    // stamp probe unique and force a full reload on every search.
     const hostile = "in-flight";
     const snapshot = {
       format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
@@ -672,8 +641,6 @@ test("offline sync apply never lets an incoming marker overwrite the local one",
     assert.equal(result.deleted, 0);
     assert.deepEqual(result.conflicts, [], "an incoming marker must be skipped node-local, not turned into a conflict");
 
-    // A stale base entry for the marker plus its absence from the incoming
-    // snapshot is NOT a delete instruction either.
     const staleBase = [{
       path: "state/embeddings.generation",
       sha256: createHash("sha256").update("stale").digest("hex"),
@@ -922,10 +889,7 @@ test("offline sync includes durable runtime state and excludes only transient sy
     await write(root, "state/memory-projection.sqlite-shm", "projection-shm");
     await write(root, "state/memory-projection.sqlite-wal", "projection-wal");
     await write(root, "state/recall_impressions.jsonl", "impressions");
-    // Rotated archive (issue #1910) must be excluded from the push snapshot
-    // while the active file stays remote-authoritative.
     await write(root, "state/recall_impressions.jsonl.1", "rotated-impressions");
-    // Node-local lifecycle coordination files must never cross offline sync.
     await write(root, "state/memory-lifecycle-ledger.jsonl.lock", "lock");
     await write(
       root,
@@ -942,11 +906,6 @@ test("offline sync includes durable runtime state and excludes only transient sy
       includeContent: true,
     });
 
-    // Issue #1786: default excludes drop state/*.sqlite*, state/index_tags.json,
-    // state/entity-mention-index.json, and state/memory-governance/runs/** from
-    // push-side enumeration. Durableremote-authoritative runtime files
-    // (last_intent.json, .artifact-write-version.log, etc.) and namespace
-    // state still ship so the remote can merge.
     assert.deepEqual(snapshot.files.map((file) => file.path), [
       "assets/state/fact-hashes.txt",
       "facts/a.md",
@@ -1014,11 +973,6 @@ test("offline sync includes durable runtime state and excludes only transient sy
       }],
     });
 
-    // 21 = the 13 durable local-only files plus the 8 node-local excluded
-    // artifacts (the 6 prior ones plus the lifecycle lock and pending spill
-    // file), which the corrected apply-side view (#1793 review) now SEES and
-    // deliberately leaves untouched (counted as skipped) instead of hiding
-    // from enumeration entirely.
     assert.equal(pull.skipped, 21);
     assert.equal(await readUtf8(root, "state/memory-lifecycle-ledger.jsonl"), "ledger");
   } finally {
@@ -1590,8 +1544,6 @@ test("offline sync reads bounded file content chunks with metadata", async () =>
     });
     assert.equal(factsFile.content.toString("utf-8"), "live db");
 
-    // Issue #1786: push-side default excludes state/lcm.sqlite; reading the
-    // chunk for an excluded path is rejected loudly.
     await assert.rejects(
       () =>
         readOfflineSyncFileContentChunk({
@@ -1976,12 +1928,6 @@ test("offline snapshot apply preserves new local runtime files without a base", 
 });
 
 test("offline snapshot apply leaves stale sqlite sidecars in place under push-side default exclude (#1786)", async () => {
-  // Issue #1786: lcm.sqlite-wal/shm are excluded from push-side enumeration
-  // because each node rebuilds its own live sqlite state. The remote never
-  // ships those sidecars, so apply cannot enumerate them as "current-only"
-  // and never issues a delete for them. The local WAL/SHM is naturally
-  // overwritten when the next lcm.sqlite reconciliation lands a fresh
-  // page and the WAL is checkpointed.
   const root = await tempDir("remnic-offline-runtime-sidecar-local-create");
   try {
     await write(root, "state/lcm.sqlite-wal", "stale local wal");
@@ -2002,14 +1948,9 @@ test("offline snapshot apply leaves stale sqlite sidecars in place under push-si
 
     assert.equal(pull.deleted, 0);
     assert.equal(pull.pendingLocal, 0);
-    // The corrected apply-side view (#1793 review) sees both sidecars and
-    // skips them via the node-local guard — visible-but-untouched, rather
-    // than invisible. deleted stays 0 either way.
     assert.equal(pull.skipped, 2);
     assert.equal(pull.conflicts.length, 0);
     assert.deepEqual(pull.nextBaseFiles, []);
-    // Local sidecars are still on disk because the remote never asserted
-    // them and the push-side default keeps them out of enumeration.
     assert.equal(await readUtf8(root, "state/lcm.sqlite-wal"), "stale local wal");
     assert.equal(await readUtf8(root, "state/lcm.sqlite-shm"), "stale local shm");
   } finally {
@@ -2488,8 +2429,6 @@ test("offline pull can record conflicts without hydrating oversized incoming con
   const remote = await tempDir("remnic-offline-metadata-conflict-remote");
   const local = await tempDir("remnic-offline-metadata-conflict-local");
   try {
-    // Issue #1786: live sqlite is excluded by push-side defaults, so use a
-    // regular facts path to exercise the metadata-only conflict path.
     await write(remote, "facts/big.bin", "base");
     const initial = await buildOfflineSyncSnapshot({
       root: remote,
@@ -2513,9 +2452,6 @@ test("offline pull can record conflicts without hydrating oversized incoming con
     const secondPull = await applyOfflineSyncSnapshot({
       root: local,
       snapshot: metadataOnly,
-      // Use the initial base so the apply path can detect both_modified
-      // (local edited from "base" -> "local edit", remote edited from
-      // "base" -> "remote edit").
       baseFiles: initial.files,
       allowMissingConflictContent: true,
       writeConflictCopies: false,
@@ -3357,9 +3293,7 @@ test("offline changeset validation reports client input errors with an offline s
 test("globToRegExp matches single-segment globs and rejects cross-segment or suffix matches (#1786)", () => {
   const re = globToRegExp("state/*.sqlite");
   assert.equal(re.test("state/lcm.sqlite"), true);
-  // Single `*` must stay in-segment: a nested file is NOT matched.
   assert.equal(re.test("state/nested/lcm.sqlite"), false);
-  // Anchored to full path: trailing variants like -wal are NOT matched.
   assert.equal(re.test("state/lcm.sqlite-wal"), false);
 });
 
@@ -3367,24 +3301,19 @@ test("globToRegExp matches sqlite sidecars via the state/*.sqlite-* pattern (#17
   const re = globToRegExp("state/*.sqlite-*");
   assert.equal(re.test("state/lcm.sqlite-wal"), true);
   assert.equal(re.test("state/lcm.sqlite-shm"), true);
-  // The bare database file is NOT matched by the sidecar pattern.
   assert.equal(re.test("state/lcm.sqlite"), false);
 });
 
 test("globToRegExp leading **/ matches zero or more directory segments (#1786)", () => {
   const re = globToRegExp("**/foo.md");
-  // Leading ** matches zero segments (file at the root).
   assert.equal(re.test("foo.md"), true);
-  // And any number of intermediate segments.
   assert.equal(re.test("a/b/foo.md"), true);
   assert.equal(re.test("a/b/c/d/foo.md"), true);
-  // No match for an unrelated path.
   assert.equal(re.test("bar.md"), false);
   assert.equal(re.test("a/b/bar.md"), false);
 });
 
 test("globToRegExp escapes regex metacharacters in literal glob segments (#1786)", () => {
-  // The literal `+` in the glob must NOT act as a regex quantifier.
   const re = globToRegExp("a+b.md");
   assert.equal(re.test("aab.md"), false);
   assert.equal(re.test("a+b.md"), true);
@@ -3396,14 +3325,11 @@ test("globToRegExp rejects empty input and strings containing NUL (#1786)", () =
 });
 
 test("globToRegExp treats ** as cross-segment in trailing and embedded positions (#1786 review)", () => {
-  // Trailing `dir/**` must exclude the whole subtree, matching the
-  // offline-mode guide's `scratch/**` example (Cursor review, PR #1793).
   const trailing = globToRegExp("scratch/**");
   assert.equal(trailing.test("scratch/a.md"), true);
   assert.equal(trailing.test("scratch/a/b.md"), true);
   assert.equal(trailing.test("scratch"), false);
   assert.equal(trailing.test("other/scratch/a.md"), false);
-  // Embedded `a/**/b` spans any depth (including zero extra segments).
   const embedded = globToRegExp("state/**/runs.json");
   assert.equal(embedded.test("state/runs.json"), true);
   assert.equal(embedded.test("state/a/runs.json"), true);
@@ -3450,9 +3376,6 @@ test("apply-side local enumeration sees node-local state via excludeNodeLocalSta
 });
 
 test("applyOfflineSyncChangeset accepts an incoming node-local state upsert without currentFiles (#1793 review)", async () => {
-  // Forces the internal buildOfflineSyncSnapshotForPaths local enumeration:
-  // with push-side excludes it would THROW "path is excluded" and fail the
-  // whole apply. Apply-side must stay permissive.
   const root = await tempDir("remnic-offline-apply-state-upsert");
   try {
     const content = Buffer.from("incoming durable sqlite", "utf-8");
@@ -3499,7 +3422,6 @@ test("buildOfflineSyncChangesetFromSnapshot honors excludePaths for 3-strikes sk
       baseFiles: [],
       excludePaths: ["facts/huge.md"],
     });
-    // The skipped file must not ride the inline changeset path.
     assert.deepEqual(changeset.changes.map((c) => c.path), ["facts/a.md"]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -3516,9 +3438,6 @@ test("buildOfflineSyncSnapshotForPaths deduplicates repeated request paths (#178
       paths: ["facts/a.md", "facts/a.md", "facts/a.md"],
       includeContent: false,
     });
-    // Duplicate entries in paths[] must yield exactly one record —
-    // the seen-set add was dropped in an earlier refactor (Cursor
-    // review, PR #1793) and produced duplicate file records.
     assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/a.md"]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -3549,11 +3468,7 @@ test("buildOfflineSyncSnapshot excludes all default #1786 push-side runtime stat
     });
 
     const paths = snapshot.files.map((file) => file.path);
-    // Only the source-of-truth fact ships; every default-excluded state
-    // artifact is gone from push-side enumeration.
     assert.deepEqual(paths, ["facts/a.md"]);
-    // And the excluded paths are individually absent — guard against
-    // accidentally re-introducing one of them via a future code path.
     for (const excluded of [
       "state/lcm.sqlite",
       "state/lcm.sqlite-wal",
@@ -3667,8 +3582,6 @@ test("applyOfflineSyncSnapshot consumes readIncomingFile for records without inl
     };
     const baseFiles = [baseEntry];
 
-    // (a) The callback supplies the verified incoming buffer; the record
-    // carries no contentBase64 at all.
     const applied = await applyOfflineSyncSnapshot({
       root,
       snapshot,
@@ -3680,8 +3593,6 @@ test("applyOfflineSyncSnapshot consumes readIncomingFile for records without inl
     assert.equal(applied.upserted, 1);
     assert.equal(await readUtf8(root, "facts/a.md"), newBody);
 
-    // (b) A callback buffer that does not match the declared digest is
-    // rejected BEFORE any publication; the published file is untouched.
     await write(root, "facts/a.md", oldBody);
     await assert.rejects(() =>
       applyOfflineSyncSnapshot({
@@ -3694,8 +3605,6 @@ test("applyOfflineSyncSnapshot consumes readIncomingFile for records without inl
     );
     assert.equal(await readUtf8(root, "facts/a.md"), oldBody);
 
-    // (c) null keeps the metadata-only behavior: an unchanged member whose
-    // local hash matches the incoming record needs no content.
     const unchangedSnapshot = {
       ...snapshot,
       files: [{ ...incoming, sha256: shaOf(oldBody), bytes: Buffer.byteLength(oldBody) }],
@@ -3838,9 +3747,6 @@ test("a transient snapshot omission must not emit a delete for a shared-base fil
       sourceId: "local",
       includeContent: false,
     });
-    // Live census fail-closes on digest ENOENT. A stale/incomplete currentFiles
-    // list is still possible from an older client cache — that path must not
-    // emit a confirmed delete when the file is back on disk.
     const incompleteFiles = base.files.filter((file) => file.path !== "facts/race.md");
     assert.deepEqual(
       incompleteFiles.map((file) => file.path),
@@ -3871,8 +3777,6 @@ test("apply must not overwrite a recreated local file omitted from the local cen
     const incoming = "incoming remote bytes";
     await write(root, "facts/race.md", recreated);
     const incomingSha = createHash("sha256").update(incoming).digest("hex");
-    // Local census omitted the recreated path (stale/racy currentFiles).
-    // Incoming is base-less, so the apply path would treat it as a pure create.
     const result = await applyOfflineSyncSnapshot({
       root,
       currentFiles: [],
@@ -3904,10 +3808,6 @@ test("apply must not overwrite a recreated local file omitted from the local cen
 });
 
 test("changeset apply must not overwrite a recreated local file omitted by controlled digest census", async () => {
-  // Public applyOfflineSyncChangeset builds local currentFiles via
-  // buildOfflineSyncSnapshotForPaths when currentFiles is omitted. A controlled
-  // digest that recreates local bytes then throws ENOENT must fail closed at
-  // the shared census boundary — never export confirmed absence and overwrite.
   const root = await tempDir("remnic-offline-changeset-uncertain-overwrite");
   try {
     const recreated = "recreated local bytes";
@@ -3918,7 +3818,6 @@ test("changeset apply must not overwrite a recreated local file omitted by contr
     await assert.rejects(
       () => applyOfflineSyncChangeset({
         root,
-        // No currentFiles: exercise the public snapshotForPaths census path.
         returnCurrentFiles: false,
         writeConflictCopies: false,
         readFileDigest: async ({ path: relPath, filePath }) => {
@@ -3965,9 +3864,6 @@ test("changeset apply must not overwrite a recreated local file omitted by contr
 });
 
 test("sender snapshot omission from digest race must not delete receiver shared-base file", async () => {
-  // Root premise: sender digest race must not export an apparently-complete
-  // snapshot that omits the path. Fail closed at the shared census boundary so
-  // no consumer can assign confirmed absence. Sender and receiver bytes stay.
   const senderRoot = await tempDir("remnic-offline-sender-uncertain-omit");
   const receiverRoot = await tempDir("remnic-offline-receiver-shared-base");
   try {
@@ -4043,7 +3939,6 @@ test("a file vanishing during the changeset upsert read keeps the retryable chan
         },
       }),
       (error: Error) => {
-        // The CLI retry loop matches this exact prefix to defer the path and rebuild the census.
         assert.equal(error.message, `offline sync file changed while building changeset: ${rel}`);
         return true;
       },
@@ -4092,7 +3987,6 @@ test("a tracked file under a directory replaced by an in-root symlink is a local
     const bytes = Buffer.from("tracked bytes\n");
     await mkdir(path.join(root, "elsewhere"), { recursive: true });
     await writeFile(path.join(root, "elsewhere", "tracked.md"), bytes);
-    // The census skips a symlinked directory, so facts/tracked.md is not in it.
     await symlink(path.join(root, "elsewhere"), path.join(root, "facts"));
     const baseFile = {
       path: rel,

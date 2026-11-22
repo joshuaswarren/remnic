@@ -67,9 +67,6 @@ import {
   hasCitationForTemplate,
   stripCitationForTemplate,
 } from "./source-attribution.js";
-// stripCitation (default-format only) is intentionally NOT used on the
-// legacy archive path — replaced by skip-with-warning (Finding 2 — Urgw).
-// stripCitationForTemplate IS used for pre-tagged dedup canonicalization.
 import { findUnresolvedEntityRefs } from "./reconstruct.js";
 import {
   mergeSearchQueryOptions,
@@ -172,8 +169,6 @@ import {
   type QueryAwarePrefilter,
   type RecallInvocationOptions,
 } from "./orchestration/orchestrator-helpers.js";
-// Issue #1526 seam 25: helpers moved to orchestration/orchestrator-helpers.ts and are
-// re-exported here so existing importers (coordinators, tests, root shims) keep working.
 export {
   BulkImportBatchPartialFailureError,
   COMPACTION_SIGNAL_MAX_AGE_MS,
@@ -513,9 +508,6 @@ import {
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { categoryDirName, RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
-// IRC preference consolidation — used by eval adapter directly;
-// orchestrator integration planned for future PR.
-// import { consolidatePreferences, buildQueryAwarePreferenceSection, synthesizePreferencesFromLcm } from "./compounding/preference-consolidator.js";
 import { TierMigrationExecutor } from "./tier-migration.js";
 import { decideTierTransition, type MemoryTier } from "./tier-routing.js";
 import {
@@ -571,27 +563,19 @@ import type {
   RecallTierExplain,
 } from "./types.js";
 
-// Issue #1526 seam 15: ExtractionRunResult moved to orchestration/extraction-run.ts.
 export type { ExtractionRunResult } from "./orchestration/extraction-run.js";
 
-// Issue #1526 seam 15: deriveTopicsFromExtraction moved to orchestration/extraction-run.ts.
 export { deriveTopicsFromExtraction } from "./orchestration/extraction-run.js";
 
 export class Orchestrator {
 
   readonly storage: StorageManager;
   private readonly storageRouter: NamespaceStorageRouter;
-  /** Rebuildable namespace catalog (issue #1499). Inert unless namespaces enabled. */
   readonly namespaceCatalog: NamespaceCatalog;
   private readonly namespaceStorageDirHints = new Map<string, Set<string>>();
   private namespaceStorageDirHintsLoaded = false;
   private readonly namespaceSearchRouter: NamespaceSearchRouter;
   qmd: SearchBackend;
-  /**
-   * Maintenance scheduler (issue #1526 PR1). Owns cron auto-registration,
-   * debounced QMD index maintenance, and consolidation scheduling. Job
-   * runners (consolidation/pattern-reinforcement/governance) stay here.
-   */
   readonly maintenanceScheduler: MaintenanceScheduler;
   private prioritizedEmbedding?: PrioritizedEmbeddingHandle;
   private readonly conversationQmd?: ConversationQmdRuntime;
@@ -608,17 +592,7 @@ export class Orchestrator {
   readonly localLlm: LocalLlmClient;
   readonly fastLlm: LocalLlmClient;
   private readonly judgeVerdictCache: Map<string, JudgeVerdict>;
-  /**
-   * Per-orchestrator defer-counter map (issue #562, PR 2). Tracks how many
-   * times the judge has returned `"defer"` for a given candidate content
-   * hash so the defer cap can be enforced.
-   */
   private readonly judgeDeferCounts: Map<string, number>;
-  /**
-   * Faithfulness gate distribution counters (issue #1576). Per-orchestrator
-   * running tally surfaced via console_state telemetry. No module-level state
-   * (rule 11) — these hang off the orchestrator instance.
-   */
   private faithfulnessCounters: FaithfulnessGateCounters = createFaithfulnessCounters();
   private readonly _fastGatewayLlm: FallbackLlmClient | null;
 
@@ -640,17 +614,7 @@ export class Orchestrator {
   readonly semanticConsolidationCoordinator: SemanticConsolidationCoordinator;
   readonly lifecyclePolicyCoordinator: LifecyclePolicyCoordinator;
   readonly entitySynthesisCoordinator: EntitySynthesisCoordinator;
-  /**
-   * In-memory X-ray snapshot from the most recent `recall()` call that
-   * was invoked with `xrayCapture: true` (issue #570 PR 1).  Scope is
-   * per-process; later slices add CLI/HTTP/MCP surfaces that consume
-   * this via the shared renderer.  `null` until the first capture, and
-   * NEVER overwritten by a recall that did not request capture —
-   * requests without the flag leave prior captures intact so the
-   * capturing caller can still read their snapshot back.
-   */
   private lastXraySnapshot: RecallXraySnapshot | null = null;
-  /** Per-instance ordering domain for every writer of `lastXraySnapshot`. */
   private readonly xrayCaptureQueue = new XrayCaptureQueue();
   readonly embeddingFallback: EmbeddingFallback;
   private readonly conversationIndexDir: string;
@@ -659,49 +623,16 @@ export class Orchestrator {
   readonly config: PluginConfig;
   readonly profiler: ProfilingCollector;
   private readonly threading: ThreadingManager;
-  /** v8.2: Per-namespace multi-graph memory indexes (entity/time/causal edges) */
   private readonly graphIndexes = new Map<string, GraphIndex>();
-  /** Per-namespace BoxBuilders, keyed by the namespace root directory path. */
   private readonly boxBuilders = new Map<string, BoxBuilder>();
-  /** Temporal Memory Tree builder — builds hour/day/week/persona summary nodes. */
   private readonly tmtBuilder: TmtBuilder;
-  /** Lossless Context Management engine — proactive session archive + DAG summarization. */
   readonly lcmEngine: LcmEngine | null = null;
   private readonly rerankCache = new RerankCache();
 
-  /**
-   * Per-session workspace selections keyed by sessionKey.
-   * Set by the before_prompt_build hook so recall() uses the correct
-   * agent workspace for BOOT.md injection. Cleared after each recall.
-   * Using a Map prevents concurrent sessions from overwriting each other.
-   */
   private _recallWorkspaceOverrides = new Map<string, string>();
-  /**
-   * Per-session coding-agent context (issue #569). Populated by connectors at
-   * session-start (PRs 5/6/7) via `setCodingContextForSession`. Used by both
-   * the recall path and the write path so that memory routing respects the
-   * project/branch scope a session is operating in (rule 42 — read + write
-   * through the same namespace layer).
-   */
   private _codingContextBySession = new Map<string, CodingContext>();
   private _codingContextOwnerBySession = new Map<string, string>();
-  /**
-   * Per-session peer ID registry (issue #679 PR 3/5).
-   * Set by connectors / hooks via `setPeerIdForSession` so `recallInternal`
-   * can inject the peer's profile into recall context when
-   * `peerProfileRecallEnabled` is true. Cleared when the session ends.
-   * Keyed by sessionKey so concurrent sessions don't clobber each other
-   * (rule 11 — scope globals per plugin ID / session).
-   */
   private _peerIdBySession = new Map<string, string>();
-  /**
-   * Defensive init for the session-binding maps (issue #1526 seam 28
-   * review). `Object.create(Orchestrator.prototype)` stubs in legacy
-   * tests skip class-field initializers, so the maps may be undefined on
-   * fakes; SessionContextCoordinator calls this before writing so the
-   * maps are created ON THE ORCHESTRATOR (or fake), never on the
-   * coordinator.
-   */
   ensureSessionBindingMaps(): void {
     this._codingContextBySession ??= new Map<string, CodingContext>();
     this._codingContextOwnerBySession ??= new Map<string, string>();
@@ -719,7 +650,6 @@ export class Orchestrator {
     }
   >();
 
-  // Batched access-tracking counts and timestamps (Phase 1A).
   private accessTrackingBuffer: Map<
     string,
     {
@@ -731,7 +661,6 @@ export class Orchestrator {
     }
   > = new Map();
 
-  // Passive correction capture (issue #1581) — dedup state + lazy service.
   private passiveCorrectionDedup: Set<string> = new Set();
   private _passiveCorrectionService: CorrectionService | null = null;
   private passiveCorrectionTelemetry: {
@@ -745,7 +674,6 @@ export class Orchestrator {
   private _dependencyPropagationRecovery: Promise<void> | null = null;
   private destroyed = false;
   private acceptingEntityMigrationMaintenance = true;
-  /** Aborted at the start of destroy(); stops every local-LLM client and extraction task at once. */
   private readonly shutdownController = new AbortController();
   readonly shutdownSignal: AbortSignal = this.shutdownController.signal;
 
@@ -770,17 +698,11 @@ export class Orchestrator {
   private _extractionRunCoordinator: ExtractionRunCoordinator | undefined;
   private _providerBreaker: ProviderCircuitBreaker | undefined;
 
-  /** One breaker per orchestrator: foreground and every isolated claim-backed
-   *  drain accumulate toward the same threshold and honor each other's open
-   *  state (review round — isolated coordinators must not reset
-   *  provider resilience). */
   private get providerBreaker(): ProviderCircuitBreaker {
     if (!this._providerBreaker) this._providerBreaker = new ProviderCircuitBreaker();
     return this._providerBreaker;
   }
 
-  /** The run-coordinator deps bundle, parameterized by its buffer accessor:
-   * an isolated claim-backed drain binds its own SmartBuffer (backlog scheduler). */
   private extractionRunDeps(getBuffer: () => SmartBuffer): ExtractionRunCoordinatorDeps {
     return {
       config: this.config,
@@ -807,7 +729,6 @@ export class Orchestrator {
     };
   }
 
-  /** Fast-tier client: low latency at all costs, thinking always suppressed. */
   private buildFastLlm(config: PluginConfig): LocalLlmClient {
     const client = new LocalLlmClient(
       {
@@ -830,10 +751,7 @@ export class Orchestrator {
     return this._extractionRunCoordinator;
   }
 
-  /** An extraction run coordinator bound to `buffer` — per drain task, so a
-   * claim-backed drain never shares the live buffer's mutable state. */
   extractionRunCoordinatorForBuffer(buffer: SmartBuffer): ExtractionRunCoordinator {
-    // Drains use their own engine and LLM lane, built on first use (COS-666).
     const getExtraction = (): ExtractionEngine => (this.drainExtraction ??= createDrainExtractionEngine(
       this.config, this.profiler, this.modelRegistry, this.shutdownSignal, this.fastChatCompletion.bind(this)));
     return new ExtractionRunCoordinator({ ...this.extractionRunDeps(() => buffer), getExtraction });
@@ -887,7 +805,6 @@ export class Orchestrator {
         hasContentHashDedup: (targetStorage, content) => this.hasContentHashDedup(targetStorage, content),
         backfillTemporalBoundsOnDedupHit: (targetStorage, dedupContent, bounds, entityRef, sourceConnector) =>
           this.backfillTemporalBoundsOnDedupHit(targetStorage, dedupContent, bounds, entityRef, sourceConnector),
-        // Removal-aware reconciling save serializes append vs removal (issue #1909).
         saveContentHashIndexes: () => this.saveContentHashIndexes(),
         artifactTypeForCategory: (category) => this.artifactTypeForCategory(category),
         loadRoutingRules: () => this.loadRoutingRules(),
@@ -912,15 +829,7 @@ export class Orchestrator {
     }
     return this._extractionPersistCoordinator;
   }
-  /**
-   * Issue #1526: recall result formatting + identity continuity section moved
-   * to RecallResultFormatter.
-   */
   readonly recallResultFormatter: RecallResultFormatter;
-  /**
-   * Issue #1526: conversation-index subsystem moved to
-   * ConversationIndexCoordinator.
-   */
   readonly conversationIndexCoordinator: ConversationIndexCoordinator;
   readonly recallRerankCoordinator: RecallRerankCoordinator;
   readonly recallSectionCoordinator: RecallSectionCoordinator;
@@ -937,12 +846,6 @@ export class Orchestrator {
   private wearablesAutoSyncHandle: { stop(): Promise<void> } | null = null;
   private lastQmdReprobeAtMs = 0;
   private lastFileHygieneRunAtMs = 0;
-  // Pattern-reinforcement cadence gate (issue #687 PR 2/4).  Tracks the
-  // last successful run so `runPatternReinforcement` can short-circuit
-  // when the configured cadence has not elapsed.  Keyed by namespace
-  // so MCP-triggered runs in tenant A don't suppress runs in tenant B
-  // (PR #730 review feedback, Codex P2).  The default-tenant path
-  // uses the empty-string key.
   private lastPatternReinforcementAtByNs = new Map<string, number>();
   private lastRecallFailureLogAtMs = 0;
   private lastRecallFailureAtMs = 0;
@@ -952,41 +855,15 @@ export class Orchestrator {
   private utilityRuntimeValues: UtilityRuntimeValues | null = null;
   private evalShadowWriteChain: Promise<void> = Promise.resolve();
 
-  // Pending fire-and-forget direct-answer tier annotations (#518).
   private directAnswerObservationChain: Promise<void> = Promise.resolve();
 
-  // Initialization gate: recall() awaits this before proceeding
   private initPromise: Promise<void> | null = null;
   private resolveInit: (() => void) | null = null;
 
-  /**
-   * Resolves when deferred initialization (warmup, caches, cron) completes.
-   * CLI and http-serve callers that need `qmd.isAvailable()` to reflect
-   * reality should `await orchestrator.deferredReady` after `initialize()`.
-   * The corpus-wide QMD update is deliberately NOT part of this gate (#3518):
-   * it runs after ready under the server retry loop, so `deferredReady` no
-   * longer implies a synced index. Gateway callers can ignore it — recall()
-   * degrades gracefully when QMD isn't ready yet.
-   *
-   * Also resolves (without error) when `initialize()` throws before reaching
-   * the deferred-init phase, so callers never hang on a permanently-pending
-   * promise.
-   *
-   * Host adapters that need to tie deferred init to their stop() lifecycle
-   * should `await orchestrator.deferredReady` before proceeding with teardown
-   * to prevent background QMD/warmup/cron tasks from racing with shutdown.
-   */
   deferredReady: Promise<void> = Promise.resolve();
   private resolveDeferredReady: (() => void) | null = null;
   private deferredInitAbort: AbortController | null = null;
 
-  /**
-   * Whether the startup corpus update completed successfully. The deferred
-   * init no longer runs it (#3518), so this stays false until the server
-   * retry loop's startupSearchSync() lands — including when
-   * `qmd.isAvailable()` is true, because availability only means the probe
-   * and collection ensure succeeded, not that the index is current.
-   */
   deferredSyncSucceeded = false;
 
   /**
@@ -1004,7 +881,6 @@ export class Orchestrator {
     await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
   }
 
-  /** Track a recall-side write so destroy() can wait for it before teardown. @internal */
   trackRecallBackgroundWrite(promise: Promise<void>, label: string): void {
     trackRecallWrite(this, promise, label);
   }
@@ -1014,7 +890,6 @@ export class Orchestrator {
    * commands should call it before returning to let Node exit naturally.
    */
   async destroy(): Promise<void> {
-    // First, always: every client and extraction task holds this signal.
     this.shutdownController.abort();
     this.acceptingEntityMigrationMaintenance = false;
     this._orchestratorInitCoordinator?.retireStartupEpoch();
@@ -1029,34 +904,25 @@ export class Orchestrator {
     await this.maintenanceScheduler.dispose();
     await this._dependencyPropagationRecovery;
     this._dependencyPropagationRecovery = null;
-    // Persist unsent turns BEFORE the extraction drain: buffered turns must
-    // already be on disk when shutdown abandons or bounds the drain's wait.
     let bufferFlushError: unknown;
     try {
       await this.buffer.flushPendingSave({ throwOnFailure: true });
     } catch (err) {
       bufferFlushError = err;
     }
-    // After the buffer flush: a long fact-hash warm-up must never delay
-    // persisting unsent turns (a kill during the wait would lose them).
     await this._orchestratorInitCoordinator?.drainStartupWarmups();
     const extractionDrainError = await drainExtractionAndShutdownDependencyPropagation(
       this.extractionQueueCoordinator,
       this._dependencyPropagationDelivery,
     );
-    // After the drain, never before: an extraction already in its persist
-    // stage reads dependencyPropagationDelivery, and this flag gates that
-    // getter ("orchestrator has been destroyed").
     this.destroyed = true;
     this._dependencyPropagationDelivery = undefined;
-    // Persist post-drain removals; a failed write stays pending for next boot.
     await this.buffer.flushPendingSave().catch(() => undefined);
     await drainRecallWrites(this);
     await this.persistenceIndexCoordinator
       .drainContentHashReconcileRetries()
       .catch((err) => log.warn(`content-hash reconcile drain failed during destroy: ${err}`));
     try {
-      // Flush catalog touches before backend disposal.
       await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
       this.prioritizedEmbedding?.dispose();
       await this.namespaceSearchRouter.dispose();
@@ -1080,11 +946,9 @@ export class Orchestrator {
     }
   }
 
-  /** Set per-session workspace for the next recall() call (compaction reset). @internal */
   setRecallWorkspaceOverride(sessionKey: string, dir: string): void {
     this._recallWorkspaceOverrides.set(sessionKey, dir);
   }
-  /** Remove a per-session workspace selection (cleanup on error or early return). @internal */
   clearRecallWorkspaceOverride(sessionKey: string): void {
     this._recallWorkspaceOverrides.delete(sessionKey);
   }
@@ -1202,9 +1066,6 @@ export class Orchestrator {
   );
 
   private configuredNamespaceList(): string[] {
-    // #1521: delegates to the scope-module resolver. The inline derivation is
-    // retired so the adHocNamespaceResolutions ratchet no longer counts this
-    // site.
     return getConfiguredNamespaces(this.config);
   }
 
@@ -1389,20 +1250,6 @@ export class Orchestrator {
   ): Promise<ContentHashIndex | null> {
     if (!resolveRecallAuxiliaryCapabilities(this.config).factDeduplication) return null;
 
-    // Round 12: share the StorageManager's corpus-AUTHORITATIVE fact-hash index
-    // (rebuilt from the .md corpus on first use per process) instead of loading a
-    // separate, possibly-stale fact-hashes.txt. This makes the orchestrator's
-    // dedup layer and StorageManager.hasFactContentHash() one coherent source:
-    // after a crash before the deferred batch save, the restart rebuild includes
-    // the durable fact, so hasContentHashDedup() sees it and persistExtraction
-    // does not re-create it. We still cache the reference so saveContentHashIndexes
-    // persists exactly the shared instance.
-    // PR #2016: use the shared (best-effort) accessor, not the throwing
-    // authoritative one — the shared instance must be available for registration
-    // add/remove even under lock contention (it reconciles to disk via the
-    // deferred retry). The dedup READ path (extraction-persist) gates a MISS on
-    // isFactContentHashAuthoritative() and confirms against the corpus, so a
-    // non-authoritative snapshot never causes a false dedup miss.
     const index = await targetStorage.getSharedFactHashIndex();
     if (targetStorage.dir === this.storage.dir) {
       this.contentHashIndex = index;
@@ -1449,10 +1296,6 @@ export class Orchestrator {
     dedupContent: string,
     bounds: {
       invalidAt?: string;
-      // #1707 thread 2 — per-fact start bound (valid_at). Carried so a
-      // re-extracted duplicate whose event time yields only a start bound
-      // ("since 2024", "yesterday", an absolute date) gets the corrected
-      // per-fact anchoring onto the existing copy.
       validFrom?: string;
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
@@ -1475,38 +1318,21 @@ export class Orchestrator {
 
   constructor(config: PluginConfig) {
     this.config = config;
-    // Thread the hot-memories cache escape hatch (issue #1902) to the storage
-    // layer BEFORE any StorageManager is constructed below, so every instance
-    // — including the ephemeral ones recall sub-stages build over the same dir
-    // — honors the operator's setting. Destructured (not `config.<flag>`) so
-    // this single access-layer read stays off the scattered-flag ratchet.
     const { hotMemoriesCacheEnabled, scopedCacheInvalidationEnabled } = config;
     StorageManager.setHotMemoriesCacheDefault(
       config.memoryDir,
       hotMemoriesCacheEnabled,
       config.hotMemoriesCacheTtlMs,
     );
-    // Register the #1904 scope-invalidation gate for this dir so every
-    // StorageManager over it (including ephemeral recall sub-stage instances)
-    // honors the operator's rollback lever.
     StorageManager.setScopedCacheInvalidationDefault(config.memoryDir, scopedCacheInvalidationEnabled);
-    // OKF conformance gate (issue #1946): child dirs (namespaces, cold roots) inherit via ancestor walk.
     StorageManager.setOkfConformanceDefault(config.memoryDir, config.okf?.conformanceEnabled);
     this.profiler = new ProfilingCollector({
       enabled: resolvePipelineProcessingCapabilities(this.config).profiling,
       storageDir: config.profilingStorageDir || path.join(config.memoryDir, "profiling"),
       maxTraces: config.profilingMaxTraces,
     });
-    // Namespace catalog (issue #1499): downstream, rebuildable metadata index.
-    // Inert unless namespacesEnabled is true. Storage resolution registers
-    // namespaces via the router's onResolve hook; the touch is best-effort and
-    // a catalog write failure never affects storage resolution.
     this.namespaceCatalog = new NamespaceCatalog(config);
     this.storageRouter = new NamespaceStorageRouter(config, {
-      // Return the registration promise (round 6, codex P2 — NEFoX) so the
-      // router's resolve-hook dedup only marks a namespace notified when the
-      // catalog actually APPENDED. A dropped append (rebuild-lock timeout) or a
-      // failure resolves to `false`/rejects, so the next `storageFor` retries.
       onResolve: (namespace, storageDir) => {
         this.rememberNamespaceStorageDirHint(namespace, storageDir);
         return this.namespaceCatalog.registerResolved(namespace, storageDir);
@@ -1517,22 +1343,14 @@ export class Orchestrator {
       this.storageRouter,
     );
     this.storage = new StorageManager(config.memoryDir, config.entitySchemas);
-    // Propagate the inline-attribution template so the storage layer can strip
-    // citations from legacy facts during the hash-index rebuild path.
     this.storage.citationTemplate = config.inlineSourceAttributionFormat;
     this.storage.citationTemplateHistory = config.inlineSourceAttributionFormatHistory;
-    // #1522: bind the post-write catalog touch at the storage chokepoint.
     if (config.defaultNamespace) this.storageRouter.bindCatalogWriteHook(this.storage, config.defaultNamespace);
-    // Wire page-level versioning (issue #371)
     this.storage.setVersioningConfig({
       enabled: resolveRecallAuxiliaryCapabilities(config).versioning,
       maxVersionsPerPage: config.versioningMaxPerPage,
       sidecarDir: config.versioningSidecarDir,
     });
-    // Wire the tombstone non-resurrection invariant (issue #1579) on the
-    // primary default-namespace storage. Router-created namespace storages
-    // get the same config via NamespaceStorageRouter.bindTombstonesConfig
-    // (installed below) so every write path funnels through the chokepoint.
     const { tombstonesEnabled, tombstonesSemanticMatch, tombstonesSemanticThreshold } = config;
     this.storage.setTombstonesConfig({
       enabled: tombstonesEnabled,
@@ -1545,13 +1363,7 @@ export class Orchestrator {
       semanticMatch: tombstonesSemanticMatch,
       semanticThreshold: tombstonesSemanticThreshold,
     });
-    // Wire at-rest encryption (issue #690 PR 3/4).
-    // If secureStoreEnabled, check whether the keyring already holds a key
-    // for this memory dir (e.g. operator unlocked before daemon restart).
     if (resolveRecallAuxiliaryCapabilities(config).secureStore) {
-      // Mark the store as required so writes throw SecureStoreLockedError
-      // instead of silently falling back to plaintext when locked (P1 finding
-      // from Cursor review of PR #767).
       this.storage.setSecureStoreRequired(true);
       const storeId = secureStoreDir(config.memoryDir);
       const existingKey = keyring.getKey(storeId);
@@ -1563,7 +1375,6 @@ export class Orchestrator {
       // and writes will throw SecureStoreLockedError via resolveWriteKey().
     }
     this.qmd = createSearchBackend(config);
-    // #2019: prioritized embedding for write-path searchability.
     const qmdCaps = resolveQmdCapabilities(config);
     if (qmdCaps.qmd && qmdCaps.qmdAutoEmbed) {
       this.prioritizedEmbedding = installPrioritizedEmbedding(
@@ -1582,9 +1393,7 @@ export class Orchestrator {
     const bindStorage = (storage: StorageManager, namespace: string) => {
       storage.onEntityMigrationComplete = () => {
         if (!this.acceptingEntityMigrationMaintenance) return false;
-        // Settles once a QMD pass covering this request ran; the migration keeps its pending marker until then.
         const served = this.maintenanceScheduler.requestQmdMaintenanceCompletion(namespace);
-        // Same side effects as before: projection rebuild and ledger-compaction checks, independent of QMD.
         this.requestQmdMaintenance();
         return served;
       };
@@ -1593,7 +1402,6 @@ export class Orchestrator {
     bindStorage(this.storage, this.config.defaultNamespace);
     this.storageRouter.onStorageCreated = bindStorage;
     this.storageRouter.forEachCachedStorage(bindStorage);
-    // Issue #1526: background extraction queue lives on its own coordinator.
     this.extractionQueueCoordinator = new ExtractionQueueCoordinator(config.extractionQueueConcurrency);
 
     this.recallResultFormatter = new RecallResultFormatter(this.config);
@@ -1675,12 +1483,6 @@ export class Orchestrator {
       getUtilityRuntimeValues: () => this.utilityRuntimeValues,
       getCompounding: () => this.compounding,
       createColdStorage: (parentDir) => {
-        // Register parentDir's gate AND TTL in the per-dir maps (issue #1902,
-        // Codex Medium) before constructing, mirroring the namespace-child fix.
-        // The constructor override only sets this manager's gate; its TTL is
-        // resolved via the per-dir map, so an unregistered cold root would fall
-        // back to the (first-writer) process-wide TTL and could inherit another
-        // orchestrator's value.
         StorageManager.setHotMemoriesCacheDefault(
           parentDir,
           config.hotMemoriesCacheEnabled,
@@ -1727,8 +1529,6 @@ export class Orchestrator {
     this.judgeVerdictCache = createVerdictCache();
     this.judgeDeferCounts = createDeferCountMap();
     this.localLlm = new LocalLlmClient(config, this.modelRegistry, this.shutdownSignal);
-    // Operator-controlled thinking suppression for structured-output ops;
-    // full rationale on THINKING_SUPPRESSED_OPERATIONS in local-llm.ts (issue #548).
     this.localLlm.disableThinking = config.localLlmDisableThinking;
     this.fastLlm = resolvePipelineProcessingCapabilities(this.config).localLlmFast
       ? this.buildFastLlm(config)
@@ -1742,7 +1542,6 @@ export class Orchestrator {
         this.removeContentHashForMemory(targetStorage, memory, context),
       saveContentHashIndexes: () => this.saveContentHashIndexes(),
     });
-    // Initialize gateway fast LLM for fast-tier ops when modelSource is "gateway"
     this._fastGatewayLlm = config.modelSource === "gateway"
       ? new FallbackLlmClient(
           config.gatewayConfig,
@@ -1769,17 +1568,14 @@ export class Orchestrator {
       path.join(config.memoryDir, "threads"),
       config.threadingGapMinutes,
     );
-    // BoxBuilders are created per-namespace on first use in runExtraction().
 
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(config);
-    // Temporal Memory Tree (v8.2) — lazy build during consolidation
     this.tmtBuilder = new TmtBuilder(config.memoryDir, {
       temporalMemoryTreeEnabled: lifecycleCaps.temporalMemoryTree,
       tmtHourlyMinMemories: config.tmtHourlyMinMemories,
       tmtSummaryMaxTokens: config.tmtSummaryMaxTokens,
     });
 
-    // Lossless Context Management (LCM) — proactive session archive + DAG summarization
     if (resolvePipelineProcessingCapabilities(this.config).lcm) {
       const summarizeFn = async (
         text: string,
@@ -1800,9 +1596,6 @@ export class Orchestrator {
             ? await this._fastGatewayLlm.chatCompletion(messages, {
                 maxTokens: maxCompletionTokens,
                 timeoutMs: this.config.localLlmFastTimeoutMs,
-                // LCM is latency-sensitive. A configured fast persona is the
-                // explicit fast-tier route; otherwise use taskModelChain so LCM
-                // avoids falling to an expensive gateway default. Issue #1473.
                 ...(this.config.fastGatewayAgentId
                   ? { agentId: this.config.fastGatewayAgentId }
                   : gatewayTaskChainOptions(this.config)),
@@ -1820,7 +1613,6 @@ export class Orchestrator {
       this.lcmEngine = new LcmEngine(config, summarizeFn);
     }
 
-    // Create init gate — recall() will await this before proceeding
     this.initPromise = new Promise<void>((resolve) => {
       this.resolveInit = resolve;
     });
@@ -1831,7 +1623,6 @@ export class Orchestrator {
     // since initialize() unconditionally overwrites it.
   }
 
-  /** Get or create a BoxBuilder for the given namespace storage root (namespace-isolated). */
   private boxBuilderFor(storage: StorageManager): BoxBuilder {
     const dir = storage.dir;
     if (!this.boxBuilders.has(dir)) {
@@ -1953,7 +1744,6 @@ export class Orchestrator {
     );
   }
 
-  /** Execute a fast-tier completion through the gateway when configured, otherwise the local fast LLM. */
   private async fastChatCompletion(
     messages: Array<{ role: string; content: string }>,
     options: Parameters<RevalidationFastChatCompletion>[1],
@@ -1974,11 +1764,6 @@ export class Orchestrator {
     return result ? { content: result.content } : null;
   }
 
-  /**
-   * Get a fast-tier LLM client compatible with the rerank interface.
-   * When gateway model source is active, routes through the gateway fast chain.
-   * Otherwise returns the local fast LLM directly.
-   */
   get fastLlmForRerank(): {
     chatCompletion: (
       messages: Array<{ role: string; content: string }>,
@@ -2003,8 +1788,6 @@ export class Orchestrator {
   /** Briefing follow-up generator over the configured LLM chain, or
    * `undefined` when no chain is available (see buildBriefing). */
   get briefingChainFollowupGenerator(): BriefingFollowupGenerator | undefined {
-    // Plugin mode gates on `localLlmEnabled` alone: chatCompletion returns
-    // null when the master switch is off (Cursor review on PR #1463).
     const chainAvailable =
       this.config.modelSource === "gateway"
         ? this._fastGatewayLlm?.isAvailable(
@@ -2240,10 +2023,6 @@ export class Orchestrator {
     );
   }
 
-  // Issue #1526 (seam 5): semantic consolidation moved to
-  // SemanticConsolidationCoordinator. Thin delegation keeps all
-  // call sites (runConsolidation, runSemanticConsolidationNow,
-  // runSemanticConsolidationFanout) stable.
   private async runSemanticConsolidation(options?: {
     dryRun?: boolean;
     thresholdOverride?: number;
@@ -2254,7 +2033,6 @@ export class Orchestrator {
   }
 
   async waitForExtractionIdle(timeoutMs: number = 60_000): Promise<boolean> {
-    // Issue #1526: queue state + idle wait moved to ExtractionQueueCoordinator.
     return this.extractionQueueCoordinator.waitForIdle(timeoutMs);
   }
 
@@ -2288,10 +2066,6 @@ export class Orchestrator {
     );
   }
 
-  /**
-   * Auto-gather today's facts and hourly summaries from storage, then generate a day summary.
-   * Returns null if no facts are found for today.
-   */
   async generateDaySummaryAuto(
     namespace?: string,
     options: DaySummaryGatherOptions = {},
@@ -2389,10 +2163,6 @@ export class Orchestrator {
     options: RecallInvocationOptions = {},
   ): Promise<string> {
     if (options.xrayCapture === true) {
-      // Preserve the legacy string-returning surface and its soft-abort
-      // behavior while still placing every X-ray writer in the same ordering
-      // domain. In particular, a pre-aborted legacy recall continues to
-      // resolve with an empty string rather than rejecting.
       const { result } = await this.runRecallWithXrayCapture(prompt, sessionKey, options);
       return result;
     }
@@ -2620,7 +2390,6 @@ export class Orchestrator {
       queryAwarePrefilter?: QueryAwarePrefilter;
       searchOptions?: SearchQueryOptions;
       onDebugSnapshot?: (snapshot: QmdRecallSnapshot) => Promise<void>;
-      /** Backend degradation observer, threaded into every QMD call (#1536). */
       onDegradation?: (degradation: SearchDegradation) => void;
       abortSignal?: AbortSignal;
     },
@@ -2633,9 +2402,6 @@ export class Orchestrator {
     );
   }
 
-  // Issue #1526 (seam 14): graph-recall expansion moved to
-  // GraphRecallCoordinator. Keep this public seam so callers and tests can
-  // override graph expansion on the orchestrator instance.
   async expandResultsViaGraph(
     options: GraphRecallExpansionOptions,
   ): Promise<GraphRecallExpansionResult> {
@@ -2709,9 +2475,6 @@ export class Orchestrator {
     }));
   }
 
-  // Issue #1526 (seam 13): recall section budgeting/assembly moved to
-  // RecallSectionCoordinator. Thin delegation keeps the orchestrator's
-  // recallInternal call sites stable.
   private getRecallSectionEntry(
     sectionId: string,
   ): RecallSectionConfig | undefined {
@@ -2799,24 +2562,10 @@ export class Orchestrator {
     );
   }
 
-  /**
-   * Clock source for the shared post-retrieval assembly/enrichment budget. The
-   * deadline is set from this value and every expiry check reads it back, so a
-   * test can drive the budget deterministically instead of racing the few-ms
-   * wall-clock window that made the "skips … after budget expires" tests flaky.
-   * Production behavior is unchanged — it returns the wall clock.
-   */
   protected recallAssemblyClockMs(): number {
     return Date.now();
   }
 
-  /**
-   * Recall-internal coordinator (issue #1526 seam 18). Owns the full
-   * `recallInternal` assembly pipeline. Lazy: created on first access so
-   * Object.create(prototype) tests that set fields post-construction work,
-   * and so subclass/test overrides of orchestrator members (e.g. the
-   * `recallAssemblyClockMs` clock seam) are observed live via accessors.
-   */
   private _recallInternalCoordinator: RecallInternalCoordinator | undefined;
 
   private get recallInternalCoordinator(): RecallInternalCoordinator {
@@ -2828,12 +2577,6 @@ export class Orchestrator {
     return this._recallInternalCoordinator;
   }
 
-  /**
-   * Recall search-pipeline coordinator (issue #1526 seam 19). Owns QMD
-   * search post-processing (prefilter, fallbacks, safety filter, boost).
-   * Lazy + accessor-wired for the same reasons as seam 18: instance-level
-   * test overrides of orchestrator members must stay live.
-   */
   private _recallSearchPipelineCoordinator: RecallSearchPipelineCoordinator | undefined;
 
   private get recallSearchPipelineCoordinator(): RecallSearchPipelineCoordinator {
@@ -2845,11 +2588,6 @@ export class Orchestrator {
     return this._recallSearchPipelineCoordinator;
   }
 
-  /**
-   * Turn-ingestion coordinator (issue #1526 seam 20). Owns the buffer-side
-   * extraction entry points. Lazy + accessor-wired so prototype-call tests
-   * and instance-level stubs stay live (same rule as seams 18/19).
-   */
   private _turnIngestionCoordinator: TurnIngestionCoordinator | undefined;
 
   private get turnIngestionCoordinator(): TurnIngestionCoordinator {
@@ -2861,11 +2599,6 @@ export class Orchestrator {
     return this._turnIngestionCoordinator;
   }
 
-  /**
-   * Recall-introspection coordinator (issue #1526 seam 21). Owns the
-   * last-recall snapshot/explain surfaces and direct-answer annotation.
-   * Lazy + accessor-wired (late-binding rule, seams 18–20).
-   */
   private _recallIntrospectionCoordinator: RecallIntrospectionCoordinator | undefined;
 
   get recallIntrospection(): RecallIntrospectionCoordinator {
@@ -2877,12 +2610,6 @@ export class Orchestrator {
     return this._recallIntrospectionCoordinator;
   }
 
-  /**
-   * Orchestrator-init coordinator (issue #1526 seam 22). Owns
-   * initialize/deferredInitialize/startupSearchSync. Lazy + accessor-wired
-   * (late-binding rule, seams 18–21); the init gate fields stay on the
-   * orchestrator and are mutated through set accessors.
-   */
   private _orchestratorInitCoordinator: OrchestratorInitCoordinator | undefined;
 
   private get orchestratorInitCoordinator(): OrchestratorInitCoordinator {
@@ -2894,11 +2621,6 @@ export class Orchestrator {
     return this._orchestratorInitCoordinator;
   }
 
-  /**
-   * Persistence-index coordinator (issue #1526 seam 23). Owns post-persist
-   * bookkeeping (content-hash dedup, temporal indexes, graph edges,
-   * semantic dedup lookup). Lazy + accessor-wired (late-binding rule).
-   */
   private _persistenceIndexCoordinator: PersistenceIndexCoordinator | undefined;
 
   private get persistenceIndexCoordinator(): PersistenceIndexCoordinator {
@@ -2910,11 +2632,6 @@ export class Orchestrator {
     return this._persistenceIndexCoordinator;
   }
 
-  /**
-   * Workspace-ops coordinator (issue #1526 seam 24). Owns periodic
-   * workspace/operations surfaces. Lazy + accessor-wired (late-binding
-   * rule, seams 18–23).
-   */
   private _workspaceOpsCoordinator: WorkspaceOpsCoordinator | undefined;
 
   private get workspaceOpsCoordinator(): WorkspaceOpsCoordinator {
@@ -2926,11 +2643,6 @@ export class Orchestrator {
     return this._workspaceOpsCoordinator;
   }
 
-  /**
-   * Namespace read-fanout coordinator (issue #1526 seam 26). Owns
-   * namespace-scoped read fanout (hints, cross-namespace search/reads,
-   * artifact statuses). Lazy + accessor-wired (late-binding rule).
-   */
   private _namespaceReadFanoutCoordinator: NamespaceReadFanoutCoordinator | undefined;
 
   private get namespaceReadFanoutCoordinator(): NamespaceReadFanoutCoordinator {
@@ -2942,7 +2654,6 @@ export class Orchestrator {
     return this._namespaceReadFanoutCoordinator;
   }
 
-  /** RecallEntryCoordinator (issue #1526 seam 28). Lazy; selfDeps live wiring. */
   private _recallEntryCoordinator: RecallEntryCoordinator | undefined;
 
   private get recallEntryCoordinator(): RecallEntryCoordinator {
@@ -2954,15 +2665,8 @@ export class Orchestrator {
     return this._recallEntryCoordinator;
   }
 
-  /** SessionContextCoordinator (issue #1526 seam 28). Lazy; selfDeps live wiring. */
   private _sessionContextCoordinator: SessionContextCoordinator | undefined;
 
-  /**
-   * Self-handle read through the selfDeps proxy (seam 28): coordinators
-   * that construct services against the orchestrator instance (e.g. the
-   * passive-correction CorrectionService) receive it via deps instead of
-   * capturing the coordinator's own `this`.
-   */
   get orchestratorSelf(): Orchestrator {
     return this;
   }
@@ -3008,7 +2712,6 @@ export class Orchestrator {
     );
   }
 
-  /** Run `task` with the buffer backed by `storage` (the drain claims). */
   async withBufferStorage<T>(storage: BufferStorage, task: () => Promise<T>): Promise<T> {
     return withBufferStorage(this, storage, task);
   }
@@ -3102,11 +2805,6 @@ export class Orchestrator {
       preemptable?: boolean;
       preemptRunning?: boolean;
       writeNamespaceOverride?: string;
-      /**
-       * Pin the provenance principal (#1495 thread 1). Forwarded to
-       * `runExtraction` so access `observe` can record provenance under the
-       * authenticated principal instead of `resolvePrincipal(sessionKey)`.
-       */
       principalOverride?: string;
       scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
     } = {},
@@ -3126,8 +2824,6 @@ export class Orchestrator {
    * drained in fitting chunks instead of failing whole.
    */
   private extractionWindowBudgetChars(): number {
-    // Object.create(Orchestrator.prototype) test doubles skip the constructor,
-    // so neither modelRegistry nor config exists there: report "no budget".
     if (!this.modelRegistry) return Number.POSITIVE_INFINITY;
     return extractionWindowBudgetChars({
       registry: this.modelRegistry,
@@ -3184,8 +2880,6 @@ export class Orchestrator {
     return this.extractionRunCoordinator.runExtraction(...args);
   }
 
-  /** Live extraction resilience snapshot (provider circuit breaker + per-
-   *  fingerprint backoff population) for status/doctor surfaces. */
   getExtractionResilienceStatus(): ExtractionResilienceStatus {
     return this.extractionRunCoordinator.getExtractionResilienceStatus();
   }
@@ -3223,10 +2917,6 @@ export class Orchestrator {
     this.maintenanceScheduler.requestQmdMaintenanceForTool("__internal__");
   }
 
-  /**
-   * Public entrypoint for tool-driven QMD maintenance requests.
-   * Delegates to the maintenance scheduler (issue #1526 PR1).
-   */
   requestQmdMaintenanceForTool(reason: string): void {
     this.maintenanceScheduler.requestQmdMaintenanceForTool(reason);
   }
@@ -3254,11 +2944,6 @@ export class Orchestrator {
       lifecycleCaps,
     );
   }
-  /**
-   * Append persisted ids to the thread episode set, excluding pending_review
-   * fact ids (#1635) so they don't re-seed predecessor edges. Fail-open like
-   * the raw appendEpisodeIds call it replaces.
-   */
   private async appendPersistedThreadEpisodes(
     threadId: string,
     persistedIds: string[],
@@ -3289,7 +2974,6 @@ export class Orchestrator {
     );
   }
 
-  /** Delegation wrapper so the persist wiring and root-test stubs route through `this` (#2813 CI-0). */
   private async buildGraphEdge(
     storage: StorageManager,
     memoryRelPath: string,
@@ -3325,7 +3009,6 @@ export class Orchestrator {
     );
   }
 
-  /** IDs of facts persisted in the last extraction */
   private lastPersistedIds: string[] = [];
 
   private async runConsolidation(): Promise<{
@@ -3336,17 +3019,12 @@ export class Orchestrator {
     return this.consolidationRunCoordinator.run();
   }
 
-  // Issue #1526 (seam 4): compression-guideline learning moved to
-  // CompressionGuidelineCoordinator. Public forwarding delegates were
-  // removed; callers use the coordinator directly. This private helper
-  // forwards recall-section formatting to the coordinator.
   private async buildCompressionGuidelineRecallSection(): Promise<string | null> {
     return this.compressionGuidelineCoordinator.buildCompressionGuidelineRecallSection();
   }
 
   async runLifecyclePolicyNow(storage: StorageManager = this.storage): Promise<{ memoriesAssessed: number }> {
     const lifecycleCorpus = await storage.readAllMemories();
-    // Record the catalog write when the pass rewrote any frontmatter (codex NR-tS).
     if ((await this.runLifecyclePolicyPass(lifecycleCorpus, storage)) > 0) {
     }
     return { memoriesAssessed: lifecycleCorpus.length };
@@ -3369,8 +3047,6 @@ export class Orchestrator {
     return this.workspaceOpsCoordinator.autoConsolidateIdentity();
   }
 
-  // Issue #1526: recall result formatting moved to RecallResultFormatter. Thin
-  // delegation keeps the private API stable for callers + tests.
   private formatQmdResults(
     title: string,
     results: QmdSearchResult[],
@@ -3509,8 +3185,6 @@ export class Orchestrator {
     return this.qmdResultResolver.storageForAbsoluteQmdResultPath(resultPath, fallbackStorage, recallNamespaces);
   }
 
-  // Issue #1526: recall-rerank methods moved to RecallRerankCoordinator.
-  // Thin delegation keeps the private API stable for callers + tests.
   private async applyMemoryWorthRerank(
     results: QmdSearchResult[],
     namespaces: string[],
@@ -3661,13 +3335,7 @@ export class Orchestrator {
   }
 
   // ---------------------------------------------------------------------------
-  // Access Tracking (Phase 1A)
-  // ---------------------------------------------------------------------------
 
-  /**
-   * Record that memories were accessed (retrieved).
-   * Updates are batched in memory and flushed during consolidation.
-   */
   trackMemoryAccess(
     memoryIds: string[],
     memoryPaths: string[] = [],
@@ -3789,7 +3457,6 @@ export class Orchestrator {
     await this.relevance.record(memoryId, vote, note);
   }
 
-  // Negative Examples (v2.2)
   async recordNotUsefulMemories(
     memoryIds: string[],
     note?: string,
@@ -3853,10 +3520,6 @@ export class Orchestrator {
     return resolved;
   }
 
-  /**
-   * Check if a new memory contradicts an existing one.
-   * Uses QMD to find similar memories, then LLM to verify contradiction.
-   */
   private async checkForContradiction(
     content: string,
     category: string,
@@ -3881,14 +3544,6 @@ export class Orchestrator {
     );
   }
 
-  /**
-   * #1645: Complete the deferred contradiction auto-resolve after writeMemory
-   * returns and the new write's tombstone status is known. Retires the old
-   * memory + deindexes it ONLY when the new write is genuinely active (not
-   * tombstone-blocked / pending_review). A blocked write must not retire the
-   * only active copy — deferring here closes the "contradictionAutoResolve
-   * supersedes before tombstone status is known" defect class.
-   */
   private async applyDeferredContradictionResolve(
     contradiction: {
       supersededId: string;
@@ -3910,12 +3565,8 @@ export class Orchestrator {
   }
 
   // ---------------------------------------------------------------------------
-  // Memory Linking (Phase 3A)
   // ---------------------------------------------------------------------------
 
-  /**
-   * Suggest links for a new memory based on similar existing memories.
-   */
   private async suggestLinksForMemory(
     content: string,
     category: string,
@@ -3940,24 +3591,8 @@ export class Orchestrator {
     );
   }
 
-  // #1522: catalog touch methods removed — touches now happen at the storage chokepoint.
 
-  /**
-   * Public best-effort catalog write touch (issue #1499). User-facing explicit
-   * captures (`memory_store`) and review-queue approvals persist via
-   * `persistExplicitCapture()` → `storage.writeMemory()`, which bypasses the
-   * extraction write path that owns the catalog touch. Without this their
-   * namespaces never record `lastWriteAt`, so the catalog under-reports write
-   * recency (round 5, codex P2). Fire-and-forget and failure-tolerant — a
-   * catalog error must never affect the explicit write (gotcha #13, rule #40).
-   *
-   * An undefined/empty `namespace` means the write targeted the DEFAULT namespace
-   * (`getStorage(undefined)` routes there), so we record it under the configured
-   * default rather than skipping it (round 6, codex P2 — default `memory_store`
-   * and inline-note writes were missing from `writtenSince`/maintenance).
-   */
 
-  // markCatalogRead removed — use storageRouter.recordRead() instead (#1522).
 
   private async readAllMemoriesForNamespaces(
     namespaces: string[],

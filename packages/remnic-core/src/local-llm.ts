@@ -38,7 +38,6 @@ import {
 
 export type { LocalLlmType } from "./local-llm-servers.js";
 
-/** Trim trailing slash characters without backtracking regex. */
 function trimTrailingSlashes(s: string): string {
   let end = s.length;
   while (end > 0 && s[end - 1] === "/") end--;
@@ -118,18 +117,6 @@ function isLmStudioNativeModelsResponse(value: unknown): boolean {
   return isLmStudioApiV1ModelsResponse(value) || isLmStudioApiV0ModelsResponse(value);
 }
 
-/**
- * Backends known to honor `chat_template_kwargs: { enable_thinking: false }`
- * on OpenAI-compatible `/v1/chat/completions`.  LM Studio, vLLM, and
- * llama.cpp forward this field to the jinja chat template, where thinking-capable
- * models (Qwen 3.5, Gemma 4, DeepSeek) suppress reasoning tokens.
- *
- * Strict OpenAI-compatible backends (standard OpenAI, Azure OpenAI, some
- * proxies) reject unknown request fields with 400 — which trips the
- * `localLlm400*` cooldown path.  `LocalLlmClient` therefore only injects
- * the kwarg when the detected backend is in this set; unknown / `generic`
- * / `ollama` / `mlx` fail open (no injection, no 400 risk).  Issue #548.
- */
 const THINKING_COMPATIBLE_BACKENDS: ReadonlySet<LocalLlmType> = new Set([
   "lmstudio",
   "vllm",
@@ -160,8 +147,6 @@ export interface LocalModelInfo {
 
 export type LocalLlmRequestPriority = "recall-critical" | "background";
 
-// LocalLlmChatCompletionOptions and LocalLlmChatCompletionResult live in
-// local-llm-helpers.ts so this file stays under its size ceiling (#1995).
 interface LocalLlmQueuedRequest {
   messages: Array<{ role: string; content: string }>;
   options: LocalLlmChatCompletionOptions;
@@ -170,13 +155,6 @@ interface LocalLlmQueuedRequest {
   resolve: (value: LocalLlmChatCompletionResult | null) => void;
 }
 
-/**
- * Local LLM client for OpenAI-compatible endpoints (LM Studio, Ollama, MLX, etc.)
- *
- * Based on openclaw-tactician's provider detection patterns for consistency.
- * Provides privacy-preserving, cost-effective LLM operations with
- * graceful fallback to cloud providers when local LLM is unavailable.
- */
 export class LocalLlmClient {
   private config: PluginConfig;
   private isAvailable: boolean | null = null;
@@ -250,16 +228,10 @@ export class LocalLlmClient {
   }
 
 
-  /**
-   * Set the ModelRegistry for caching detected capabilities
-   */
   setModelRegistry(registry: ModelRegistry): void {
     this.modelRegistry = registry;
   }
 
-  /**
-   * Get the detected server type (null if not detected)
-   */
   getDetectedType(): LocalLlmType | null {
     return this.detectedType;
   }
@@ -279,10 +251,6 @@ export class LocalLlmClient {
   }
 
 
-  /**
-   * Fetch with timeout for health checks. Body lives in the sibling helper so
-   * this file stays under its size ceiling (issue #1995).
-   */
   private async fetchWithTimeout(
     url: string,
     timeoutMs: number = 2000,
@@ -315,10 +283,6 @@ export class LocalLlmClient {
     return { matched: false, unauthorized };
   }
 
-  /**
-   * Check if local LLM is available
-   * Uses 127.0.0.1 instead of localhost to avoid DNS issues (consistent with tactician)
-   */
   async checkAvailability(
     signal?: AbortSignal,
     chatUrl?: string,
@@ -327,10 +291,8 @@ export class LocalLlmClient {
     if (signal?.aborted) return false;
     const now = Date.now(); // cache health check results for 1 minute
     if (chatUrl) {
-      // An empty label is a real pool key: a "" caller still sees a recorded circuit (wAN on #3474).
       const poolOperation = operation ?? "unspecified";
       const poolKey = formatLocalLlmPoolKey(chatUrl, poolOperation);
-      // A lapsed circuit stays visible as a tombstone; each client clears its cached verdict once.
       const expiredAtMs = localLlmBackendPoolExpiredAtMs(now, chatUrl, poolOperation);
       if (expiredAtMs !== null && expiredAtMs > (this.poolExpirySeenMs.get(poolKey) ?? 0)) {
         this.poolExpirySeenMs.set(poolKey, expiredAtMs);
@@ -355,16 +317,11 @@ export class LocalLlmClient {
 
   private async probeAvailability(signal?: AbortSignal): Promise<boolean> {
     const now = Date.now();
-    // Probe server-native endpoints from the server root even when users configure
-    // the OpenAI-compatible `/v1` base URL for chat completions.
     const configuredBaseUrl = trimTrailingSlashes(
       this.config.localLlmUrl.replace("localhost", "127.0.0.1"),
     );
     const probeBaseUrl = stripTrailingV1Path(configuredBaseUrl);
     let sawUnauthorizedProbe = false;
-    // A probe that TIMED OUT says the event loop was busy, not that the backend
-    // is down (issue #2210). Tracked separately so a loaded daemon cannot cache
-    // itself into a blackout.
     let sawAbortedProbe = false;
     // Several server shapes share a probe URL (LiteLLM and Ollama both use
     // `/`); fetch each URL once per pass.
@@ -377,7 +334,6 @@ export class LocalLlmClient {
       return result;
     };
 
-    // Try to detect which server type is running
     if (signal?.aborted) return false;
     for (const serverConfig of orderedLocalServers(configuredBaseUrl)) {
       const healthUrl = `${probeBaseUrl}${serverConfig.healthEndpoint}`;
@@ -442,7 +398,6 @@ export class LocalLlmClient {
     }
     if (signal?.aborted) return false;
 
-    // Generic check if specific detection failed
     try {
       const modelsUrl = `${probeBaseUrl}/v1/models`;
       const result = await this.fetchWithTimeout(modelsUrl, 2000, undefined, signal);
@@ -525,8 +480,6 @@ export class LocalLlmClient {
    */
   private getContextFromLmsCli(modelId: string): number | null {
     try {
-      // Check if lms CLI exists in common locations.
-      // HOME may be absent in launchd environments, so prefer the resolved helper.
       const homeDir = this.resolveHomeDir();
       const lmsPaths = [
         this.config.localLmsCliPath || "",
@@ -541,8 +494,6 @@ export class LocalLlmClient {
         return null;
       }
 
-      // Run lms ps --json to get loaded models with context
-      // Use spawnSync with shell and explicit PATH to ensure lms can find its dependencies
       log.debug(`LMS CLI: running: ${lmsPath} ps --json`);
       const existingPath = readEnvVar("PATH") || "";
       const result = launchProcessSync(lmsPath, ["ps", "--json"], {
@@ -570,7 +521,6 @@ export class LocalLlmClient {
         return null;
       }
 
-      // Parse JSON output
       let models: Array<{
         identifier?: string;
         modelKey?: string;
@@ -590,7 +540,6 @@ export class LocalLlmClient {
         return null;
       }
 
-      // Find the model matching our configured model ID
       const model = models.find((m) =>
         m.identifier === modelId ||
         m.modelKey === modelId ||
@@ -602,7 +551,6 @@ export class LocalLlmClient {
         return null;
       }
 
-      // Use contextLength (actual configured) or fall back to maxContextLength (model max)
       const contextWindow = model.contextLength || model.maxContextLength;
 
       if (contextWindow) {
@@ -612,7 +560,6 @@ export class LocalLlmClient {
 
       return null;
     } catch (err) {
-      // LMS CLI not available or failed
       const errorMsg = err instanceof Error ? err.message : String(err);
       log.debug(`LMS CLI: failed - ${errorMsg}`);
       return null;
@@ -685,34 +632,27 @@ export class LocalLlmClient {
   getCachedContextWindow(modelId: string): number | null {
     const now = Date.now();
 
-    // 1. Check ModelRegistry for persisted context window
     if (this.modelRegistry) {
       const caps = this.modelRegistry.getCapabilities(modelId);
       if (caps.source === "lmstudio" && caps.contextWindow) {
         log.debug(`ModelRegistry: using persisted LM Studio context: ${caps.contextWindow}`);
-        // Also update memory cache
         this.cachedLmsContext = caps.contextWindow;
         this.lastLmsCheck = now;
         return caps.contextWindow;
       }
     }
 
-    // 2. Return in-memory cached value if still valid
     if (this.cachedLmsContext && now - this.lastLmsCheck < LocalLlmClient.LMS_CACHE_INTERVAL_MS) {
       log.debug(`LMS CLI: returning in-memory cached context: ${this.cachedLmsContext}`);
       return this.cachedLmsContext;
     }
 
-    // 3. Try LMS CLI (authoritative source)
     const lmsInfo = this.getLmsModelInfo(modelId);
     if (lmsInfo?.contextLength) {
       this.cachedLmsContext = lmsInfo.contextLength;
       this.lastLmsCheck = now;
-      // Calculate appropriate output tokens based on context size
-      // Use 12.5% of context window, capped at 16K (generous but safe)
       const calculatedOutputTokens = Math.min(Math.floor(lmsInfo.contextLength / 8), 16384);
       const outputTokens = Math.max(calculatedOutputTokens, 4096); // Minimum 4K
-      // Persist to ModelRegistry with detected capabilities
       if (this.modelRegistry) {
         this.modelRegistry.setCapabilities(modelId, {
           maxPositionEmbeddings: lmsInfo.maxContextLength || lmsInfo.contextLength,
@@ -726,12 +666,10 @@ export class LocalLlmClient {
       return lmsInfo.contextLength;
     }
 
-    // Legacy: Try LMS CLI context only (fallback)
     const legacyContext = this.getContextFromLmsCli(modelId);
     if (legacyContext) {
       this.cachedLmsContext = legacyContext;
       this.lastLmsCheck = now;
-      // Persist to ModelRegistry with calculated output tokens
       if (this.modelRegistry) {
         const calculatedOutputTokens = Math.min(Math.floor(legacyContext / 8), 16384);
         const outputTokens = Math.max(calculatedOutputTokens, 4096);
@@ -746,7 +684,6 @@ export class LocalLlmClient {
       return legacyContext;
     }
 
-    // 4. Fall back to LM Studio settings.json
     const settingsContext = this.getContextFromLmStudioSettings();
     if (settingsContext) {
       log.info(`LM Studio settings: using default context: ${settingsContext}`);
@@ -758,9 +695,6 @@ export class LocalLlmClient {
     return null;
   }
 
-  /**
-   * Clear the LMS context cache. Call this when the model changes.
-   */
   clearContextCache(): void {
     this.cachedLmsContext = null;
     this.lastLmsCheck = 0;
@@ -896,29 +830,11 @@ export class LocalLlmClient {
         model: requestModel,
         messages,
         temperature: options.temperature ?? 0.7,
-        // Use max_tokens consistent with cloud models
         max_tokens: options.maxTokens ?? 4096,
         stream: false,
       };
       this.nativeSchemaGate.attach(requestBody, options, requestModel);
 
-      // Suppress thinking/reasoning for operations that benefit from terse,
-      // structured output. Thinking-capable models (Qwen 3.5, Gemma 4,
-      // DeepSeek) default to thinking-on via their chat template; sending
-      // `chat_template_kwargs: { enable_thinking: false }` tells the template
-      // to skip reasoning tokens. Consolidation operations on the main client
-      // intentionally keep thinking enabled so entity resolution and
-      // deduplication can use the model's reasoning path. Fast-tier callers can
-      // still force suppression per request to preserve their low-latency
-      // contract.
-      //
-      // Gate the injection on detected backend support (issue #548,
-      // Codex P1 on PR #550): `chat_template_kwargs` is an LM Studio /
-      // vLLM / llama.cpp extension, not part of standard OpenAI chat
-      // completions.  Strict OpenAI-compatible backends reject
-      // unknown fields with 400, which trips the 400-cooldown path and
-      // can effectively disable local extraction.  Fail open when the
-      // backend hasn't been positively identified as thinking-capable.
       const shouldSuppressThinking =
         options.forceDisableThinking === true ||
         ((options.disableThinking ?? this._disableThinking) &&
@@ -930,15 +846,6 @@ export class LocalLlmClient {
       ) {
         requestBody.chat_template_kwargs = { enable_thinking: false };
       } else if (shouldSuppressThinking && this.detectedType === "ollama") {
-        // Ollama's /v1 endpoint silently drops `chat_template_kwargs` AND
-        // `enable_thinking` — the ONLY field it maps to think-off is
-        // `reasoning_effort` ("none" → ThinkValue{false} in openai.go;
-        // verified against Ollama 0.32.0 source and live probes,
-        // issue #1996). Without this, thinking-capable models (Gemma 4,
-        // Qwen 3.5+) burn 1,700-2,000 reasoning tokens per extraction on
-        // Ollama, exceed the client timeout, and retry forever. The effort
-        // is configurable via `localLlmReasoningEffort` (default "none");
-        // an empty value disables injection (pre-#1996 behavior).
         const effort = this.config.localLlmReasoningEffort;
         if (effort) {
           requestBody.reasoning_effort = effort;
@@ -949,7 +856,6 @@ export class LocalLlmClient {
       log.debug(
         `local LLM: sending request to ${chatUrl} with model ${this.config.localLlmModel}`,
       );
-      // Avoid logging request bodies by default (can contain sensitive user content).
       log.debug(`local LLM: request body length=${requestBodyJson.length}`);
 
       const effectiveTimeoutMs =
@@ -957,11 +863,6 @@ export class LocalLlmClient {
           ? Math.min(this.config.localLlmTimeoutMs, options.timeoutMs)
           : this.config.localLlmTimeoutMs;
       const maxAttempts = 1 + Math.max(0, this.config.localLlmRetry5xxCount);
-      // COS-447: rate-limit responses (429/503/408, LiteLLM cooldown) get
-      // their own retry budget with exponential full-jitter backoff, and a
-      // process-wide semaphore caps concurrent HTTP attempts across clients.
-      // Waits are bounded by the request timeout so a short caller budget
-      // (e.g. rerankTimeoutMs) is never stretched by a long cooldown.
       const rateLimit = new LocalLlmRateLimitSession(
         formatLocalLlmPoolKey(chatUrl, operation),
         resolveRateLimitSettings(this.config),
@@ -974,7 +875,6 @@ export class LocalLlmClient {
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         response = null;
         responseBody = "";
-        // Wait out the shared endpoint backoff, then take a concurrency slot.
         const gate = await rateLimit.beforeAttempt(signal);
         if (gate.kind === "skip") {
           log.warn(gate.reason === "queue"
@@ -1014,7 +914,6 @@ export class LocalLlmClient {
             isUnsupportedJsonSchemaError(`400 ${responseBody}`)
           ) {
             this.nativeSchemaGate.rememberRejection(requestModel);
-            // Match gateway degradation without extending this attempt's deadline.
             delete requestBody.response_format;
             requestBodyJson = JSON.stringify(requestBody);
             log.debug("local LLM rejected native JSON schema; retrying without it");
@@ -1074,7 +973,6 @@ export class LocalLlmClient {
           attempt -= 1; // own retry budget; the loop top waits out the backoff
           continue;
         }
-        // A terminal pool-unavailable 503 must not reach the generic 5xx retry.
         if (isTerminalLocalLlmProxyPoolError(response.status, responseBody)) break;
         if (response.status < 500 || attempt >= maxAttempts) break;
 
@@ -1174,7 +1072,6 @@ export class LocalLlmClient {
         return null;
       }
 
-      // Estimate tokens if not provided by local LLM
       const usage = data.usage
         ? {
             promptTokens: data.usage.prompt_tokens ?? 0,
@@ -1235,7 +1132,6 @@ export class LocalLlmClient {
       this.config.localLlmUrl.replace("localhost", "127.0.0.1"),
     );
 
-    // Handle URL construction - localLlmUrl may already include /v1
     const modelsUrl = baseUrl.endsWith("/v1")
       ? `${baseUrl}/models`
       : `${baseUrl}/v1/models`;
@@ -1262,10 +1158,8 @@ export class LocalLlmClient {
           id?: string;
           object?: string;
           owned_by?: string;
-          // LM Studio specific fields
           max_context_length?: number;
           max_tokens?: number;
-          // Ollama specific
           name?: string;
           details?: {
             parameter_size?: string;
@@ -1279,7 +1173,6 @@ export class LocalLlmClient {
         return null;
       }
 
-      // Verbose model listings are noisy on every gateway restart. Keep it debug-only.
       const modelIds = data.data.map((m) => m.id).filter(Boolean);
       log.debug(
         `Local LLM: Found ${modelIds.length} model(s). First 10: ${modelIds.slice(0, 10).join(", ")}`,
@@ -1289,7 +1182,6 @@ export class LocalLlmClient {
       const configuredModel = this.config.localLlmModel;
       let model = data.data.find((m) => m.id === configuredModel);
 
-      // If not found by exact match, try partial match (handle suffixes like @4bit)
       if (!model) {
         model = data.data.find((m) =>
           configuredModel.includes(m.id || "") ||
@@ -1297,7 +1189,6 @@ export class LocalLlmClient {
         );
       }
 
-      // If still not found, use the first loaded model and warn
       if (!model) {
         model = data.data[0];
         const availablePreview = data.data
@@ -1311,10 +1202,8 @@ export class LocalLlmClient {
         );
       }
 
-      // Extract context window - try multiple field names
       let contextWindow = model.max_context_length || model.max_tokens;
 
-      // If API doesn't report context window, try LMS CLI (LM Studio specific)
       if (!contextWindow) {
         log.info("Local LLM: API did not report context window, trying LMS CLI...");
         const lmsContext = this.getCachedContextWindow(model.id || "");
@@ -1357,7 +1246,6 @@ export class LocalLlmClient {
       return { available: false, warnings: ["Could not query local LLM for model info"] };
     }
 
-    // If we have expected context and the server reports one, check for mismatch
     if (expectedContextWindow && modelInfo.contextWindow) {
       if (modelInfo.contextWindow < expectedContextWindow) {
         warnings.push(
@@ -1368,7 +1256,6 @@ export class LocalLlmClient {
       }
     }
 
-    // Warn if server doesn't report context window (common with some local LLM setups)
     if (!modelInfo.contextWindow) {
       warnings.push(
         `Local LLM server did not report context window for ${modelInfo.id}. ` +
@@ -1383,9 +1270,6 @@ export class LocalLlmClient {
     };
   }
 
-  /**
-   * Make a chat completion request to local LLM
-   */
   async chatCompletion(
     messages: Array<{ role: string; content: string }>,
     options: LocalLlmChatCompletionOptions = {},
@@ -1434,9 +1318,6 @@ export class LocalLlmClient {
 
     return await this.runChatCompletionRequest(messages, options);
   }
-  /**
-   * Estimate tokens when local LLM does not return usage stats.
-   */
   private estimateTokens(
     messages: Array<{ role: string; content: string }>,
     response: string
@@ -1451,15 +1332,11 @@ export class LocalLlmClient {
     };
   }
 
-  /**
-   * Try local LLM first, fallback to cloud provider if configured
-   */
   async withFallback<T>(
     localOperation: () => Promise<T | null>,
     fallbackOperation: () => Promise<T>,
     operationName: string
   ): Promise<T> {
-    // Try local LLM first if enabled
     if (resolveLocalLlmCapabilities(this.config).localLlm) {
       const localResult = await localOperation();
       if (localResult !== null) {
@@ -1467,7 +1344,6 @@ export class LocalLlmClient {
         return localResult;
       }
 
-      // Local failed or unavailable
       if (this.config.localLlmFallback) {
         log.info(`${operationName}: local LLM unavailable, falling back to cloud`);
       } else {
@@ -1475,7 +1351,6 @@ export class LocalLlmClient {
       }
     }
 
-    // Use fallback (cloud provider)
     return fallbackOperation();
   }
 }

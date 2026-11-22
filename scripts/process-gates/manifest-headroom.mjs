@@ -1,11 +1,4 @@
 #!/usr/bin/env node
-/**
- * Pre-push gate: openclaw.plugin.json minified must stay below the
- * 250,000-byte fail-at. The hard cap is 262,144 (256 KB); the fail-at is a
- * fleet-wide runway: every config-adding feature consumes ~10-30 bytes, and
- * the next one without a shrink will breach the fail-at. Catching it
- * pre-push costs ~50 ms; catching it in CI costs ~3 minutes of worker rebuild.
- */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -16,10 +9,7 @@ const HARD_CAP = 262_144;
 const FAIL_AT = 250_000;
 
 function minifiedSize() {
-  // The minify script swaps the file in place; for a size-only check we
-  // pipe through node -e JSON.stringify-equivalent on the parsed JSON.
   const raw = readFileSync(MANIFEST, "utf8");
-  // The minified form is JSON.stringify(parsed, null, 0) by convention here.
   return JSON.stringify(JSON.parse(raw)).length;
 }
 

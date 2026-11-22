@@ -33,8 +33,6 @@ function makeFact(id: string, path: string, created: string): MemoryFile {
       tags: ["project/remnic", "shared", `flat-${id}`],
     },
   };
-  // Test fixture: MemoryFile carries many optional fields the archival loop
-  // never reads; a full literal would be noise. Narrow, deliberate cast.
   return memory as unknown as MemoryFile;
 }
 
@@ -54,8 +52,6 @@ test("#1911B fact-archival flushes prior de-index entries when a later iteration
     const memA = makeFact("mem-a", "/tmp/mem-a.md", "2020-01-01T09:00:00.000Z");
     const memB = makeFact("mem-b", "/tmp/mem-b.md", "2020-02-02T09:00:00.000Z");
 
-    // Seed the on-disk temporal index so a successful de-index is observable as
-    // the removal of the memory's date bucket.
     await indexMemoryAsync(memoryDir, memA.path, memA.frontmatter.created, memA.frontmatter.tags ?? []);
     await indexMemoryAsync(memoryDir, memB.path, memB.frontmatter.created, memB.frontmatter.tags ?? []);
 
@@ -65,22 +61,17 @@ test("#1911B fact-archival flushes prior de-index entries when a later iteration
 
     const archived: string[] = [];
     const fakeStorage = {
-      // Both memories archive successfully on disk.
       async archiveMemory(memory: MemoryFile): Promise<string> {
         archived.push(memory.frontmatter.id);
         return memory.frontmatter.id;
       },
     };
-    // runFactArchival only calls archiveMemory on the storage; the rest of the
-    // StorageManager surface is unused here.
     const storage = fakeStorage as unknown as StorageManager;
 
     const embeddingFallback = {
       async removeFromIndex(): Promise<void> {},
     } as unknown as EmbeddingFallback;
 
-    // Minimal config: the archival loop reads only these fields plus the
-    // queryAwareIndexing capability flag. A full PluginConfig literal is noise.
     const config = {
       memoryDir,
       queryAwareIndexingEnabled: true,
@@ -101,10 +92,6 @@ test("#1911B fact-archival flushes prior de-index entries when a later iteration
         staleDecayThreshold: 0,
         archiveDecayThreshold: 0,
       }),
-      // Throws for mem-b — the later iteration — after mem-b is already archived
-      // AND queued for de-index, but before its content-hash cleanup completes.
-      // Asserts the production call passes the target storage instance and the
-      // fact-archival context.
       async removeContentHashForMemory(targetStorage, memory, context): Promise<void> {
         assert.equal(
           targetStorage,
@@ -128,7 +115,6 @@ test("#1911B fact-archival flushes prior de-index entries when a later iteration
       /content-hash removal exploded/,
     );
 
-    // Both were archived on disk before the failure.
     assert.deepEqual(archived, ["mem-a", "mem-b"]);
 
     // Both facts were archived on disk AND queued for de-index — the queue push

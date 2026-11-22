@@ -1,12 +1,3 @@
-/**
- * Shared runner scaffolding for the Assistant bench tier.
- *
- * Builds the `BenchmarkResult` shape used by the existing dashboard, but with
- * per-dimension rubric scores (identity_accuracy, stance_coherence, novelty,
- * calibration) and bootstrap 95% confidence intervals attached. Each
- * scenario is executed `runCount` times (default 5) and the per-run means
- * feed the bootstrap so the dashboard can render error bars.
- */
 
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -134,8 +125,6 @@ export async function runAssistantBenchmark(
   const statistics = buildStatistics(perScenarioRuns, runnerOptions.random);
 
   const remnicVersion = await getRemnicVersion();
-  // `task.latencyMs` now holds the summed per-seed wall-clock for that
-  // scenario, so the bench-level totals below roll up to real runtime.
   const totalLatencyMs = tasks.reduce((sum, task) => sum + task.latencyMs, 0);
   const totalSeedExecutions = tasks.length * runCount;
 
@@ -169,8 +158,6 @@ export async function runAssistantBenchmark(
       outputTokens: 0,
       estimatedCostUsd: 0,
       totalLatencyMs,
-      // Mean latency per seed execution (one agent call + one judge call),
-      // which is the actual per-query unit of work in the Assistant tier.
       meanQueryLatencyMs:
         totalSeedExecutions > 0 ? totalLatencyMs / totalSeedExecutions : 0,
     },
@@ -213,11 +200,6 @@ function collapseScenario(
   ) / ASSISTANT_RUBRIC_DIMENSIONS.length;
   scores.overall = roundScore(overall);
 
-  // Report cumulative wall-clock per task (sum across seeds) so the
-  // downstream `cost.totalLatencyMs = Σ task.latencyMs` aggregation in
-  // `runAssistantBenchmark` reflects real runtime across seeded runs.
-  // Under-reporting here makes multi-seed Assistant runs look artificially
-  // cheap compared to their single-seed counterparts.
   const totalTaskLatencyMs = perSeed.reduce(
     (sum, run) => sum + run.latencyMs,
     0,
@@ -350,9 +332,6 @@ function resolveSeeds(
   const requested =
     runnerOptions.runCount ??
     (resolved.mode === "quick" ? 2 : DEFAULT_RUN_COUNT);
-  // Delegate to the shared helper so seed-sequence generation stays in one
-  // place; `buildBenchmarkRunSeeds` also validates the runCount / baseSeed
-  // inputs.
   return buildBenchmarkRunSeeds(requested, resolved.seed);
 }
 

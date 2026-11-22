@@ -1,39 +1,3 @@
-/**
- * Preference drift detection (issue #2371).
- *
- * Remnic already handles *explicit* preference change: the contradiction scan
- * catches a new statement that conflicts with a stored one, and temporal
- * supersession retires a fact that gets restated. Both require new evidence to
- * arrive. This module covers the opposite failure mode the agent-memory survey
- * calls stale preference reuse: a `category: preference` memory keeps being
- * injected at full prominence even though the last N days of conversation
- * contain no corroboration for it — or contain behavioral evidence pointing the
- * other way that never rose to an explicit contradiction.
- *
- * Per aging preference the scan gathers recent same-namespace evidence, then
- * classifies:
- *
- *   - `corroborated` — recent evidence restates or is consistent with it.
- *   - `stale`        — the lookback window held nothing either way.
- *   - `drifted`      — recent evidence points away from it (judge verdict
- *                      `contradicts`), so a review item is opened.
- *   - `skipped`      — the classification could not be made honestly:
- *                      `backend_unavailable` (evidence lookup failed — §22:
- *                      never counted as "no evidence") or
- *                      `verification_unavailable` (evidence exists but no LLM
- *                      could judge it, so neither a positive nor a negative
- *                      claim is warranted).
- *
- * Apply mode stamps `lastCorroborated` / `driftState` and opens review items.
- * It never auto-deletes and never auto-supersedes: drift is inference, and the
- * least-privileged default for an inferred change to user state is "ask"
- * (Review Prevention Checklist §36). Resolution runs through the existing
- * review queue and `review_resolve`, with the drift verbs `keep`, `supersede`,
- * and `archive`.
- *
- * Deliberately NOT part of `runMemoryGovernance` — same isolation decision as
- * procedure mining and procedure-library maintenance.
- */
 
 import path from "node:path";
 import type { MemoryFile, MemoryStatus, PluginConfig } from "../types.js";
@@ -171,19 +135,8 @@ function tsMs(value: unknown): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-/**
- * Statuses that make a memory a drift candidate. Stated as an inclusion set,
- * never an exclusion list, so a newly added status can never leak through
- * (§41): `superseded`, `archived`, `quarantined`, `rejected`, and
- * `pending_review` preferences are all excluded by construction.
- */
 const CANDIDATE_STATUSES: Partial<Record<MemoryStatus, true>> = { active: true };
 
-/**
- * Deterministic candidate order (§12): oldest preference first, stable id
- * tiebreak, so the per-run cap always selects the same slice on identical
- * fixtures.
- */
 function compareCandidates(a: MemoryFile, b: MemoryFile): number {
   const aMs = tsMs(a.frontmatter.created) ?? tsMs(a.frontmatter.updated) ?? 0;
   const bMs = tsMs(b.frontmatter.created) ?? tsMs(b.frontmatter.updated) ?? 0;
@@ -198,15 +151,6 @@ type EvidenceResult =
   | { ok: true; hits: PreferenceDriftEvidence[]; hitMemories: MemoryFile[] }
   | { ok: false; reason: "backend_unavailable" };
 
-/**
- * Gather recent same-namespace evidence for one preference.
- *
- * §22: an empty result and a failed backend are DIFFERENT outcomes. The
- * `SemanticDedupLookup` contract is that implementations throw when the
- * embedding backend is unavailable and return `[]` only when a reachable
- * backend reports no hits, so the throw is the failure signal — it must never
- * be swallowed into "no evidence", which would mark a live preference stale.
- */
 async function gatherEvidence(
   preference: MemoryFile,
   lookup: SemanticDedupLookup,
@@ -233,9 +177,6 @@ async function gatherEvidence(
     if (!memory) continue;
     const observedMs = tsMs(memory.frontmatter.updated) ?? tsMs(memory.frontmatter.created);
     if (observedMs === null) continue;
-    // Half-open window [windowStart, now): a memory observed exactly at the
-    // window start counts, one observed exactly at the run instant does not
-    // (§23).
     if (observedMs < windowStartMs || observedMs >= nowMs) continue;
     hits.push({
       memoryId: hit.id,
@@ -329,7 +270,6 @@ export async function runPreferenceDriftScan(
       skippedReason: "drift_disabled",
     };
   }
-  // `0` is the documented disable value and must behave as a true zero (§33).
   if (cfg.maxCandidatesPerRun === 0) {
     return {
       schemaVersion: 1,
@@ -396,8 +336,6 @@ export async function runPreferenceDriftScan(
   };
 
   const windowStartMs = nowMs - cfg.lookbackDays * DAY_MS;
-  // One judge cache per run so the module-level singleton never leaks across
-  // namespaces or scans.
   const judgeCache = new Map<string, ContradictionJudgeResult>();
   const driftedPairs: Array<{ preference: MemoryFile; evidenceId: string; finding: PreferenceDriftFinding; rationale: string; confidence: number }> = [];
   const stamps: Array<{ memory: MemoryFile; patch: { driftState?: "stale"; lastCorroborated?: string }; reasonCode: string }> = [];
@@ -442,7 +380,6 @@ export async function runPreferenceDriftScan(
       continue;
     }
 
-    // The judge call happens only when candidate evidence exists.
     const judgeInputs: ContradictionJudgeInput[] = evidence.hitMemories.map((hit) => ({
       memoryIdA: preference.frontmatter.id,
       memoryIdB: hit.frontmatter.id,
@@ -458,8 +395,6 @@ export async function runPreferenceDriftScan(
       deps.fallbackLlm,
       judgeCache,
     );
-    // Preserve evidence order (score desc) so the verdict scan is deterministic
-    // rather than dependent on Map iteration of the judge's keyed results.
     const orderedVerdicts: ContradictionJudgeResult[] = [];
     for (const input of judgeInputs) {
       for (const result of judged.results.values()) {
@@ -505,9 +440,6 @@ export async function runPreferenceDriftScan(
   let writes = 0;
   for (const stamp of stamps) {
     try {
-      // `driftState: undefined` is an explicit clear: writeMemoryFrontmatter
-      // merges the patch over existing frontmatter, and the serializer omits
-      // undefined fields, so a corroborated preference loses its stale mark.
       await storage.writeMemoryFrontmatter(stamp.memory, { ...stamp.patch, updated: nowIso }, {
         at: now,
         actor: DRIFT_ACTOR,
@@ -528,10 +460,6 @@ export async function runPreferenceDriftScan(
       driftedPairs.map((d) => ({
         memoryIds: [d.preference.frontmatter.id, d.evidenceId],
         kind: "preference-drift",
-        // A drift finding IS a detected conflict, so the honest verdict is
-        // `contradicts`; `kind` is what distinguishes it from a pair the
-        // contradiction scan produced. Existing review surfaces render it
-        // unchanged.
         verdict: "contradicts",
         rationale: d.rationale,
         confidence: d.confidence,
@@ -554,10 +482,6 @@ export async function runPreferenceDriftScan(
   }
 
   if (writes > 0) {
-    // Frontmatter stamps bypass the extraction write pipeline, so bump the
-    // shared corpus version out of band — otherwise hot recall caches keep
-    // serving pre-stamp frontmatter and the damping stage never sees the new
-    // `driftState` (§25/§31).
     bumpMemoryCorpusVersionForDir(storage.dir, { indexedText: false });
     if (storage.dir !== deps.memoryDir) {
       bumpMemoryCorpusVersionForDir(deps.memoryDir, { indexedText: false });
@@ -580,7 +504,6 @@ export async function runPreferenceDriftScan(
   return report;
 }
 
-// ── Review resolution ────────────────────────────────────────────────────────
 
 export interface PreferenceDriftResolutionOptions {
   /** Replacement preference text. Required for `supersede`. */
@@ -671,9 +594,6 @@ export async function resolvePreferenceDrift(
     };
   }
 
-  // Sealed-envelope write: the replacement text is user- or LLM-supplied, so
-  // compose with salvage and warn-log any dropped optional field rather than
-  // failing the whole resolution on a cosmetic value.
   const envelope = composeMemoryEnvelope(
     {
       content: replacementText,
@@ -691,13 +611,8 @@ export async function resolvePreferenceDrift(
   const written = await storage.writeSealedMemory(envelope, {
     actor: DRIFT_ACTOR,
     lineage: [preferenceId],
-    // `update` is the operator for "newer version of the same claim" — the
-    // drift replacement restates one preference, it does not merge two.
     derivedVia: "update",
   });
-  // A tombstone-blocked replacement is NOT active, so superseding the old
-  // preference to it would retire the only live copy (§14: never destroy old
-  // state before the new state is confirmed viable).
   if (written.tombstoneBlocked) {
     return {
       affectedIds: [],

@@ -17,11 +17,6 @@ const MARKER = "unusable local reply";
 type LocalMessages = Array<{ role: string; content: string }>;
 type LocalStub = (messages: LocalMessages, options: { failureDiag?: LocalFailureDiag }) => Promise<{ content: string } | null>;
 
-/**
- * Runs one full extraction against a stubbed local LLM and captures every warn
- * line. Fallback is disabled so the local path's rejection is the failure under
- * test, and the logger is always restored.
- */
 async function extractCapturingWarns(local: LocalStub) {
   const engine = new ExtractionEngine(parseConfig({ localLlmEnabled: true, localLlmModel: "fixture-local", localLlmFallback: false }));
   const modelRegistry = { calculateContextSizes: () => ({ maxInputChars: 8_000, maxOutputTokens: 1_000, description: "fixture" }) };
@@ -59,7 +54,6 @@ test("a length-truncated unusable reply classifies output_truncated and logs the
   }
 });
 
-/** Wrong-shape JSON end to end: identifier key names reported, values and non-identifier keys suppressed even when they hold the secret. */
 test("wrong-shape JSON: key names are reported, values and unsafe keys are not", async () => {
   const reply = JSON.stringify({ summary: SECRET, "user@example.com": 1 });
   const { result, warns } = await extractCapturingWarns(async () => ({ content: reply }));
@@ -73,7 +67,6 @@ test("wrong-shape JSON: key names are reported, values and unsafe keys are not",
   }
 });
 
-/** The empty-content rejection site: the same single-line diagnostic with no reply at all, and the HTTP status classification survives. */
 test("a rejected request (HTTP 400, no reply) logs the same diagnostic once and keeps its status", async () => {
   const { result, warns } = await extractCapturingWarns(async (_messages, options) => {
     if (options.failureDiag) options.failureDiag.lastError = Object.assign(new Error("local LLM http failure"), { status: 400 });

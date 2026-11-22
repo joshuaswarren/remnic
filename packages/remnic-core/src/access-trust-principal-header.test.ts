@@ -9,7 +9,6 @@ import { EngramAccessService } from "./access-service.js";
 import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
 
-/** Raw agentAccessHttp section as it appears in the config file before parsing — trustPrincipalHeader stays unknown on purpose so the tests can feed the parser non-boolean values. */
 interface AgentAccessHttpRawOverrides {
   enabled?: boolean;
   host?: string;
@@ -47,7 +46,6 @@ test("agentAccessHttp.trustPrincipalHeader defaults off and accepts bool-like st
   }
 });
 
-/** One timings-probe server per flag value; the route 200s for the operator principal and 403s otherwise. */
 async function timingsFixture(t: TestContext, trustConfig: boolean) {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-tph-"));
   t.after(() => rm(memoryDir, { recursive: true, force: true }));
@@ -67,7 +65,6 @@ async function timingsFixture(t: TestContext, trustConfig: boolean) {
     port: 0,
     authToken: "secret-token",
     principal: "operator",
-    // The same expression the http-serve action builds when the CLI flag is absent.
     trustPrincipalHeader: config.agentAccessHttp.trustPrincipalHeader === true,
     maxBodyBytes: 1024,
   });
@@ -84,8 +81,6 @@ test("off (default): an x-engram-principal header is ignored, as today", async (
       "X-Engram-Principal": "reader",
     },
   });
-  // The header is not trusted, so the configured principal "operator" still
-  // answers the operator-only route — the spoofed reader never materializes.
   assert.equal(response.status, 200);
 });
 

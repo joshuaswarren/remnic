@@ -17,8 +17,6 @@
  */
 
 // ---------------------------------------------------------------------------
-// Generator config — parameterized synthetic repo (issue #1557 design (a)).
-// ---------------------------------------------------------------------------
 
 /**
  * Parameters for the deterministic synthetic repo generator. Same seed +
@@ -27,7 +25,6 @@
 export interface SyntheticRepoConfig {
   /** PRNG seed — same seed + params = identical output. */
   readonly seed: number;
-  /** Number of synthetic source files. */
   readonly fileCount: number;
   /** Symbols (functions/classes/methods) per file. */
   readonly symbolsPerFile: number;
@@ -81,7 +78,6 @@ export interface SyntheticEdge {
 }
 
 // ---------------------------------------------------------------------------
-// Machine fingerprint — baselines are only comparable on the same machine.
 // ---------------------------------------------------------------------------
 
 export interface MachineFingerprint {
@@ -94,7 +90,6 @@ export interface MachineFingerprint {
 }
 
 // ---------------------------------------------------------------------------
-// Metrics — one entry per metric key. p50/p95 computed over iterations.
 // ---------------------------------------------------------------------------
 
 /**
@@ -106,7 +101,6 @@ export interface MicroMetric {
   readonly p50: number;
   /** 95th percentile in milliseconds. */
   readonly p95: number;
-  /** Number of iterations measured. */
   readonly iterations: number;
   /** Raw per-iteration timings (ms) — kept so the report is auditable. */
   readonly samplesMs: readonly number[];
@@ -138,7 +132,6 @@ export type CodingGraphMetricKey =
   | "dbBytesPerKloc";
 
 // ---------------------------------------------------------------------------
-// Benchmark report — the JSON artifact written to disk.
 // ---------------------------------------------------------------------------
 
 export interface CodingGraphBenchReport {
@@ -183,7 +176,6 @@ export interface CodingGraphBenchReport {
 }
 
 // ---------------------------------------------------------------------------
-// Regression gate — compares report against baseline with tolerance.
 // ---------------------------------------------------------------------------
 
 /**
@@ -241,7 +233,6 @@ export interface RegressionGateResult {
 }
 
 // ---------------------------------------------------------------------------
-// Run configuration.
 // ---------------------------------------------------------------------------
 
 export interface CodingGraphBenchConfig {

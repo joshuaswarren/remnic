@@ -39,26 +39,17 @@ export function daemonTargetFor(bridge: BridgeConfig): DelegateDaemonTarget {
         bridge.daemonAuthTokenOverride !== undefined &&
         !invalidated(bridge.daemonAuthTokenOverride)
       ) {
-        // A unit-supplied credential is re-read from its unit — including its
-        // drop-ins and `EnvironmentFile=`.
         const unit =
           bridge.daemonAuthUnit === undefined ? undefined : readUnitAuthToken(bridge.daemonAuthUnit);
         if (unit?.readable === true && unit.token !== undefined && !invalidated(unit.token)) {
           return { token: unit.token, source: "daemon configuration" };
         }
-        // A unit that is no longer READABLE proves nothing, so the value the
         if (
           (unit === undefined || unit.readable === false) &&
           !invalidated(bridge.daemonAuthTokenOverride)
         ) {
           return { token: bridge.daemonAuthTokenOverride, source: "daemon configuration" };
         }
-        // Readable and deliberately carrying no token: the daemon has fallen
-        // back to its config or token store, so fall through to the same
-        // resolution rather than replaying a credential nobody serves. The
-        // BOUND config is tried first — `loadDaemonAuth` puts the gateway's
-        // own token store ahead of it, which is wrong for a daemon running
-        // under another account and would keep 401ing after the restart.
         if (bridge.daemonConfigPath !== undefined) {
           const configToken = readDaemonConfigAuthToken(bridge.daemonConfigPath);
           if (configToken !== undefined && !invalidated(configToken)) {

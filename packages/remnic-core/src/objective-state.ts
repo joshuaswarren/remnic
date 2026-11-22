@@ -86,7 +86,6 @@ function validateMetadata(raw: unknown): Record<string, string> | undefined {
   return validateStringRecord(raw, "metadata");
 }
 
-// Assert that a built path stays inside the expected base directory before it is
 // used in a filesystem write. snapshotId/recordedAt are already validated by
 // validateObjectiveStateSnapshot, so for valid data this is a defense-in-depth
 // barrier (and makes the containment provable to CodeQL js/path-injection).

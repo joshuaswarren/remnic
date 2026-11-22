@@ -41,7 +41,6 @@ test("query --json keeps log.info off stdout so JSON.parse succeeds", async (t) 
 
 const INSECURE_HTTP_WARNING = /openaiBaseUrl from config is using insecure http/;
 
-/** A fresh `remnic` process starts with a no-op logger; earlier tests in this process installed a real one. */
 const SILENT_LOGGER = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
 
 async function runBriefingWithInsecureConfig(args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {

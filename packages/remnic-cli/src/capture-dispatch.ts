@@ -1,14 +1,5 @@
 // ---------------------------------------------------------------------------
-// `remnic capture audio <subcommand>` passthrough (issue #1897)
-// ---------------------------------------------------------------------------
 //
-// `@remnic/capture-audio` is an à-la-carte optional package: installing the
-// CLI alone never pulls it in. This dispatcher forwards
-// `remnic capture audio <sub> [args...]` to the package's `runCapture`,
-// loaded lazily via a computed-specifier dynamic import so the bundler
-// leaves it as a runtime call. When the package is absent we surface a
-// clean install hint (AGENTS.md §44 / #1897 AC), never a bare
-// MODULE_NOT_FOUND.
 
 import { isSpecifierNotFoundError } from "./optional-module-loader.js";
 
@@ -75,9 +66,6 @@ export async function cmdCapture(rest: string[], io: CaptureDispatchIO): Promise
     io.stderr(err instanceof Error ? err.message : String(err));
     return 2;
   }
-  // Tell the daemon how to re-launch itself when it backgrounds into
-  // --foreground: as `remnic capture audio ...`, not the bare `remnic` bin
-  // (process.argv[1] here is the remnic CLI entrypoint).
   return mod.runCapture({
     argv: forwarded,
     stdout: io.stdout,

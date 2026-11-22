@@ -20,8 +20,6 @@ test("every state-view task passes in enabled mode (labels + anchoring)", () => 
 });
 
 test("enabled mode beats baseline exactly where history exists", () => {
-  // The delta between modes is the labeled history rows — never a change to
-  // which current rows surface.
   for (const task of STATE_VIEW_TASKS) {
     const baseline = runStateViewTask(task, { enabled: false });
     const enabled = runStateViewTask(task, { enabled: true });
@@ -61,7 +59,6 @@ test("bench tasks exercise the shared core annotator directly (no drift)", () =>
       ["db-v3", "current"],
     ],
   );
-  // Render contract the formatter applies to labeled rows.
   assert.equal(
     formatSupersededPrefix("2026-04-01", "db-v2"),
     "[superseded 2026-04-01 by db-v2]",

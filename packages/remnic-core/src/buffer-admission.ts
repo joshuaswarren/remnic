@@ -1,4 +1,3 @@
-/** Buffer session-entry admission: refusal errors and the live-admission probe. */
 
 import { selectEvictedBufferKeys, type BufferEvictionHooks } from "./buffer-eviction.js";
 import type { BufferEntryState } from "./types.js";
@@ -55,11 +54,6 @@ export class StorageTargetRequiredError extends Error {
   }
 }
 
-/**
- * Live-admission bound (#1908 policy, backlog-safe): a NEW session enters
- * only while under the cap or when an EMPTY entry can be reclaimed. Buffered
- * backlog is never dropped for a live capture; the caller refuses instead.
- */
 export function canAdmitNewEntryUnlocked(
   entries: Readonly<Record<string, BufferEntryState>>,
   bufferKey: string,
@@ -68,7 +62,5 @@ export function canAdmitNewEntryUnlocked(
 ): boolean {
   const count = Object.keys(entries).length;
   if (count < maxSessionEntries) return true;
-  // Probe post-admission (as if this key had landed): admission is safe
-  // exactly when an EMPTY entry could then be reclaimed.
   return selectEvictedBufferKeys(entries, [bufferKey], Math.max(0, count - 1), hooks).length > 0;
 }

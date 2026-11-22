@@ -1,23 +1,7 @@
 // ---------------------------------------------------------------------------
-// ChatGPT parsed → ImportedMemory transform (issue #568 slice 2)
-// ---------------------------------------------------------------------------
 //
-// Two shapes of memory come out of a ChatGPT export:
 //
-//   1. Saved memories — first-person facts the user confirmed. 1:1 mapping:
-//      every entry becomes one `ImportedMemory`. This is the default.
-//   2. Conversation summaries — only produced when the caller opts in via
-//      `includeConversations: true`. Each conversation is reduced to a
-//      single "user said X, Y, Z" summary (user-side turns concatenated),
-//      not uploaded verbatim. The rationale is that the conversation
-//      bodies mix transient and durable content, and the extraction
-//      pipeline downstream will score them — but we need SOMETHING
-//      coherent to hand it. One memory per conversation keeps the import
-//      footprint bounded when users have thousands of chats.
 //
-// The adapter runs `parse()` first, then `transform()` produces the final
-// `ImportedMemory[]`. Provenance (sourceLabel, importedFromPath, metadata)
-// is attached here; `runImporter` stamps `importedAt`.
 
 import type { ImportedMemory } from "@remnic/core";
 

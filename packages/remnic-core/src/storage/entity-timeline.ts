@@ -1,8 +1,3 @@
-// Entity timeline / structured-section pure helpers extracted from storage.ts
-// (issue #1909 PR write-hot-paths). Pure functions only — no I/O — so they are
-// safe to share across the write path and entity parsing without circular
-// runtime coupling. storage.ts imports these back and re-exports the ones that
-// were previously part of its public API.
 import { createHash } from "node:crypto";
 import { matchEntitySchemaSection, normalizeEntityStructuredSection } from "../entity-schema.js";
 import type { EntityFile, EntityStructuredSection, EntityTimelineEntry, PluginConfig } from "../types.js";

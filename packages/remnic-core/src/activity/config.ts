@@ -74,13 +74,6 @@ function parseUnitInterval(value: unknown, key: string, fallback: number): numbe
   return parsed;
 }
 
-/**
- * Parse, protocol-check, and confine an activity source base URL to a local
- * loopback host. Shared with ActivityHttpSourceClient so config-load and client
- * construction reject the exact same shapes with the same prefixed message. The
- * bearer token travels in an Authorization header, so a non-loopback baseUrl
- * would exfiltrate it; the subsystem contract is local capture daemons only.
- */
 export function validateActivityBaseUrl(baseUrl: string): URL {
   let parsed: URL;
   try {
@@ -91,7 +84,6 @@ export function validateActivityBaseUrl(baseUrl: string): URL {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new RangeError("activity source baseUrl must use HTTP or HTTPS");
   }
-  // Shared classification (brackets, 127.0.0.0/8, *.localhost, mapped v4).
   if (!isLoopbackHost(parsed.hostname)) {
     throw new RangeError(`activity source baseUrl must target a loopback host (got ${parsed.hostname})`);
   }
@@ -105,9 +97,6 @@ function parseSource(value: unknown): ActivitySourceConfig {
   if (machineLabel === undefined || baseUrl === undefined) {
     throw new TypeError("activity source requires machineLabel and baseUrl");
   }
-  // Reject whitespace-only labels here so config-load fails loudly rather than
-  // parsing clean and then failing on the first sync (the client and pipeline
-  // both reject a blank label via trim()).
   if (machineLabel.trim().length === 0) {
     throw new RangeError("activity source machineLabel must not be blank");
   }
@@ -132,9 +121,6 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
     throw new TypeError("activity.enabled must be a boolean");
   }
   const timezone = optionalString(config.timezone, "activity.timezone") ?? "UTC";
-  // Validate the IANA zone at parse so a typo fails before any daemon is
-  // contacted; otherwise activityDayWindow() throws mid-sync after snapshot
-  // pages may already be persisted, and every retry replays the same window.
   assertValidTimezone(timezone);
   const syncDaysValue = coerceNumber(config.syncDays, "activity.syncDays");
   if (config.syncDays !== undefined && syncDaysValue === undefined) {
@@ -156,9 +142,6 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
     throw new TypeError("activity.sources must be an array");
   }
   const sources = (config.sources ?? []).map(parseSource);
-  // Cursors and row dedup are keyed on machineLabel alone; two sources sharing
-  // a label would share a cursor and dedup namespace, silently skipping or
-  // conflating snapshots. Reject the collision at parse.
   const labels = new Set<string>();
   for (const source of sources) {
     if (labels.has(source.machineLabel)) {
@@ -169,9 +152,6 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
   const enabled = enabledValue ?? false;
   if (enabled && sources.length === 0) throw new RangeError("activity.enabled requires at least one source");
 
-  // Extraction gate (independent of `enabled` ingestion). Default `off`.
-  // Default only for a missing key; an explicit null/non-string is a malformed
-  // enum and must fail rather than silently disabling extraction.
   const extractionMode = config.extractionMode === undefined ? defaults.extractionMode : config.extractionMode;
   if (typeof extractionMode !== "string" || !EXTRACTION_MODES.includes(extractionMode as ActivityExtractionMode)) {
     throw new RangeError(`activity.extractionMode must be one of: ${EXTRACTION_MODES.join(", ")}`);
@@ -180,8 +160,6 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
   if (typeof minImportance !== "string" || !IMPORTANCE_LEVELS.includes(minImportance as ImportanceLevel)) {
     throw new RangeError(`activity.minImportance must be one of: ${IMPORTANCE_LEVELS.join(", ")}`);
   }
-  // Default only for a missing key; an explicit null/unparseable value must fail
-  // rather than silently uncapping (parity with the enum/unit-interval fields).
   const rawMaxMemoriesPerDay =
     config.maxMemoriesPerDay === undefined ? defaults.maxMemoriesPerDay : config.maxMemoriesPerDay;
   const maxMemoriesPerDay = coerceNumber(rawMaxMemoriesPerDay);
@@ -258,8 +236,6 @@ function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
     }
   }
   if (journal.source === "vault") {
-    // Parse-time prerequisite gate (issue #1987): the error names EVERY
-    // missing prerequisite, never just the first (§1/§39).
     const prereq = checkVaultJournalPrerequisites({
       vaultEnabled: vault.enabled,
       dailyNotePath: vault.dailyNotePath,
@@ -376,10 +352,6 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
   const noteTemplate = optionalNonEmptyString(vault.noteTemplate, "activity.timeline.vault.noteTemplate") ?? "";
   const insertUnderHeading =
     optionalNonEmptyString(vault.insertUnderHeading, "activity.timeline.vault.insertUnderHeading") ?? "";
-  // The configured insertion heading is matched against parsed note
-  // headings, so a blank, padded, or multi-line value can never match
-  // (issue #2917). Reuse the journal work's canonical heading validator —
-  // no second parser — and require the trimmed form like publish sections.
   if (insertUnderHeading.length > 0) {
     const heading = normalizeJournalHeading(insertUnderHeading);
     if (!heading.ok || heading.heading !== insertUnderHeading) {
@@ -465,10 +437,6 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
     (readbackRaw as Record<string, unknown> | undefined)?.journalSection,
     "activity.timeline.vault.readback.journalSection",
   );
-  // Readback matches the section by parsed heading text, so a padded or
-  // multi-line journalSection can never match and would silently read back
-  // an empty journal (issue #2917). Same canonical validator as the legacy
-  // journal.heading alias.
   if (readbackJournalSection !== undefined && readbackJournalSection.length > 0) {
     const heading = normalizeJournalHeading(readbackJournalSection);
     if (!heading.ok || heading.heading !== readbackJournalSection) {
@@ -548,8 +516,6 @@ function parseVaultPublishBlock(
     throw new TypeError("activity.timeline.vault.publish must be an object");
   }
   const block = raw as Record<string, unknown>;
-  // Each kind is read at its literal path so the config-contract extractor
-  // can attribute publish.<kind>.<leaf> to real parse sites (§40).
   const publish = {
     timeline: parseVaultTarget(block.timeline, "timeline", defaults.timeline, weeklyNotePath),
     standup: parseVaultTarget(block.standup, "standup", defaults.standup, weeklyNotePath),
@@ -590,18 +556,11 @@ function parseVaultTarget(
   if (typeof section !== "string" || section.trim().length === 0 || section !== section.trim()) {
     throw new RangeError(`activity.timeline.vault.publish.${kind}.section must be a non-empty trimmed string`);
   }
-  // The accepted config domain must equal what the publisher accepts: a name
-  // containing `-->` or a line break passes the trimmed-string check above
-  // but is rejected downstream by `publishVaultNote`, which would turn an
-  // apparently valid config into a runtime failure.
   if (!validateRegionName(section).ok) {
     throw new RangeError(
       `activity.timeline.vault.publish.${kind}.section must not contain a line break or "-->"`,
     );
   }
-  // The path is required only by an entry that will actually publish to the
-  // weekly file; a disabled entry must load the same whether its object is
-  // explicit (serialized schema default) or omitted entirely.
   if (enabled && target === "weekly" && weeklyNotePath.length === 0) {
     throw new RangeError(
       `activity.timeline.vault.publish.${kind}.target is "weekly" but activity.timeline.vault.weeklyNotePath is empty; configure weeklyNotePath first`,

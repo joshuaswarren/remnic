@@ -1,12 +1,3 @@
-/**
- * Budgeted REFINE/EXPAND/STOP loop (issue #2332 first slice).
- *
- * Pure state stepper. Policy is injected. No LLM, no orchestrator recall,
- * no IO. Surfaces and parseConfig wait for a later PR — config.ts is at
- * its fileSizeGrandfather ceiling.
- *
- * Budget 0 stops without calling the policy. Unknown actions throw.
- */
 export const DEEP_RECALL_ACTIONS = ["refine", "expand", "stop"] as const;
 
 export type DeepRecallAction = (typeof DEEP_RECALL_ACTIONS)[number];

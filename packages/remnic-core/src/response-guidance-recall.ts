@@ -169,13 +169,6 @@ export async function buildResponseGuidanceRecallSection(
   ) {
     return "";
   }
-  // #1505 codex P2: gather candidates across the ordered LCM read key set
-  // (primary overlay → project/root fallbacks) and UNION them into the existing
-  // rank/dedupe/budget pass, so stronger project-fallback guidance is not masked
-  // by a weak primary-key hit. `gatherAcrossReadSessions` isolates a per-key read
-  // failure so a corrupt/locked fallback index can't discard the primary key's
-  // guidance; the single-key path collects exactly once and propagates a failure
-  // as before — byte-for-byte the pre-#1505 behavior.
   const items: EvidencePackItem[] = [];
   await gatherAcrossReadSessions(resolveLcmReadSessionIds(options), async (sessionId) => {
     items.push(...(await collectGuidanceItems({ ...options, sessionId }, intents)));
@@ -350,31 +343,11 @@ async function collectGuidanceScanItems(
   return items;
 }
 
-/**
- * Issue #1539 PR4: response-guidance now routes dedup/score/threshold/sort through
- * the unified spine (`unifiedDedupeAndRank`). The divergence that lived inline
- * here — append-guidance-cues content transform (two-arg: content + intents),
- * relevance scoring on ORIGINAL content, default DESC turn-index ordering with
- * -1 sentinel for missing turns — is now declared config on the spine. The score
- * and appendGuidanceCues helpers stay in this module because they are genuinely
- * per-tier policy; only the duplicated dedup/sort/threshold machinery moved out.
- *
- * Behavior is byte-for-byte identical to the inline implementation it replaces
- * (the spine was extracted to match it exactly; see recall-pipeline-stages.ts).
- * The response-guidance-recall.test.ts suite is the characterization.
- *
- * Note: response-guidance (like the pre-migration code) dedups on the TRANSFORMED
- * (cue-appended) content, not the original — this matches the spine's default
- * (transform-then-dedup) exactly. No divergence from prior behavior.
- */
 function rankAndDedupeGuidanceItems(
   items: EvidencePackItem[],
   query: string,
   intents: readonly GuidanceIntent[],
 ): RankedEvidenceItem[] {
-  // The spine's config.intents is typed TIntent[] (readability contract — it is
-  // never mutated). Cast the readonly array through; safe because the spine only
-  // forwards intents to the score/transform callbacks.
   const mutableIntents = intents as GuidanceIntent[];
   return unifiedDedupeAndRank(items, {
     query,

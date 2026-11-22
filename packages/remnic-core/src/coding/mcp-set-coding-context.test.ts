@@ -37,7 +37,6 @@ function makeMcp(): {
   return { mcp, calls };
 }
 
-// Helper — bypass JSON-RPC layer.
 async function call(mcp: EngramMcpServer, name: string, args: Record<string, unknown>): Promise<unknown> {
   const anyMcp = mcp as unknown as {
     callTool(n: string, a: Record<string, unknown>): Promise<unknown>;
@@ -45,8 +44,6 @@ async function call(mcp: EngramMcpServer, name: string, args: Record<string, unk
   return anyMcp.callTool(name, args);
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Tool listing — advertises both canonical and legacy names
 // ──────────────────────────────────────────────────────────────────────────
 
 test("engram.set_coding_context is listed in the tool catalogue", () => {
@@ -60,7 +57,6 @@ test("engram.set_coding_context is listed in the tool catalogue", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Happy path
 // ──────────────────────────────────────────────────────────────────────────
 
 test("engram.set_coding_context: attaches a full context", async () => {
@@ -107,7 +103,6 @@ test("engram.set_coding_context: branch=null (detached HEAD) accepted", async ()
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Canonical alias — remnic.set_coding_context resolves to the same handler
 // ──────────────────────────────────────────────────────────────────────────
 
 test("remnic.set_coding_context: canonical name is aliased to the engram.* handler", async () => {
@@ -127,7 +122,6 @@ test("remnic.set_coding_context: canonical name is aliased to the engram.* handl
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Validation — CLAUDE.md #51
 // ──────────────────────────────────────────────────────────────────────────
 
 test("engram.set_coding_context: empty sessionKey → throws EngramAccessInputError", async () => {

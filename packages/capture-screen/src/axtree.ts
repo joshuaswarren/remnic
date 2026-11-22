@@ -1,19 +1,3 @@
-/**
- * Accessibility-tree text extraction. Walks a macOS AX-tree JSON snapshot and
- * concatenates the visible text, with three safety filters baked in:
- *
- *   - AXSecureTextField nodes are skipped entirely (never read a password box),
- *     including their subtree.
- *   - Off-screen nodes (`offScreen: true`) are skipped with their subtree — text
- *     the user cannot see is not "on screen".
- *   - Traversal is bounded to `maxNodes` visited nodes, so a pathological tree
- *     cannot exhaust memory/CPU; the result is flagged `truncated` when the cap
- *     is hit.
- *
- * The shape is intentionally permissive: real AX dumps carry many roles and the
- * text can live on any of value/title/description/label. Unknown fields are
- * ignored.
- */
 
 export const SECURE_ROLE = "AXSecureTextField";
 

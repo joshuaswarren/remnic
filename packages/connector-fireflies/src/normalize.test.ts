@@ -9,7 +9,6 @@ import {
 } from "./normalize.js";
 
 test("maps sentences to segments with absolute UTC times from the meeting start", () => {
-  // 2026-03-10T14:00:00Z in epoch ms.
   const start = Date.parse("2026-03-10T14:00:00.000Z");
   const transcript: FirefliesTranscript = {
     id: "t1",
@@ -48,7 +47,6 @@ test("accepts an ISO string meeting date", () => {
   };
   const conv = transcriptToConversation(transcript);
   assert.equal(conv.startIso, "2026-03-10T14:00:00.000Z");
-  // No speaker_name → key falls back to the string speaker id.
   assert.equal(conv.segments[0]?.speakerKey, "3");
   assert.equal(conv.segments[0]?.speakerName, undefined);
 });

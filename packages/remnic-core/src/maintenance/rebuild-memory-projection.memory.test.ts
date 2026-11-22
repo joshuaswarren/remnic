@@ -1,12 +1,3 @@
-/**
- * Heap regression for the scheduled projection rebuild.
- *
- * About 20k synthetic facts (~2 KB each) and a 100k-line lifecycle ledger are
- * rebuilt once under `--max-old-space-size=192` and once with the default
- * heap. Row counts and the SHA-256 of the projection rows must match. The
- * child is a fresh process so the fixture writer does not share its heap
- * with the rebuild.
- */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";

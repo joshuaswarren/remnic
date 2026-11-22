@@ -7,8 +7,6 @@ import {
 } from "./recall-navigate-disclosure.js";
 import { RECALL_DISCLOSURE_LEVELS } from "./types.js";
 
-// The declared input type is strings; agents send arbitrary JSON. Cast only
-// at this boundary so the invalid-shape cases stay one line each.
 const plan = (from: unknown, to: unknown) =>
   planDisclosureStep({ from, to } as unknown as { from: string; to: string });
 

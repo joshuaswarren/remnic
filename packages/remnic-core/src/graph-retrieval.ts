@@ -20,8 +20,6 @@
  */
 
 // ---------------------------------------------------------------------------
-// Node & edge type enums
-// ---------------------------------------------------------------------------
 
 /**
  * Kinds of nodes the retrieval graph can hold.
@@ -69,7 +67,6 @@ export type EdgeType =
   | "related-to";
 
 // ---------------------------------------------------------------------------
-// Graph element shapes
 // ---------------------------------------------------------------------------
 
 /**
@@ -122,7 +119,6 @@ export interface RemnicGraph {
 }
 
 // ---------------------------------------------------------------------------
-// Query surface (stub)
 // ---------------------------------------------------------------------------
 
 /**
@@ -161,17 +157,11 @@ export interface QueryGraphOptions {
   seedWeights?: ReadonlyMap<string, number> | Readonly<Record<string, number>>;
 }
 
-/**
- * A scored node returned by `queryGraph()`.
- */
 export interface RankedGraphNode {
   id: string;
   score: number;
 }
 
-/**
- * The shape returned by `queryGraph()`.
- */
 export interface QueryGraphResult {
   rankedNodes: RankedGraphNode[];
   /** Number of power-iteration rounds actually executed. */
@@ -180,11 +170,8 @@ export interface QueryGraphResult {
   converged: boolean;
 }
 
-/** PPR damping factor default. */
 export const DEFAULT_PPR_DAMPING = 0.85;
-/** Power-iteration cap default. */
 export const DEFAULT_PPR_ITERATIONS = 20;
-/** L1 convergence threshold default. */
 export const DEFAULT_PPR_TOLERANCE = 1e-6;
 
 /**
@@ -229,10 +216,6 @@ function buildSeedVector(
 
   const explicitWeights = normalizeSeedWeights(options.seedWeights);
   if (explicitWeights.size > 0) {
-    // Restrict weight keys to the declared seed set (or, if empty, to
-    // graph nodes). Documented contract in `QueryGraphOptions.seedWeights`:
-    // keys must appear in `seedIds` — unrelated / stale weight entries
-    // must not silently override the requested personalization.
     const allowedKeys =
       seedIds.length > 0
         ? new Set(seedIds.filter((id) => typeof id === "string"))
@@ -251,10 +234,6 @@ function buildSeedVector(
     seed.clear();
   }
 
-  // Deduplicate before computing shares — `["a", "a", "b"]` must behave
-  // identically to `["a", "b"]`. Computing `share` against a de-duped set
-  // is the only way to guarantee that; renormalizing after the fact is
-  // a no-op because the pre-dedup shares already sum to 1.
   const validSeeds = new Set<string>();
   for (const id of seedIds) {
     if (typeof id === "string" && graph.nodes.has(id)) validSeeds.add(id);
@@ -265,7 +244,6 @@ function buildSeedVector(
     return seed;
   }
 
-  // Uniform fallback over all graph nodes.
   if (graph.nodes.size > 0) {
     const share = 1 / graph.nodes.size;
     for (const id of graph.nodes.keys()) seed.set(id, share);
@@ -347,7 +325,6 @@ export function queryGraph(
     return { rankedNodes: [], iterations: 0, converged: true };
   }
 
-  // Clamp options.
   let damping = typeof options.damping === "number" ? options.damping : DEFAULT_PPR_DAMPING;
   if (!Number.isFinite(damping) || damping < 0) damping = 0;
   if (damping >= 1) damping = 1 - 1e-9;
@@ -360,13 +337,6 @@ export function queryGraph(
 
   const seed = buildSeedVector(graph, seedIds, options);
 
-  // Apply `RemnicGraphNode.weight` as a starting-rank prior — BUT only
-  // when the caller did not supply explicit `seedWeights`. Explicit
-  // caller-supplied weights must not be silently re-biased by node
-  // priors (would double-count and contradict the documented contract
-  // for `seedWeights`). When no explicit weights are given, multiply
-  // each seed entry by its node weight (defaulting missing / non-
-  // positive / non-finite weights to 1) and renormalize.
   const hasExplicitWeights =
     options.seedWeights !== undefined && options.seedWeights !== null;
   if (!hasExplicitWeights) {
@@ -391,7 +361,6 @@ export function queryGraph(
 
   const { outgoing, outSum } = buildAdjacency(graph);
 
-  // Initialize rank vector = seed.
   let rank = new Map<string, number>();
   for (const id of graph.nodes.keys()) rank.set(id, seed.get(id) ?? 0);
   // If the seed vector is empty (e.g. graph has no nodes matching seeds
@@ -408,20 +377,16 @@ export function queryGraph(
   for (; iter < maxIter; iter++) {
     const next = new Map<string, number>();
 
-    // Sum of rank on dangling nodes (no outgoing edges) — redistribute
-    // proportional to the seed vector to conserve probability mass.
     let danglingMass = 0;
     for (const [id, r] of rank) {
       if ((outSum.get(id) ?? 0) === 0) danglingMass += r;
     }
 
-    // Teleport contribution: (1 - d) * s(v) + d * danglingMass * s(v).
     const teleportScale = 1 - damping + damping * danglingMass;
     for (const [id, s] of seed) {
       next.set(id, (next.get(id) ?? 0) + teleportScale * s);
     }
 
-    // Edge contribution: d * r(u) * w(u,v) / Σ w(u,·).
     for (const [from, edges] of outgoing) {
       const r = rank.get(from) ?? 0;
       if (r === 0) continue;
@@ -433,7 +398,6 @@ export function queryGraph(
       }
     }
 
-    // Compute L1 delta.
     let delta = 0;
     for (const id of graph.nodes.keys()) {
       delta += Math.abs((next.get(id) ?? 0) - (rank.get(id) ?? 0));
@@ -447,12 +411,10 @@ export function queryGraph(
     }
   }
 
-  // Rank and trim.
   const ranked: RankedGraphNode[] = [];
   for (const [id, score] of rank) {
     if (score > 0) ranked.push({ id, score });
   }
-  // Sort by descending score, ties broken by id for determinism.
   ranked.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
@@ -476,7 +438,6 @@ export function queryGraph(
 }
 
 // ---------------------------------------------------------------------------
-// Type guards (useful for defensive construction from untyped JSON)
 // ---------------------------------------------------------------------------
 
 const NODE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>([
@@ -497,18 +458,15 @@ const EDGE_TYPES: ReadonlySet<EdgeType> = new Set<EdgeType>([
   "related-to",
 ]);
 
-/** Returns true iff `value` is a valid `NodeType`. */
 export function isNodeType(value: unknown): value is NodeType {
   return typeof value === "string" && NODE_TYPES.has(value as NodeType);
 }
 
-/** Returns true iff `value` is a valid `EdgeType`. */
 export function isEdgeType(value: unknown): value is EdgeType {
   return typeof value === "string" && EDGE_TYPES.has(value as EdgeType);
 }
 
 // ---------------------------------------------------------------------------
-// Edge extraction (issue #559, PR 2 of 5)
 // ---------------------------------------------------------------------------
 
 /**
@@ -539,7 +497,6 @@ export interface MemoryEdgeSource {
   content?: string;
 }
 
-/** Options controlling edge extraction. */
 export interface ExtractGraphEdgesOptions {
   /**
    * When true, include edges whose `to` endpoint is not present in the
@@ -556,11 +513,6 @@ export interface ExtractGraphEdgesOptions {
  * template configuration — it only recognizes the default shape plus minor
  * whitespace / ordering variants.
  */
-// Non-greedy quantifiers on classes like `[^\]\n]+?` can be polynomial on
-// pathological inputs (CodeQL rule js/polynomial-redos). Using a greedy
-// quantifier with a negated character class that also excludes `[` prevents
-// nested-bracket inputs from forcing catastrophic backtracking, and the `\s*`
-// after `Source:` is bounded by the terminal `]`.
 const CITATION_REGEX = /\[Source:([^\]\n[]+)\]/gi;
 
 /**
@@ -594,7 +546,6 @@ function stripDerivedFromVersion(ref: string): string {
   if (colon < 0) return ref;
   const tail = ref.slice(colon + 1);
   if (tail.length === 0) return ref.slice(0, colon);
-  // Only strip when the tail is purely numeric; otherwise keep the full ref.
   if (/^\d+$/.test(tail)) return ref.slice(0, colon);
   return ref;
 }
@@ -634,8 +585,6 @@ export function extractGraphEdges(
 
   const nodes = new Map<string, RemnicGraphNode>();
   const edges: RemnicGraphEdge[] = [];
-  // Dedupe within this extraction pass. Key is `${from}\u0000${to}\u0000${type}`
-  // — using a NUL separator avoids collisions with ids that contain `|`.
   const seenEdgeKeys = new Set<string>();
 
   const addNode = (id: string, type: NodeType) => {
@@ -650,28 +599,14 @@ export function extractGraphEdges(
     edges.push({ from, to, type });
   };
 
-  // First pass — register every memory as a node so cross-references can
-  // resolve regardless of input ordering.
   for (const memory of memories) {
     if (!memory?.id) continue;
     addNode(memory.id, "memory");
   }
 
-  // Pre-scan every memory for entity / agent references so the
-  // memory-target guard can reject ids that are "claimed" by entity
-  // mentions in the same batch — regardless of iteration order.
-  // Without this, with `includeDanglingEdges: true`, processing
-  // `{supersedes: "shared"}` before `{entityRef: "shared"}` would
-  // materialize a memory node for "shared" and then the later entity
-  // mention would be silently dropped (and vice versa), producing
-  // order-dependent output.
   const entityClaimed = new Set<string>();
   for (const memory of memories) {
     if (!memory?.id) continue;
-    // Do not mark the memory's own id as entity-claimed just because it
-    // carries an entityRef — the memory node takes precedence over its
-    // own mention (which is impossible anyway; the edge would be a
-    // self-loop and is dropped).
     if (typeof memory.entityRef === "string" && memory.entityRef) {
       if (memory.entityRef !== memory.id) entityClaimed.add(memory.entityRef);
     }
@@ -695,33 +630,15 @@ export function extractGraphEdges(
       }
     }
   }
-  // Ids claimed by both roles (memory + entity) stay memory — an
-  // explicit memory node with a given id always wins over an entity
-  // mention of the same id in a different memory. Drop any memory ids
-  // out of `entityClaimed` so the memory-target guard does not reject
-  // cross-memory supersedes / lineage references to them.
   for (const memory of memories) {
     if (memory?.id) entityClaimed.delete(memory.id);
   }
 
-  // Second pass — walk each memory's relationship fields.
   for (const memory of memories) {
     if (!memory?.id) continue;
     const from = memory.id;
 
-    // `supersedes`, `lineage`, and `derived_from` edges must point at a
-    // memory node specifically — never an entity / episode / concept /
-    // reflection node that happens to share an id. The guard applies
-    // regardless of `includeDanglingEdges`:
     //
-    //   - If the target is already registered under a non-memory type,
-    //     reject the edge (type mismatch).
-    //   - If the target will be claimed by an entity mention in this
-    //     batch (pre-scan above), reject the edge.
-    //   - If the target is not yet known and is not entity-claimed,
-    //     accept only when `includeDanglingEdges` is `true`. A new
-    //     memory node is registered for the dangling reference.
-    //   - If the target is already registered as a memory, accept.
     const canTargetMemory = (id: string): boolean => {
       const existing = nodes.get(id);
       if (existing !== undefined) return existing.type === "memory";
@@ -729,7 +646,6 @@ export function extractGraphEdges(
       return includeDangling;
     };
 
-    // supersedes: memory → older memory
     if (typeof memory.supersedes === "string" && memory.supersedes) {
       const to = memory.supersedes;
       if (canTargetMemory(to)) {
@@ -738,7 +654,6 @@ export function extractGraphEdges(
       }
     }
 
-    // lineage: memory → each parent memory
     if (Array.isArray(memory.lineage)) {
       for (const parent of memory.lineage) {
         if (typeof parent !== "string" || !parent) continue;
@@ -748,7 +663,6 @@ export function extractGraphEdges(
       }
     }
 
-    // derived_from: memory → parent memory (strip `:<version>` suffix)
     if (Array.isArray(memory.derived_from)) {
       for (const raw of memory.derived_from) {
         if (typeof raw !== "string" || !raw) continue;
@@ -760,11 +674,6 @@ export function extractGraphEdges(
       }
     }
 
-    // entityRef / entityRefs: memory → entity. The target must either be
-    // absent (we register a new entity node) or already an entity node
-    // (no type conflict). If the id is already a memory node, drop the
-    // edge rather than mis-typing it — the extractor never mutates an
-    // existing node's type.
     const entitySet = new Set<string>();
     if (typeof memory.entityRef === "string" && memory.entityRef) {
       entitySet.add(memory.entityRef);
@@ -781,8 +690,6 @@ export function extractGraphEdges(
       addEdge(from, ref, "mentions");
     }
 
-    // Inline [Source: agent=..., ...] citations → authored-by edge.
-    // Same type-collision guard as the entity block above.
     if (typeof memory.content === "string" && memory.content.length > 0) {
       // Reset the regex's lastIndex on each memory since it is a global regex.
       CITATION_REGEX.lastIndex = 0;

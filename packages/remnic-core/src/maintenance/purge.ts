@@ -142,7 +142,6 @@ export async function purgeMemories(
   const now = (options.now ?? (() => new Date()))();
   const nowMs = now.getTime();
 
-  // Collect all memories from applicable tiers
   const [hotMemories, coldMemories, archivedMemories] = await Promise.all([
     tier === "all" ? storage.readAllMemories() : Promise.resolve([]),
     storage.readAllColdMemories(),
@@ -163,7 +162,6 @@ export async function purgeMemories(
     poolEntries.push({ memory: m, resolvedTier: "cold" });
   }
 
-  // Build candidate list
   const candidates: PurgeCandidate[] = [];
   const candidateMemoriesByPath = new Map<string, MemoryFile>();
   for (const { memory, resolvedTier } of poolEntries) {
@@ -206,7 +204,6 @@ export async function purgeMemories(
     };
   }
 
-  // Hard-delete phase
   const errors: Array<{ id: string; path: string; error: string }> = [];
   try {
     await logPurgeAudit(storage, candidates, now, "PURGE_DELETE_INTENT");
@@ -284,7 +281,6 @@ export async function purgeMemories(
     (storage as unknown as { invalidateAllMemoriesCacheForDir: () => void }).invalidateAllMemoriesCacheForDir();
   }
 
-  // Update QMD index for affected collections
   if (qmd) {
     for (const collection of collectionsToUpdate) {
       try {
@@ -294,7 +290,6 @@ export async function purgeMemories(
           await qmd.updateCollection(collection, { signal: options.signal });
         }
       } catch (indexErr) {
-        // Non-fatal — operator can re-index manually
         errors.push({
           id: "(qmd-update)",
           path: collection,

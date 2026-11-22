@@ -145,8 +145,6 @@ test("merges consecutive same-speaker runs across diarized speakers", () => {
     ]),
     ALL_ON,
   );
-  // Three runs: 0+0, 1+1, 0. Generic-label protection is off here, so
-  // diarized same-speaker adjacency merges within the gap.
   assert.equal(result.conversation.segments.length, 3);
   assert.equal(result.conversation.segments[0].text, "Hello there. How are you?");
   assert.equal(result.conversation.segments[1].text, "Good, thanks. And you?");
@@ -166,7 +164,6 @@ test("preserveUtteranceBoundaries keeps generic-labeled utterances distinct (#18
     ]),
     settings,
   );
-  // Generic "unknown"/"Unknown" utterances are NOT merged into one block.
   assert.equal(result.conversation.segments.length, 4);
   assert.deepEqual(
     result.conversation.segments.map((segment) => segment.text),
@@ -176,8 +173,6 @@ test("preserveUtteranceBoundaries keeps generic-labeled utterances distinct (#18
 });
 
 test("preserveUtteranceBoundaries default (off) still collapses generic labels", () => {
-  // The flag is opt-in: without it the legacy merge-everything behavior
-  // is unchanged for sources that never set it.
   const result = cleanConversation(
     conversation([
       { speakerKey: "unknown", text: "First.", startIso: "2026-06-10T10:00:00Z", endIso: "2026-06-10T10:00:02Z" },
@@ -208,7 +203,6 @@ test("strips Korean and Cyrillic filler tokens as whole tokens", () => {
 
 test("never strips a filler lookalike inside a longer token", () => {
   assert.equal(stripFillerTokens("the umbrella is uhh wet"), "the umbrella is wet");
-  // "음" also occurs inside ordinary Korean words; only the whole token goes.
   assert.equal(stripFillerTokens("다음 회의"), "다음 회의");
 });
 
@@ -246,8 +240,6 @@ test("matcher cache keys distinguish differently-shaped token lists", () => {
 });
 
 test("a Hebrew operator token is a whole token, never a substring", () => {
-  // Hebrew spaces its words, so an inline match would strip the suffix of
-  // an ordinary word and corrupt the transcript.
   assert.equal(stripFillerTokens("נראה טוב", ["אה"]), "נראה טוב");
   assert.equal(stripFillerTokens("אה טוב", ["אה"]), "טוב");
 });
@@ -256,6 +248,5 @@ test("a decomposed accented filler is stripped without rewriting the rest", () =
   const decomposed = "a\u0308hm weiter mit dem cafe\u0301";
   const cleaned = stripFillerTokens(decomposed);
   assert.equal(cleaned, "weiter mit dem cafe\u0301");
-  // The surviving text keeps the ASR's own bytes: no NFC rewrite.
   assert.ok(cleaned.includes("\u0301"));
 });

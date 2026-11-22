@@ -1,7 +1,3 @@
-/**
- * Procedural memory types (issue #519).
- * Bodies use ordered "## Step N" sections; machine fields live in frontmatter / structuredAttributes.
- */
 
 export interface ProcedureStep {
   order: number;
@@ -14,7 +10,6 @@ export interface ProcedureStep {
   optional?: boolean;
 }
 
-/** Normalize loose extraction JSON into ProcedureStep records. */
 export function normalizeProcedureSteps(raw: unknown): ProcedureStep[] {
   if (!Array.isArray(raw)) return [];
   const out: ProcedureStep[] = [];
@@ -49,7 +44,6 @@ export function normalizeProcedureSteps(raw: unknown): ProcedureStep[] {
   return out;
 }
 
-/** Title line plus serialized steps for storage.writeMemory body. */
 export function buildProcedurePersistBody(title: string, procedureSteps: unknown): string {
   const head = typeof title === "string" ? title.trim() : "";
   const steps = normalizeProcedureSteps(procedureSteps);
@@ -57,7 +51,6 @@ export function buildProcedurePersistBody(title: string, procedureSteps: unknown
   return `${head}\n\n${buildProcedureMarkdownBody(steps)}`.trimEnd() + "\n";
 }
 
-/** Serialize steps into markdown body (human-editable). */
 export function buildProcedureMarkdownBody(steps: ProcedureStep[]): string {
   const sorted = [...steps].sort((a, b) => a.order - b.order);
   const lines: string[] = [];

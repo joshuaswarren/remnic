@@ -62,7 +62,6 @@ function parseTimestamp(value: unknown, where: string): string {
   if (probe.getUTCFullYear() !== cy || probe.getUTCMonth() !== cm - 1 || probe.getUTCDate() !== cd) {
     throw new CaptureConfigError(`${where}: '${value}' is not a real calendar date`);
   }
-  // Canonicalize to UTC (Z) so an offset instant sorts correctly under the keyset.
   return new Date(value).toISOString();
 }
 
@@ -115,7 +114,6 @@ function listFixtureFiles(dir: string): string[] {
   return entries;
 }
 
-/** Parse + validate every fixture without touching the spool (atomic failure). */
 function parseReplayDir(dir: string): { candidates: CaptureCandidate[]; files: number } {
   const entries = listFixtureFiles(dir);
   const candidates: CaptureCandidate[] = [];
@@ -133,7 +131,6 @@ function parseReplayDir(dir: string): { candidates: CaptureCandidate[]; files: n
     const docs = Array.isArray(raw) ? raw : [raw];
     docs.forEach((doc, i) => candidates.push(parseCandidate(doc, `${name}[${i}]`)));
   }
-  // Stable ascending capture order (tie: original index) — deterministic dedup.
   const indexed = candidates.map((candidate, index) => ({ candidate, index }));
   indexed.sort((a, b) => {
     const at = Date.parse(a.candidate.capturedAtUtc);
@@ -168,7 +165,6 @@ function commit(processor: CaptureProcessor, spool: Spool, config: DaemonConfig,
 /** Commit size between event-loop yields in the responsive ingester. */
 export const REPLAY_COMMIT_BATCH = 25;
 
-/** Synchronous ingest: validate the whole directory, then process it all. */
 export function ingestReplayDir(spool: Spool, dir: string, config: DaemonConfig, ocr?: OcrFn): ReplayResult {
   const { candidates, files } = parseReplayDir(dir);
   const processor = new Processor(config, ocr);

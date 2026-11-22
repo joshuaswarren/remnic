@@ -214,7 +214,6 @@ export class DependencyPropagationDelivery {
           preparedReplacementFingerprint = memoryFingerprint(replacement);
         } catch (error) {
           // A transient survivor lookup failure must defer merge preparation.
-          // Do not persist a job that cannot prove its replacement fingerprint.
           log.warn(`dependency propagation survivor fingerprint capture failed: ${error}`);
           return null;
         }
@@ -470,9 +469,6 @@ export class DependencyPropagationDelivery {
     // `leased` with an owner carrying the `:recovery:` segment (the only place
     // that owner is ever written; both replay success → ready and replay
     // failure → prepared clear it). Once that lease expires it MUST be routed
-    // back through primary replay before the background worker can claim it and
-    // deliver to dependents — otherwise dependent revalidation runs against a
-    // source whose primary mutation was never committed (#2326).
     for (const job of jobs) {
       if (
         job.status !== "leased" ||
@@ -541,12 +537,10 @@ export class DependencyPropagationDelivery {
         current.job.leaseOwner !== job.leaseOwner
       ) {
         // The job advanced (another run reclaimed/replayed it) since the scan;
-        // never preempt a live owner — fencing.
         return null;
       }
       // Re-check expiry against the live clock: a lease renewed between the
       // scan and this claim still belongs to an in-flight run and must not be
-      // stolen.
       if ((current.job.leaseExpiresAt ?? Number.POSITIVE_INFINITY) > this.clock()) {
         return null;
       }

@@ -60,7 +60,6 @@ function mergeSessionCursor(
   const triggeredAt =
     incomingTriggeredMs >= existingTriggeredMs ? incoming.lastTriggeredAt : existing.lastTriggeredAt;
 
-  // Preserve monotonic cursor progression except for explicit reset observations.
   const incomingIsNewer = incomingObservedMs >= existingObservedMs;
   const incomingHasNewerReset = incomingResetMs > existingResetMs;
   const allowIncomingReset = incomingIsNewer && incomingHasNewerReset;

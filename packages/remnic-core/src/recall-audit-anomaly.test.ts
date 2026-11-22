@@ -156,7 +156,6 @@ test("rapid-fire fires on too many entries in the window", () => {
 
 test("entries outside the window are ignored", () => {
   const entries: RecallAuditEntry[] = [];
-  // 20 old entries (outside window), 2 new entries (inside).
   for (let i = 0; i < 20; i++) {
     entries.push(makeEntry({ ts: tsAt(0 + i), queryText: "old" }));
   }
@@ -175,7 +174,6 @@ test("entries outside the window are ignored", () => {
     },
   });
   assert.equal(result.windowEntryCount, 2);
-  // The repeat-query flag fires on "new" (2 repeats > limit 1), not on "old".
   const flag = result.flags.find((f) => f.kind === "repeat-query");
   assert.ok(flag);
   assert.equal(flag.signal, "new");
@@ -196,7 +194,6 @@ test("invalid ts entries are skipped silently", () => {
 
 test("flags are sorted by severity then kind for deterministic output", () => {
   const entries: RecallAuditEntry[] = [];
-  // Trigger alert (namespace-walk) + warn (repeat-query + rapid-fire).
   for (let i = 0; i < 10; i++) {
     entries.push(
       makeEntry({
@@ -219,7 +216,6 @@ test("flags are sorted by severity then kind for deterministic output", () => {
     },
   });
   assert.ok(result.flags.length >= 2);
-  // alert comes before warn.
   const severities = result.flags.map((f) => f.severity);
   const firstWarn = severities.indexOf("warn");
   const lastAlert = severities.lastIndexOf("alert");

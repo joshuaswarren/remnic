@@ -1,14 +1,3 @@
-/**
- * Recovery primary-mutation replay for durable dependency propagation.
- *
- * Extracted from the delivery module so the recovery concern — resolving a
- * memory across hot/cold/archived stores and replaying the primary mutation
- * (supersede / invalidate / temporal) that a durable job represents — lives in
- * one cohesive place. These functions are stateless with respect to the
- * delivery class: they operate on an injected storage handle plus pure helpers,
- * so the delivery delegates here without wrapper indirection. The module
- * imports only package-local, host-agnostic sources (no index backend).
- */
 import { createHash } from "node:crypto";
 
 import { sanitizeMemoryContent } from "../sanitize.js";
@@ -108,14 +97,6 @@ export async function readCurrentReplacementEvent(
   };
 }
 
-/**
- * Replay the primary mutation a durable job represents against the current
- * store, by cause: temporal supersession, contradiction supersede,
- * consolidation invalidate, or consolidation merge. Idempotent — returns
- * `true` when the mutation is already applied or is applied now, `false` when
- * the source/replacement no longer matches the prepared snapshot (so the caller
- * keeps the job retryable instead of marking it complete).
- */
 export async function replayPrimaryMutation(
   sourceStorage: DependencyPropagationStorage,
   event: PropagationEvent,

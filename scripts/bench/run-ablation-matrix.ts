@@ -128,7 +128,6 @@ function parseArgs(argv: string[]): { ok: true; value: ParsedArgs } | { ok: fals
         }
         case "--only": {
           only = requireValue(argv, ++i, "--only") as SingleFlagAblationId;
-          // Fail fast on unknown cell ids — a typo would otherwise silently skip.
           getAblationCell(only);
           break;
         }
@@ -263,13 +262,6 @@ async function main(): Promise<number> {
     localLabManifestPath: args.localLabManifestPath,
     judgeCacheDir: args.judgeCacheDir,
   });
-  // Preflight: verify each local-lab endpoint is live and serving the
-  // manifest-declared model before spending time on a cell. Addresses the
-  // "never invokes preflight" concern from PR #1751 review. The programmatic
-  // runBenchmark() API is used (not the CLI sequential-phase scheduler)
-  // because it is the only path that accepts per-cell configOverrides; the
-  // warm judge cache eliminates the responder/judge swap that sequential
-  // phases exist to schedule.
   if (resolved.localLab) {
     const roles: Array<[string, typeof resolved.localLab.responder]> = [
       ["responder", resolved.localLab.responder],
@@ -327,11 +319,6 @@ async function main(): Promise<number> {
   return failures === 0 ? 0 : 1;
 }
 
-/**
- * Derive the true run window from the runner's end-stamp and summed task
- * latency. Mirrors build-artifact-from-result.ts so the artifact's
- * startedAt/finishedAt match the promotion path exactly.
- */
 function deriveRunWindow(metaTimestamp: string, totalLatencyMs: number): { startedAt: string; finishedAt: string } {
   const finishedMs = Date.parse(metaTimestamp);
   if (!Number.isFinite(finishedMs)) {
@@ -356,11 +343,6 @@ async function runOneCell(
   resolved: ResolvedBenchRuntimeProfile,
   cell: SingleFlagAblationCell
 ): Promise<WriteBenchmarkArtifactResult> {
-  // Merge the cell's configOverrides ON TOP of the resolved baseline config.
-  // The resolved `adapterOptions.configOverrides` already contains the
-  // local-lab baseline + provider hooks; the ablation flag rides on top so
-  // everything else (provider, judge, drain) is byte-identical to the
-  // matching baseline run.
   const mergedConfigOverrides = {
     ...resolved.adapterOptions.configOverrides,
     ...cell.configOverrides,
@@ -399,13 +381,8 @@ async function runOneCell(
       system: adapter,
     })) as BenchmarkResult;
 
-    // Stamp the effective config (post-merge) so the artifact reflects what
-    // actually ran, including the ablation override.
     result.config.remnicConfig = mergedConfigOverrides;
 
-    // Build the artifact via the public promotion contract (same shape as
-    // build-artifact-from-result.ts): derive benchmarkId/model/seed/run-window
-    // from the live result so the artifact is self-describing + reproducible.
     const benchmarkId = result.meta.benchmark as PublishedBenchmarkId;
     const model = result.config.systemProvider?.model ?? "unknown";
     const seed = result.meta.seeds[0] ?? 1;
@@ -423,15 +400,9 @@ async function runOneCell(
       note,
     });
 
-    // Per-cell subdir: buildBenchmarkArtifactFilename derives the filename
-    // from startedAt+gitSha+model, so cells run on the same day with the same
-    // model would collide (overwrite) if written to the same out-dir. Each
-    // cell gets its own subdir so the matrix run preserves all 3 artifacts.
     const cellOutDir = path.join(args.outDir, cell.id);
     return await writeBenchmarkArtifact(artifact, cellOutDir);
   } finally {
-    // createRemnicAdapter allocates a temp memory/QMD sandbox per cell;
-    // destroy() releases it so a 3-cell matrix run doesn't leak sandboxes.
     await adapter.destroy();
   }
 }

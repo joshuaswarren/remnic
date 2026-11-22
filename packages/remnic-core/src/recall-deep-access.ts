@@ -1,9 +1,3 @@
-/**
- * Named-policy access facade for the deep-recall stepper (issue #2332 leftover).
- *
- * Not the hot path. Surfaces and parseConfig wait. Policy names are
- * allow-listed. Budget 0 returns a tagged refusal without a policy call.
- */
 
 import { runDeepRecall, type DeepRecallResult, type DeepRecallState } from "./recall-deep.js";
 

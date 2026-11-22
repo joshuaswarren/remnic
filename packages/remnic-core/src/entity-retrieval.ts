@@ -430,10 +430,8 @@ async function buildEntityMentionIndex(
       : Promise.all(storages.map((scopedStorage) => scopedStorage.readAllMemories({ abortSignal }))),
     nativeChunksOverride ? Promise.resolve(nativeChunksOverride) : readNativeChunks(config, recallNamespaces, abortSignal),
   ]);
-  // The bulk reads now stop at their own scan boundaries (issue #2307); this
   // checkpoint still guards the (larger) indexing pass over their results.
   checkEntityRecallAbort(abortSignal);
-  // Pair each entity with the storage that owns it (#1534): canonical ids must
   // reflect that store's aliases and historical migration mappings, never another
   // namespace's.
   const entityRecords = entityFileSets.flatMap((set, index) =>
@@ -441,7 +439,6 @@ async function buildEntityMentionIndex(
   );
   const memories = memorySets.flat();
 
-  // The two passes over the corpus below never await real I/O, so without an
   // explicit yield they hold the event loop and no recall section deadline can
   // fire during them (issue #2291).
   let scanned = 0;
@@ -507,7 +504,6 @@ async function buildEntityMentionIndex(
       entry.memorySnippetOrigins = [...(entry.memorySnippetOrigins ?? []), memory.frontmatter.origin];
     }
   }
-  // Each remaining phase is another synchronous pass over the whole index
   // (alias map, native-chunk merge, sort, two full serializations). Yield between
   // them so a section deadline can fire between passes instead of only after all
   // of them (issue #2291).
@@ -869,12 +865,9 @@ function formatEntityHintSection(
 ): string | null {
   if (candidates.length === 0) return null;
   const lines: string[] = ["## entity_answer_hints", ""];
-  // #1955 review: non-native snippet kinds may embed extraction-written content
   // without per-field origin — fence as unknown (least privilege; plumbing #2397).
   const renderSnippet = (snippet: EntityHintSnippet): string => snippet.kind !== "native"
     ? renderAuthorityBoundContent(snippet.text, snippet.origin, { enabled: originAuthorityEnabled, untrustedOrigins }) : snippet.text;
-  // (see comment above)
-  // #1955 review: inline fields (names/types/aliases/targets) cannot carry the
   // multi-line block fence without collapsing the hint list structure —
   // per-field origin plumbing is tracked in #2397.
   for (const { candidate, snippets, uncertainty } of candidates) {
@@ -965,13 +958,11 @@ function formatEntityHintSection(
 }
 
 export async function buildEntityRecallSection(options: BuildEntityRecallSectionOptions): Promise<string | null> {
-  // Checkpoints sit at the real I/O boundaries below (persisted-index read,
   // native-chunk read, storage resolution, index build).  The per-candidate
   // formatting that follows never awaits real I/O, so a deadline that fires
   // during a scan is observed here (issue #2291).
   checkEntityRecallAbort(options.abortSignal);
   const prefixedMode = detectEntityQueryMode(options.query);
-  // #2193: in zero-pronoun scripts a short question with no entity name
   // never trips a pronoun word list, so the structural signal routes it
   // into the same coreference path as an English "what about him?".
   // Latin-script queries stay on the cue tables / English rules so the

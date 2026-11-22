@@ -26,7 +26,6 @@ export type ChatToolName =
   | "review_list"
   | "scope_inspect";
 
-/** Tools that mutate memory — require confirmation before execution. */
 export const MUTATING_TOOLS: ReadonlySet<ChatToolName> = new Set([
   "correction_apply",
   "memory_promote",
@@ -222,9 +221,6 @@ const SCOPE_INSPECT_SCHEMA: ChatToolSchema = {
   },
 };
 
-/**
- * All read-only tool schemas, always available when chat is enabled.
- */
 const READONLY_SCHEMAS: ChatToolSchema[] = [
   MEMORY_SEARCH_SCHEMA,
   MEMORY_GET_SCHEMA,

@@ -71,8 +71,6 @@ export function noteToConversation(note: GranolaNote): WearableConversation {
 
   const summary = trimmed(note.summary_text) ?? trimmed(note.summary_markdown);
 
-  // Note-only fallback: a summarized meeting with no transcript still anchors
-  // recall for the day.
   if (segments.length === 0 && summary !== undefined) {
     segments.push({ text: summary, speakerKey: "note" });
   }

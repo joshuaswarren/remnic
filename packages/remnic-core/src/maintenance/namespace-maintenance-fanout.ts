@@ -1,28 +1,3 @@
-/**
- * Namespace maintenance fanout coordinator (issue #1500).
- *
- * Builds on the namespace-aware maintenance planner (#1499 / #1517) to fan out
- * the REMAINING background maintenance jobs — dreams, pattern reinforcement,
- * governance/lifecycle, contradiction scans, semantic/causal consolidation,
- * graph decay, fact archival, tier migration — across all maintained
- * namespaces.
- *
- * The planner (`namespace-planner.ts`) already handles namespace discovery
- * (configured + catalog), per-kind gating, cycle budgeting, per-job+namespace
- * locking, status recording, and catalog maintenance timestamps. QMD
- * maintenance was wired through it in #1517. This module standardizes the
- * per-job adapter pattern so every other maintenance job can be fanned out
- * with one call, and aggregates per-namespace health for doctor/dashboard.
- *
- * Design contract (issue #1500 compatibility requirements):
- * - Existing direct `runJob({ namespace })` calls continue to work unchanged.
- * - Namespaces disabled: fanout is a no-op (the planner returns only the
- *   default namespace; jobs run exactly as before).
- * - `maintenanceNamespaceFanoutEnabled: false`: fanout is a no-op.
- * - A failure in one namespace must not abort other namespaces (the planner
- *   already isolates per-namespace failures).
- * - Per-namespace locks prevent duplicate concurrent runs (planner-provided).
- */
 
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import type { NamespaceCatalog } from "../namespaces/catalog.js";
@@ -164,8 +139,6 @@ export async function runNamespaceMaintenanceFanout(
 }
 
 // ---------------------------------------------------------------------------
-// Health summary for doctor / dashboard / CLI
-// ---------------------------------------------------------------------------
 
 export interface NamespaceMaintenanceJobHealth {
   jobName: string;
@@ -198,11 +171,6 @@ export async function summarizeNamespaceMaintenanceHealth(
 ): Promise<NamespaceMaintenanceHealthSummary> {
   const generatedAt = new Date().toISOString();
   const statuses = await readNamespaceMaintenanceStatuses(config);
-  // Merge last-successful-run records so lastRunAt reflects the most recent
-  // successful maintenance, not just the latest (possibly skipped/failed)
-  // outcome. The latest status file is overwritten on every run; without
-  // this merge a namespace that ran then got budget-skipped shows ran=0 /
-  // lastRunAt=null (review #1622: preserve last successful run).
   const lastRanStatuses = await readNamespaceMaintenanceLastRanStatuses(config);
   const lastRanByJobNs = new Map<string, NamespaceMaintenanceRunStatus>();
   for (const lr of lastRanStatuses) {
@@ -237,8 +205,6 @@ export async function summarizeNamespaceMaintenanceHealth(
     const ran = jobStatuses.filter((s) => s.state === "ran").length;
     const skipped = jobStatuses.filter((s) => s.state === "skipped").length;
     const failed = jobStatuses.filter((s) => s.state === "failed").length;
-    // Consider BOTH the latest outcome and the last successful run so a
-    // namespace that ran then was later skipped still reports lastRunAt.
     const candidates: string[] = [];
     for (const st of jobStatuses) {
       if (typeof st.completedAt === "string") candidates.push(st.completedAt);
@@ -273,9 +239,6 @@ export async function summarizeNamespaceMaintenanceHealth(
   };
 }
 
-/**
- * Format the health summary as human-readable text for the CLI.
- */
 export function formatNamespaceMaintenanceHealthText(
   summary: NamespaceMaintenanceHealthSummary,
 ): string {
@@ -307,8 +270,6 @@ export function formatNamespaceMaintenanceHealthText(
       parts.push(`last=${job.lastRunAt}`);
     }
     lines.push(`    ${job.jobName}: ${parts.join(", ")}`);
-    // Surface failed namespaces with their reason/error so operators know
-    // WHAT to fix without rerunning with --json (review #1622).
     const failedNs = job.namespaces.filter((n) => n.state === "failed");
     for (const ns of failedNs) {
       const detail = ns.error ? `: ${ns.error}` : "";

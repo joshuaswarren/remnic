@@ -1,70 +1,14 @@
-/**
- * Issue #1539 PR2 — the staged recall pipeline spine.
- *
- * The four recall pipelines (`targeted-fact-recall.ts`, `response-guidance-
- * recall.ts`, `explicit-cue-recall.ts`, `event-order-recall.ts`) implement
- * the same stage sequence — intent → candidate collection → dedup → rank →
- * filter → slice → metadata insertion → token budgeting — with ~70%
- * near-duplicate code. The most dangerous divergence is the sort
- * comparator: guidance/targeted-fact sort `turnIndex` DESC (recency) while
- * event-order sorts `turnIndex` ASC (chronological). The comparators are
- * byte-identical except for this direction — copy-pasting into a new
- * chronological pipeline silently inverts the ordering.
- *
- * This module centralizes the **dedup + score + threshold-filter + sort**
- * stages behind one declared config object. Per-tier divergence (threshold
- * value, sort direction, content transformation) becomes a declared config
- * field instead of embedded code.
- *
- * **PR 2 scope:** extract the module with NO pipeline changes. PRs 3–6
- * migrate each pipeline to call `unifiedDedupeAndRank` one at a time,
- * re-running the characterization snapshots
- * (`tests/recall-pipeline-unified.test.ts`) to verify byte-for-byte parity.
- *
- * Future PRs will add the remaining stages from the issue's Solution
- * (`mergeAcrossLcmKeys`, `insertMetadata`) once the per-tier hooks are
- * factored out of each pipeline.
- *
- * @see https://github.com/joshuaswarren/remnic/issues/1539
- */
 
 import type { EvidencePackItem } from "./evidence-pack.js";
 
-/** A ranked evidence item: an `EvidencePackItem` with a computed `rank`. */
 export interface RankedEvidenceItem extends EvidencePackItem {
   rank: number;
 }
 
-/**
- * Sort direction for the turn-index secondary key. This is the divergence
- * issue #1539 identifies: relevance-ranked pipelines (targeted-fact,
- * response-guidance) sort `turnIndex` DESC (recency — latest first); the
- * chronological pipeline (event-order) sorts `turnIndex` ASC (earliest
- * first). The rank primary key is ALWAYS DESC (higher rank first); only
- * the `turnIndex` tiebreaker flips direction.
- */
 export type TurnIndexSortDirection = "desc" | "asc";
 
-/**
- * Configuration for the unified dedup + score + threshold-filter + sort
- * pass. Each pipeline declares its divergences as fields here instead of
- * embedding them in pipeline-specific code.
- *
- * The issue's Solution defines the intended full config object
- * (`RecallPipelineConfig`); this interface is extracted incrementally:
- *   - PR 2 (this PR): dedup/score/threshold/sort only
- *   - PRs 3–6: migrate each pipeline to consume the spine
- *   - future: add `mergeAcrossLcmKeys`, `insertMetadata` once the per-tier
- *     hooks are factored out of each pipeline
- */
 export interface UnifiedRankConfig<TIntent> {
-  /** The user query — passed to the scorer. */
   query: string;
-  /**
-   * Per-tier intent classification result (already computed by the caller;
-   * intent classification stays per-tier because it is genuinely
-   * per-tier per issue #1539 Pitfall 1).
-   */
   intents: TIntent[];
   /**
    * Score an item using its ORIGINAL (pre-transform) content. Higher = more
@@ -207,10 +151,6 @@ export function unifiedDedupeAndRank<TIntent>(
   const direction: TurnIndexSortDirection = config.turnIndexSortDirection ?? "desc";
   const dedupByContent = config.dedupByContent !== false;
 
-  // Stage 1: dedup by id (+ normalized transformed content when enabled).
-  // First-seen wins, matching every existing pipeline. Event-order opts out
-  // of content dedup (dedupByContent: false) because it keeps distinct turns
-  // even when two turns share the same cue-appended body.
   const seenIds = new Set<string>();
   const seenContent = new Set<string>();
   const survivors: Array<{ original: EvidencePackItem; transformedContent: string }> = [];
@@ -229,45 +169,27 @@ export function unifiedDedupeAndRank<TIntent>(
     survivors.push({ original: item, transformedContent });
   }
 
-  // Stage 2: score on ORIGINAL content (transforms don't influence the score).
   const scored: RankedEvidenceItem[] = survivors.map(({ original, transformedContent }) => ({
     ...original,
     content: transformedContent,
     rank: config.scoreEvidence(original, config.query, config.intents),
   }));
 
-  // Stage 3: threshold-filter (declared, not inlined).
   const filtered =
     typeof config.rankThreshold === "number"
       ? scored.filter((item) => item.rank >= (config.rankThreshold as number))
       : scored;
 
-  // Stage 4: sort.
-  // rank is ALWAYS DESC (higher rank first).
-  // turnIndex direction is configurable: DESC (relevance) or ASC (chronology).
-  // The tertiary tiebreaker follows the direction:
-  //   DESC → score DESC; ASC → content.localeCompare.
-  //
-  // explicit-cue opts out of sorting entirely (preserveInsertionOrder) — its
-  // deliberate value ordering is the collection order (turn references →
-  // content cues → lexical cues), and a rank-based sort would invert it.
   if (config.preserveInsertionOrder) {
     return filtered;
   }
   return filtered.sort(makeComparator(direction));
 }
 
-/**
- * Build the sort comparator for the configured direction. Extracted so the
- * comparator's two shapes (DESC / ASC) can be tested independently and so
- * the direction divergence is visible in ONE place.
- */
 function makeComparator(
   direction: TurnIndexSortDirection,
 ): (left: RankedEvidenceItem, right: RankedEvidenceItem) => number {
   if (direction === "asc") {
-    // Chronological (event-order): rank DESC → turnIndex ASC → content localeCompare.
-    // Matches event-order-recall.ts:159-164 (rankedByScore sort) byte-for-byte.
     return (left, right) => {
       if (right.rank !== left.rank) return right.rank - left.rank;
       const leftTurn =
@@ -282,10 +204,6 @@ function makeComparator(
       return left.content.localeCompare(right.content);
     };
   }
-  // Relevance-ranked (targeted-fact, response-guidance):
-  // rank DESC → turnIndex DESC → score DESC.
-  // Matches targeted-fact-recall.ts:239-245 and response-guidance-recall.ts:374-380
-  // byte-for-byte.
   return (left, right) => {
     if (right.rank !== left.rank) return right.rank - left.rank;
     const leftTurn =

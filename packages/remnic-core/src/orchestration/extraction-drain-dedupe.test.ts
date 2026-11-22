@@ -24,19 +24,15 @@ const FAILED: ExtractionRunResult = {
   durableOutputCount: 0,
 };
 
-/** What an extraction run keeps for the model: the chunk minus marked duplicate copies. */
 function modelTurnsOf(call: { turns: BufferTurn[] }): BufferTurn[] {
   return call.turns.filter((seen) => seen.extractionDuplicateOf !== true);
 }
 
 interface RunSpy {
   calls: { turns: BufferTurn[]; options: Partial<DrainRunOptions> }[];
-  /** role+content the model sees, in arrival order */
   modelRoleContent(): string[];
   modelTurnCount(): number;
-  /** repeated role+content pairs within any single chunk's model-visible set (must stay 0) */
   modelDuplicates(): number;
-  /** marked copies whose representative is missing from the same call (must stay 0) */
   uncoveredShadows(): number;
 }
 
@@ -73,7 +69,6 @@ function createSpy(): RunSpy {
 }
 
 interface DrainOptions {
-  /** Turns loaded into the buffer AND handed to `run` as the drain window. */
   turns: BufferTurn[];
   results: ExtractionRunResult[];
   budgetChars?: number;
@@ -82,10 +77,6 @@ interface DrainOptions {
   saveCopy?: (bufferKey: string, reason: string, turns: readonly BufferTurn[]) => Promise<string>;
 }
 
-/**
- * A real buffer on real storage, drained with a stub runExtraction that clears like the
- * coordinator does for a `clearMatchingTurns` drain: by identity, from the turns it received.
- */
 async function withDrain(
   opts: DrainOptions,
   run: (
@@ -116,7 +107,6 @@ async function withDrain(
       runExtraction: async (turns, options) => {
         spy.calls.push({ turns: [...turns], options: options ?? {} });
         const result = opts.results.shift() ?? DONE;
-        // A successful run clears its chunk the way the coordinator does: by identity.
         if (result.status === "completed") {
           await buffer.clearAfterExtraction(
             "s1",
@@ -231,8 +221,6 @@ test("different write scopes are never collapsed, even with identical text", asy
 });
 
 test("duplicate-heavy windows need fewer chunks", async () => {
-  // Six unique turns of 40 chars, every turn repeated twice, 120-char budget:
-  // raw packing needs six chunks; deduped packing needs two of three representatives.
   const unique = Array.from({ length: 6 }, (_, index) => makeTurn(`u${index} `.padEnd(40, "x")));
   const window = unique.flatMap((entry) => [
     entry,
@@ -253,7 +241,6 @@ test("duplicate-heavy windows need fewer chunks", async () => {
 });
 
 test("a window that is 17.6% duplicates sends 17.6% fewer turns", async () => {
-  // 1000 turns, 176 of them exact duplicates of an earlier turn (the measured backlog rate).
   const window: BufferTurn[] = [];
   let stamp = 0;
   const nextTimestamp = (): string => {
@@ -343,7 +330,6 @@ test("a dropped chunk drops its duplicates too, and the recovery copy holds ever
   );
 });
 
-/** Ten-char contents so a 20-char budget packs exactly two representatives per chunk. */
 const tenChars = (tag: string): string => tag.padEnd(10, "0");
 
 test("a duplicate between two chunks is cleared with the chunk before it", async () => {
@@ -384,7 +370,6 @@ test("a duplicate after the last representative is cleared with the last chunk",
   );
 });
 
-/** Seeded PRNG so the property run is reproducible. */
 function mulberry32(seed: number): () => number {
   let state = seed;
   return () => {
@@ -397,8 +382,6 @@ function mulberry32(seed: number): () => number {
 }
 
 test("chunks partition every window: each turn cleared once, model never sees a duplicate", async () => {
-  // A window's first turn is always a representative by construction — there is no
-  // earlier occurrence to duplicate — so windows never start with a duplicate.
   const random = mulberry32(3443);
   for (let trial = 0; trial < 12; trial++) {
     const size = 6 + Math.floor(random() * 10);
@@ -438,14 +421,6 @@ test("chunks partition every window: each turn cleared once, model never sees a 
 });
 
 test("a failed chunk keeps its identities; its gap duplicate drains on the retry pass", async () => {
-  // Window [A, B | C, A-dup]: chunk 1 holds A and B; the gap duplicate sits before
-  // chunk 2's span, so it rides with chunk 2. Below the drop threshold a retained
-  // failure STOPS the drain, so on the failing pass chunk 2 (and the duplicate) are
-  // not attempted; on the retry pass both chunks succeed and the duplicate drains
-  // with chunk 2. If the failing chunk is eventually dropped instead, its recovery
-  // side-file copy holds its identities — the duplicate's text is identical to its
-  // representative's, so no content is lost either way (ACCEPTED TRADE-OFF, also
-  // documented in the PR).
   const a = makeTurn(tenChars("aaaa"));
   const b = makeTurn(tenChars("bbbb"), { timestamp: "2026-11-16T12:00:01.000Z" });
   const c = makeTurn(tenChars("cccc"), { timestamp: "2026-11-16T12:00:02.000Z" });

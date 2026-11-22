@@ -1,8 +1,3 @@
-/**
- * Shared-context claim key parse (issue #1957 leftover).
- *
- * Pure. Empty is missing_key. Newline is invalid_key.
- */
 
 export type ParseClaimKeyResult =
   | { ok: true; key: string }

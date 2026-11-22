@@ -1,0 +1,105 @@
+# Host hooks fail open, never block the host, and harden every host-supplied input
+
+Status: accepted
+
+## Context
+Remnic's hooks run inside Codex, Claude Code, Antigravity, and Devin sessions under short host timeouts, where a hook returning `continue:false` stops compaction entirely and a slow hook stalls the user's session. Hook payloads come from the host and include session ids, paths, and tool output — all of which can contain shell metacharacters or be non-strings. Transcripts can be enormous, Windows caps the environment block near 32 KB, and inherited environment variables can masquerade as per-invocation input.
+
+## Decision
+Fail open: every hook path returns `continue:true` even when the hook itself fails — a belt-and-suspenders catch wraps anything `main()` throws. No token means a bare continue with no banner noise on every prompt. A failed final flush must not set `continue:false` and must not look clean: it retains the cursor for retry.
+
+Never block: PostToolUse observation spawns a detached copy of the runner, so the slow observe always runs in the background and the foreground hook returns inside the host's timeout; SessionEnd hands a contended tail drain to a detached worker with a much longer budget. The worker's payload is passed on stdin, never through the environment (Windows ~32 KB env cap makes large PostToolUse payloads fail with E2BIG) and never through an env fallback — an inherited `REMNIC_HOOK_INPUT` must not override the piped payload. Synchronous waits use `Atomics.wait` on a throwaway buffer, not busy-spin.
+
+Harden inputs: session ids are validated against a safe charset before they reach an observe endpoint or a cursor filesystem path, so a payload field can never become a path traversal or shell argument even if a future caller regresses to `shell:true`. String payload fields (`cwd`, `transcript_path`) are coerced via `|| ""` so unexpected non-strings cannot reach `fs`/`git`. Every spawn uses a fixed literal argument array, never a string command; hooks are registered in exec form (`command: "node"` + `args`), which avoids shell re-tokenization of plugin roots containing `$` or backticks, works on Windows without Git Bash, and uses no `commandWindows` dispatch.
+
+Bound and structure transcript reads: reads carry row-count and byte caps through one descriptor (stat-then-read, so a growing file cannot inflate the read); Unicode conversation text is preserved while control characters are dropped; message roles derive from row structure, never text patterns, so adversarial user text containing tool-like tokens stays user.
+
+## Consequences
+The host never notices a broken Remnic install — which also means failures surface only in Remnic's own logs, not the host's. Detachment trades immediacy for non-blocking: state must be coordinated through locks, cursors, and tombstones (see the observation-cursor ADR). Input hardening must be re-checked whenever a new payload field is consumed.
+
+## Origin comments
+- `packages/plugin-agy/hooks/bin/remnic-agy-hook.cjs:122` — "// Row-count bound on the steps read (#3452 review): a pathological"
+- `packages/plugin-agy/hooks/bin/remnic-agy-hook.cjs:132` — "// Line-count and byte bound on JSONL reads (#3454 / Kilo review): mirror the"
+- `packages/plugin-agy/hooks/bin/remnic-agy-hook.cjs:153` — "// Read through one descriptor with a byte bound: stat-then-read lets a file"
+- `packages/plugin-agy/hooks/bin/remnic-agy-hook.cjs:213` — "// Preserve Unicode conversation text (mixed-language turns); drop"
+- `packages/plugin-agy/hooks/bin/remnic-agy-hook.cjs:224` — "// Role follows row structure, never text patterns (a user can"
+- `packages/plugin-agy/hooks/bin/remnic-agy-hook.test.cjs:179` — "// The pane really sends transcriptPath at brain/<id>/.../transcript.jsonl."
+- `packages/plugin-agy/hooks/bin/remnic-agy-hook.test.cjs:365` — "// Adversarial user text with tool-like patterns stays user: speaker"
+- `packages/plugin-agy/hooks/bin/remnic-agy-hook.test.cjs:376` — "// Follow-up to the #3452 review: the steps read must carry a row-count"
+- `packages/plugin-agy/hooks/bin/remnic-agy-jsonl-read.cjs:3` — "// Bounded read for agy JSONL transcripts (#3454 CodeRabbit): one descriptor,"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:38` — "// The detached observe worker re-spawns the HOST WRAPPER (not this core) so"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:39` — "// it re-enters through the same per-host config. When the core is required"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:40` — "// by a wrapper, `require.main` is the wrapper's module."
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:144` — "// Internal re-entrant mode: post-tool-observe spawns a detached copy of"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:145` — "// itself so the (slow) observe runs in the background and never blocks the"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:146` — "// host past the short PostToolUse timeout — mirroring the original"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:147` — "// `( … ) & disown`."
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:150` — "// Detached worker that retries the SessionEnd tail drain after lock"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:151` — "// contention. The foreground session-end hook gives up after ~5s so the"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:152` — "// host is never blocked; this worker waits longer for a still-running"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:153` — "// observe worker to release the session lock, then performs the same"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:154` — "// drain + cursor cleanup."
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:201` — "// Always read the real stdin. The foreground hook gets its payload from"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:202` — "// the host on fd 0; the detached observe worker gets it from the pipe the"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:203` — "// foreground writes. We deliberately do NOT consult an env var here — an"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:204` — "// inherited REMNIC_HOOK_INPUT in the parent environment would otherwise"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:205` — "// override the piped payload and the worker could observe stale/empty"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:206` — "// input (#1443 review)."
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1087` — "// No-token → bare continue (no banner noise on every prompt)."
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1133` — "// Background worker: lock + cursor + observe the transcript delta. Detached"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1134` — "// from the foreground hook so a slow observe never blocks the host past the"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1135` — "// PostToolUse timeout."
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1203` — "// Spawn a detached copy to do the observe in the background (mirrors the"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1204` — "// original `( … ) & disown`). Pass the raw hook payload via the worker's"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1205` — "// STDIN, not the environment — Windows caps the environment block at"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1206` — "// ~32 KB, so large PostToolUse payloads (big file edits, command output)"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1207` — "// would fail with E2BIG/ENAMETOOLONG and the observation would silently"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1208` — "// drop (#1443 review). Stdin has no comparable limit."
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1238` — "// Serialize the final drain and cleanup with the per-session lock so a"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1239` — "// still-running detached observe worker cannot race the cursor read,"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1240` — "// duplicate the tail observation, or have its lock removed mid-flight."
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1241` — "// The foreground hook waits ~5s; on contention it hands the drain to a"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1242` — "// detached worker with a much longer budget so messages that land after"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1243` — "// the in-flight worker's snapshot are still observed before the session"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1244` — "// state is cleaned up. If even that worker gives up, cursor and lock stay"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1245` — "// for the stale-lock reaper — a forced cleanup could drop queued work."
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1631` — "// Belt-and-suspenders fail-open for anything main() itself throws before"
+- `packages/plugin-agy/hooks/bin/remnic-hook-core.cjs:1632` — "// its internal try/catch (rule: a hook error must never block the host)."
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:553` — "// A session id containing shell metacharacters must NOT reach the observe"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:554` — "// endpoint or the cursor filesystem path. The runner validates the id"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:555` — "// charset so a malicious payload field can never become a path traversal"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:556` — "// or a shell argument even if a future caller regresses to shell=true."
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:592` — "// Windows caps the environment block at ~32 KB. Large PostToolUse payloads"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:593` — "// (big file edits) would E2BIG; the worker reads stdin instead. We assert"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:594` — "// the source rather than running an E2BIG payload because reproducing the"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:595` — "// limit cross-platform is impractical."
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:874` — "// Claude Code hooks do not support `commandWindows` (that field is"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:875` — "// specific to the Codex plugin loader). The documented cross-"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:876` — "// platform shape is exec form: `command: "node"` with an `args`"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:877` — "// vector pointing at the runner. `node.exe` is a real binary on"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:878` — "// Windows, so the same entry works on every platform without a"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:879` — "// shell, without Git Bash, and without `.sh`/`.ps1` dispatch."
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:880` — "// Each `args` element is passed verbatim (no shell tokenization),"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:881` — "// so a plugin root containing spaces or metacharacters such as `$`"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:882` — "// or backticks cannot be re-interpreted by a shell."
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:899` — "// The shell-form fields must NOT be present: no `commandWindows`"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:900` — "// (unsupported by Claude Code), and `command` must not be a shell"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:901` — "// string that would let a shell re-tokenize the plugin root."
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:930` — "// Every spawn/spawnSync must use a fixed literal argument array, never a"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:931` — "// string command, so a payload value (session id, cwd, transcript path,"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:932` — "// prompt, tool name) cannot achieve command injection."
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:943` — "// Confirm the daemon-start + migration loops pre-check PATH with onPath()"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:944` — "// (.cmd/.exe-aware) so the remnic→engram fallthrough happens, and launch"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:945` — "// through a shell on Windows so `.cmd` npm shims actually run."
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:966` — "// cwd / transcript_path are coerced via `input.X || ""` so an unexpected"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:967` — "// non-string payload field (number, object, array) cannot reach fs / git"
+- `packages/plugin-claude-code/hooks/bin/remnic-cc-hook.test.cjs:968` — "// and throw an opaque error or, worse, be coerced by Node to a path."
+- `packages/plugin-claude-code/hooks/bin/remnic-hook-core.cjs:799` — "// Synchronous sleep without busy-spin (Atomics.wait on a throwaway buffer)."
+- `packages/plugin-claude-code/hooks/bin/remnic-hook-core.cjs:927` — "// No-token → bare continue (no banner noise on every prompt)."
+- `packages/plugin-codex/hooks/bin/remnic-codex-hook.test.cjs:482` — "// An inherited REMNIC_HOOK_INPUT must NOT be able to override the piped"
+- `packages/plugin-codex/hooks/bin/remnic-codex-hook.test.cjs:483` — "// stdin payload, so readStdin must not read it."
+- `packages/plugin-codex/hooks/bin/remnic-codex-hook.test.cjs:661` — "// Critical invariant: a flush failure MUST NOT set continue:false, which"
+- `packages/plugin-codex/hooks/bin/remnic-codex-hook.test.cjs:662` — "// (per the upstream Codex contract) would stop compaction entirely."
+- `packages/plugin-codex/hooks/bin/remnic-hook-core.cjs:799` — "// Synchronous sleep without busy-spin (Atomics.wait on a throwaway buffer)."
+- `packages/plugin-codex/hooks/bin/remnic-hook-core.cjs:927` — "// No-token → bare continue (no banner noise on every prompt)."
+- `packages/plugin-devin/hooks/bin/remnic-hook-core.cjs:927` — "No-token → bare continue (no banner noise on every prompt)"

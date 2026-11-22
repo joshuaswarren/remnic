@@ -26,7 +26,6 @@ const CLIENT_ID = "remnic-chatgpt-test";
 const CLIENT_SECRET = "s3cret-e2e-value";
 const REDIRECT_URI = "https://chatgpt.com/connector/oauth/cb_test123";
 
-/** Reserve a free TCP port so the issuer URL can be fixed before start. */
 async function reserveFreePort(): Promise<number> {
   const { promise, resolve, reject } = Promise.withResolvers<number>();
   const probe = net.createServer();
@@ -49,8 +48,6 @@ function pkcePair(): { verifier: string; challenge: string } {
   return { verifier, challenge };
 }
 
-// Signature-faithful minimal service stub: only health() is exercised by
-// these tests (scope-policy checks against a REST route).
 const serviceStub = {
   health: async () => ({
     ok: true as const,
@@ -110,7 +107,6 @@ interface Harness {
   cleanup: () => Promise<void>;
 }
 
-/** Boot the access server with the OAuth facade wired exactly like startServer(). */
 async function startHarness(overrides?: Partial<Record<string, unknown>>): Promise<Harness> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-oauth-"));
   const tokensPath = path.join(dir, "tokens.json");
@@ -130,8 +126,6 @@ async function startHarness(overrides?: Partial<Record<string, unknown>>): Promi
     host: "127.0.0.1",
     port,
     authToken: OPERATOR_TOKEN,
-    // Production wiring (startServer): one coherent entries snapshot +
-    // chatgpt-connector tokens pinned to /mcp.
     authTokenEntriesGetter: () => getAllValidTokenEntriesCached(tokensPath),
     tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
     adminConsoleEnabled: false,
@@ -151,7 +145,6 @@ async function startHarness(overrides?: Partial<Record<string, unknown>>): Promi
   };
 }
 
-/** Run the authorize → approve → token exchange flow, returning the access token. */
 async function completeOAuthFlow(h: Harness, opts?: { resource?: string }): Promise<string> {
   const { verifier, challenge } = pkcePair();
   const authorizeUrl = new URL("/authorize", h.issuer);
@@ -169,7 +162,6 @@ async function completeOAuthFlow(h: Harness, opts?: { resource?: string }): Prom
   assert.match(html, /remnic oauth approve/, "page must show the CLI approval command");
   assert.doesNotMatch(html, /password|client_secret|bearer/i, "page must never ask for credentials");
 
-  // Operator lists pending and approves via the operator-only endpoint.
   const pendingResp = await fetch(`${h.issuer}/oauth/pending`, {
     headers: { authorization: `Bearer ${OPERATOR_TOKEN}` },
   });
@@ -196,8 +188,6 @@ async function completeOAuthFlow(h: Harness, opts?: { resource?: string }): Prom
   const code = redirect.searchParams.get("code");
   assert.ok(code, "redirect must carry the authorization code");
 
-  // Token exchange (client_secret_post + PKCE verifier), form-encoded like
-  // a real OAuth client.
   const tokenResp = await fetch(`${h.issuer}/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -253,7 +243,6 @@ test("OAuth discovery documents are served unauthenticated and truthful", async 
     assert.equal(asBody.authorization_endpoint, `${h.issuer}/authorize`);
     assert.equal(asBody.token_endpoint, `${h.issuer}/token`);
     assert.deepEqual(asBody.code_challenge_methods_supported, ["S256"]);
-    // Truthfully narrowed: only the single configured method + grant.
     assert.deepEqual(asBody.token_endpoint_auth_methods_supported, ["client_secret_post"]);
     assert.deepEqual(asBody.grant_types_supported, ["authorization_code"]);
     assert.equal(asBody.registration_endpoint, undefined, "DCR must not be advertised");
@@ -275,7 +264,6 @@ test("full OAuth flow: authorize → CLI-style approve → token → authenticat
   try {
     const accessToken = await completeOAuthFlow(h, { resource: `${h.issuer}/mcp` });
 
-    // Minted token works on /mcp immediately (mint-then-use coherence).
     const init = await mcpInitialize(h, accessToken);
     assert.equal(init.status, 200);
     assert.ok(init.headers.get("mcp-session-id"), "initialize must assign an MCP session id");
@@ -283,7 +271,6 @@ test("full OAuth flow: authorize → CLI-style approve → token → authenticat
     assert.equal(initBody.result.protocolVersion, "2025-06-18");
     assert.equal(initBody.result.serverInfo.name, "remnic");
 
-    // tools/list with the same token also works.
     const tools = await fetch(`${h.issuer}/mcp`, {
       method: "POST",
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
@@ -302,7 +289,6 @@ test("scope policy: chatgpt token is /mcp-only; operator and other connectors ke
   try {
     const accessToken = await completeOAuthFlow(h);
 
-    // ChatGPT token: /mcp works, everything else is denied.
     assert.equal((await mcpInitialize(h, accessToken)).status, 200);
     for (const denied of ["/engram/v1/health", "/engram/v1/adapters"]) {
       const resp = await fetch(`${h.issuer}${denied}`, {
@@ -310,13 +296,11 @@ test("scope policy: chatgpt token is /mcp-only; operator and other connectors ke
       });
       assert.equal(resp.status, 401, `chatgpt token must be denied on ${denied}`);
     }
-    // Including the OAuth operator endpoints — it cannot approve its own pendings.
     const pendingWithChatGpt = await fetch(`${h.issuer}/oauth/pending`, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
     assert.equal(pendingWithChatGpt.status, 401);
 
-    // Static operator token: full REST access.
     const opHealth = await fetch(`${h.issuer}/engram/v1/health`, {
       headers: { authorization: `Bearer ${OPERATOR_TOKEN}` },
     });
@@ -324,14 +308,12 @@ test("scope policy: chatgpt token is /mcp-only; operator and other connectors ke
     const opHealthBody = (await opHealth.json()) as { ok?: boolean };
     assert.equal(opHealthBody.ok, true);
 
-    // Ordinary connector token (same store): unrestricted, as before OAuth.
     const codexEntry = generateToken("codex", h.tokensPath);
     const codexHealth = await fetch(`${h.issuer}/engram/v1/health`, {
       headers: { authorization: `Bearer ${codexEntry.token}` },
     });
     assert.equal(codexHealth.status, 200, "non-chatgpt connector tokens keep full access");
 
-    // Revoke-immediately-use: revoking the chatgpt connector kills the token.
     assert.equal(revokeToken("chatgpt", h.tokensPath), true);
     assert.equal((await mcpInitialize(h, accessToken)).status, 401, "revoked token must be rejected");
   } finally {
@@ -364,13 +346,11 @@ test("authorize rejections: bad client, unregistered redirect, missing PKCE, set
     base.searchParams.set("code_challenge", challenge);
     base.searchParams.set("code_challenge_method", "S256");
 
-    // Unknown client_id → direct 400, no redirect.
     const badClient = new URL(base);
     badClient.searchParams.set("client_id", "someone-else");
     const badClientResp = await fetch(badClient);
     assert.equal(badClientResp.status, 400);
 
-    // Redirect URI not byte-exact in the allowlist → direct 400.
     const badRedirect = new URL(base);
     badRedirect.searchParams.set("redirect_uri", `${REDIRECT_URI}/extra`);
     const badRedirectResp = await fetch(badRedirect);
@@ -388,7 +368,6 @@ test("authorize rejections: bad client, unregistered redirect, missing PKCE, set
     assert.equal(`${errRedirect.origin}${errRedirect.pathname}`, REDIRECT_URI);
     assert.equal(errRedirect.searchParams.get("error"), "invalid_request");
 
-    // No pending txns were created by any rejected request.
     const pending = await fetch(`${h.issuer}/oauth/pending`, {
       headers: { authorization: `Bearer ${OPERATOR_TOKEN}` },
     });
@@ -422,7 +401,6 @@ test("setup mode (empty redirectUris): discovery live, every authorization refus
 test("token endpoint rejections: wrong secret, wrong verifier, code reuse, refresh grant", async () => {
   const h = await startHarness();
   try {
-    // Set up an approved code via the normal flow, but do the exchange manually.
     const { verifier, challenge } = pkcePair();
     const url = new URL("/authorize", h.issuer);
     url.searchParams.set("response_type", "code");
@@ -452,7 +430,6 @@ test("token endpoint rejections: wrong secret, wrong verifier, code reuse, refre
         body: new URLSearchParams(body),
       });
 
-    // Wrong client secret → 400 invalid_client (token untouched, code intact).
     const wrongSecret = await exchange({
       grant_type: "authorization_code",
       code,
@@ -464,7 +441,6 @@ test("token endpoint rejections: wrong secret, wrong verifier, code reuse, refre
     assert.equal(wrongSecret.status, 400);
     assert.equal(((await wrongSecret.json()) as { error?: string }).error, "invalid_client");
 
-    // Wrong PKCE verifier → 400 invalid_grant.
     const wrongVerifier = await exchange({
       grant_type: "authorization_code",
       code,
@@ -476,7 +452,6 @@ test("token endpoint rejections: wrong secret, wrong verifier, code reuse, refre
     assert.equal(wrongVerifier.status, 400);
     assert.equal(((await wrongVerifier.json()) as { error?: string }).error, "invalid_grant");
 
-    // Correct exchange succeeds…
     const good = await exchange({
       grant_type: "authorization_code",
       code,
@@ -487,7 +462,6 @@ test("token endpoint rejections: wrong secret, wrong verifier, code reuse, refre
     });
     assert.equal(good.status, 200);
 
-    // …and the code is single-use: replay fails.
     const replay = await exchange({
       grant_type: "authorization_code",
       code,
@@ -499,7 +473,6 @@ test("token endpoint rejections: wrong secret, wrong verifier, code reuse, refre
     assert.equal(replay.status, 400);
     assert.equal(((await replay.json()) as { error?: string }).error, "invalid_grant");
 
-    // Refresh grant is not supported.
     const refresh = await exchange({
       grant_type: "refresh_token",
       refresh_token: "whatever",
@@ -538,16 +511,13 @@ test("poll endpoint: wrong secret rejected, approved poll returns the callback r
         body: JSON.stringify(body),
       });
 
-    // Wrong secret → 401; missing fields → 400.
     assert.equal((await poll({ txn, pollSecret: "0".repeat(32) })).status, 401);
     assert.equal((await poll({ txn })).status, 400);
 
-    // Pending before decision.
     const pendingPoll = await poll({ txn, pollSecret });
     assert.equal(pendingPoll.status, 200);
     assert.deepEqual(await pendingPoll.json(), { status: "pending" });
 
-    // Approve, then the poll returns the redirect with code + state.
     const pendingList = (await (
       await fetch(`${h.issuer}/oauth/pending`, { headers: { authorization: `Bearer ${OPERATOR_TOKEN}` } })
     ).json()) as { pending: Array<{ ref: string }> };
@@ -567,7 +537,6 @@ test("poll endpoint: wrong secret rejected, approved poll returns the callback r
     assert.equal(redirect.searchParams.get("state"), "poll-state");
     assert.ok(redirect.searchParams.get("code"));
 
-    // Unknown txn reads as expired (no oracle for txn existence).
     const unknown = await poll({ txn: "f".repeat(32), pollSecret });
     assert.equal(unknown.status, 200);
     assert.deepEqual(await unknown.json(), { status: "expired" });
@@ -591,7 +560,6 @@ test("operator endpoints require the operator token; deny flow reaches the polle
     const pollSecret = html.match(/var secret = "([0-9a-f]{32})"/)?.[1];
     assert.ok(txn && pollSecret);
 
-    // No token / bad token → 401 for pending list and decisions.
     assert.equal((await fetch(`${h.issuer}/oauth/pending`)).status, 401);
     const pendingList = (await (
       await fetch(`${h.issuer}/oauth/pending`, { headers: { authorization: `Bearer ${OPERATOR_TOKEN}` } })
@@ -600,7 +568,6 @@ test("operator endpoints require the operator token; deny flow reaches the polle
     assert.ok(ref);
     assert.equal((await fetch(`${h.issuer}/oauth/pending/${ref}/deny`, { method: "POST" })).status, 401);
 
-    // Deny with the operator token; the poller sees "denied".
     const deny = await fetch(`${h.issuer}/oauth/pending/${ref}/deny`, {
       method: "POST",
       headers: { authorization: `Bearer ${OPERATOR_TOKEN}` },
@@ -613,14 +580,12 @@ test("operator endpoints require the operator token; deny flow reaches the polle
     });
     assert.deepEqual(await denied.json(), { status: "denied" });
 
-    // Approving a denied txn conflicts.
     const approveDenied = await fetch(`${h.issuer}/oauth/pending/${ref}/approve`, {
       method: "POST",
       headers: { authorization: `Bearer ${OPERATOR_TOKEN}` },
     });
     assert.equal(approveDenied.status, 409);
 
-    // Unknown ref → 404.
     const missing = await fetch(`${h.issuer}/oauth/pending/nope/approve`, {
       method: "POST",
       headers: { authorization: `Bearer ${OPERATOR_TOKEN}` },
@@ -662,7 +627,6 @@ test("disabled OAuth serves no facade endpoints and keeps the bare Bearer challe
 });
 
 test("oauth config parsing rejects invalid input and applies env overrides", async (t) => {
-  // Invalid enum / URL / boolean values throw with precise messages.
   assert.throws(() => parseOAuthConfig({ enabled: true }), /issuerUrl/);
   assert.throws(
     () => parseOAuthConfig({ enabled: true, issuerUrl: "https://x.example", clientId: "c" }),
@@ -702,8 +666,6 @@ test("oauth config parsing rejects invalid input and applies env overrides", asy
   );
   assert.throws(() => parseOAuthConfig({ enabled: "maybe" }), /boolean/);
 
-  // The http exception shares core's loopback classification (issue #3012):
-  // any loopback spelling may use http; a LAN address may not.
   const loopbackIssuer = parseOAuthConfig({
     enabled: true,
     issuerUrl: "http://[::1]:4318",
@@ -726,7 +688,6 @@ test("oauth config parsing rejects invalid input and applies env overrides", asy
   assert.equal(parseOAuthConfig({ enabled: "false" }).enabled, false);
   assert.equal(parseOAuthConfig({ enabled: "0" }).enabled, false);
 
-  // Env overrides win over the file block.
   const envKeys = [
     "REMNIC_OAUTH_ENABLED",
     "REMNIC_OAUTH_ISSUER_URL",
@@ -759,10 +720,6 @@ test("oauth config parsing rejects invalid input and applies env overrides", asy
 test("rate limiting: decision bucket returns JSON 429 when exhausted; poll bucket stays independent", async () => {
   const h = await startHarness();
   try {
-    // The decision limiter is 30/min. Fire 31 approve attempts against a
-    // non-existent ref (each would otherwise be a 404) — the 31st must be
-    // a 429 from the limiter, proving the operator mutation route is
-    // rate-limited.
     let sawRateLimit = false;
     let rateLimitBody: { error?: string } | undefined;
     for (let i = 0; i < 31; i++) {
@@ -779,8 +736,6 @@ test("rate limiting: decision bucket returns JSON 429 when exhausted; poll bucke
     assert.equal(sawRateLimit, true, "decision route must 429 once its bucket is exhausted");
     assert.equal(rateLimitBody?.error, "rate_limited", "429 body must be deterministic JSON");
 
-    // The poll bucket is independent: even after the decision limiter
-    // tripped, a poll still gets a normal (non-429) response.
     const poll = await fetch(`${h.issuer}/oauth/authorize/poll`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -811,16 +766,13 @@ test("OAuthState.reviveCode: a persist failure can un-burn the code so the excha
   });
   const { code } = state.approveByRef(txn.ref);
 
-  // First exchange consumes the code.
   const first = state.takeCode({ code, clientId: CLIENT_ID, redirectUri: REDIRECT_URI, resource: undefined });
   assert.ok(first, "first takeCode must succeed");
-  // Single-use: a second attempt is rejected while consumed.
   assert.equal(
     state.takeCode({ code, clientId: CLIENT_ID, redirectUri: REDIRECT_URI, resource: undefined }),
     undefined,
     "a consumed code must not be reusable",
   );
-  // Simulating a token-persist failure: revive, then the retry succeeds.
   state.reviveCode(code);
   const retry = state.takeCode({ code, clientId: CLIENT_ID, redirectUri: REDIRECT_URI, resource: undefined });
   assert.ok(retry, "revived code must be exchangeable again");
@@ -836,11 +788,6 @@ test("OAuthState.reviveCode: a persist failure can un-burn the code so the excha
 });
 
 test("token exchange: persist failure returns 500 and preserves the code; retry after recovery succeeds once", async () => {
-  // tokensPath lives in a read-only directory, so token-store LOAD (file
-  // absent → empty) works but the WRITE fails with EACCES — forcing the
-  // real catch in exchangeAuthorizationCode without breaking reads.
-  // Restoring write permission lets a retry of the SAME code succeed,
-  // proving the code was not burned by the failed persist.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-oauth-persistfail-"));
   const roDir = path.join(dir, "ro");
   await mkdir(roDir, { recursive: true });
@@ -903,19 +850,16 @@ test("token exchange: persist failure returns 500 and preserves the code; retry 
         }),
       });
 
-    // Persist fails → 500 server_error, no token minted.
     const failed = await exchange();
     assert.equal(failed.status, 500);
     assert.equal(((await failed.json()) as { error?: string }).error, "server_error");
     assert.deepEqual([...getAllValidTokenEntriesCached(tokensPath)], [], "no token may be persisted on failure");
 
-    // Recover: restore write permission so the token store can persist.
     await chmod(roDir, 0o755);
     const ok = await exchange();
     assert.equal(ok.status, 200, `retry must succeed after recovery: ${await ok.clone().text()}`);
     assert.match(((await ok.json()) as { access_token: string }).access_token, /^remnic_cg_/);
 
-    // Single-use preserved: a third attempt with the now-spent code fails.
     const replay = await exchange();
     assert.equal(replay.status, 400);
     assert.equal(((await replay.json()) as { error?: string }).error, "invalid_grant");
@@ -927,12 +871,9 @@ test("token exchange: persist failure returns 500 and preserves the code; retry 
 });
 
 test("applyOAuthEnvOverrides rejects a present-but-non-object server.oauth block", () => {
-  // `"oauth": true` / a string is invalid config, not "disabled" — it must
-  // throw rather than silently coerce to {} and turn OAuth off.
   for (const bad of [true, "on", 42, ["x"]]) {
     assert.throws(() => applyOAuthEnvOverrides(bad), /server\.oauth/);
   }
-  // undefined (absent) is legal → disabled.
   assert.equal(applyOAuthEnvOverrides(undefined).enabled, false);
 });
 
@@ -954,12 +895,8 @@ test("poll reports expired (not approved) once the authorization code is gone", 
     codeChallenge: "x".repeat(43),
   });
   state.approveByRef(txn.ref);
-  // While the code is live, poll hands back the redirect.
   const approved = state.poll(txn.txn, txn.pollSecret);
   assert.equal(approved?.status, "approved");
-  // Consume the code (as the token exchange does). The pending txn still
-  // reads "approved" (600 s TTL) but the code (120 s TTL) is gone, so poll
-  // must NOT redirect the browser to a dead code — it reports expired.
   const code = new URL((approved as { redirect: string }).redirect).searchParams.get("code");
   assert.ok(code, "approved poll must carry a code in the redirect");
   const taken = state.takeCode({ code, clientId: CLIENT_ID, redirectUri: REDIRECT_URI, resource: undefined });
@@ -989,11 +926,9 @@ test("approved transactions survive the pending TTL while the authorization code
       codeChallenge: "x".repeat(43),
     });
     state.approveByRef(txn.ref);
-    // Advance PAST the 1 s pending TTL but well within the 120 s code TTL.
     t.mock.timers.tick(1_500);
     const stillApproved = state.poll(txn.txn, txn.pollSecret);
     assert.equal(stillApproved?.status, "approved", "approval before the deadline must remain redeemable");
-    // Advance past the code TTL: now both code and txn are gone.
     t.mock.timers.tick(120_000);
     const afterCode = state.poll(txn.txn, txn.pollSecret);
     assert.equal(afterCode?.status, "expired");

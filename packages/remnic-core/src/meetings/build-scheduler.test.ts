@@ -3,7 +3,6 @@ import { test } from "node:test";
 
 import { MeetingsBuildScheduler } from "./build-scheduler.js";
 
-/** A build fn recording the days it was asked to build. */
 function recorder(): { build: (date: string) => Promise<void>; calls: string[] } {
   const calls: string[] = [];
   return { calls, build: async (date: string) => { calls.push(date); } };

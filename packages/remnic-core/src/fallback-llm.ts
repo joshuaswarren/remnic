@@ -81,15 +81,6 @@ export interface FallbackLlmAvailabilityOptions {
   modelChain?: AgentPersonaModelConfig;
 }
 
-/**
- * Resolve the gateway routing options Remnic's background tasks should pass to
- * FallbackLlmClient — extraction, fact/profile/identity consolidation,
- * summarization, calibration, and causal/semantic consolidation. Single source
- * of truth so every task path stays consistent and can't diverge (gotcha #22):
- * in gateway mode an explicit `taskModelChain` wins over the gateway agent
- * persona; otherwise the persona (if any) is used. Returns `{}` in plugin mode
- * because the chain resolves through gateway providers only. Issue #1365.
- */
 export function gatewayTaskChainOptions(
   config: Pick<PluginConfig, "modelSource" | "taskModelChain" | "gatewayAgentId">,
 ): Pick<FallbackLlmOptions, "modelChain" | "agentId"> {
@@ -130,7 +121,6 @@ const LEGACY_PROVIDER_IDS = new Set(["openai-codex", "claude-cli"]);
 const MANAGED_SECRETREF_MARKER = ["secretref", "managed"].join("-");
 const PROVIDER_API_KEY_FIELD = ["api", "Key"].join("") as keyof ModelProviderConfig;
 
-/** Built-in OAuth/managed-auth providers so resolveProviderConfig reaches runtime auth. */
 const BUILT_IN_PROVIDER_FALLBACKS: Record<string, ModelProviderConfig> = {
   anthropic: {
     baseUrl: "https://api.anthropic.com/v1",
@@ -144,18 +134,9 @@ const BUILT_IN_PROVIDER_FALLBACKS: Record<string, ModelProviderConfig> = {
     models: [],
     [PROVIDER_API_KEY_FIELD]: MANAGED_SECRETREF_MARKER,
   },
-  // Subscription-OAuth extraction provider (issue #2784): no apiKey — the
-  // codex CLI login authenticates, via the runner the codex-subscription
-  // module registers on this same seam.
   [CODEX_SUBSCRIPTION_PROVIDER_ID]: codexSubscriptionBuiltinProviderConfig(),
 };
 
-/**
- * Gateway/task LLM client. In `modelSource: "gateway"` this is the primary
- * configured path (taskModelChain / agent persona), not a secondary recovery
- * client. The class name stays `FallbackLlmClient` because it is imported
- * widely; prefer the `TaskLlmClient` alias in new code. Issue #2967.
- */
 export class FallbackLlmClient {
   private gatewayConfig: GatewayConfig | undefined;
   private runtimeContext: FallbackLlmRuntimeContext;
@@ -174,9 +155,6 @@ export class FallbackLlmClient {
     };
   }
 
-  /**
-   * Check if fallback is available (gateway config has at least one model).
-   */
   isAvailable(agentIdOrOptions?: string | FallbackLlmAvailabilityOptions): boolean {
     const options = typeof agentIdOrOptions === "string"
       ? { agentId: agentIdOrOptions }
@@ -185,11 +163,6 @@ export class FallbackLlmClient {
     return models.length > 0;
   }
 
-  /**
-   * Make a chat completion request using the gateway's default AI chain.
-   * Tries primary first, then each fallback in order.
-   * When agentId is provided, uses that agent persona's model chain instead of defaults.
-   */
   async chatCompletion(
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     options: FallbackLlmOptions = {},
@@ -247,7 +220,6 @@ export class FallbackLlmClient {
       let lastRejectedResponse: FallbackLlmResponse | null = null;
       let lastError: unknown;
       let terminalError: unknown;
-      // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
         if (runOptions.signal?.aborted) {
           throwIfCallerAborted(runOptions.signal);
@@ -289,9 +261,6 @@ export class FallbackLlmClient {
             isUnsupportedJsonSchemaError(err)
           ) {
             log.debug(`task LLM: ${model.modelString} rejected native JSON schema; retrying without it`);
-            // Degrade to prompt-only for the REST of the chain too, so an
-            // N-model chain where every provider rejects structured output
-            // costs N+1 requests instead of 2N.
             runOptions = {
               ...runOptions,
               jsonSchema: undefined,
@@ -357,9 +326,6 @@ export class FallbackLlmClient {
       if (options.failureDiag && lastError !== undefined && !lastRejectedResponse) {
         options.failureDiag.lastError = lastError;
       }
-      // A terminal typed provider failure must reach the caller when the
-      // chain is exhausted — the documented timeout/re-login guidance
-      // depends on it (issue #2833).
       if (terminalError !== undefined) {
         throw terminalError;
       }
@@ -442,11 +408,6 @@ export class FallbackLlmClient {
     try {
       outcome = await this.completeChat(messages, options);
     } catch (err) {
-      // Caller aborts must propagate (e.g. recall planner cancellation) — do
-      // not swallow them as a provider failure, or abort-driven callers lose
-      // cancellation and treat it as an extraction error (codex review).
-      // Terminal codex-subscription failures propagate for the same reason:
-      // their TimeoutError/auth guidance is the documented contract.
       if (options.signal?.aborted || isTerminalCodexSubscriptionError(err)) throw err;
       if (isTimeoutError(err)) {
         return { result: null, failureReason: "timeout", errorClass: "timeout" };
@@ -528,7 +489,6 @@ export class FallbackLlmClient {
     const chain: ModelRef[] = [];
     const providers = this.gatewayConfig?.models?.providers ?? {};
 
-    // Resolve the model config: explicit task chain, agent persona chain, or global defaults
     let modelConfig: AgentPersonaModelConfig | undefined;
 
     if (modelChainOverride?.primary) {
@@ -556,7 +516,6 @@ export class FallbackLlmClient {
       modelConfig = this.gatewayConfig?.agents?.defaults?.model;
     }
 
-    // Build list of model strings: primary + fallbacks
     const modelStrings: string[] = [];
 
     const addModelString = (value: unknown): void => {
@@ -576,7 +535,6 @@ export class FallbackLlmClient {
       }
     }
 
-    // Parse each model string and look up provider config
     for (const modelString of modelStrings) {
       const modelRef = this.parseModelString(modelString, providers);
       if (modelRef) {
@@ -584,17 +542,7 @@ export class FallbackLlmClient {
       }
     }
 
-    // Implicit last-resort: when a task-specific modelChain override is active,
-    // append the gateway default model so a stale or exhausted taskModelChain
-    // never leaves the chain empty — Remnic should never be the reason a chat is
-    // interrupted by a flush failure. Keyed on `modelChainOverride?.primary` —
-    // the SAME activation condition chain resolution uses above — so a
-    // primary-less override (e.g. {}) that falls through to a persona/default
-    // chain does NOT get the default appended (gotcha #39). Issue #1365 / PR #1370.
     if (includeDefaultModelFallback && modelChainOverride?.primary && modelStrings.length > 0) {
-      // Append the FULL gateway default chain (primary + fallbacks), not just
-      // the primary — if the default primary is also unreachable, a listed
-      // default fallback may still succeed (cursor review #1425).
       const defaults = this.gatewayConfig?.agents?.defaults?.model;
       const defaultStrings: string[] = [
         ...(typeof defaults?.primary === "string" ? [defaults.primary] : []),
@@ -618,14 +566,10 @@ export class FallbackLlmClient {
     return chain;
   }
 
-  /**
-   * Parse a "provider/model" string and look up its config.
-   */
   private parseModelString(
     modelString: string,
     providers: Record<string, ModelProviderConfig>,
   ): ModelRef | null {
-    // Parse "provider/model" format (e.g., "openai/gpt-5.5", "anthropic/claude-opus-4-6")
     const parts = modelString.split("/");
     if (parts.length < 2) {
       log.warn(`task LLM: invalid model format: ${modelString}`);
@@ -635,10 +579,6 @@ export class FallbackLlmClient {
     const requestedProviderId = parts[0];
     const modelId = parts.slice(1).join("/"); // Handle cases like "openai/gpt-5.5"
 
-    // Respect the active gateway config first so profile-local overrides and
-    // credentials win. Fall back to the materialized models.json only when
-    // the provider is absent from the loaded config (for built-in providers
-    // registered by the gateway at runtime).
     const resolvedProvider = this.resolveProviderConfig(requestedProviderId, providers);
     const providerConfig = resolvedProvider?.config;
     if (!providerConfig) {
@@ -717,15 +657,6 @@ export class FallbackLlmClient {
     return null;
   }
 
-  /**
-   * Try to call a single model.
-   *
-   * Uses the gateway's native getRuntimeAuthForModel when available — this
-   * handles all provider-specific auth transforms (OAuth token exchange,
-   * base URL overrides for codex/copilot/etc.) through the same codepath
-   * the gateway itself uses. Falls back to resolveProviderApiKey for
-   * simpler providers or when the runtime module isn't loaded.
-   */
   private async tryModel(
     model: ModelRef,
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
@@ -743,8 +674,6 @@ export class FallbackLlmClient {
     const effectiveBaseUrl = runtimeAuth?.baseUrl ?? model.providerConfig.baseUrl;
     const resolvedApiKey = runtimeAuth?.apiKey ?? await this.resolveFallbackApiKey(model);
 
-    // If the raw key looks like an unresolved secret ref and resolution fails,
-    // skip this provider entirely so the chain falls through to the next.
     const rawKey = model.providerConfig.apiKey;
     const needsResolution = rawKey === "secretref-managed" || (typeof rawKey === "object" && rawKey !== null);
     if (needsResolution && !resolvedApiKey) {
@@ -777,10 +706,6 @@ export class FallbackLlmClient {
       return await this.callOpenAIResponses(effectiveConfig, model.modelId, messages, capped);
     }
 
-    // For OpenAI-compatible chat-completions APIs (openai-completions,
-    // ollama, etc.) and unknown formats, use chat completions — the gateway's
-    // runtime auth resolver returns request-ready base URL and credentials for
-    // most providers.
     return await this.callOpenAI(
       effectiveConfig,
       model.modelId,
@@ -790,11 +715,6 @@ export class FallbackLlmClient {
     );
   }
 
-  /**
-   * Resolve request-ready auth through the gateway's native runtime, which
-   * handles provider-specific transforms (OAuth token exchange for codex/copilot,
-   * base URL rewrite, etc.). Returns null if the runtime isn't available.
-   */
   private async resolveRuntimeAuth(
     model: ModelRef,
   ): Promise<{ apiKey?: string; baseUrl?: string } | null> {
@@ -845,9 +765,6 @@ export class FallbackLlmClient {
     );
   }
 
-  /**
-   * Call OpenAI-compatible API.
-   */
   private async callOpenAI(
     config: ModelProviderConfig,
     modelId: string,
@@ -937,11 +854,6 @@ export class FallbackLlmClient {
     };
   }
 
-  /**
-   * Call Ollama's native /api/chat transport. This lets benchmark-isolated
-   * gateway configs route Remnic's own internal LLM calls to Ollama Cloud
-   * without requiring an OpenAI-compatible shim.
-   */
   private async callOllamaChat(
     config: ModelProviderConfig,
     modelId: string,
@@ -1002,9 +914,6 @@ export class FallbackLlmClient {
     };
   }
 
-  /**
-   * Call an OpenAI-compatible Responses API.
-   */
   private async callOpenAIResponses(
     config: ModelProviderConfig,
     modelId: string,
@@ -1111,9 +1020,6 @@ export class FallbackLlmClient {
     };
   }
 
-  /**
-   * Call Anthropic Messages API.
-   */
   private async callAnthropic(
     config: ModelProviderConfig,
     modelId: string,
@@ -1140,7 +1046,6 @@ export class FallbackLlmClient {
     const systemMessage = messages.find((m) => m.role === "system")?.content;
     const nonSystemMessages = messages.filter((m) => m.role !== "system");
 
-    // Convert messages to Anthropic format
     const anthropicMessages = nonSystemMessages.map((m) => ({
       role: m.role,
       content: m.content,

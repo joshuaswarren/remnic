@@ -40,8 +40,6 @@ import {
 import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Canonical tool names — mirror the external codebase-memory-mcp surface
-// ──────────────────────────────────────────────────────────────────────────
 
 export const CODEGRAPH_TOOL_NAMES = [
   "index",
@@ -64,18 +62,15 @@ export type CodegraphToolName = (typeof CODEGRAPH_TOOL_NAMES)[number];
 
 const TOOL_NAME_SET: ReadonlySet<string> = new Set(CODEGRAPH_TOOL_NAMES as readonly string[]);
 
-/** Type guard — narrows an unknown string to a {@link CodegraphToolName}. */
 export function isCodegraphToolName(value: unknown): value is CodegraphToolName {
   return typeof value === "string" && TOOL_NAME_SET.has(value);
 }
 
-/** Human-readable list for error messages (rule 51). */
 export function formatCodegraphToolNames(): string {
   return CODEGRAPH_TOOL_NAMES.join(", ");
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Surface request / response shapes
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -90,26 +85,19 @@ export interface CodegraphSurfaceRequest {
   readonly principal?: string;
   /** Explicit project id; defaults to the session's coding-context projectId. */
   readonly project?: string;
-  // search_graph / search_code
   readonly query?: string;
   readonly limit?: number;
-  // trace_path
   readonly start?: string;
   readonly direction?: string;
   readonly depth?: number;
-  // get_snippet
   readonly qualifiedName?: string;
   readonly path?: string;
   // query_graph (structured; Cypher passthrough is rejected)
   readonly structuredQuery?: Record<string, unknown>;
-  // detect_changes
   readonly head?: string;
-  // index
   readonly repoRoot?: string;
   readonly mode?: string;
-  // delete_project
   readonly confirm?: boolean;
-  // manage_adr (delegates to Track A's decision records)
   readonly subcommand?: string;
   readonly id?: string;
   readonly title?: string;
@@ -119,7 +107,6 @@ export interface CodegraphSurfaceRequest {
   readonly consequences?: string;
   readonly entityRefs?: string[];
   readonly supersedesId?: string;
-  // ingest_traces
   readonly traces?: unknown[];
 }
 
@@ -128,11 +115,6 @@ export type CodegraphSurfaceResponse =
   | { tool: CodegraphToolName; ok: false; code: string; message: string };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Runtime-delegate outcomes — the handler surfaces these verbatim so the
-// surface never reports stub success for index / ingest / status / detect.
-// Each delegate is OPTIONAL: when the runtime (@remnic/coding-graph) is
-// unavailable, the access-service omits it and the handler degrades with a
-// clean code instead of pretending success (P1 fix, issue #1554 review).
 // ──────────────────────────────────────────────────────────────────────────
 
 /** Outcome of a reindex run (mirrors @remnic/coding-graph ReindexResult). */
@@ -140,11 +122,6 @@ export type CodegraphReindexOutcome =
   | { ok: true; mode: string; filesIngested: number; head: string | null }
   | { ok: false; code: string; message: string };
 
-/** Outcome of an index-status probe (mirrors IndexStatus). The status body
- * is opaque at the surface layer — the runtime delegate returns the real
- * IndexStatus shape from @remnic/coding-graph and the surface passes it
- * through as `result: unknown` (core must not depend on the optional
- * package's exact type). */
 export type CodegraphIndexStatusOutcome =
   | { ok: true; status: Record<string, unknown> }
   | { ok: false; code: string; message: string };
@@ -160,7 +137,6 @@ export type CodegraphIngestTracesOutcome =
   | { ok: false; code: string; message: string };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Allow-lists for enum-ish params — rule 51 (reject loudly, list options)
 // ──────────────────────────────────────────────────────────────────────────
 
 const TRACE_DIRECTIONS = ["inbound", "outbound", "both"] as const;
@@ -172,7 +148,6 @@ const INDEX_MODE_SET: ReadonlySet<string> = new Set(INDEX_MODES as readonly stri
 const MANAGE_ADR_SUBCOMMANDS = DECISION_SUBCOMMANDS;
 
 // ──────────────────────────────────────────────────────────────────────────
-// Handler context — the surface service wires this per call
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -200,33 +175,10 @@ export interface CodegraphSurfaceContext {
   delegateDecisionRecord(request: DecisionSurfaceRequest): Promise<DecisionSurfaceResponse>;
   /** Composed architecture card + graph stats builder (Track A reuse). */
   buildArchitectureCard(repoRoot: string): Promise<unknown>;
-  /**
-   * Run a reindex via @remnic/coding-graph's executeReindex. Optional — when
-   * omitted (runtime unavailable), the index handler degrades with a clean
-   * code instead of stub success (P1 fix).
-   */
   runReindex?(store: CodegraphStore, repoRoot: string, mode: string): Promise<CodegraphReindexOutcome>;
-  /**
-   * Run LSP type resolution after a heuristic reindex (issue #1917).
-   * Optional — when omitted or when codingKnowledge.lsp is not enabled,
-   * the heuristic edges stand alone.
-   */
   runLspResolution?(store: CodegraphStore, repoRoot: string, lspConfig: NonNullable<PluginConfig["codingKnowledge"]["lsp"]>): Promise<{ ok: boolean; code?: string; upgraded?: number; unresolved?: number; budgetExhausted?: number; message?: string; degradations?: Array<{ language: string; code: string; message: string }> }>;
-  /**
-   * Report index status via @remnic/coding-graph's getIndexStatus. Optional —
-   * when omitted, index_status degrades with a clean code (no placeholder).
-   */
   reportIndexStatus?(store: CodegraphStore, repoRoot: string): Promise<CodegraphIndexStatusOutcome>;
-  /**
-   * Detect changes / blast radius via @remnic/coding-graph's detect-changes
-   * pipeline. Optional — when omitted, detect_changes degrades cleanly.
-   */
   detectChanges?(store: CodegraphStore, repoRoot: string, head: string): Promise<CodegraphDetectChangesOutcome>;
-  /**
-   * Persist runtime call traces as HTTP_CALLS edges via the store's write
-   * path. Optional — when omitted, ingest_traces degrades cleanly. The
-   * returned `persisted` count is the number of traces actually written.
-   */
   ingestTraces?(store: CodegraphStore, traces: readonly unknown[]): Promise<CodegraphIngestTracesOutcome>;
 }
 
@@ -239,10 +191,6 @@ export async function handleCodegraphTool(
   request: CodegraphSurfaceRequest,
   ctx: CodegraphSurfaceContext,
 ): Promise<CodegraphSurfaceResponse> {
-  // Gate 1: config-only predicate. Runtime availability check follows per
-  // tool so that `list_projects` (which does not need a store) still works
-  // when the package is missing -- it returns the empty list with a clean
-  // code rather than throwing.
   if (!codegraphSurfaceVisible(ctx.config)) {
     return disabledResponse(request.tool, "codegraph tools are disabled in config");
   }
@@ -277,9 +225,6 @@ export async function handleCodegraphTool(
     case "ingest_traces":
       return withStore(request, ctx, (store) => handleIngestTraces(store, request, ctx));
     default: {
-      // Exhaustive: the switch above covers CODEGRAPH_TOOL_NAMES. The
-      // default branch exists so a future tool added to the union without
-      // a handler here fails closed rather than silently no-oping.
       const _exhaustive: never = request.tool;
       void _exhaustive;
       ctx.throwInputError(`unknown codegraph tool: ${request.tool}`);
@@ -314,8 +259,6 @@ async function withStore(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Per-tool handlers — thin adapters over the store's structured API.
-// No query logic in the surface layer (issue #1554 design).
 // ──────────────────────────────────────────────────────────────────────────
 
 async function handleListProjects(
@@ -336,10 +279,6 @@ async function handleGetSchema(
   tool: CodegraphToolName,
 ): Promise<CodegraphSurfaceResponse> {
   const stats = store.schemaStats();
-  // Thread 12 (cursor bugbot): a closed-store / invalid-query failure arrives
-  // as { ok: false, code }. The surface MUST mirror that to ok:false so MCP/HTTP
-  // clients honoring CodegraphSurfaceResponse.ok do not treat failures as
-  // successes (search_code already did this; the other read handlers did not).
   if (!stats.ok) {
     return { tool, ok: false, code: stats.code, message: "schemaStats failed" };
   }
@@ -372,11 +311,6 @@ async function handleSearchCode(
 ): Promise<CodegraphSurfaceResponse> {
   const query = requireString(request.query, "query", ctx);
   const limit = clampPositiveInteger(request.limit, 50, "limit", ctx);
-  // search_code limits results to code symbol kinds (function/class/method).
-  // The store's SearchQuery.label takes a SINGLE kind, so query per kind and
-  // merge + dedupe by nodeId. The earlier `kinds` array was silently
-  // ignored by GraphStore.searchGraph, making this an unfiltered name search
-  // (issue #1554 review threads: kind filter must be real, not cosmetic).
   const seen = new Set<string>();
   const merged: unknown[] = [];
   for (const kind of SEARCH_CODE_KINDS) {
@@ -437,9 +371,6 @@ async function handleQueryGraph(
   request: CodegraphSurfaceRequest,
   ctx: CodegraphSurfaceContext,
 ): Promise<CodegraphSurfaceResponse> {
-  // Cypher passthrough is rejected: the store exposes a STRUCTURED query
-  // API (searchGraph / traverse / schemaStats / deadCode); a string
-  // Cypher query against `query` is the documented rejection-table case.
   if (typeof request.query === "string" && isLikelyCypher(request.query)) {
     ctx.throwInputError(
       "codegraph_query_graph does not accept Cypher text; pass a structured query via structuredQuery (issue #1554 rejection table)",
@@ -463,9 +394,6 @@ async function handleIndexStatus(
   ctx: CodegraphSurfaceContext,
 ): Promise<CodegraphSurfaceResponse> {
   const repoRoot = resolveRepoRoot(request, ctx);
-  // Delegate to @remnic/coding-graph's getIndexStatus via the runtime. When
-  // the runtime delegate is absent (package missing), degrade with a clean
-  // code instead of a placeholder success (issue #1554 review thread).
   if (!ctx.reportIndexStatus) {
     return {
       tool: request.tool,
@@ -488,9 +416,6 @@ async function handleDetectChanges(
   ctx: CodegraphSurfaceContext,
 ): Promise<CodegraphSurfaceResponse> {
   const head = requireString(request.head, "head", ctx);
-  // Delegate to @remnic/coding-graph's detect-changes + blast-radius
-  // pipeline (issue #1553). When the runtime delegate is absent, degrade
-  // with a clean code instead of a placeholder success (review thread).
   if (!ctx.detectChanges) {
     return {
       tool: request.tool,
@@ -517,20 +442,12 @@ async function handleIndex(
   if (!INDEX_MODE_SET.has(modeRaw)) {
     ctx.throwInputError(`mode must be one of ${INDEX_MODES.join(", ")}; got ${JSON.stringify(modeRaw)}`);
   }
-  // Open the per-project store. The reindex itself is invoked explicitly
-  // via ctx.runReindex below — GraphStore.open only creates/applies the
-  // schema; it does NOT parse or ingest files (P1 fix: previously the
-  // handler returned ok:true after open + schemaStats without reindexing).
   //
   // Open the per-project store. The reindex itself is invoked explicitly
   // via ctx.runReindex below — GraphStore.open only creates/applies the
   // schema; it does NOT parse or ingest files (P1 fix: previously the
   // handler returned ok:true after open + schemaStats without reindexing).
   //
-  // Project derivation for repoRoot-only callers lives in the SHARED
-  // resolveStore (access-service.ts) so every store-backed tool — index,
-  // search_graph, get_schema, index_status — reopens the SAME DB. No
-  // per-handler duplication (issue #1554 review threads 7/9/11).
   const resolveReq = { ...request, repoRoot } as CodegraphSurfaceRequest;
   let store: CodegraphStore;
   try {
@@ -541,8 +458,6 @@ async function handleIndex(
     }
     throw err;
   }
-  // Run the reindex executor. When the runtime delegate is absent (package
-  // missing), degrade with a clean code instead of stub success.
   if (!ctx.runReindex) {
     return {
       tool: request.tool,
@@ -555,10 +470,6 @@ async function handleIndex(
   if (!outcome.ok) {
     return { tool: request.tool, ok: false, code: outcome.code, message: outcome.message };
   }
-  // LSP Phase B: upgrade unresolved call sites via language servers.
-  // Failure is non-fatal (heuristic edges survive) but NEVER silent — the
-  // degradation code/message surface in the result so a misconfigured
-  // server is diagnosable from the index response (review thread).
   let lspUpgradeSummary:
     | {
         upgraded: number;
@@ -603,7 +514,6 @@ async function handleDeleteProject(
 ): Promise<CodegraphSurfaceResponse> {
   const projectId = resolveProjectId(request, ctx);
   if (request.confirm !== true) {
-    // Rule 48: destructive operations are never defaulted to proceed.
     return {
       tool: request.tool,
       ok: false,
@@ -635,9 +545,6 @@ async function handleGetArchitecture(
 ): Promise<CodegraphSurfaceResponse> {
   const codingContext = resolveCodingContext(request, ctx);
   const repoRoot = request.repoRoot ?? codingContextLocalRoot(codingContext);
-  // Composition (issue #1554): deterministic architecture card from Track A
-  // (no live graph) + live graph stats from the per-project store. Two
-  // existing sources, one composed response -- no duplicated card logic.
   const card = await ctx.buildArchitectureCard(repoRoot);
   let stats: CodegraphSchemaStatsResult;
   try {
@@ -645,8 +552,6 @@ async function handleGetArchitecture(
     stats = store.schemaStats();
   } catch (err) {
     if (err instanceof CodegraphRuntimeError) {
-      // Architecture card still returns; graph stats degrade to a clean
-      // "unavailable" code rather than failing the whole composition.
       stats = { ok: false, code: err.code };
     } else {
       throw err;
@@ -669,11 +574,6 @@ async function handleManageAdr(
       `manage_adr subcommand must be one of ${MANAGE_ADR_SUBCOMMANDS.join(", ")}; got ${JSON.stringify(subcommand)}`,
     );
   }
-  // Rule 22 reuse: codegraph_manage_adr is a *presentation* of Track A's
-  // decision records under the parity tool name. Same store, same status
-  // lifecycle, zero duplicate ADR logic. The identity test (issue #1554
-  // done-when) asserts that `manage_adr record` and `coding_decision record`
-  // write byte-identical records -- both routes call handleCodingDecision.
   const codingContext = resolveCodingContext(request, ctx);
   if (!isCodingKnowledgeFeatureEnabled(ctx.config.codingKnowledge, "decisionRecords", codingContext)) {
     return disabledResponse(
@@ -705,10 +605,6 @@ async function handleIngestTraces(
   if (!Array.isArray(request.traces)) {
     ctx.throwInputError("codegraph_ingest_traces requires traces: an array of call-site observations");
   }
-  // Persist traces as HTTP_CALLS edges via the store's write path. The
-  // trace→edge upgrade lives in the runtime delegate (P1 fix: previously
-  // the handler returned accepted: traces.length without persisting). When
-  // the runtime delegate is absent, degrade with a clean code.
   if (!ctx.ingestTraces) {
     return {
       tool: request.tool,
@@ -732,7 +628,6 @@ async function handleIngestTraces(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Helpers — validation + project resolution
 // ──────────────────────────────────────────────────────────────────────────
 
 function requireString(value: unknown, field: string, ctx: CodegraphSurfaceContext): string {
@@ -797,8 +692,6 @@ function isLikelyCypher(input: string): boolean {
   return /^\s*(MATCH|RETURN|WHERE|CREATE|MERGE|DELETE|WITH|OPTIONAL|CALL|YIELD|UNWIND)\b/i.test(input);
 }
 
-// Re-export the runtime helpers the access-service delegate uses so the
-// surface module is the single import for callers wiring the boundary.
 export {
   codegraphSurfaceVisible,
   codegraphRuntimeAvailable,

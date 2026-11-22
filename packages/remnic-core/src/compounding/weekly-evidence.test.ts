@@ -35,7 +35,6 @@ test("isoWeekStartMs returns Monday UTC for valid ids and null otherwise", () =>
   assert.equal(isoWeekStartMs("2026-W00"), null);
   assert.equal(isoWeekStartMs("not-a-week"), null);
   assert.equal(isoWeekStartMs("2026-W54"), null);
-  // 2026 has 53 weeks only if the calendar emits it; W53 that does not land is null.
   const w53 = isoWeekStartMs("2015-W53");
   assert.ok(w53 !== null);
   assert.equal(isoWeekId(new Date(w53)), "2015-W53");
@@ -168,7 +167,6 @@ Fix the pricing table.
       "utf8",
     );
 
-    // SAFETY: rememberRawFrontmatter reads only path, content and frontmatter; this literal sets all three.
     const smallMemory = rememberRawFrontmatter(
       {
         path: path.join(correctionsDir, smallName),

@@ -128,8 +128,6 @@ export function registerSkillsCommands(
       const storage = await orchestrator.getStorageForNamespace(namespace || undefined);
       const { imported, rejected } = await persistImportedSkills({ storage, bundles: read.bundles });
 
-      // Direct writes bypass extraction, so the search index needs an explicit
-      // refresh or imported procedures stay undiscoverable (§31).
       await orchestrator.qmd.probe();
       if (orchestrator.qmd.isAvailable()) {
         await orchestrator.qmd.update();

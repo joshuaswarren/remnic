@@ -1,13 +1,3 @@
-/**
- * Recall-navigation surface tests (issue #1956): MCP three-step flow
- * (recall-served id → expand → traverse), disabled-tool listing removal,
- * HTTP parity, and namespace isolation over a two-namespace fixture.
- *
- * Service is built the way deep-recall-surface.test.ts builds it:
- * Object.create(EngramAccessService.prototype) with a stub orchestrator
- * carrying a REAL RecallHandleHistoryStore (the same ring recall writes)
- * and REAL StorageManager instances.
- */
 
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -112,8 +102,6 @@ test("MCP three-step: expand a served id to raw, then traverse contradicts", asy
     const source = await writeMemory(storage, "The API rate limit is 1000 requests per minute.", [
       { targetId: neighbor, linkType: "contradicts", strength: 0.9 },
     ]);
-    // The recall step's role in the flow: register the served ids. This is
-    // the same write path orchestrator recall uses (handle history record).
     await f.history.record(SESSION, [source, neighbor]);
 
     const server = new EngramMcpServer(f.service, { emitLegacyTools: true });
@@ -149,7 +137,6 @@ test("MCP three-step: expand a served id to raw, then traverse contradicts", asy
     assert.equal(traversePayload.items?.[0]?.memoryId, neighbor);
     assert.equal(traversePayload.items?.[0]?.linkType, "contradicts");
 
-    // An id the session never saw is refused with the constraint named.
     const stranger = await writeMemory(storage, "Never served to this session.");
     const unserved = (await call("remnic.memory_expand", {
       memoryId: stranger,
@@ -184,9 +171,6 @@ test("disabled config removes navigation tools from tools/list; default keeps th
     };
 
     const withFields = (fields: Record<string, unknown>): EngramAccessService =>
-      // Plain object, not prototype-based: supportPassportEnabled is a
-      // getter on the base class and cannot be assigned per instance. The
-      // MCP constructor only READS these flags while building the tool list.
       ({
         supportPassportEnabled: false,
         briefingEnabled: false,
@@ -201,7 +185,6 @@ test("disabled config removes navigation tools from tools/list; default keeps th
     assert.ok(!disabled.has("memory_expand"), "disabled removes memory_expand from listing");
     assert.ok(!disabled.has("memory_traverse"), "disabled removes memory_traverse from listing");
 
-    // The live service shape: enabled by the default config.
     const live = await shortNames(f.service);
     assert.ok(live.has("memory_expand") && live.has("memory_traverse"));
   } finally {
@@ -277,12 +260,9 @@ test("namespace isolation: navigation never crosses the resolved namespace", asy
       [],
     );
     const bobMemory = await writeMemory(f.storages.ns_bob!, "Bob-private: the merger closes never.");
-    // Alice's memory links at Bob's id (stale/foreign edge): traversal must
-    // not resolve it inside alice's namespace.
     const aliceLinked = await writeMemory(f.storages.ns_alice!, "Alice decision with a foreign edge.", [
       { targetId: bobMemory, linkType: "follows", strength: 0.5 },
     ]);
-    // The recall step served alice's ids to alice's session.
     await f.history.record("alice-session", [aliceMemory, aliceLinked]);
 
     const status = await server.start();
@@ -293,8 +273,6 @@ test("namespace isolation: navigation never crosses the resolved namespace", asy
         body: JSON.stringify(body),
       });
 
-    // Bob asks for alice's id inside his own namespace: the id resolves
-    // against bob's storage and is simply absent — zero content leakage.
     const bobProbe = await post({
       memoryId: aliceMemory,
       sessionKey: "bob-session",
@@ -305,8 +283,6 @@ test("namespace isolation: navigation never crosses the resolved namespace", asy
     assert.equal(bobBody.ok, false);
     assert.equal(bobBody.error, "not_served", "bob's session never served alice's id");
 
-    // Alice expands her linked memory; the foreign edge must yield no
-    // neighbor content from bob's namespace.
     const aliceTraverse = await fetch(`http://127.0.0.1:${status.port}/engram/v1/memory/traverse`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer operator-token" },
@@ -323,7 +299,6 @@ test("namespace isolation: navigation never crosses the resolved namespace", asy
     const rendered = JSON.stringify(traverseBody);
     assert.ok(!rendered.includes("Bob-private"), "no bob-namespace content may appear in alice's traverse");
 
-    // Alice CAN expand her own served memory.
     const aliceExpand = await post({
       memoryId: aliceMemory,
       sessionKey: "alice-session",

@@ -28,10 +28,6 @@ export function handleMcpGetSse(
     "transfer-encoding": "chunked",
   });
 
-  // Comment-only frames: `: ping\n\n` is a valid SSE comment that carries no
-  // data and cannot be mistaken for a JSON-RPC message. One is written
-  // immediately so clients and proxies see the stream is live without
-  // waiting for the first 25 s tick.
   const heartbeat = (): void => {
     try { res.write(": ping\n\n"); } catch { /* client gone; cleanup fires via "close" */ }
   };

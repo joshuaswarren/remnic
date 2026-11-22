@@ -25,7 +25,6 @@ export const LIMITLESS_DEFAULT_BASE_URL = "https://api.limitless.ai";
 export const LIFELOGS_MAX_PAGE_SIZE = 10;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-/** Backoff cap so a hostile retryAfter can't stall a sync for minutes. */
 const MAX_RETRY_DELAY_MS = 30_000;
 
 export interface LimitlessContentNode {
@@ -120,7 +119,6 @@ export class LimitlessClient {
       );
       lifelogs.push(...page.lifelogs);
       cursor = page.nextCursor;
-      // Keep the existing outer pagination safety ceiling's candidate capacity.
       if (!cursor || page.lifelogs.length === 0 || this.pageSize === LIFELOGS_MAX_PAGE_SIZE ||
         lifelogs.length >= LIFELOGS_MAX_PAGE_SIZE || seenCursors.has(cursor)) {
         return { lifelogs, nextCursor: cursor };
@@ -136,8 +134,6 @@ export class LimitlessClient {
       timezone: params.timezone,
       limit: String(pageSize),
       direction: "asc",
-      // The markdown rendering duplicates what `contents` carries and
-      // inflates payloads; segments come from `contents`.
       includeMarkdown: "false",
       includeHeadings: "false",
       includeContents: "true",
@@ -155,8 +151,6 @@ export class LimitlessClient {
       } catch (err) {
         if (params.signal?.aborted || !(err instanceof LimitlessApiError) ||
           (err.status !== 408 && err.status !== 504) || pageSize === 1) throw err;
-        // Retry the SAME cursor with a lighter payload; the caller still drains
-        // every nextCursor. Keep the learned size for subsequent pages.
         pageSize = Math.max(1, Math.floor(pageSize / 2));
         this.pageSize = Math.min(this.pageSize, pageSize);
         await this.sleep(1_000);

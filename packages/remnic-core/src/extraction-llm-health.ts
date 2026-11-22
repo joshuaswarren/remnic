@@ -1,14 +1,3 @@
-/**
- * Extraction-LLM availability tracking surfaced on `/health` (issue #3140).
- *
- * A failing extraction LLM (unreachable endpoint, gateway with no models)
- * used to surface only as debug-level lines while extraction silently skipped
- * persistence and the buffer grew for days. The extraction run records every
- * attempt outcome here; the access `/health` payload reads the last outcome so
- * an unavailable extractor is visible without debug logs, and each distinct
- * failure reason logs at ERROR level at most once per window instead of once
- * per failed flush.
- */
 
 import { log } from "./logger.js";
 

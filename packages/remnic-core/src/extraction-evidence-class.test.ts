@@ -17,8 +17,6 @@ function turn(overrides: Partial<EvidenceClassTurnInput> & Pick<EvidenceClassTur
 }
 
 // ---------------------------------------------------------------------------
-// Deterministic turn-class derivation — table-driven across all classes
-// ---------------------------------------------------------------------------
 
 const DERIVATION_TABLE: ReadonlyArray<{
   label: string;
@@ -52,7 +50,6 @@ test("deriveTurnEvidenceClass: same input always yields the same class (determin
     for (let i = 0; i < 50; i++) {
       assert.equal(deriveTurnEvidenceClass(input), first, `${row.label}: call ${i} diverged`);
     }
-    // A structurally identical clone must not change the class either.
     const clone = turn({ content: "x", ...row.input });
     assert.equal(deriveTurnEvidenceClass(clone), first, `${row.label}: clone diverged`);
   }
@@ -69,7 +66,6 @@ test("deriveTurnEvidenceClass: unrelated fields never change the class", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Buffer-turn adapter — tool part flags map mechanically
 // ---------------------------------------------------------------------------
 
 test("evidenceTurnInput: tool_result part flags the turn as machine output", () => {
@@ -109,7 +105,6 @@ test("evidenceTurnInput: user role passes through", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Fact-level span classification — reuses the provenance matcher
 // ---------------------------------------------------------------------------
 
 const USER_TURN = turn({ role: "user", content: "we renewed the license for 40 seats" });
@@ -172,7 +167,6 @@ test("classifyEvidenceClasses: determinism regression over repeated and reordere
 });
 
 // ---------------------------------------------------------------------------
-// Fact-level single class — strongest present license wins
 // ---------------------------------------------------------------------------
 
 test("deriveFactEvidenceClass: strongest class present wins in fixed order", () => {
@@ -194,12 +188,9 @@ test("deriveFactEvidenceClass: every class round-trips through the canonical ord
 });
 
 // ---------------------------------------------------------------------------
-// Deterministic post-extraction rules — each case a smuggling attempt
 // ---------------------------------------------------------------------------
 
 test("rule: agent-asserted user decision never passes (assertion loop)", () => {
-  // The agent asserts the human decided something; the only surviving span is
-  // agent prose. This is the self-reinforcing loop the rules must break.
   const findings = applyEvidenceClassRules({
     content: "The user decided to migrate the database to Postgres",
     category: "decision",
@@ -340,7 +331,6 @@ test("rule: same input always yields the same findings (determinism regression)"
   for (let i = 0; i < 50; i++) {
     assert.deepEqual(applyEvidenceClassRules(input), first, `call ${i} diverged`);
   }
-  // Findings order is canonical (rule id order), not input-order dependent.
   assert.deepEqual(first.map((f) => f.rule), [
     "numeric_without_tool_evidence",
     "user_attribution_without_user_span",

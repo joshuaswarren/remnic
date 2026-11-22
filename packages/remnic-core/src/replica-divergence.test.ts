@@ -18,8 +18,6 @@ import {
 import { parseReplicaPeersConfig, resolveReplicaPeersConfig } from "./replica-peers-config.js";
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 const THRESHOLDS = { maxFileCountDelta: 100, maxWatermarkAgeDeltaMs: 900_000 } as const;
 
@@ -69,7 +67,6 @@ async function startPeer(handler: RequestListener): Promise<Peer> {
   };
 }
 
-/** A `/health`-style handler that serves `corpus` under the given path (default engram prefix). */
 function corpusHandler(corpus: CorpusWatermark[], servedPath = "/engram/v1/health"): RequestListener {
   return (req, res) => {
     const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
@@ -84,7 +81,6 @@ function corpusHandler(corpus: CorpusWatermark[], servedPath = "/engram/v1/healt
 }
 
 // ---------------------------------------------------------------------------
-// Config parsing (§1/§17/§24/§39)
 // ---------------------------------------------------------------------------
 
 test("parseReplicaPeersConfig: defaults are opt-out and match the documented values", () => {
@@ -147,9 +143,6 @@ test("parseReplicaPeersConfig: rejects fractional / non-positive intervals (§1/
 });
 
 test("resolveReplicaPeersConfig: the read boundary caps requestTimeoutMs at the timer ceiling (falls back, never throws)", () => {
-  // The lenient read boundary (/health, doctor) must apply the same timer ceiling
-  // as the strict parser: a legacy config with an over-ceiling timeout would clamp
-  // to ~1ms and mark every peer unreachable. It falls back to the default, never throws.
   const resolved = resolveReplicaPeersConfig({ requestTimeoutMs: 2_147_483_648, enabled: true });
   assert.equal(resolved.requestTimeoutMs, 10_000, "an over-ceiling timeout falls back to the default at the read boundary");
 });
@@ -174,7 +167,6 @@ test("parseReplicaPeersConfig: ${ENV} expansion in url and token, throws on unse
 });
 
 // ---------------------------------------------------------------------------
-// compareReplicaWatermarks (pure)
 // ---------------------------------------------------------------------------
 
 test("compareReplicaWatermarks: a one-sided null newest-write is divergence, not agreement (round 6, codex)", () => {
@@ -183,7 +175,6 @@ test("compareReplicaWatermarks: a one-sided null newest-write is divergence, not
   const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
   assert.equal(result.state, "diverged", "a missing measurement on one side cannot certify convergence");
   assert.ok(result.namespaces[0]?.reasons.includes("newest_write_presence_mismatch"));
-  // Two genuinely undated but otherwise-matching corpora still converge.
   const bothNull = compareReplicaWatermarks(
     [watermark("default", { newestWriteAt: null })],
     [watermark("default", { newestWriteAt: null })],
@@ -241,10 +232,8 @@ test("compareReplicaWatermarks: a one-sided namespace is reported; local_only ad
   const peer = [watermark("default"), watermark("team-b")];
   const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
   const byNamespace = new Map(result.namespaces.map((delta) => [delta.namespace, delta]));
-  // local_only is advisory (a namespace-restricted peer token may hide it): reported, not diverged.
   assert.equal(byNamespace.get("team-a")?.presence, "local_only");
   assert.equal(byNamespace.get("team-a")?.diverged, false);
-  // peer_only is a real divergence — the peer holds a namespace we lack.
   assert.equal(byNamespace.get("team-b")?.presence, "peer_only");
   assert.equal(byNamespace.get("team-b")?.diverged, true);
   assert.equal(byNamespace.get("default")?.diverged, false);
@@ -252,12 +241,6 @@ test("compareReplicaWatermarks: a one-sided namespace is reported; local_only ad
 });
 
 test("compareReplicaWatermarks: a local-only namespace is ambiguous, not converged (round 2, codex P1)", () => {
-  // A namespace-scoped peer token returns only `default`, and an unrestricted
-  // peer that genuinely LOST `team-a` returns exactly the same shape. Round 1
-  // called this advisory and certified `converged`, which would hide a peer
-  // that dropped an entire namespace. It is neither divergence nor health:
-  // the comparison resolves the peer to `unknown` so nothing is certified on
-  // evidence that cannot distinguish the two cases.
   const local = [watermark("default", { digest: "d" }), watermark("team-a", { digest: "d" })];
   const peer = [watermark("default", { digest: "d" })];
   const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
@@ -270,16 +253,11 @@ test("compareReplicaWatermarks: a local-only namespace is ambiguous, not converg
 });
 
 test("compareReplicaWatermarks: no shared namespace is unknown, never converged (round 6, codex P1)", () => {
-  // A local empty corpus and a peer that scoped out every namespace both present
-  // as empty maps. Zero overlap is zero evidence of agreement — it must not fall
-  // through to converged.
   const empty = compareReplicaWatermarks([], [], THRESHOLDS);
   assert.equal(empty.state, "unknown", "no shared namespace cannot be certified converged");
   assert.equal(empty.reason, "no_shared_namespaces");
   assert.notEqual(empty.state, "converged");
 
-  // But a genuinely empty single-namespace deployment still shares that one
-  // namespace on both sides (0 files == 0 files) and converges normally.
   const emptyDefault = watermark("default", {
     memoryFileCount: 0,
     newestWriteAt: null,
@@ -305,7 +283,6 @@ test("compareReplicaWatermarks: real watermarks with equal count but different d
 });
 
 // ---------------------------------------------------------------------------
-// fetchPeerWatermarks / pollReplicaPeers (real HTTP peer on 127.0.0.1)
 // ---------------------------------------------------------------------------
 
 test("pollReplicaPeers: converged peer over the engram prefix this server serves (no fallback needed)", async () => {
@@ -367,7 +344,6 @@ test("pollReplicaPeers: a 500 is reported unreachable and is NOT conflated with 
 });
 
 test("pollReplicaPeers: a connection refused is unreachable, never converged (§22)", async () => {
-  // Bind then close to get a port that is deterministically refused.
   const dead = await startPeer(corpusHandler([watermark("default")]));
   const url = dead.url;
   await dead.close();
@@ -468,7 +444,6 @@ test("pollReplicaPeers: a SecretRef token with no resolver degrades to unreachab
     const config = parseReplicaPeersConfig({
       replicaPeers: { enabled: true, peers: [{ url: peer.url, token: { source: "exec", provider: "kc_peer" } }] },
     });
-    // Resolving the SecretRef throws (no resolver); the whole poll must NOT reject.
     const report = await pollReplicaPeers({ config, localWatermarks: [watermark("default")] });
     assert.equal(report.peers[0]?.state, "unreachable");
     assert.equal(report.peers[0]?.reason, "token_error");
@@ -480,10 +455,6 @@ test("pollReplicaPeers: a SecretRef token with no resolver degrades to unreachab
 });
 
 test("round 6 (codex P2): a stalling peer-token resolver times out instead of hanging the fetch", { timeout: 5000 }, async () => {
-  // A SecretRef whose host resolver never settles must not hang fetchPeerWatermarks;
-  // that would wedge the monitor's single-flight refresh and block doctor's batch.
-  // The per-peer deadline now bounds token resolution too. The 5s test timeout is a
-  // guard: on the fix, the poll returns in ~one requestTimeoutMs; a revert hangs.
   const stall = () => Promise.withResolvers<string>().promise; // never settles
   const config = parseReplicaPeersConfig({
     replicaPeers: {
@@ -525,7 +496,6 @@ test("pollReplicaPeers: a provided resolveSecretRef resolves a SecretRef token a
 });
 
 // ---------------------------------------------------------------------------
-// Capability filtering (issue #2156 finding B parity)
 // ---------------------------------------------------------------------------
 
 function reportWithNamespaces(): ReplicaDivergenceStatus {
@@ -571,7 +541,6 @@ test("filterReplicaReportByCaps: an unreachable peer's state is preserved for a 
 });
 
 // ---------------------------------------------------------------------------
-// redaction
 // ---------------------------------------------------------------------------
 
 test("redactPeerUrl: strips userinfo, path, and query so an embedded credential cannot leak", () => {
@@ -581,7 +550,6 @@ test("redactPeerUrl: strips userinfo, path, and query so an embedded credential 
 });
 
 // ---------------------------------------------------------------------------
-// ReplicaDivergenceMonitor (SWR / single-flight)
 // ---------------------------------------------------------------------------
 
 test("ReplicaDivergenceMonitor: disabled config never polls and reports disabled", () => {
@@ -604,12 +572,10 @@ test("ReplicaDivergenceMonitor: stale-while-revalidate serves cached state and s
   const monitor = new ReplicaDivergenceMonitor({ clock: () => clock, fetchImpl });
   const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, pollIntervalMs: 60_000, peers: [{ url: "http://127.0.0.1:4318" }] } });
 
-  // First probe is cold: returns a never-polled placeholder and triggers a background poll.
   const cold = monitor.getReport({ config, computeLocalWatermarks });
   assert.equal(cold.polledAt, null);
   await monitor.whenIdle();
 
-  // Second probe (within TTL) serves the completed report without re-polling.
   const warm = monitor.getReport({ config, computeLocalWatermarks });
   assert.equal(warm.peers[0]?.state, "diverged");
   assert.equal(computeCalls, 1, "single-flight: exactly one poll within the TTL");
@@ -617,7 +583,6 @@ test("ReplicaDivergenceMonitor: stale-while-revalidate serves cached state and s
   await monitor.whenIdle();
   assert.equal(computeCalls, 1, "still one — the cached report is fresh");
 
-  // After the TTL elapses, a probe triggers a refresh.
   clock += 60_001;
   monitor.getReport({ config, computeLocalWatermarks });
   await monitor.whenIdle();
@@ -650,15 +615,12 @@ test("ReplicaDivergenceMonitor: warming state is distinguishable from no-peers c
   const withPeers = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } });
   const noPeers = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [] } });
 
-  // Enabled + peers but no completed poll yet -> pending:true (in-progress/failed).
   const warming = monitor.getReport({ config: withPeers, computeLocalWatermarks });
   assert.equal(warming.pending, true);
   assert.equal(warming.peers.length, 0);
 
-  // Enabled but no peers configured -> pending:false, distinct from warming.
   assert.equal(monitor.getReport({ config: noPeers, computeLocalWatermarks }).pending, false);
 
-  // After the poll completes -> pending:false with the real report.
   await monitor.whenIdle();
   const polled = monitor.getReport({ config: withPeers, computeLocalWatermarks });
   assert.equal(polled.pending, false);
@@ -667,8 +629,6 @@ test("ReplicaDivergenceMonitor: warming state is distinguishable from no-peers c
 
 test("ReplicaDivergenceMonitor: a partial config with no replicaPeers block reads as disabled, never crashes (review round 1)", () => {
   const monitor = new ReplicaDivergenceMonitor();
-  // A duck-typed/legacy orchestrator whose config has no `replicaPeers` block:
-  // health() -> getReport must degrade to disabled, not throw on `config.enabled`.
   const report = monitor.getReport({ config: undefined, computeLocalWatermarks: async () => ({ watermarks: [], complete: true }) });
   assert.equal(report.enabled, false);
   assert.equal(report.pending, false);
@@ -676,14 +636,9 @@ test("ReplicaDivergenceMonitor: a partial config with no replicaPeers block read
 });
 
 // ---------------------------------------------------------------------------
-// Review round 2 regressions
 // ---------------------------------------------------------------------------
 
 test("round 2 (cursor): poll TTL runs from completion, so a slow poll cannot self-expire", async () => {
-  // expiresAt was computed from the poll's START. A poll slower than
-  // pollIntervalMs was therefore already stale when stored, so every probe
-  // scheduled another peer poll — unbounded re-polling under slow peers,
-  // exactly when peers can least afford it.
   let now = 1_000_000;
   let polls = 0;
   const fetchImpl: FetchLike = async () => {
@@ -701,8 +656,6 @@ test("round 2 (cursor): poll TTL runs from completion, so a slow poll cannot sel
   await monitor.whenIdle();
   assert.equal(polls, 1, "first probe triggers exactly one poll");
 
-  // Immediately after completion the entry must still be fresh: the TTL starts
-  // when the poll FINISHED, so no second poll is scheduled.
   monitor.getReport({ config, computeLocalWatermarks });
   await monitor.whenIdle();
   assert.equal(polls, 1, "a poll slower than the interval must not be born expired");
@@ -714,8 +667,6 @@ test("round 2 (cursor): poll TTL runs from completion, so a slow poll cannot sel
 });
 
 test("round 6 (coderabbit): a persistently failing poll backs off one interval, not one scan per probe", async () => {
-  // this.cached is set only on success; without backoff every /health probe found
-  // no fresh cache and rescheduled a full local corpus scan + peer fan-out.
   let clock = 1_000_000;
   let computeCalls = 0;
   const computeLocalWatermarks = async () => {
@@ -747,10 +698,6 @@ test("round 6 (coderabbit): a persistently failing poll backs off one interval, 
 });
 
 test("round 2 (codex P2): the file-count threshold tolerates a real sub-threshold delta", async () => {
-  // Any nonzero count delta also perturbs the census digest, so flagging
-  // digest mismatch unconditionally made maxFileCountDelta unreachable for
-  // REAL watermarks — a delta of 1 always reported diverged. Digest mismatch
-  // is now the equal-count (split-brain) signal only.
   const baseDir = "/tmp/replica-threshold-fixture";
   const localPaths = ["facts/2026-03-01/a.md", "facts/2026-03-01/b.md"].map((rel) => `${baseDir}/${rel}`);
   const peerPaths = [...localPaths, `${baseDir}/facts/2026-03-01/c.md`];
@@ -767,9 +714,6 @@ test("round 2 (codex P2): the file-count threshold tolerates a real sub-threshol
 });
 
 test("round 2 (codex P2): semantically malformed peer watermarks read as unknown, never converged", async () => {
-  // Structurally present but invalid values used to pass: a peer could return
-  // memoryFileCount: -1 with an unparseable timestamp and be certified
-  // converged. Corrupt telemetry must be unknown, not health.
   const cases: Array<[string, unknown]> = [
     ["negative count", { ...watermark("default"), memoryFileCount: -1 }],
     ["fractional count", { ...watermark("default"), memoryFileCount: 1.5 }],
@@ -791,9 +735,6 @@ test("round 2 (codex P2): semantically malformed peer watermarks read as unknown
 });
 
 test("round 6 (codex P1): a stale peer census reads as unknown, never converged", async () => {
-  // CorpusWatermarkCache serves a prior watermark when a refresh fails, so a peer
-  // that changed after its last successful scan presents an old computedAt. A
-  // census older than maxWatermarkAgeDeltaMs cannot certify convergence.
   const now = Date.parse("2026-03-08T12:00:00.000Z");
   const staleAt = new Date(now - 20 * 60_000).toISOString(); // 20 min > default 15 min bound
   const staleImpl: FetchLike = async () => ({
@@ -811,7 +752,6 @@ test("round 6 (codex P1): a stale peer census reads as unknown, never converged"
   assert.equal(stale.peers[0]?.reason, "peer_census_stale");
   assert.notEqual(stale.peers[0]?.state, "converged");
 
-  // A fresh census (default helper computedAt = now) still converges.
   const freshImpl: FetchLike = async () => ({ ok: true, status: 200, json: async () => ({ corpus: [watermark("default")] }) });
   const fresh = await pollReplicaPeers({
     config: parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } }),
@@ -822,10 +762,6 @@ test("round 6 (codex P1): a stale peer census reads as unknown, never converged"
 });
 
 test("round 6 (codex P2): a peer census computed during a slow poll is fresh, not future-stale", { timeout: 5000 }, async () => {
-  // polledAt is captured before the fan-out; a slow/queued peer computes its census
-  // AFTER polledAt. Freshness is measured at RESPONSE time, so that fresh census is
-  // not falsely flagged peer_census_stale under a small age bound. Real timers
-  // (ts-no-test-timers exception): the delay past polledAt IS the behavior under test.
   const fetchImpl: FetchLike = async () => {
     const gate = Promise.withResolvers<void>();
     setTimeout(() => gate.resolve(), 120); // push the response well past polledAt
@@ -842,9 +778,6 @@ test("round 6 (codex P2): a peer census computed during a slow poll is fresh, no
 });
 
 test("round 6 (cursor): maxWatermarkAgeDeltaMs=0 (any-gap divergence mode) does NOT gate census staleness", async () => {
-  // 0 is the documented strictest DIVERGENCE mode ("flag any write-age gap"); it
-  // must NOT be read as a 0ms census-freshness bound that marks every peer stale
-  // and blocks convergence entirely.
   const now = Date.parse("2026-03-08T12:00:00.000Z");
   const oldButMatching = watermark("default", { computedAt: new Date(now - 60 * 60_000).toISOString() });
   const fetchImpl: FetchLike = async () => ({ ok: true, status: 200, json: async () => ({ corpus: [oldButMatching] }) });
@@ -861,9 +794,6 @@ test("round 6 (cursor): maxWatermarkAgeDeltaMs=0 (any-gap divergence mode) does 
 });
 
 test("round 6 (codex P2): a future-dated peer census is rejected, never indefinitely fresh", async () => {
-  // A `9999` computedAt makes `now - computedAt` negative, which a one-sided
-  // "> maxAge" check reads as fresh forever. A materially future-dated census is
-  // corrupt/clock-skewed telemetry and must not certify convergence.
   const now = Date.parse("2026-03-08T12:00:00.000Z");
   const futureImpl: FetchLike = async () => ({
     ok: true,
@@ -882,8 +812,6 @@ test("round 6 (codex P2): a future-dated peer census is rejected, never indefini
 });
 
 test("round 3 (codex P2): a peer repeating a namespace is malformed, not converged", async () => {
-  // compareReplicaWatermarks builds a Map, so a later duplicate silently wins:
-  // a mismatching watermark followed by a matching one would certify converged.
   const fetchImpl: FetchLike = async () => ({
     ok: true,
     status: 200,
@@ -905,8 +833,6 @@ test("round 3 (codex P2): a peer repeating a namespace is malformed, not converg
 });
 
 test("round 3 (codex P2): a present-but-invalid replicaPeers.enabled is rejected, not read as false", () => {
-  // `enabled: 1` used to coerce to undefined and fall back to false — silently
-  // leaving monitoring OFF after an operator tried to turn it on.
   for (const bad of [1, 0, "yes-please", {}]) {
     assert.throws(
       () => parseReplicaPeersConfig({ replicaPeers: { enabled: bad, peers: [] } }),
@@ -914,16 +840,12 @@ test("round 3 (codex P2): a present-but-invalid replicaPeers.enabled is rejected
       `enabled: ${JSON.stringify(bad)} must be rejected`,
     );
   }
-  // Recognized tokens and absence still work.
   assert.equal(parseReplicaPeersConfig({ replicaPeers: { enabled: "false", peers: [] } }).enabled, false);
   assert.equal(parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [] } }).enabled, true);
   assert.equal(parseReplicaPeersConfig({ replicaPeers: { peers: [] } }).enabled, false, "absent -> default");
 });
 
 test("round 4 (cursor): an incomplete local census cannot certify a peer converged", async () => {
-  // computeServiceCorpusWatermarks DROPS a namespace whose scan failed, so an
-  // unscanned tenant never enters the comparison and its divergence would be
-  // invisible. Doctor already gated on this; /health did not.
   const fetchImpl: FetchLike = async () => ({
     ok: true,
     status: 200,
@@ -951,8 +873,6 @@ test("round 4 (cursor): an incomplete local census cannot certify a peer converg
 });
 
 test("round 4 (codex P2): a present null peer token is rejected, not silently unauthenticated", () => {
-  // Dropping `token: null` polls without the credential and surfaces a healthy
-  // peer as http_401, hiding the real configuration error.
   assert.throws(
     () =>
       parseReplicaPeersConfig({
@@ -960,14 +880,12 @@ test("round 4 (codex P2): a present null peer token is rejected, not silently un
       }),
     /token must be a string or a SecretRef object/,
   );
-  // An OMITTED token still selects unauthenticated polling.
   const omitted = parseReplicaPeersConfig({
     replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] },
   });
   assert.equal(omitted.peers[0]?.token, undefined);
 });
 
-/** A both-sides, in-agreement namespace delta for report-shaped fixtures. */
 function delta(namespace: string) {
   return {
     namespace,
@@ -985,9 +903,6 @@ function delta(namespace: string) {
 }
 
 test("round 5 (cursor/codex): a capability filter cannot clear a census-level unknown", () => {
-  // The cap filter recomputes a peer's state from its VISIBLE deltas. A
-  // census-level unknown says the LOCAL set was partial, which no amount of
-  // namespace filtering makes safe — it must survive the recompute.
   const report: ReplicaDivergenceStatus = {
     enabled: true,
     pending: false,
@@ -1014,9 +929,6 @@ test("round 5 (cursor/codex): a capability filter cannot clear a census-level un
 });
 
 test("round 6 (coderabbit): a cap filter that hides every namespace yields unknown, not converged", async () => {
-  // A restricted token whose capabilities hide EVERY namespace of a converged
-  // peer leaves zero visible deltas — no evidence of agreement. The recompute
-  // must resolve to unknown, not a convergence claim derived from nothing.
   const report: ReplicaDivergenceStatus = {
     enabled: true,
     pending: false,
@@ -1039,11 +951,6 @@ test("round 6 (coderabbit): a cap filter that hides every namespace yields unkno
 });
 
 test("round 6 (codex P2): capability filtering re-applies the census gate (no false split-brain for a restricted caller)", () => {
-  // Incomplete census + a peer with a REAL shared divergence in a HIDDEN namespace
-  // AND a visible peer_only namespace. The full-report gate keeps the peer diverged
-  // (the shared divergence is real). Filtering hides that namespace, leaving only
-  // the peer_only delta — which, against an incomplete census, is a false
-  // split-brain. The re-applied gate must downgrade the FILTERED view to unknown.
   const report: ReplicaDivergenceStatus = {
     enabled: true,
     pending: false,
@@ -1074,7 +981,6 @@ test("round 6 (codex P2): capability filtering re-applies the census gate (no fa
       },
     ],
   };
-  // The presenting token can see team-a but NOT the diverged team-secret.
   const filtered = filterReplicaReportByCaps(report, { namespaces: ["team-a"] } as never);
   assert.equal(filtered.peers[0]?.state, "unknown", "a hidden shared divergence must not leave the visible peer_only as a false split-brain");
   assert.equal(filtered.peers[0]?.reason, "local_census_incomplete");
@@ -1083,10 +989,6 @@ test("round 6 (codex P2): capability filtering re-applies the census gate (no fa
 });
 
 test("round 6 (codex P2): an incomplete census downgrades peer-only divergence but keeps real shared divergence", () => {
-  // A namespace the local scan DROPPED but the peer reports looks like peer_only
-  // (=diverged). Against an incomplete local census that is a false split-brain --
-  // we may hold that namespace and simply failed to read it -- so it must read
-  // `unknown`. A genuine shared-namespace divergence still stands.
   const peerOnly: ReplicaDivergenceStatus = {
     enabled: true,
     pending: false,
@@ -1120,7 +1022,6 @@ test("round 6 (codex P2): an incomplete census downgrades peer-only divergence b
   assert.equal(gatedPeerOnly.peers[0]?.reason, "local_census_incomplete");
   assert.notEqual(gatedPeerOnly.peers[0]?.state, "diverged");
 
-  // A real shared-namespace divergence survives an incomplete census.
   const shared: ReplicaDivergenceStatus = {
     enabled: true,
     pending: false,
@@ -1141,10 +1042,6 @@ test("round 6 (codex P2): an incomplete census downgrades peer-only divergence b
 });
 
 test("round 6 (codex P2): a mixed incomplete census keeps shared divergence but neutralizes peer-only deltas", () => {
-  // Namespace `default` has a REAL shared divergence; the failed local scan omitted
-  // team-b, so it shows peer_only. The peer must stay diverged (default is real) but
-  // team-b must NOT count as divergence — its absence is unverifiable under an
-  // incomplete census (round 6, codex).
   const report: ReplicaDivergenceStatus = {
     enabled: true,
     pending: false,
@@ -1183,14 +1080,7 @@ test("round 6 (codex P2): a mixed incomplete census keeps shared divergence but 
 });
 
 test("round 6 (coderabbit): the dual-prefix fallback inherits the REMAINING shared deadline", async () => {
-  // Two independent 300ms budgets would pass the old assertions; this asserts the
-  // SECOND attempt's signal is bounded by what the first left, not a fresh full
-  // budget. The preferred (engram) path burns most of the 300ms budget then 404s.
   //
-  // Real timers are unavoidable here (ts-no-test-timers exception): the assertion
-  // is about `AbortSignal.timeout` firing against a real `Date.now()` deadline
-  // shared across two fetch attempts, which node:test cannot drive with a fake
-  // clock — the elapsed delay IS the behavior under test.
   let fallbackSignalAborted: boolean | undefined;
   const fetchImpl: FetchLike = async (url, init) => {
     if (String(url).includes("/engram/v1/")) {
@@ -1199,9 +1089,6 @@ test("round 6 (coderabbit): the dual-prefix fallback inherits the REMAINING shar
       await burned.promise;
       return { ok: false, status: 404, json: async () => ({}) };
     }
-    // The fallback inherits the ~80ms remainder. Wait PAST that remainder but well
-    // under a fresh 300ms budget: with the shared deadline the signal has aborted
-    // by now; with a per-attempt fresh budget it would not have.
     const waited = Promise.withResolvers<void>();
     setTimeout(() => waited.resolve(), 150);
     await waited.promise;
@@ -1223,8 +1110,6 @@ test("round 6 (coderabbit): the dual-prefix fallback inherits the REMAINING shar
 });
 
 test("round 7 (codex P2): an oversized peer body is refused, not buffered", async () => {
-  // A configured peer is a trust boundary: response.json() would buffer an
-  // unbounded corpus whole, and several peers are polled concurrently.
   let delivered = 0;
   const chunk = new TextEncoder().encode("x".repeat(1024 * 1024));
   const fetchImpl: FetchLike = async () => ({
@@ -1235,7 +1120,6 @@ test("round 7 (codex P2): an oversized peer body is refused, not buffered", asyn
       getReader: () => ({
         read: async () => {
           delivered += chunk.byteLength;
-          // Far exceeds the cap; the reader must stop early, not run forever.
           return delivered > MAX_PEER_RESPONSE_BYTES * 4
             ? { done: true, value: undefined }
             : { done: false, value: chunk };
@@ -1258,8 +1142,6 @@ test("round 7 (codex P2): an oversized peer body is refused, not buffered", asyn
 });
 
 test("round 7 (codex P2): a noncanonical peer namespace key is malformed", async () => {
-  // "default " would compare as a DISTINCT namespace and manufacture phantom
-  // local_only/peer_only deltas for the same logical tenant.
   for (const bad of ["default ", "../escape", "team\u0000a"]) {
     const fetchImpl: FetchLike = async () => ({
       ok: true,
@@ -1277,8 +1159,6 @@ test("round 7 (codex P2): a noncanonical peer namespace key is malformed", async
 });
 
 test("round 7 (codex P1): a peer advertising an incomplete census cannot converge", async () => {
-  // The peer omits corpus entries whose scan failed; a namespace present only
-  // on the peer could be missing, leaving the comparison seeing false agreement.
   const fetchImpl: FetchLike = async () => ({
     ok: true,
     status: 200,
@@ -1292,7 +1172,6 @@ test("round 7 (codex P1): a peer advertising an incomplete census cannot converg
   assert.equal(status.peers[0]?.state, "unknown");
   assert.equal(status.peers[0]?.reason, "peer_census_incomplete");
 
-  // A peer that advertises a COMPLETE census still converges.
   const healthy: FetchLike = async () => ({
     ok: true,
     status: 200,
@@ -1307,9 +1186,6 @@ test("round 7 (codex P1): a peer advertising an incomplete census cannot converg
 });
 
 test("round 8 (codex P1): corpusComplete describing THIS response wins over the replica block", async () => {
-  // The peer's `corpus` array and `replica.censusComplete` came from two
-  // independently-cached scans and could disagree; the flag that describes the
-  // shipped array is authoritative.
   const mixed: FetchLike = async () => ({
     ok: true,
     status: 200,
@@ -1340,9 +1216,6 @@ test("round 8 (codex P2): an unterminated env placeholder in a peer token is rej
 });
 
 test("round 9 (cursor): a cached poll is re-gated by the census shipped with THIS response", async () => {
-  // Poll once while the census is complete, then serve the cache while the
-  // local scan has degraded. The response must not pair `converged` peers with
-  // an incomplete corpus.
   let now = 0;
   const monitor = new ReplicaDivergenceMonitor({ clock: () => now, fetchImpl: async () => ({
     ok: true, status: 200,
@@ -1396,8 +1269,6 @@ test("round 9 (codex P2): a token expanding to whitespace is rejected, not silen
 });
 
 test("round 10 (codex P2): a malformed LEGACY completeness flag is rejected too", async () => {
-  // The round-9 fix gated `corpusComplete`; the legacy fallback kept accepting
-  // a string, which slips past the `=== false` branch and certifies a partial.
   const bad: FetchLike = async () => ({
     ok: true, status: 200,
     json: async () => ({ corpus: [watermark("default")], replica: { censusComplete: "false" } }),
@@ -1417,8 +1288,6 @@ test("round 10 (codex P2): an expanded peer URL is stored canonically", () => {
     const config = parseReplicaPeersConfig({
       replicaPeers: { enabled: true, peers: [{ url: "${REMNIC_TEST_PEER_URL}" }] },
     });
-    // The health path is appended by concatenation, so retained whitespace would
-    // build " http://... /engram/v1/health" and read as an unreachable peer.
     assert.equal(config.peers[0]?.url, "http://127.0.0.1:4318");
   } finally {
     delete process.env.REMNIC_TEST_PEER_URL;
@@ -1431,8 +1300,6 @@ test("round 10 (codex P2): a cached verdict cannot outlive the census freshness 
     ok: true, status: 200,
     json: async () => ({ corpus: [watermark("default")], corpusComplete: true }),
   }) });
-  // A poll interval far longer than the freshness bound: without the cap, a
-  // converged verdict would be served for a full day past its own staleness.
   const config = parseReplicaPeersConfig({
     replicaPeers: {
       enabled: true, pollIntervalMs: 86_400_000, maxWatermarkAgeDeltaMs: 900_000,
@@ -1451,8 +1318,6 @@ test("round 10 (codex P2): a cached verdict cannot outlive the census freshness 
 });
 
 test("round 11: maxWatermarkAgeDeltaMs=0 disables the freshness cap, it does not zero the cache", async () => {
-  // 0 is the documented strict write-age mode. Reading it as a zero-length TTL
-  // re-scans the whole corpus on every probe (§17 zero footgun).
   let now = 0;
   const monitor = new ReplicaDivergenceMonitor({ clock: () => now, fetchImpl: async () => ({
     ok: true, status: 200,

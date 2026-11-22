@@ -1,11 +1,5 @@
 import { abortError } from "./abort-error.js";
 
-/**
- * One in-flight daemon search shared by identical callers.
- * The shared signal aborts only when every waiter has aborted, which is
- * what tells the QMD process to stop. One caller giving up must not cancel
- * a sibling that still wants the result.
- */
 export type InflightJoiner<T> = {
   join(key: string, signal: AbortSignal | undefined, run: (signal: AbortSignal) => Promise<T>): Promise<T>;
 };
@@ -25,8 +19,6 @@ export function createInflightJoiner<T>(): InflightJoiner<T> {
         return Promise.reject(abortError("QMD inflight search aborted"));
       }
       let slot = slots.get(key);
-      // A slot whose last waiter already aborted is doomed; its promise settles
-      // late. Never hand it to a new caller.
       if (slot?.controller.signal.aborted) slot = undefined;
       if (!slot) {
         const controller = new AbortController();
@@ -45,8 +37,6 @@ export function createInflightJoiner<T>(): InflightJoiner<T> {
         }).finally(() => {
           if (slots.get(key) === created) slots.delete(key);
         });
-        // A cancel with no remaining waiter rejects this promise after the
-        // waiter has already settled. Swallow that so it is not unhandled.
         created.promise.catch(() => {});
         slot = created;
       }
@@ -91,15 +81,6 @@ function attachWaiter<T>(slot: InflightSlot<T>, signal?: AbortSignal): Promise<T
   });
 }
 
-/**
- * Score documents on a shared cursor and stop between documents when
- * `signal` aborts. In-flight `rankIndex` calls finish; later indexes
- * are not started. A cancelled batch throws and does not return scores.
- *
- * `docs/patches/qmd-2.8.3-mcp-cancel.patch` uses the same loop inside
- * QMD's reranker. `rank()` and `rankAll()` share one evaluate path, so
- * a document that finishes has the same score either way.
- */
 export async function rankDocumentsUntilAbortParallel<T>(
   count: number,
   parallelism: number,

@@ -86,8 +86,6 @@ function createHarness(options: HarnessOptions = {}): {
       return options.identityReflections ?? null;
     },
   };
-  // The surface deliberately consumes only this storage subset; the cast keeps
-  // the fixture honest at each method while avoiding a full filesystem store.
   const storage = storageFixture as unknown as StorageManager;
 
   const config = parseConfig({
@@ -115,8 +113,6 @@ function createHarness(options: HarnessOptions = {}): {
       return storage;
     },
   };
-  // Access surfaces accept the live orchestrator; this named fixture supplies
-  // the exact members this surface owns and no unrelated runtime machinery.
   const orchestrator = orchestratorFixture as unknown as Orchestrator;
 
   const deps: AccessIdentityContinuitySurfaceDeps = {

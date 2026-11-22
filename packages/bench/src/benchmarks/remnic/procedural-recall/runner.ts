@@ -1,6 +1,3 @@
-/**
- * Deterministic benchmark for procedural recall gating (issue #519).
- */
 
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -102,7 +99,6 @@ export async function runProceduralRecallBenchmark(
       const storage = new StorageManager(dir);
       await storage.ensureDirectories();
       const body = buildProcedureMarkdownBody(sample.procedureSteps);
-      // Sealed-envelope write (issue #1989 PR4): bench-built corpus.
       await storage.writeSealedMemory(
         composeMemoryEnvelope(
           {

@@ -5,7 +5,6 @@ export function tokenize(value: string): string[] {
   return normalizeEntityText(value).split(/\s+/).filter((token) => token.length >= 2);
 }
 
-/** The query side of alias scoring, computed once per query, not once per alias (COS-666). */
 export interface AliasQuery {
   normalized: string;
   tokens: Set<string>;
@@ -25,7 +24,6 @@ export function scoreAliasMatch(query: AliasQuery, alias: string): number {
   if (aliasTokens.length === 0) return 0;
   const overlap = aliasTokens.filter((token) => query.tokens.has(token)).length;
   if (overlap === 0) return 0;
-  // Cross-entity contamination guard (#682 PR 2/3 R-2). For multi-token
   // aliases, partial-token overlap that hits ONLY shared common tokens
   // (like "person" in "Person-A1" / "Person-B1") would surface every
   // similarly-prefixed entity for a query that named only one. Require

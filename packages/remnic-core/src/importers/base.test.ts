@@ -15,8 +15,6 @@ import {
 import type { ImportTurn } from "../bulk-import/types.js";
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function makeMemories(count: number, sourceLabel = "fake"): ImportedMemory[] {
   const out: ImportedMemory[] = [];
@@ -41,7 +39,6 @@ function makeMockTarget(): {
   const received: ImportTurn[][] = [];
   const target: ImporterWriteTarget = {
     async ingestBulkImportBatch(turns) {
-      // Snapshot turns so adapter mutations don't retroactively change the log.
       received.push(turns.map((t) => ({ ...t })));
     },
     bulkImportWriteNamespace() {
@@ -64,8 +61,6 @@ function makeFakeAdapter(
       return input as ImportedMemory[];
     },
     transform(parsed: ImportedMemory[]): ImportedMemory[] {
-      // Forwards the already-shaped memories unchanged — slice-1 integration
-      // test drives the pipeline without source-specific shape wrangling.
       return parsed;
     },
     async writeTo(target, batch) {
@@ -75,7 +70,6 @@ function makeFakeAdapter(
 }
 
 // ---------------------------------------------------------------------------
-// Tests
 // ---------------------------------------------------------------------------
 
 describe("validateImportBatchSize", () => {
@@ -180,7 +174,6 @@ describe("runImporter — slice 1 integration", () => {
     const memories = makeMemories(3);
     const adapter = makeFakeAdapter(memories);
     const { target, received } = makeMockTarget();
-    // Spy on writeTo explicitly.
     let writeToCalls = 0;
     const wrapped: ImporterAdapter<ImportedMemory[]> = {
       ...adapter,
@@ -204,7 +197,6 @@ describe("runImporter — slice 1 integration", () => {
     assert.equal(result.batchesProcessed, 0);
     assert.equal(result.adapter, "fake");
     assert.equal(result.sourceLabel, "fake");
-    // Progress should have visited parse → transform → dry-run phases.
     assert.ok(
       progress.some((p) => p.startsWith("parse:")),
       `expected parse phase in ${progress.join(", ")}`,
@@ -224,12 +216,10 @@ describe("runImporter — slice 1 integration", () => {
     assert.equal(result.dryRun, false);
     assert.equal(result.memoriesPlanned, 3);
     assert.equal(result.memoriesWritten, 3);
-    // 3 memories, batch size 2 → 2 batches.
     assert.equal(result.batchesProcessed, 2);
     assert.equal(received.length, 2);
     assert.equal(received[0].length, 2);
     assert.equal(received[1].length, 1);
-    // Provenance: every turn carries the sourceLabel as participantName.
     for (const batch of received) {
       for (const turn of batch) {
         assert.equal(turn.role, "user");

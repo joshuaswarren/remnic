@@ -38,7 +38,6 @@ const DEFAULT_MIN_CONFIDENCE = 0.6;
 const DEFAULT_MIN_IMPORTANCE: ImportanceLevel = "low";
 // Uncapped by default — wearables capture full days and the smart trust
 // pipeline is the quality gate; a count cap would drop real memories on
-// busy days. Operators who want a ceiling set any positive integer.
 const DEFAULT_MAX_MEMORIES_PER_DAY = 0;
 const DEFAULT_AUTO_SYNC_ENABLED = true;
 const DEFAULT_AUTO_SYNC_INTERVAL_MINUTES = 15;
@@ -50,7 +49,6 @@ const DEFAULT_SOURCE_TRUST = 0.8;
 const DEFAULT_AUTO_APPROVE_TRUST = 0.7;
 const DEFAULT_REVIEW_TRUST = 0.45;
 // Cross-source fusion (#1810) — disabled by default; enabling is the
-// only behavior change fusion introduces.
 const DEFAULT_FUSION_ENABLED = false;
 const DEFAULT_FUSION_PROXIMITY_GAP_MS = 300_000;
 const DEFAULT_FUSION_WINDOW_TOLERANCE_MS = 30_000;
@@ -58,9 +56,7 @@ const DEFAULT_FUSION_WINDOW_TOLERANCE_MS = 30_000;
 // Sources whose provider emits per-utterance text but unreliable
 // speaker labels (Bee falls back to a generic "unknown" label when
 // diarization is unavailable). For those, the cleanup default keeps
-// utterance-level boundaries so a whole conversation does not collapse
 // into one mega-segment (issue #1811). Other sources keep the legacy
-// merge-everything default unless explicitly configured.
 const BOUNDARY_PRESERVING_SOURCE_IDS = new Set<string>(["bee"]);
 
 /**
@@ -137,9 +133,7 @@ function requireObject(
   return value as Record<string, unknown>;
 }
 
-/** Longest accepted off-the-record marker phrase. */
 const MAX_MARKER_PHRASE_LENGTH = 128;
-/** Longest accepted filler token. */
 const MAX_FILLER_TOKEN_LENGTH = 64;
 
 /**
@@ -244,7 +238,6 @@ function parseCorrectionRules(
     }
     return rule;
   });
-  // Compile now so bad rules fail at config load, not mid-sync.
   compileCorrectionRules(rules, keyPath);
   return rules;
 }
@@ -260,7 +253,6 @@ function parseSourceSettings(
   const minConfidenceRaw = coerceNumber(raw.minConfidence);
   // Out-of-range values reject loudly instead of clamping — silently
   // turning minConfidence 7 into 1 would change the memory gate in a
-  // way the operator never asked for (Codex P2 on PR #1458, round 3).
   if (
     raw.minConfidence !== undefined &&
     (minConfidenceRaw === undefined || minConfidenceRaw < 0 || minConfidenceRaw > 1)
@@ -272,9 +264,7 @@ function parseSourceSettings(
   const minConfidence = minConfidenceRaw ?? defaults.minConfidence;
 
   const maxPerDayRaw = coerceNumber(raw.maxMemoriesPerDay);
-  // Reject non-integers instead of flooring them: 0.5 would floor to 0,
   // and 0 is the documented "disable the cap" value — a fractional typo
-  // must not silently remove the cap (Codex P2 on PR #1458).
   if (
     raw.maxMemoriesPerDay !== undefined &&
     (maxPerDayRaw === undefined ||
@@ -286,7 +276,6 @@ function parseSourceSettings(
     );
   }
   // 0 is the documented "disable the cap" value — honored here AND in
-  // the schema minimum (CLAUDE.md rule 45).
   const maxMemoriesPerDay = maxPerDayRaw ?? defaults.maxMemoriesPerDay;
 
   const parseUnitInterval = (value: unknown, name: string, fallback: number): number => {
@@ -338,7 +327,6 @@ function parseSourceSettings(
     preserveUtteranceBoundaries: parseBool(
       rawCleanup.preserveUtteranceBoundaries,
       `${keyPath}.cleanup.preserveUtteranceBoundaries`,
-      // Optional on the type; the per-source default is always concrete.
       defaults.cleanup.preserveUtteranceBoundaries ?? false,
     ),
   };
@@ -441,7 +429,6 @@ export function parseWearablesConfig(value: unknown): WearablesConfig {
       throw new Error("wearables.redactionPatterns must be an array of strings");
     }
     redactionPatterns = raw.redactionPatterns as string[];
-    // Compile now so invalid regexes fail at config load.
     compileRedactionPatterns(redactionPatterns);
   }
 
@@ -454,10 +441,7 @@ export function parseWearablesConfig(value: unknown): WearablesConfig {
     raw.offTheRecordMarkers === undefined
       ? {}
       : requireObject(raw.offTheRecordMarkers, "wearables.offTheRecordMarkers");
-  // A typo such as `starts:` would otherwise be dropped without a word,
-  // and the operator would believe a private span is protected. Core and
   // standalone callers never see OpenClaw's JSON schema, so the check
-  // belongs here. Keys are compared literally so the config-contract
   // extractor can still enumerate this parser's surface.
   const {
     start: rawMarkerStart,
@@ -490,7 +474,6 @@ export function parseWearablesConfig(value: unknown): WearablesConfig {
   };
   // A silent no-op is the exact failure this feature exists to remove
   // (issue #2196): turning the built-ins off without supplying a start
-  // phrase would leave the gate on and matching nothing.
   if (
     offTheRecordEnabled &&
     !offTheRecordMarkers.useBuiltIns &&
@@ -550,8 +533,6 @@ export function parseWearablesConfig(value: unknown): WearablesConfig {
     MAX_AUTO_SYNC_WINDOW_DAYS,
   );
   // A deep window narrower than the every-tick window would make the
-  // "deep" pass fetch LESS than a normal tick — reject the confusion
-  // instead of silently honoring it (0 disables the deep pass).
   if (autoSyncDeepDays !== 0 && autoSyncDeepDays < autoSyncDays) {
     throw new Error(
       `wearables.autoSyncDeepDays must be 0 (disabled) or >= wearables.autoSyncDays (${autoSyncDays}); got ${autoSyncDeepDays}`,

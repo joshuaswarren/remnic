@@ -53,9 +53,6 @@ export function envOverrides(): Partial<ServerConfig["server"]> & { remnic?: Rec
   if (adminConsoleMemoryReviewEnabled) overrides.adminConsoleMemoryReviewEnabled = adminConsoleMemoryReviewEnabled;
   if (readinessOverride !== undefined) overrides.readinessOverride = readinessOverride;
   if (readinessDegradedAfterAttempts !== undefined) overrides.readinessDegradedAfterAttempts = readinessDegradedAfterAttempts;
-  // Use `!== undefined` (not truthiness) so an explicitly-set empty/invalid
-  // value still reaches parseServerConfig and is rejected, rather than being
-  // silently dropped so file config wins (issue #2029 review).
   if (writeRateLimitMaxRequests !== undefined) overrides.writeRateLimitMaxRequests = writeRateLimitMaxRequests;
   if (writeRateLimitWindowMs !== undefined) overrides.writeRateLimitWindowMs = writeRateLimitWindowMs;
 

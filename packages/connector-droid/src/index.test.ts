@@ -1,9 +1,3 @@
-/**
- * Tests for the Factory Droid connector package.
- *
- * Verifies the package exports the expected connector ID and MCP helper
- * functions, and that the helper functions round-trip correctly.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -27,7 +21,6 @@ test("REMNIC_MCP_SERVER_KEY is 'remnic'", () => {
 test("resolveFactoryMcpPath returns an absolute path ending in .factory/mcp.json", () => {
   const p = resolveFactoryMcpPath();
   assert.ok(p.endsWith(".factory/mcp.json"), `expected path ending in .factory/mcp.json, got ${p}`);
-  // Must be absolute
   assert.ok(p.startsWith("/"), `expected absolute path, got ${p}`);
 });
 
@@ -74,7 +67,6 @@ test("upsertFactoryMcpRemnicEntry does not preserve stale X-Engram-Namespace on 
       remnic: { type: "http", url: "http://localhost:4318/mcp", headers: { Authorization: "Bearer old", "X-Engram-Namespace": "old-ns" } },
     },
   });
-  // Reinstall without namespace — should NOT preserve the old namespace.
   const config = upsertFactoryMcpRemnicEntry(prior, "new-tok", {});
   const remnic = (config.mcpServers as Record<string, Record<string, unknown>>).remnic;
   const headers = remnic.headers as Record<string, string>;

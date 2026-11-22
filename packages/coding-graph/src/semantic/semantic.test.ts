@@ -39,8 +39,6 @@ import {
 } from "./index.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Counting stub provider — signature matches HostEmbeddingProvider (rule 33).
-// ──────────────────────────────────────────────────────────────────────────
 
 function createCountingProvider(
   opts: { failMode?: "timeout" | "null" | "throw" | "malformed" } = {},
@@ -74,7 +72,6 @@ function createCountingProvider(
       for (let i = 0; i < text.length; i++) {
         vec[i % dims]! += text.charCodeAt(i)!;
       }
-      // Normalize to unit length so cosine is meaningful.
       const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
       return vec.map((v) => v / norm);
     },
@@ -87,7 +84,6 @@ function createCountingProvider(
   } as unknown as HostEmbeddingProvider & { embedCount: number; reset(): void };
 }
 
-// Fix the counting provider properly.
 function countingProvider(
   opts: { failMode?: "timeout" | "null" | "throw" | "malformed" } = {},
 ): HostEmbeddingProvider & { embedCount: number; reset(): void } {
@@ -123,7 +119,6 @@ function countingProvider(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Helpers
 // ──────────────────────────────────────────────────────────────────────────
 
 const ENABLED_CONFIG: SemanticConfig = resolveSemanticConfig({ enabled: true });
@@ -159,7 +154,6 @@ async function tempStore(): Promise<{ store: GraphStore; dir: string; cleanup: (
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Cache-hit: unchanged symbol → zero embed calls on reindex (rule 37)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("cache-hit: unchanged symbol on reindex → zero embed calls", async () => {
@@ -173,7 +167,6 @@ test("cache-hit: unchanged symbol on reindex → zero embed calls", async () => 
     await store.upsertFileBatch([ir]);
 
     const provider = countingProvider();
-    // First index: embeds once.
     const r1 = await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
     assert.equal(r1.ok, true);
     if (r1.ok) {
@@ -182,7 +175,6 @@ test("cache-hit: unchanged symbol on reindex → zero embed calls", async () => 
     }
     assert.equal(provider.embedCount, 1, "first index should embed once");
 
-    // Re-index: cache hit → zero embeds.
     provider.reset();
     const r2 = await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
     assert.equal(r2.ok, true);
@@ -197,7 +189,6 @@ test("cache-hit: unchanged symbol on reindex → zero embed calls", async () => 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Gate-off parity: semantic disabled → zero writes, zero calls
 // ──────────────────────────────────────────────────────────────────────────
 
 test("gate-off: semantic.enabled=false → zero vectors writes, zero provider calls", async () => {
@@ -215,7 +206,6 @@ test("gate-off: semantic.enabled=false → zero vectors writes, zero provider ca
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.code, "semantic_disabled");
     assert.equal(provider.embedCount, 0, "disabled → zero provider calls");
-    // No vectors in the table.
     const vecs = store.readAllSymbolVectors("stub-model-v1");
     assert.equal(vecs.length, 0, "disabled → zero vectors written");
   } finally {
@@ -224,7 +214,6 @@ test("gate-off: semantic.enabled=false → zero vectors writes, zero provider ca
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Degradation matrix: provider missing / timeout / malformed → distinct codes
 // ──────────────────────────────────────────────────────────────────────────
 
 test("degradation: no provider → provider_unavailable", async () => {
@@ -293,7 +282,6 @@ test("degradation: malformed vector (NaN/Infinity) → skipped", async () => {
     const r = await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
     assert.equal(r.ok, true);
     if (r.ok) {
-      // normalizeHostEmbeddingVector rejects NaN/Infinity → skipped.
       assert.equal(r.skipped, 1);
       assert.equal(r.embedded, 0);
     }
@@ -303,7 +291,6 @@ test("degradation: malformed vector (NaN/Infinity) → skipped", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Budgets: maxSymbolsPerRun respected
 // ──────────────────────────────────────────────────────────────────────────
 
 test("budget: maxSymbolsPerRun=2 limits embedding to 2 symbols", async () => {
@@ -353,7 +340,6 @@ test("budget: maxSymbolsPerRun=0 means unlimited", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// SIMILAR_TO pipeline end-to-end
 // ──────────────────────────────────────────────────────────────────────────
 
 test("SIMILAR_TO: computeSimilarTo with gate-off returns semantic_disabled", () => {
@@ -377,14 +363,11 @@ test("SIMILAR_TO: similarEdgesToEdgeIR maps to EdgeIR with semantic provenance +
   assert.equal(edges[0]!.type, "SIMILAR_TO");
   assert.equal(edges[0]!.provenance, "semantic");
   assert.equal(edges[0]!.confidence, 0.95);
-  // Node ids are carried through so the store resolves endpoints by id
-  // (issue #1677 — duplicate qualified-name support).
   assert.equal(edges[0]!.srcNodeId, "id-a");
   assert.equal(edges[0]!.dstNodeId, "id-b");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// semantic_query degradation matrix
 // ──────────────────────────────────────────────────────────────────────────
 
 test("semanticQuery: disabled → semantic_disabled", async () => {
@@ -460,9 +443,6 @@ test("semanticQuery: with vectors → returns ranked hits", async () => {
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// Budget applies to embed WORK, not the candidate list — a bounded run
-// must make progress across runs (cursor Bugbot + chatgpt-codex-connector
-// P2: bounded index could remain permanently incomplete).
 // ──────────────────────────────────────────────────────────────────────────
 
 test("budget: bounded run makes progress across runs (not stuck on cached prefix)", async () => {
@@ -481,15 +461,11 @@ test("budget: bounded run makes progress across runs (not stuck on cached prefix
     const provider = countingProvider();
     const config = resolveSemanticConfig({ enabled: true, maxSymbolsPerRun: 2 });
 
-    // Run 1: embeds the first 2 (a, b).
     const r1 = await indexSymbolVectors({ store, provider, repoRoot: dir, config });
     assert.equal(r1.ok, true);
     if (r1.ok) assert.equal(r1.embedded, 2, "run 1 embeds 2");
     assert.equal(provider.embedCount, 2);
 
-    // Run 2: a, b are cached (no embed); c, d are now embedded. Before the
-    // fix this re-sliced the same alphabetical prefix and embedded 0 new
-    // symbols every run.
     const r2 = await indexSymbolVectors({ store, provider, repoRoot: dir, config });
     assert.equal(r2.ok, true);
     if (r2.ok) {
@@ -498,7 +474,6 @@ test("budget: bounded run makes progress across runs (not stuck on cached prefix
     }
     assert.equal(provider.embedCount, 4, "4 total embeds across the two runs");
 
-    // Run 3: everything cached — zero new embeds.
     provider.reset();
     const r3 = await indexSymbolVectors({ store, provider, repoRoot: dir, config });
     if (r3.ok) assert.equal(r3.embedded, 0, "run 3: all cached, no new embeds");
@@ -509,9 +484,6 @@ test("budget: bounded run makes progress across runs (not stuck on cached prefix
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// computeSimilarTo refuses to guess when it has neither bodies nor a
-// repoRoot — silent qname-MinHashing would miss real clones (chatgpt-
-// codex-connector P2: 'Require source bodies before MinHashing').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("SIMILAR_TO: no bodies and no repoRoot → repo_root_unset (not silent qname MinHash)", () => {
@@ -521,9 +493,6 @@ test("SIMILAR_TO: no bodies and no repoRoot → repo_root_unset (not silent qnam
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// clearSemanticSimilarToEdges: recompute replace semantics — stale
-// SIMILAR_TO edges are removed while non-semantic edges survive
-// (chatgpt-codex-connector P2: 'Replace old SIMILAR_TO edges on recompute').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("SIMILAR_TO: clearSemanticSimilarToEdges removes only semantic SIMILAR_TO edges", async () => {
@@ -537,7 +506,6 @@ test("SIMILAR_TO: clearSemanticSimilarToEdges removes only semantic SIMILAR_TO e
     ], src);
     await store.upsertFileBatch([ir]);
 
-    // Seed a semantic SIMILAR_TO edge AND a structural CALLS edge f→g.
     await store.upsertEdges([
       { srcQualifiedName: "mod.f", dstQualifiedName: "mod.g", type: "SIMILAR_TO", confidence: 0.93, provenance: "semantic" },
       { srcQualifiedName: "mod.f", dstQualifiedName: "mod.g", type: "CALLS", confidence: 1, provenance: "heuristic" },
@@ -556,7 +524,6 @@ test("SIMILAR_TO: clearSemanticSimilarToEdges removes only semantic SIMILAR_TO e
     if (afterSimilar.ok) {
       assert.ok(!afterSimilar.hits.some((h) => h.qualifiedName === "mod.g"), "SIMILAR_TO edge gone after clear");
     }
-    // The structural CALLS edge survives.
     const afterCalls = store.traverse({ start: "mod.f", edgeTypes: ["CALLS"], maxDepth: 1 });
     assert.equal(afterCalls.ok, true);
     if (afterCalls.ok) {
@@ -568,8 +535,6 @@ test("SIMILAR_TO: clearSemanticSimilarToEdges removes only semantic SIMILAR_TO e
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// semantic_query: hit.kind is the node label, not empty (cursor Bugbot:
-// 'Query hits omit symbol kind').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("semanticQuery: hits carry the symbol kind", async () => {
@@ -597,9 +562,6 @@ test("semanticQuery: hits carry the symbol kind", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// semantic_query: snippet hydrates by node id, so a qualified name
-// duplicated across files still resolves the exact node's snippet
-// (chatgpt-codex-connector P2: 'Hydrate snippets by node id as well').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("semanticQuery: duplicate qualified name still hydrates a snippet (by node id)", async () => {
@@ -620,9 +582,6 @@ test("semanticQuery: duplicate qualified name still hydrates a snippet (by node 
     const r = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "dup" });
     assert.equal(r.ok, true);
     if (r.ok) {
-      // Both nodes share qname "mod.dup" but distinct node ids; hydrating
-      // by node id must yield a real snippet for at least one hit (the old
-      // qname path returned 'ambiguous_name' and left every snippet empty).
       const withSnippet = r.hits.filter((h) => h.snippet.length > 0);
       assert.ok(withSnippet.length >= 1, "at least one hit should carry a snippet despite the duplicate name");
     }
@@ -633,10 +592,6 @@ test("semanticQuery: duplicate qualified name still hydrates a snippet (by node 
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// MinHash-only edges are the documented NO-PROVIDER fallback. When a
-// provider IS configured, a pair missing a vector is skipped (await
-// cosine confirmation) instead of bypassing it with a MinHash-only edge
-// (cursor Bugbot: 'MinHash edges with provider set').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("SIMILAR_TO: provider set + missing vectors → no MinHash-only bypass", async () => {
@@ -648,7 +603,6 @@ test("SIMILAR_TO: provider set + missing vectors → no MinHash-only bypass", as
       ["n2", { qualifiedName: "mod.b", body }],
     ]);
 
-    // Provider configured, no vectors → must NOT emit MinHash-only edges.
     const withProvider = computeSimilarTo({
       store,
       provider: countingProvider(),
@@ -662,7 +616,6 @@ test("SIMILAR_TO: provider set + missing vectors → no MinHash-only bypass", as
       assert.equal(withProvider.edges.length, 0, "no edges when vectors missing and provider active");
     }
 
-    // No provider → MinHash-only edges are the documented local fallback.
     const noProvider = computeSimilarTo({
       store,
       provider: undefined,
@@ -679,10 +632,6 @@ test("SIMILAR_TO: provider set + missing vectors → no MinHash-only bypass", as
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Mismatched-dimensionality vectors are excluded from ranking. cosine over
-// the shorter length would otherwise give a misleading partial score to a
-// row from a different model size (cursor Bugbot: 'Mismatched embedding
-// lengths scored').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("semanticQuery: mismatched-dims vectors are excluded from ranking", async () => {
@@ -700,7 +649,6 @@ test("semanticQuery: mismatched-dims vectors are excluded from ranking", async (
     const modelId = modelIdFor(provider);
     const idA = nodeIdFor({ qualifiedName: "mod.a", filePath: "a.ts", label: "function" });
     const idB = nodeIdFor({ qualifiedName: "mod.b", filePath: "a.ts", label: "function" });
-    // a: dims=8 (matches the query provider); b: dims=4 (mismatched → excluded).
     await store.writeSymbolVector({ nodeId: idA, modelId, contentHash: "h".repeat(64), dims: 8, vector: new Float32Array(8) });
     await store.writeSymbolVector({ nodeId: idB, modelId, contentHash: "h".repeat(64), dims: 4, vector: new Float32Array(4) });
 
@@ -717,9 +665,6 @@ test("semanticQuery: mismatched-dims vectors are excluded from ranking", async (
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Closed store is a distinct degradation code (rule 34), not an empty
-// graph that returns ok:true / no_vectors (cursor Bugbot: 'Closed store
-// reports success').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("closed store: indexSymbolVectors returns store_closed (not ok with zeros)", async () => {
@@ -741,8 +686,6 @@ test("closed store: semanticQuery returns store_closed (not no_vectors)", async 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// computeSimilarTo honors the closed store (cursor Bugbot: 'SimilarTo
-// ignores closed store').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("closed store: computeSimilarTo returns store_closed", async () => {
@@ -761,8 +704,6 @@ test("closed store: computeSimilarTo returns store_closed", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Cosine confirmation requires matching dims (cursor Bugbot: 'SimilarTo
-// skips embedding length check').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("SIMILAR_TO: cosine confirmation skips mismatched-dims pairs", async () => {
@@ -777,8 +718,6 @@ test("SIMILAR_TO: cosine confirmation skips mismatched-dims pairs", async () => 
       ["n1", new Float32Array(8)],
       ["n2", new Float32Array(4)], // mismatched dims
     ]);
-    // Pair has vectors but mismatched dims → not cosine-confirmed; provider
-    // active → not MinHash-only either → no edges.
     const r = computeSimilarTo({
       store,
       provider: countingProvider(),
@@ -794,9 +733,6 @@ test("SIMILAR_TO: cosine confirmation skips mismatched-dims pairs", async () => 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Budget bounds provider CALLS, not successful writes — a degraded provider
-// must not bypass the cost cap (chatgpt-codex-connector: 'Count failed embed
-// attempts against the vector budget').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("budget: degraded provider cost is bounded by maxSymbolsPerRun (attempts, not successes)", async () => {
@@ -816,10 +752,6 @@ test("budget: degraded provider cost is bounded by maxSymbolsPerRun (attempts, n
     const config = resolveSemanticConfig({ enabled: true, maxSymbolsPerRun: 2 });
     const r = await indexSymbolVectors({ store, provider, repoRoot: dir, config });
     assert.equal(r.ok, true);
-    // Every embed throws → zero successes, but the provider must NOT be
-    // called for all four nodes. Before the fix, `embedded` never reached
-    // the limit (all throws) so the loop called the provider for every
-    // remaining node, bypassing the per-run cost cap.
     assert.ok(
       provider.embedCount <= 2,
       `degraded provider calls must be bounded by maxSymbolsPerRun, got ${provider.embedCount}`,
@@ -830,10 +762,6 @@ test("budget: degraded provider cost is bounded by maxSymbolsPerRun (attempts, n
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// MinHash runs over the extracted BODY only — bodyless declarations
-// (stubs/types with no body) yield no candidates instead of name-driven
-// spurious pairs (chatgpt-codex-connector: 'MinHash only the extracted
-// body text').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("SIMILAR_TO: bodyless declarations yield no MinHash candidates", async () => {
@@ -860,9 +788,6 @@ test("SIMILAR_TO: bodyless declarations yield no MinHash candidates", async () =
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Host-provided enabled is coerced — "false"/"0" must not become truthy
-// and silently enable vector indexing (chatgpt-codex-connector: 'Coerce
-// host enabled before trusting it').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("config: host enabled string 'false'/'0' coerce to false (not truthy)", () => {
@@ -873,15 +798,10 @@ test("config: host enabled string 'false'/'0' coerce to false (not truthy)", () 
   assert.equal(resolveSemanticConfig({ enabled: "true" as never }).enabled, true);
   assert.equal(resolveSemanticConfig({ enabled: true }).enabled, true);
   assert.equal(resolveSemanticConfig({ enabled: false }).enabled, false);
-  // Absent host value still falls through to env/default (false).
   assert.equal(resolveSemanticConfig({}).enabled, false);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// snippetFor honors a query-level repoRoot override, so a store opened
-// without repoRoot can still hydrate snippets when the caller supplies one
-// (chatgpt-codex-connector + cursor: 'Snippet hydration ignores query
-// repoRoot').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("snippetFor: query repoRoot overrides a store opened without repoRoot", async () => {
@@ -897,12 +817,10 @@ test("snippetFor: query repoRoot overrides a store opened without repoRoot", asy
     await store.upsertFileBatch([ir]);
     const nodeId = nodeIdFor({ qualifiedName: "mod.greet", filePath: "a.ts", label: "function" });
 
-    // No override → store has no repoRoot → repo_root_unset.
     const noRoot = await store.snippetFor({ nodeId });
     assert.equal(noRoot.ok, false);
     if (!noRoot.ok) assert.equal(noRoot.code, "repo_root_unset");
 
-    // Override supplied → snippet resolves from the caller's repoRoot.
     const withRoot = await store.snippetFor({ nodeId, repoRoot: dir });
     assert.equal(withRoot.ok, true);
     if (withRoot.ok) assert.ok(withRoot.text.includes("greet"), "snippet hydrates from the query repoRoot");
@@ -913,9 +831,6 @@ test("snippetFor: query repoRoot overrides a store opened without repoRoot", asy
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// writeSymbolVector reports whether it persisted (returns false on a
-// closed store) so the indexer does not count dropped writes as embedded
-// (cursor Bugbot: 'Embedded count after dropped writes').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("writeSymbolVector: returns false on a closed store (write dropped)", async () => {
@@ -934,17 +849,12 @@ test("writeSymbolVector: returns false on a closed store (write dropped)", async
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// coerceHostBool fails CLOSED: unrecognized enabled strings are an opt-out,
-// not an opt-in, so a malformed host value can never silently enable remote
-// embedding (cursor Bugbot: 'Unknown enabled strings enable semantic').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("config: unknown enabled strings fail closed to false", () => {
-  // Explicit affirmatives still enable.
   assert.equal(resolveSemanticConfig({ enabled: "on" as never }).enabled, true);
   assert.equal(resolveSemanticConfig({ enabled: "yes" as never }).enabled, true);
   assert.equal(resolveSemanticConfig({ enabled: "true" as never }).enabled, true);
-  // Unrecognized / opt-out wording must NOT enable (fail closed).
   assert.equal(resolveSemanticConfig({ enabled: "disabled" as never }).enabled, false);
   assert.equal(resolveSemanticConfig({ enabled: "off" as never }).enabled, false);
   assert.equal(resolveSemanticConfig({ enabled: "maybe" as never }).enabled, false);
@@ -952,10 +862,6 @@ test("config: unknown enabled strings fail closed to false", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Host numeric config is coerced: a malformed string ("abc") must not become
-// NaN and silently disable the vector budget (NaN > 0 is false → unlimited)
-// or the cosine gate. It falls through to the documented default instead
-// (chatgpt-codex-connector: 'Validate host numeric config before clamping').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("config: malformed host numbers fall back to default (no NaN)", () => {
@@ -966,19 +872,13 @@ test("config: malformed host numbers fall back to default (no NaN)", () => {
   });
   assert.equal(Number.isNaN(cfg.maxSymbolsPerRun), false, "maxSymbolsPerRun must not be NaN");
   assert.equal(Number.isNaN(cfg.similarToThreshold), false, "similarToThreshold must not be NaN");
-  // Falls through to the documented defaults.
   assert.equal(cfg.maxSymbolsPerRun, DEFAULT_MAX_SYMBOLS_PER_RUN);
   assert.equal(cfg.similarToThreshold, DEFAULT_SIMILAR_TO_THRESHOLD);
-  // A valid numeric string is still honored.
   const cfg2 = resolveSemanticConfig({ enabled: true, maxSymbolsPerRun: "5" as never });
   assert.equal(cfg2.maxSymbolsPerRun, 5);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Cache hits still work when the provider does not declare dimensions
-// (optional). The dims gate is skipped, so re-indexing an unchanged symbol
-// uses the cache instead of re-embedding every run (cursor Bugbot: 'Cache
-// misses without provider dimensions').
 // ──────────────────────────────────────────────────────────────────────────
 
 test("cache-hit: provider without dimensions still caches on reindex", async () => {
@@ -991,7 +891,6 @@ test("cache-hit: provider without dimensions still caches on reindex", async () 
     ], src);
     await store.upsertFileBatch([ir]);
 
-    // Provider that does NOT declare `dimensions` (the field is optional).
     let calls = 0;
     const provider = {
       id: "nodims-embedder",
@@ -1024,17 +923,11 @@ test("cache-hit: provider without dimensions still caches on reindex", async () 
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// SIMILAR_TO end-to-end: two symbols that share a qualified name across two
-// files are persisted as a SIMILAR_TO edge by node id (issue #1677). Before
-// the fix the edge was dropped because resolveNodeId returns undefined for an
-// ambiguous qualified name.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("SIMILAR_TO: duplicate qualified name across files persists by node id (issue #1677)", async () => {
   const { store, dir, cleanup } = await tempStore();
   try {
-    // Identical bodies → MinHash candidate. Same qualified name, different
-    // files → distinct node ids, ambiguous qualified name.
     const body = "function clone() { const x = 1; const y = 2; return x + y; }";
     await writeFile(path.join(dir, "a.ts"), body);
     await writeFile(path.join(dir, "b.ts"), body);
@@ -1047,17 +940,14 @@ test("SIMILAR_TO: duplicate qualified name across files persists by node id (iss
     const idB = nodeIdFor({ qualifiedName: "mod.clone", filePath: "b.ts", label: "function" });
     assert.notEqual(idA, idB, "same-qname symbols in different files have distinct node ids");
 
-    // No provider → MinHash-only path (deterministic, local).
     const r = computeSimilarTo({ store, provider: undefined, config: ENABLED_CONFIG, repoRoot: dir });
     assert.equal(r.ok, true);
     if (!r.ok) throw new Error("expected ok");
     assert.ok(r.edges.length >= 1, "a near-clone candidate is produced");
 
-    // The candidate edges MUST carry node ids (the fix).
     const pair = r.edges.find((e) => e.srcNodeId === idA && e.dstNodeId === idB);
     assert.ok(pair, "emitted edge carries the content-derived node ids of both same-qname nodes");
 
-    // Persist via the store. Pre-fix this returned skipped=1, persisted=0.
     const edgeIRs = similarEdgesToEdgeIR(r.edges);
     const upsert = await store.upsertEdges(edgeIRs);
     assert.equal(upsert.ok, true);
@@ -1065,7 +955,6 @@ test("SIMILAR_TO: duplicate qualified name across files persists by node id (iss
     assert.equal(upsert.persisted, edgeIRs.length, "all SIMILAR_TO edges persisted by node id");
     assert.equal(upsert.skipped, 0, "no edge dropped as an ambiguous qualified name");
 
-    // Traversal by node id confirms the edge links the two same-qname nodes.
     const t1 = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
     assert.equal(t1.ok, true);
     if (t1.ok) {
@@ -1080,8 +969,6 @@ test("SIMILAR_TO: duplicate qualified name across files persists by node id (iss
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// #1680 — deferred review nits on the semantic layer (tagged read failures,
-// limit validation, negative body budget, README recompute example).
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -1105,27 +992,17 @@ function throwingReadStore(
   }) as GraphStore;
 }
 
-// config: a negative/zero canonicalBodyLines must NOT clamp to 0 (which
-// extractBodyText treats as unlimited, sending full symbol bodies to the
-// remote embedder and defeating the cost/privacy cap). It falls back to the
-// documented default instead (#1680).
 test("config: negative/zero canonicalBodyLines falls back to default (not 0/unlimited)", () => {
   const neg = resolveSemanticConfig({ enabled: true, canonicalBodyLines: -5 });
   assert.equal(neg.canonicalBodyLines, DEFAULT_CANONICAL_BODY_LINES, "negative → default");
   const zero = resolveSemanticConfig({ enabled: true, canonicalBodyLines: 0 });
   assert.equal(zero.canonicalBodyLines, DEFAULT_CANONICAL_BODY_LINES, "zero → default");
-  // A positive value is still honored (not clobbered by the fallback).
   const ok = resolveSemanticConfig({ enabled: true, canonicalBodyLines: 7 });
   assert.equal(ok.canonicalBodyLines, 7, "positive value honored");
-  // String coercion path (coerceHostNumber) — a numeric string like "-3"
-  // must also fall back, not clamp to 0.
   const negStr = resolveSemanticConfig({ enabled: true, canonicalBodyLines: "-3" as never });
   assert.equal(negStr.canonicalBodyLines, DEFAULT_CANONICAL_BODY_LINES, "numeric-string -3 → default");
 });
 
-// semanticQuery: a transient store read failure (SQLITE_BUSY/CORRUPT) on
-// readAllSymbolVectors maps to a tagged db_error instead of escaping as a
-// throw (#1680).
 test("semanticQuery: transient store read error → db_error (tagged, not thrown)", async () => {
   const { store, dir, cleanup } = await tempStore();
   try {
@@ -1139,8 +1016,6 @@ test("semanticQuery: transient store read error → db_error (tagged, not thrown
   }
 });
 
-// indexSymbolVectors: a transient store read failure on readNodesForSemantic
-// maps to a tagged db_error instead of rejecting the promise (#1680).
 test("indexSymbolVectors: transient store read error → db_error (tagged, not thrown)", async () => {
   const { store, dir, cleanup } = await tempStore();
   try {
@@ -1154,10 +1029,6 @@ test("indexSymbolVectors: transient store read error → db_error (tagged, not t
   }
 });
 
-// semanticQuery: a caller-supplied limit of NaN/Infinity must not produce a
-// NaN/Infinity slice. slice(0, NaN) returns no hits; slice(0, Infinity)
-// returns every scored vector. Both are wrong — coerce to the finite default
-// (#1680).
 test("semanticQuery: NaN/Infinity limit falls back to default (no empty/all slice)", async () => {
   const { store, dir, cleanup } = await tempStore();
   try {
@@ -1173,7 +1044,6 @@ test("semanticQuery: NaN/Infinity limit falls back to default (no empty/all slic
       start: src.indexOf(`function f${i}`),
       end: src.length,
     }));
-    // Fix the end byte for each to the next symbol's start (last = src.length).
     for (let i = 0; i < symbols.length; i++) {
       symbols[i]!.end = i + 1 < symbols.length ? symbols[i + 1]!.start : src.length;
     }
@@ -1182,20 +1052,17 @@ test("semanticQuery: NaN/Infinity limit falls back to default (no empty/all slic
     const provider = countingProvider();
     await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
 
-    // NaN limit → default (10), not 0.
     const nanR = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "function", limit: NaN });
     assert.equal(nanR.ok, true);
     if (nanR.ok) {
       assert.ok(nanR.hits.length > 0, `NaN limit must not return zero hits, got ${nanR.hits.length}`);
       assert.ok(nanR.hits.length <= DEFAULT_SEMANTIC_QUERY_LIMIT, `NaN limit capped to default, got ${nanR.hits.length}`);
     }
-    // Infinity limit → default (10), not all 12.
     const infR = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "function", limit: Infinity });
     assert.equal(infR.ok, true);
     if (infR.ok) {
       assert.ok(infR.hits.length <= DEFAULT_SEMANTIC_QUERY_LIMIT, `Infinity limit capped to default, got ${infR.hits.length}`);
     }
-    // A finite positive limit is honored.
     const two = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "function", limit: 2 });
     assert.equal(two.ok, true);
     if (two.ok) assert.equal(two.hits.length, 2, "limit=2 returns exactly 2 hits");
@@ -1206,9 +1073,6 @@ test("semanticQuery: NaN/Infinity limit falls back to default (no empty/all slic
 
 
 test("semanticQuery: a fractional limit between 0 and 1 returns at least 1 hit (not an empty slice)", async () => {
-  // Math.floor(0.5) === 0; without clamping, slice(0, 0) returns no hits
-  // even when matching vectors exist (#1680 review: 'Clamp sub-one query
-  // limits before slicing').
   const { store, dir, cleanup } = await tempStore();
   try {
     const src = Array.from({ length: 3 }, (_, i) => `function f${i}() { return ${i}; }`).join("\n");
@@ -1237,14 +1101,9 @@ test("semanticQuery: a fractional limit between 0 and 1 returns at least 1 hit (
   }
 });
 
-// SIMILAR_TO recompute is replace-not-append: the README example clears
-// semantic SIMILAR_TO edges before upserting so two symbols that STOP being
-// similar do not leave a stale edge (upsertEdges does not delete absent rows).
-// This test exercises the documented README flow end to end (#1680).
 test("SIMILAR_TO recompute: clearSemanticSimilarToEdges makes recompute replace-not-append (README example)", async () => {
   const { store, dir, cleanup } = await tempStore();
   try {
-    // Two near-identical bodies → MinHash candidate → SIMILAR_TO edge.
     const bodyA = "function twin() { const x = 1; const y = 2; return x + y; }";
     const bodyB = "function twin() { const x = 1; const y = 2; return x + y; }";
     await writeFile(path.join(dir, "a.ts"), bodyA);
@@ -1255,7 +1114,6 @@ test("SIMILAR_TO recompute: clearSemanticSimilarToEdges makes recompute replace-
     ]);
 
     const provider = countingProvider();
-    // README step 0: index vectors FIRST so cosine confirmation has data.
     await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
     const r1 = computeSimilarTo({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
     assert.equal(r1.ok, true);
@@ -1270,18 +1128,10 @@ test("SIMILAR_TO recompute: clearSemanticSimilarToEdges makes recompute replace-
       assert.ok(beforeClear.hits.some((h) => h.qualifiedName === "mod.b"), "mod.b reachable via SIMILAR_TO before clear");
     }
 
-    // README flow: compute-first-then-swap. computeSimilarTo is pure (no
-    // edge mutation), so compute candidates BEFORE clearing — if the
-    // recompute fails, existing SIMILAR_TO edges are preserved instead of
-    // leaving the graph empty (chatgpt-codex-connector P2: "Preserve
-    // existing edges until recompute succeeds").
     const r2 = computeSimilarTo({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
     assert.equal(r2.ok, true);
     if (!r2.ok) throw new Error("expected ok");
 
-    // Compute succeeded → safe to swap. Clear makes it replace-not-append
-    // (upsertEdges does not delete absent rows); without it, a stale edge
-    // recompute would NOT re-emit would survive.
     await store.clearSemanticSimilarToEdges();
     const afterClear = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
     assert.ok(afterClear.ok, "traverse ok after clear");
@@ -1294,14 +1144,9 @@ test("SIMILAR_TO recompute: clearSemanticSimilarToEdges makes recompute replace-
     const final = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
     assert.ok(final.ok, "traverse ok");
     if (final.ok) {
-      // After clear + recompute + upsert, mod.b is reachable again — the
-      // still-similar pair has its edge (clean replace, not a stale append).
       assert.ok(final.hits.some((h) => h.qualifiedName === "mod.b"), "mod.b reachable again after recompute (replace worked)");
     }
 
-    // Preserve-on-failure: a recompute that returns { ok: false } must NOT
-    // clear — the existing edge survives. semantic_disabled short-circuits
-    // before any table work, so no clear runs and mod.b stays reachable.
     const failing = computeSimilarTo({ store, provider, repoRoot: dir, config: DISABLED_CONFIG });
     assert.equal(failing.ok, false);
     const preserved = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });

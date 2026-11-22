@@ -35,8 +35,6 @@ function config(overrides: Partial<WearablesConfig> = {}): WearablesConfig {
     ...defaultWearablesConfig(),
     enabled: true,
     timezone: "UTC",
-    // Pinned off so per-stage tests stay focused; defaults are covered
-    // in config.test.ts and the dedicated digest test below.
     digestEnabled: false,
     offTheRecordEnabled: false,
     ...overrides,
@@ -319,8 +317,6 @@ test("#1645: a tombstone-blocked wearable write propagates to summary.memoriesBl
     };
     const { deps, reindexes } = makeDeps(memoryDir);
     assert.ok(deps.memoryGen, "memory-gen deps wired");
-    // Force every extraction write to be tombstone-blocked (#1579): the
-    // write lands pending_review with no active copy.
     deps.memoryGen.writer.writeSealedMemory = async (_envelope, _extras) => ({
       id: "blocked-mem-1",
       tombstoneBlocked: true,
@@ -361,9 +357,6 @@ test("a deleted day file is recreated even when sync state remembers its hash", 
     await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
     assert.equal(written.length, 1);
 
-    // Simulate the day file being deleted while sync state still
-    // remembers its hash — the file is authoritative, so the next sync
-    // must rewrite it (Cursor review on PR #1458).
     filesRef.readDayContentHash = async () => null;
     const summary = await syncWearableSource(
       fakeConnector(byDate),
@@ -447,7 +440,6 @@ test("a failed memory pass retries on the next sync even when the day is unchang
     const healthyExtract = deps.memoryGen?.extract;
     assert.ok(deps.memoryGen && healthyExtract);
 
-    // First sync: transcript stores, but the extraction engine fails.
     deps.memoryGen.extract = async () => {
       throw new Error("provider outage");
     };
@@ -456,15 +448,12 @@ test("a failed memory pass retries on the next sync even when the day is unchang
     assert.equal(first.memoriesCreated, 0);
     assert.ok(first.warnings.some((warning) => warning.includes("extraction failed")));
 
-    // Second sync: day unchanged, engine healthy — the memory pass must
-    // re-run instead of being frozen out by the unchanged-day skip.
     deps.memoryGen.extract = healthyExtract;
     const second = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
     assert.equal(second.transcriptsWritten.length, 0, "transcript unchanged");
     assert.equal(second.memoriesCreated, 1, "memory pass retried");
     assert.equal(memoryWrites.length, 1);
 
-    // Third sync: completion recorded — no further re-extraction.
     const third = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
     assert.equal(third.memoriesCreated, 0);
     assert.equal(memoryWrites.length, 1);
@@ -488,13 +477,9 @@ test("a stale completion record cannot mask a failed pass on a recreated day fil
     const healthyExtract = deps.memoryGen?.extract;
     assert.ok(deps.memoryGen && healthyExtract);
 
-    // Sync 1: clean pass — completion recorded for body hash H.
     await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
     assert.equal(memoryWrites.length, 1);
 
-    // Sync 2: the day file was deleted (changed=true on recreate) and
-    // the engine fails — the old completion record for the SAME body
-    // hash must be cleared, not carried forward.
     const readBackup = deps.readDayContentHash;
     deps.readDayContentHash = async () => null;
     deps.memoryGen.extract = async () => {
@@ -504,7 +489,6 @@ test("a stale completion record cannot mask a failed pass on a recreated day fil
     assert.ok(second.warnings.some((warning) => warning.includes("extraction failed")));
     deps.readDayContentHash = readBackup;
 
-    // Sync 3: unchanged file, healthy engine — extraction must re-run.
     deps.memoryGen.extract = healthyExtract;
     const third = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
     assert.equal(third.transcriptsWritten.length, 0, "file unchanged");
@@ -547,7 +531,6 @@ test("an all-elided day replaces an existing transcript but never creates one fr
     assert.match(replaced, /No storable conversation content/);
     assert.ok(!replaced.includes("quarterly planning"), "old content gone");
 
-    // The same all-garbage day with no stored file writes nothing.
     const { deps: freshDeps, written: freshWritten } = makeDeps(
       mkdtempSync(path.join(tmpdir(), "remnic-pipeline-fresh-")),
     );
@@ -573,7 +556,6 @@ test("zero provider conversations never clobber an existing transcript", async (
     await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
     assert.equal(written.length, 1);
 
-    // Provider hiccup: empty result for a day we have on disk.
     const summary = await syncWearableSource(fakeConnector({}), settings(), config(), { days: 1 }, deps);
     assert.equal(summary.transcriptsWritten.length, 0);
     assert.equal(written.length, 1, "stored transcript untouched");
@@ -593,8 +575,6 @@ test("looping pagination cursors stop with a partial marker and keep warning", a
       { speaker: "user", isWearer: true, text: "First chunk of a very long recorded day of conversations." },
       { speaker: "Speaker 2", text: "Indeed, the recordings just keep going on and on today." },
     ]);
-    // A connector whose cursor loops forever (pathological) — cycle
-    // detection must stop it; no page-count cap truncates real data.
     const endlessConnector = {
       id: "testsource",
       displayName: "Test Source",
@@ -614,7 +594,6 @@ test("looping pagination cursors stop with a partial marker and keep warning", a
     assert.equal(written.length, 1);
     assert.match(written[0].serialized, /pagination safety cap reached/);
 
-    // Identical second sync: file unchanged (no rewrite), warning persists.
     const second = await syncWearableSource(endlessConnector, settings(), config(), { days: 1 }, deps);
     assert.equal(second.transcriptsWritten.length, 0);
     assert.ok(second.warnings.some((warning) => warning.includes("repeated cursor")));
@@ -630,7 +609,6 @@ test("looping providers that re-serve rows never duplicate conversations", async
       { speaker: "user", isWearer: true, text: "A conversation the provider keeps re-serving on every page." },
       { speaker: "Speaker 2", text: "The looping pagination should still store this exactly once." },
     ]);
-    // Pathological: every page returns the SAME row and loops the cursor.
     const reServingConnector = {
       id: "testsource",
       displayName: "Test Source",
@@ -662,7 +640,6 @@ test("looping providers that re-serve rows never duplicate conversations", async
 test("long provider days paginate fully — no page-count truncation", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {
-    // 60 pages (beyond the old 50-page cap), each with one conversation.
     const PAGES = 60;
     const longDayConnector = {
       id: "testsource",
@@ -739,8 +716,6 @@ test("a judge outage does not re-run the memory pass forever", async () => {
     assert.equal(first.memoriesCreated, 1, "degraded pass still writes");
     const callsAfterFirst = extractCalls;
 
-    // Unchanged day, judge still down: the degraded-but-complete pass
-    // must have recorded completion — no re-extraction.
     const second = await syncWearableSource(
       fakeConnector(byDate),
       settings({ memoryMode: "smart" }),
@@ -769,7 +744,6 @@ test("smart mode: another device's stored day transcript corroborates borderline
     };
     const { deps, memoryWrites } = makeDeps(memoryDir);
     assert.ok(deps.memoryGen);
-    // Borderline extraction: 0.75 * 0.8 = 0.6 — review band unless corroborated.
     deps.memoryGen.extract = async () => ({
       facts: [
         {
@@ -783,7 +757,6 @@ test("smart mode: another device's stored day transcript corroborates borderline
       entities: [],
       questions: [],
     });
-    // A second device already stored a transcript covering the same day.
     deps.readOtherSourceDayBodies = async (date, excludeSource) => {
       assert.equal(date, "2026-06-11");
       assert.equal(excludeSource, "testsource");
@@ -825,8 +798,6 @@ test("smart native import never uses day-scoped cross-source corroboration", asy
     ];
     const summary = await syncWearableSource(
       fakeConnector({}, [
-        // No day attached — must not be scored against any day's tokens,
-        // but corpus support still applies: 0.7*(0.8*0.9)+0.10 = 0.604 -> review.
         { id: "nat-1", content: "User volunteers at the food bank every month with the team." },
       ]),
       settings({ memoryMode: "smart", importNativeMemories: "smart" }),
@@ -863,8 +834,6 @@ test("facts written earlier in a multi-day backfill support later days in the sa
     };
     const { deps, memoryWrites } = makeDeps(memoryDir);
     assert.ok(deps.memoryGen);
-    // Borderline confidence so day 2 only crosses the auto threshold
-    // with the +0.10 corpus-support boost from day 1's write.
     let call = 0;
     deps.memoryGen.extract = async () => {
       call += 1;
@@ -919,15 +888,11 @@ test("a second device's day write invalidates the first device's memory-pass com
       ]);
     const { deps } = makeDeps(memoryDir);
 
-    // Device A syncs first and completes its memory pass for the day.
     const connectorA = { ...fakeConnector({ [day]: [conversationFor("a")] }), id: "sourcea" };
     await syncWearableSource(connectorA, settings({ memoryMode: "smart" }), config(), { days: 1 }, deps);
     let state = await loadSyncState(memoryDir);
     assert.ok(state.sources.sourcea.memoryDayHashes?.[day], "A's pass recorded");
 
-    // Device B then writes a transcript for the same day: A's
-    // completion record for that day must be invalidated so A's next
-    // sync re-scores with B's evidence available.
     const connectorB = { ...fakeConnector({ [day]: [conversationFor("b")] }), id: "sourceb" };
     await syncWearableSource(connectorB, settings({ memoryMode: "smart" }), config(), { days: 1 }, deps);
     state = await loadSyncState(memoryDir);
@@ -964,15 +929,10 @@ test("a promotion-only re-pass still fires the reindex hook", async () => {
       questions: [],
     });
 
-    // Sync 1: borderline fact lands in review. Reindex fires (a memory
-    // was created).
     await syncWearableSource(fakeConnector(byDate), settings({ memoryMode: "smart" }), config(), { days: 1 }, deps);
     assert.equal(memoryWrites[0].options.status, "pending_review");
     const reindexesAfterFirst = reindexes.count;
 
-    // Another source's same-day transcript arrives, then sync 1's
-    // source re-passes: unchanged transcript, duplicate fact — but now
-    // corroborated, so it PROMOTES. The reindex hook must still fire.
     const written: string[] = [];
     deps.memoryGen.writer.findWearableMemoryByContent = async (content) =>
       content.trim() === borderline ? { id: "mem-1", status: "pending_review" } : null;
@@ -984,7 +944,6 @@ test("a promotion-only re-pass still fires the reindex hook", async () => {
       content.trim() === borderline;
     deps.readOtherSourceDayBodies = async () =>
       new Map([["bee", "They said the launch moves to September twelfth right after that vendor call wrapped."]]);
-    // Clear the completion record the way a sibling-source write would.
     const { loadSyncState: load, saveSyncState: save } = await import("./sync-state.js");
     const state = await load(memoryDir);
     delete state.sources.testsource.memoryDayHashes?.[day];

@@ -1,12 +1,3 @@
-/**
- * Span-mode materialization tests (issue #2333 Phase B).
- *
- * Covers the Phase B test contract: bounds off-by-one at both ends
- * ([charStart, charEnd) end-exclusive), hash-mismatch (offset drift)
- * rejection, per-fact fail-open, shadow-mode zero-diff vs "off", oversized
- * span rejection, frame word-count limits, untrusted-span stripping in "off",
- * and strict config enum handling.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -104,8 +95,6 @@ test("[charStart, charEnd) is end-exclusive — off-by-one at both ends", () => 
 });
 
 test("offset drift (turn text changed after stamping) is rejected", () => {
-  // The stamp was computed over the exact double-spaced string the model saw;
-  // the turn text here has been renormalized — verify must fail.
   const drifted: SpanMaterializeTurn[] = [
     { text: "Maya moved to Seattle.", stamp: stampSpanSource("Maya  moved  to Seattle.") },
   ];
@@ -174,11 +163,8 @@ test("shadow mode is zero-diff: byte-identical facts vs the same input", () => {
   assert.equal(shadow.fact.content, "generated restatement", "shadow persists generated content");
   assert.ok(!("quote" in shadow.fact), "shadow does not touch the grounding quote");
   assert.equal(shadow.fact.span, undefined);
-  // Zero-diff vs "off": the persisted fact is byte-identical to simply
-  // stripping the span — same content, same fields, nothing added.
   const stripped = stripUntrustedFactSpans([spanFact])[0];
   assert.deepEqual(shadow.fact, stripped);
-  // And the comparison materialization is still produced for telemetry.
   assert.equal(shadow.materialized, "Maya's relocation: Seattle");
 });
 
@@ -197,8 +183,6 @@ test("stray span in off-mode is stripped untrusted; factCarriesSpan detects span
   assert.equal(strippedFacts[0].span, undefined);
   assert.equal(strippedFacts[0].content, "kept");
   assert.ok(!factCarriesSpan(strippedFacts[0]));
-  // materializeFactSpan in off mode never validates — callers strip instead;
-  // a fallback here still must not lose content.
   const result = materializeFactSpan(stray, messages, "off");
   assert.equal(result.fact.content, "kept");
 });

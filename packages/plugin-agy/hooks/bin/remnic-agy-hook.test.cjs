@@ -1,6 +1,5 @@
 "use strict";
 
-// Integration tests for the unified Antigravity CLI (agy) hook runner.
 // Each test spawns the real remnic-agy-hook.cjs against a mock Remnic HTTP
 // server, with an isolated HOME/XDG_STATE_HOME and a synthetic ATIF
 // transcript, and asserts both the emitted hook JSON and the
@@ -92,7 +91,6 @@ function runHook(event, input, { port, home, env = {} } = {}) {
   });
 }
 
-// Write an ATIF transcript under the XDG data dir the resolver checks.
 function atifTranscript(home, sessionId, steps) {
   const dir = path.join(home, "data", "agy", "cli", "transcripts");
   fs.mkdirSync(dir, { recursive: true });
@@ -137,7 +135,6 @@ function okServer(extra) {
   };
 }
 
-// ── session-start ──────────────────────────────────────────────────────────
 
 test("post-tool-observe: missing payload transcriptPath falls back to the SQLite db", async () => {
   // The pane sends transcriptPath pointing at a .jsonl that never exists;
@@ -176,7 +173,6 @@ test("post-tool-observe: missing payload transcriptPath falls back to the SQLite
 });
 
 test("post-tool-observe: parses the agy native JSONL transcript by type", async () => {
-  // The pane really sends transcriptPath at brain/<id>/.../transcript.jsonl.
   // Role comes from the type field, never text patterns.
   const home = mkHome();
   const sessionId = "jsonl-1";
@@ -270,7 +266,6 @@ test("session-start: injects recall context and recovers cwd from AGY_PROJECT_DI
   }
 });
 
-// ── user-prompt-recall ─────────────────────────────────────────────────────
 
 test("user-prompt-recall: short prompts are skipped", async () => {
   const home = mkHome();
@@ -290,7 +285,6 @@ test("user-prompt-recall: short prompts are skipped", async () => {
   }
 });
 
-// ── hooks.json matcher covers agy real file-edit tools ──
 // wAN review: agy 1.5.10 surfaces write_to_file, replace_file_content and
 // multi_replace_file_content — none of the bare write/edit names.
 test("hooks.json PostToolUse matcher matches agy file-edit tools", async () => {
@@ -306,7 +300,6 @@ test("hooks.json PostToolUse matcher matches agy file-edit tools", async () => {
   }
 });
 
-// ── post-tool-observe with ATIF transcript ─────────────────────────────────
 
 test("post-tool-observe: observes a turn stored in the agy SQLite conversation db", async () => {
   // 3449 shipped a hook that observed nothing: agy keeps transcripts only
@@ -362,7 +355,6 @@ test("post-tool-observe: observes a turn stored in the agy SQLite conversation d
     assert.match(contents, /Explain \(bot-foo\)/);
     const byContent = Object.fromEntries(observe.body.messages.map((m) => [m.content.slice(0, 20), m.role]));
     assert.equal(byContent["Remember that the st"], "user");
-    // Adversarial user text with tool-like patterns stays user: speaker
     // comes from row structure, never text patterns.
     const advRow = observe.body.messages.find((m) => /Explain \(bot-foo\)/.test(m.content));
     assert.equal(advRow.role, "user");
@@ -373,7 +365,6 @@ test("post-tool-observe: observes a turn stored in the agy SQLite conversation d
 });
 
 test("post-tool-observe: an over-cap conversation db refuses the parse loudly", async () => {
-  // Follow-up to the #3452 review: the steps read must carry a row-count
   // LIMIT. Past AGY_SQLITE_ROW_LIMIT the parse must fail through the
   // existing parse-failed path — logged and retried on each hook event —
   // rather than silently truncate the head, which would advance the cursor
@@ -404,7 +395,6 @@ test("post-tool-observe: an over-cap conversation db refuses the parse loudly", 
       { port, home },
     );
     assert.equal(json.continue, true);
-    // The detached worker hits the cap, logs parse failed, and never posts.
     const logFile = path.join(home, ".remnic", "logs", "remnic-post-tool-observe.log");
     const deadline = Date.now() + 10000;
     let logged = "";
@@ -449,7 +439,6 @@ test("post-tool-observe: observes ATIF transcript delta resolved from session_id
       { port, home },
     );
     assert.equal(json.continue, true);
-    // The observe runs in a detached worker — wait for it to hit the mock.
     const deadline = Date.now() + 10000;
     let observe = null;
     while (Date.now() < deadline) {
@@ -466,7 +455,6 @@ test("post-tool-observe: observes ATIF transcript delta resolved from session_id
     assert.equal(messages[1].role, "assistant");
     assert.match(messages[1].content, /tool call\] edit/);
     assert.match(messages[1].content, /tool result\] edit applied/);
-    // Cursor advances only after the observe response succeeds; poll with a
     // deadline rather than a fixed sleep.
     const cursorDeadline = Date.now() + 10000;
     while (!fs.existsSync(cursorPath(home, sessionId)) && Date.now() < cursorDeadline) {
@@ -479,7 +467,6 @@ test("post-tool-observe: observes ATIF transcript delta resolved from session_id
   }
 });
 
-// ── no compaction hooks on agy ──────────────────────────────────────────────
 
 test("post-compaction is not registered: agy has no compaction event", async () => {
   const home = mkHome();
@@ -512,7 +499,6 @@ test("post-compaction is not registered: agy has no compaction event", async () 
   }
 });
 
-// ── session-end ────────────────────────────────────────────────────────────
 
 test("session-end: final flush observes remaining tail and clears cursor", async () => {
   const home = mkHome();
@@ -550,7 +536,6 @@ test("session-end: a queued observe worker does not replay the transcript", asyn
     await runHook("session-end", { session_id: sessionId, reason: "exit" }, { port, home });
     const observesBefore = calls.filter((c) => c.url === "/engram/v1/observe").length;
     assert.equal(observesBefore, 1, "session-end flushed the tail once");
-    // A detached observe worker spawned just before SessionEnd can still be
     // queued behind the lock; once it runs it must see the done tombstone
     // and exit instead of treating the removed cursor as 0.
     await runHook(
@@ -558,7 +543,6 @@ test("session-end: a queued observe worker does not replay the transcript", asyn
       { session_id: sessionId, tool_name: "edit", prompt_id: "p1" },
       { port, home },
     );
-    // Give the detached worker time to acquire the lock and (wrongly) observe.
     await new Promise((r) => setTimeout(r, 3000));
     const observesAfter = calls.filter((c) => c.url === "/engram/v1/observe").length;
     assert.equal(observesAfter, observesBefore, "queued worker did not replay the transcript");
@@ -611,7 +595,6 @@ test("session resume: done marker restores the cursor checkpoint and observation
   }
 });
 
-// ── camelCase payload fallbacks (agy native contract) ──────────────────────
 
 test("session-start: accepts conversationId when session_id is absent", async () => {
   const home = mkHome();
@@ -652,7 +635,6 @@ test("session-start: snake_case session_id wins over conversationId", async () =
 });
 
 test("session-start: DEVIN_PROJECT_DIR does not override AGY_PROJECT_DIR", async () => {
-  // Cross-host isolation: the active host's variable wins even when another
   // host's variable is set to a different directory.
   const home = mkHome();
   const other = mkHome();
@@ -693,11 +675,9 @@ test("user-prompt-recall: accepts lastUserInput when prompt is absent", async ()
   }
 });
 
-// ── fail-open ──────────────────────────────────────────────────────────────
 
 test("fail-open: dead daemon still emits continue and never throws", async () => {
   const home = mkHome();
-  // Nothing listening on this port.
   const { json, stderr } = await runHook(
     "session-start",
     { session_id: "dead-1", source: "startup" },
@@ -707,7 +687,6 @@ test("fail-open: dead daemon still emits continue and never throws", async () =>
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-// ── bounded jsonl read (CodeRabbit #3454 short-read finding) ────────────────
 
 test("readBounded accumulates multiple short reads before EOF", () => {
   const { readBounded } = require("./remnic-agy-jsonl-read.cjs");
@@ -721,7 +700,6 @@ test("readBounded accumulates multiple short reads before EOF", () => {
   try {
     fs.readSync = (fd, buf, off, len, pos) => {
       calls += 1;
-      // Positive short reads: at most 5 bytes per call, then EOF.
       return realRead(fd, buf, off, Math.min(len, 5), pos);
     };
     const got = readBounded(file, 1024);

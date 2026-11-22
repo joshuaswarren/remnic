@@ -1,9 +1,3 @@
-/**
- * WearablesService — the single implementation behind every wearables
- * access surface (CLI, MCP tools, HTTP routes). Surfaces stay thin and
- * delegate here; formatting differences live with the surface, behavior
- * lives here (same renderer-sharing rule as recall explain/xray).
- */
 
 import {
   correctionsFilePath,
@@ -181,22 +175,11 @@ export interface WearableDayTranscriptView {
   overlapsWith: string[];
 }
 
-/**
- * Build the memory writer used by wearable syncs. The storage fact
- * hash index only covers category "fact", so dedup for the other
- * categories wearables write (moment digests, decisions, preferences,
- * commitments) additionally scans existing wearable-tagged memories for
- * an exact content match — without this, a forced or retried day
- * re-writes identical digests and candidates (Codex P2 on PR #1458).
- * The scan is bounded to wearable-sourced memories and sits on the
- * cached readAllMemories() path.
- */
 export function createWearableMemoryWriter(
   storage: WearableStorageIo,
 ): WearableMemoryGenDeps["writer"] {
   return {
     writeSealedMemory: async (envelope, extras) => {
-      // Facts register in the fact hash index, so extraction and a wearable sync
       // can commit the same new fact. Commit it under the window extraction uses
       // and recheck the index there. Other categories keep the direct write: the
       // index does not cover them, and the corpus scan stays outside the window.
@@ -216,7 +199,6 @@ export function createWearableMemoryWriter(
     demoteWearableMemory: storage.demoteWearableMemory.bind(storage),
     hasFactContentHash: async (content: string) => {
       if (await storage.hasFactContentHash(content)) return true;
-      // Compare with the "[Attributes: ...]" enrichment suffix removed
       // on BOTH sides — stored wearable bodies carry it, callers pass
       // raw fact text. Without the strip, digest/candidate dedup never
       // matched attribute-bearing memories.
@@ -232,7 +214,6 @@ export function createWearableMemoryWriter(
   };
 }
 
-/** Mirrors the storage-layer guard so surface inputs fail as 400s. */
 const SOURCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
 function assertValidSourceId(source: string): void {
@@ -273,7 +254,6 @@ export class WearablesService {
     );
   }
 
-  /** Status for every configured source (and connector availability). */
   async status(): Promise<{
     enabled: boolean;
     timezone: string;
@@ -307,7 +287,6 @@ export class WearablesService {
     };
   }
 
-  /** Run a sync for one source or all enabled sources. */
   async sync(
     options: WearableSyncOptions & { source?: string },
   ): Promise<WearableSyncSummary[]> {
@@ -381,7 +360,6 @@ export class WearablesService {
             storage.writeWearableDayTranscript(source, date, serialized),
           afterWrites: this.deps.reindexSearch,
           memoryGen,
-          // Cross-device corroboration evidence (smart mode): other
           // sources' stored transcripts for the same day...
           readOtherSourceDayBodies: async (date, excludeSource) => {
             const bodies = new Map<string, string>();
@@ -395,7 +373,6 @@ export class WearablesService {
             }
             return bodies;
           },
-          // ...and existing memories for the support boost. Status
           // resolves through the canonical inferMemoryStatus so rows
           // archived via `archivedAt` (or an archive/ path) without an
           // explicit status never count. Explicit allow-list: active
@@ -431,7 +408,6 @@ export class WearablesService {
       );
       summaries.push(summary);
     }
-    // Tail step (issue #1900): a wearable sync changed a day's audio, so fan out
     // the affected days to the injected build hook (wired to the meetings
     // service's debounced rebuild). Fires for every sync path — auto-sync and
     // manual HTTP/MCP/CLI backfill alike — since they all share this service.
@@ -452,7 +428,6 @@ export class WearablesService {
     return summaries;
   }
 
-  /** Verify connectivity/credentials for one source. */
   async checkAuth(sourceId: string): Promise<{ ok: boolean; detail?: string }> {
     this.assertEnabled();
     await ensureBuiltInWearableConnectors();
@@ -473,7 +448,6 @@ export class WearablesService {
       timezone: this.timezone(),
     });
     try {
-      // Connector detail strings are authored guidance (plus
       // name+errno network summaries) — safe to pass through verbatim.
       return await connector.verifyAuth();
     } catch (err) {
@@ -512,7 +486,6 @@ export class WearablesService {
         source,
         date,
         meta: parsed?.meta ?? null,
-        // Decode escaped segment text for display: the stored body is an
         // internal line-based serialization (newlines/backslashes escaped
         // so segment text survives the serialize -> reconstruct round
         // trip); user-facing view surfaces must show the original text.
@@ -530,7 +503,6 @@ export class WearablesService {
     return views;
   }
 
-  /** List days that have stored transcripts. */
   async listDays(
     sourceId?: string,
   ): Promise<Array<{ source: string; date: string }>> {
@@ -539,7 +511,6 @@ export class WearablesService {
     return storage.listWearableTranscriptDays(sourceId);
   }
 
-  // -- cross-source fusion (#1810) -----------------------------------------
 
   /**
    * Fuse all enabled sources' stored transcripts for one day into a
@@ -581,7 +552,6 @@ export class WearablesService {
       });
       sourceTimezones.push(parsed?.meta.timezone ?? "");
     }
-    // Reconstruct the normalized inputs once and derive the sources that
     // actually CONTRIBUTE conversations/clocks for the day. The sync path
     // can persist an explicit EMPTY (all-elided / zero-conversation)
     // transcript for days whose segments were all dropped; such a file
@@ -596,7 +566,6 @@ export class WearablesService {
       .filter((entry) =>
         reconstructed.some((input) => input.source === entry.source),
       );
-    // Mixed-timezone guard: reconstructFusionInputs rebuilds every clock as
     // `${date}T${HH}:${MM}:00Z` and compares local HH:MM clocks across sources
     // as if they shared one timezone. That comparison is ONLY valid when every
     // CONTRIBUTING source (one that reconstructs to >=1 conversation) carries
@@ -623,7 +592,6 @@ export class WearablesService {
         log.warn(
           `wearables fusion: skipping ${date} — sources were rendered under differing timezones (${detail}); reconstructFusionInputs only compares local clocks correctly when every source shares one explicit IANA timezone id`,
         );
-        // Clear any previously-fused artifact for this day: a day that
         // fused successfully before must not keep serving a stale view
         // now that this run explicitly refuses to fuse (issue #1849).
         await storage.fusionArtifactStore().deleteFusedDay(date);
@@ -646,7 +614,6 @@ export class WearablesService {
       windowToleranceMs: this.deps.config.fusion.windowToleranceMs,
       sourceTrust,
     });
-    // Idempotent skip-unchanged: do not rewrite when the input content
     // hash matches the stored artifact, the stored body parsed cleanly
     // into a well-formed conversation set, AND the stored body hash still
     // matches a recompute over the stored body itself. A
@@ -763,14 +730,12 @@ export class WearablesService {
     const matchesScope = (source: string, date: string): boolean => {
       if (options.source !== undefined && source !== options.source) return false;
       if (options.from !== undefined && date < options.from) return false;
-      // Half-open scan semantics aren't meaningful for whole-day files;
       // `to` is inclusive of the named day.
       if (options.to !== undefined && date > options.to) return false;
       return true;
     };
 
     if (this.deps.searchBackend) {
-      // The index stores escaped segment text (real newlines become
       // the two characters \n, lone backslashes are doubled). A query
       // containing those characters in their ORIGINAL decoded form will
       // not match the indexed representation, so we ALSO search the
@@ -792,7 +757,6 @@ export class WearablesService {
           const dedupeKey = `${located.source}:${located.date}`;
           if (seen.has(dedupeKey)) continue;
           seen.add(dedupeKey);
-          // The indexed snippet mirrors the stored body's escape encoding.
           // Read the file once to learn whether it was written by the
           // escape-aware serializer so a LEGACY file's literal two-character
           // \n/\r is never decoded (#1849).
@@ -810,7 +774,6 @@ export class WearablesService {
         }
         if (results.length >= limit) break;
       }
-      // The index spans the whole memory dir, so ordinary memory
       // files can crowd transcripts out of the top hits entirely.
       // Zero in-scope hits therefore doesn't mean "no transcript
       // matches" — fall through to the bounded scan in that case
@@ -821,7 +784,6 @@ export class WearablesService {
       }
     }
 
-    // Fallback scan: newest days first, bounded, case-insensitive.
     const storage = await this.deps.getStorage();
     const days = await storage.listWearableTranscriptDays(options.source);
     const needle = trimmed.toLowerCase();
@@ -831,7 +793,6 @@ export class WearablesService {
       const raw = await storage.readWearableDayTranscript(source, date);
       if (raw === null) continue;
       const scanParsed = parseDayTranscript(raw);
-      // Decode escaped segment text so searches match AND snippets show
       // the ORIGINAL text (e.g. a real newline or backslash), not the
       // internal escape serialization — but ONLY for bodies written by
       // the escape-aware serializer; legacy bodies are searched verbatim
@@ -919,7 +880,6 @@ export class WearablesService {
     return results.slice(0, limit);
   }
 
-  // -- speakers -------------------------------------------------------------
 
   async listSpeakers(): Promise<SpeakerRegistry> {
     const storage = await this.deps.getStorage();
@@ -975,7 +935,6 @@ export class WearablesService {
     return registry;
   }
 
-  // -- corrections ----------------------------------------------------------
 
   async listCorrections(): Promise<{
     fromConfig: WearableCorrectionRule[];
@@ -991,7 +950,6 @@ export class WearablesService {
   }
 
   async addCorrection(rule: WearableCorrectionRule): Promise<void> {
-    // Validate before persisting so a bad rule fails the command, not
     // the next sync.
     compileCorrectionRule(rule, "correction");
     const storage = await this.deps.getStorage();
@@ -1043,7 +1001,6 @@ function clampLimit(
   return value;
 }
 
-/** Map an indexed-search hit path back to (source, date), or null. */
 export function locateTranscriptPath(
   hitPath: string,
 ): { source: string; date: string } | null {

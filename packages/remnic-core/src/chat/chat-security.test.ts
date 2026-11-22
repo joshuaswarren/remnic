@@ -1,17 +1,3 @@
-/**
- * Chat security + correctness regression tests (issue #1583 review round).
- *
- * Covers the genuine HIGH-severity threads:
- *  - P1 path traversal: session id validation (chat-session.ts)
- *  - P1 stack-trace / raw-error exposure: replies never echo err.message
- *  - P2 confirmation bypass: memory_promote requires an affirmative confirm
- *  - HIGH intercepted apply fetches wrong plan: pending plan binds the REQUESTED id
- *  - HIGH pending-plan cleared wrongly: a normal turn must not clear an active plan
- *  - P1 tool-role normalization: production adapter converts role:"tool" → user
- *  - P2 deduplicate fenced tool-call candidates
- *  - P2 forward MCP scope: processChatMessage binds namespace/sessionKey
- *  - Medium recall_explain forwards query
- */
 
 import { strict as assert } from "node:assert";
 import { rm, readFile } from "node:fs/promises";
@@ -35,8 +21,6 @@ import type { ChatToolExecutor } from "./chat-engine.js";
 import type { EngramAccessService } from "../access-service.js";
 import { createChatExecutor } from "./chat-executor.js";
 
-// ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
 function makeStubExecutor(overrides: Partial<ChatToolExecutor> = {}): ChatToolExecutor {
@@ -73,7 +57,6 @@ function makeEngine(
 const makeTempDir = (): Promise<string> => managedMakeTempDir("chat-sec-");
 
 // ---------------------------------------------------------------------------
-// P1 — Path traversal (chat-session.ts)
 // ---------------------------------------------------------------------------
 
 test("path traversal: isSafeChatSessionId rejects traversal payloads", () => {
@@ -102,9 +85,6 @@ test("path traversal: chatSessionFile throws on malicious id", () => {
 test("path traversal: loadChatSession returns null for malicious id (no read outside chat dir)", async () => {
   const dir = await makeTempDir();
   try {
-    // chatSessionFile throws on the malicious id; loadChatSession catches that
-    // and returns null. The security property: NO file outside the chat dir is
-    // ever read — the caller sees "not found".
     const result = await loadChatSession(dir, "../../../../tmp/target");
     assert.equal(result, null, "malicious id must not read a file outside the chat dir");
   } finally {
@@ -124,13 +104,10 @@ test("path traversal: appendTranscriptEntry rejects malicious id (no write outsi
 });
 
 // ---------------------------------------------------------------------------
-// P1 — Stack-trace / raw-error exposure (chat-engine.ts)
 // ---------------------------------------------------------------------------
 
 test("error sanitization: LLM failure reply does not echo raw err.message", async () => {
   const executor = makeStubExecutor();
-  // Adapter that always throws — simulates an LLM transport error whose
-  // message might contain a stack/internal path.
   const llm = {
     async complete() { throw new Error("ECONNREFUSED 127.0.0.1:11434 / internal stack at foo.ts:42"); },
   } as unknown as StubChatLlmAdapter;
@@ -153,12 +130,10 @@ test("error sanitization: correction-apply failure reply is generic", async () =
   const executor = makeStubExecutor({
     async correctionApply() { throw new Error("secret internal: write failed at storage.ts:99"); },
   });
-  // Step 1: confirm the plan (fast path) → triggers correctionApply → throws.
   const llm = new StubChatLlmAdapter([{ content: "unused" }]);
   const engine = makeEngine(llm, executor, { correctionAvailable: true });
   const dir = await makeTempDir();
   const session = await createChatSession(dir, {});
-  // Seed a pending plan so the confirmation fast-path runs correctionApply.
   session.pendingPlanId = "plan-xyz";
   const result = await engine.processMessage("apply", session);
 
@@ -170,7 +145,6 @@ test("error sanitization: correction-apply failure reply is generic", async () =
 });
 
 // ---------------------------------------------------------------------------
-// P2 — Confirmation bypass: memory_promote requires confirmation (Thread 9)
 // ---------------------------------------------------------------------------
 
 test("confirmation: memory_promote is intercepted and requires an affirmative confirm", async () => {
@@ -178,7 +152,6 @@ test("confirmation: memory_promote is intercepted and requires an affirmative co
   const executor = makeStubExecutor({
     async memoryPromote(memoryId: string) { promoteCalls.push(memoryId); return JSON.stringify({ promoted: true, memoryId }); },
   });
-  // Step 1: LLM emits a memory_promote tool call.
   const llm = new StubChatLlmAdapter([
     { toolCalls: [{ name: "memory_promote", arguments: { memoryId: "mem-1" } }] },
     { content: "done" },
@@ -188,12 +161,10 @@ test("confirmation: memory_promote is intercepted and requires an affirmative co
 
   const result = await engine.processMessage("promote mem-1", session);
 
-  // The promotion must NOT have executed yet (no confirmation received).
   assert.equal(promoteCalls.length, 0, "memory_promote must not execute without confirmation");
   assert.equal(session.pendingPromotionId, "mem-1", "pendingPromotionId must be recorded");
   assert.ok(/apply/i.test(result.reply), "reply must ask the user to confirm");
 
-  // Now confirm → fast-path executes the promotion.
   const result2 = await engine.processMessage("apply", session);
   assert.equal(promoteCalls.length, 1, "memory_promote executes after confirmation");
   assert.equal(promoteCalls[0], "mem-1");
@@ -201,15 +172,12 @@ test("confirmation: memory_promote is intercepted and requires an affirmative co
 });
 
 // ---------------------------------------------------------------------------
-// HIGH — Intercepted apply fetches wrong plan (Thread 11)
 // ---------------------------------------------------------------------------
 
 test("confirmation: pending plan binds the REQUESTED planId, not an executor re-minted id", async () => {
-  // The executor always returns a DIFFERENT planId than requested.
   const executor = makeStubExecutor({
     async correctionPlan() { return { planId: "MINTED-DIFFERENT", preview: "preview text" }; },
   });
-  // Step 1: LLM emits correction_apply for planId "REQ-123" (unconfirmed).
   const llm = new StubChatLlmAdapter([
     { toolCalls: [{ name: "correction_apply", arguments: { planId: "REQ-123" } }] },
     { content: "applied" },
@@ -225,14 +193,12 @@ test("confirmation: pending plan binds the REQUESTED planId, not an executor re-
 });
 
 // ---------------------------------------------------------------------------
-// HIGH — Pending plan cleared wrongly (Thread 15)
 // ---------------------------------------------------------------------------
 
 test("pending-plan lifecycle: a normal turn does not clear an active pending plan", async () => {
   const dir = await makeTempDir();
   try {
     const session0 = await createChatSession(dir, { principal: "alice" });
-    // Simulate a pending plan from an earlier correction-preview turn.
     await markPendingPlan(dir, session0.id, "plan-active");
 
     const fakeLlm = { chatCompletion: async () => ({ content: "just a normal answer" }) };
@@ -254,7 +220,6 @@ test("pending-plan lifecycle: a normal turn does not clear an active pending pla
       principal: "alice",
     });
 
-    // Reload and verify the pending plan survived the normal turn.
     const reloaded = await loadChatSession(dir, session0.id);
     assert.equal(reloaded?.pendingPlanId, "plan-active", "normal turn must NOT clear the pending plan");
   } finally {
@@ -263,7 +228,6 @@ test("pending-plan lifecycle: a normal turn does not clear an active pending pla
 });
 
 // ---------------------------------------------------------------------------
-// P1 — Tool-role normalization (chat-llm.ts, Thread 13)
 // ---------------------------------------------------------------------------
 
 test("tool-role normalization: production adapter converts role:tool to role:user", async () => {
@@ -293,7 +257,6 @@ test("tool-role normalization: production adapter converts role:tool to role:use
 });
 
 // ---------------------------------------------------------------------------
-// P2 — Deduplicate fenced tool-call candidates (chat-llm.ts, Thread 18)
 // ---------------------------------------------------------------------------
 
 test("parseToolCalls: a fenced block is not duplicated by the bare-line scan", () => {
@@ -318,7 +281,6 @@ test("parseToolCalls: distinct tool calls are all kept", () => {
 });
 
 // ---------------------------------------------------------------------------
-// P2 — Forward MCP scope into new chat sessions (Thread 17)
 // ---------------------------------------------------------------------------
 
 test("scope forwarding: processChatMessage binds namespace/sessionKey into a new session", async () => {
@@ -348,7 +310,6 @@ test("scope forwarding: processChatMessage binds namespace/sessionKey into a new
     assert.equal(reloaded?.namespace, "team-proj", "new session must bind the forwarded namespace");
     assert.equal(reloaded?.sessionKey, "sess-42", "new session must bind the forwarded sessionKey");
 
-    // Verify the system header carries the structured binding.
     const raw = await readFile(chatSessionFile(dir, result.chatSessionId), "utf8");
     const header = JSON.parse(raw.split("\n")[0]);
     assert.equal(header.namespace, "team-proj");
@@ -359,7 +320,6 @@ test("scope forwarding: processChatMessage binds namespace/sessionKey into a new
 });
 
 // ---------------------------------------------------------------------------
-// Medium — recall_explain forwards query (Thread 1)
 // ---------------------------------------------------------------------------
 
 test("recall_explain: forwards the query argument to the executor", async () => {
@@ -378,7 +338,6 @@ test("recall_explain: forwards the query argument to the executor", async () => 
 });
 
 // ---------------------------------------------------------------------------
-// P2 — Executor forwards maxResults=0 (Thread 14, kilo review)
 // ---------------------------------------------------------------------------
 
 test("executor: maxResults=0 is forwarded, not dropped by falsy check (Thread 14)", async () => {
@@ -399,7 +358,6 @@ test("executor: maxResults=0 is forwarded, not dropped by falsy check (Thread 14
 });
 
 // ---------------------------------------------------------------------------
-// HIGH — Promote bypass via repeated tool call (cursor OkuNd)
 // ---------------------------------------------------------------------------
 
 test("promote: a second tool call for the same memoryId does NOT bypass confirmation", async () => {
@@ -407,22 +365,17 @@ test("promote: a second tool call for the same memoryId does NOT bypass confirma
   const executor = makeStubExecutor({
     async memoryPromote() { promoteCalled = true; return JSON.stringify({ promoted: true }); },
   });
-  // correctionAvailable=true so memory_promote is in the schema and requires confirmation.
   const llm = new StubChatLlmAdapter([
     { toolCalls: [{ name: "memory_promote", arguments: { memoryId: "mem-1" } }] },
   ]);
   const engine = makeEngine(llm, executor, { correctionAvailable: true });
   const session = await createChatSession(await makeTempDir(), {});
 
-  // Turn 1: LLM calls memory_promote — should be intercepted.
   const result1 = await engine.processMessage("promote mem-1", session);
   assert.ok(result1.reply.includes("apply"), "Turn 1 should ask for confirmation");
   assert.equal(session.pendingPromotionId, "mem-1");
   assert.equal(promoteCalled, false, "memory_promote must NOT execute in the tool loop");
 
-  // Turn 2: user types something that is NOT a confirmation keyword.
-  // The LLM calls memory_promote again. The engine must intercept again,
-  // NOT execute it (cursor HIGH: no bypass via repeated calls).
   const llm2 = new StubChatLlmAdapter([
     { toolCalls: [{ name: "memory_promote", arguments: { memoryId: "mem-1" } }] },
   ]);
@@ -433,7 +386,6 @@ test("promote: a second tool call for the same memoryId does NOT bypass confirma
 });
 
 // ---------------------------------------------------------------------------
-// HIGH — Disabled mutating tools still execute (cursor OkuNk)
 // ---------------------------------------------------------------------------
 
 test("tool gate: memory_promote is rejected when correctionAvailable is false", async () => {
@@ -441,8 +393,6 @@ test("tool gate: memory_promote is rejected when correctionAvailable is false", 
   const executor = makeStubExecutor({
     async memoryPromote() { promoteCalled = true; return JSON.stringify({ promoted: true }); },
   });
-  // correctionAvailable=false so memory_promote is NOT in the tool schema.
-  // The LLM hallucinates a memory_promote call anyway.
   const llm = new StubChatLlmAdapter([
     { toolCalls: [{ name: "memory_promote", arguments: { memoryId: "mem-1" } }] },
     { content: "Done." },
@@ -454,7 +404,6 @@ test("tool gate: memory_promote is rejected when correctionAvailable is false", 
 });
 
 // ---------------------------------------------------------------------------
-// HIGH — Failed apply restores pending state (cursor OlACo/OlACg)
 // ---------------------------------------------------------------------------
 
 test("failed correction apply restores pendingPlanId for retry (OlACo)", async () => {

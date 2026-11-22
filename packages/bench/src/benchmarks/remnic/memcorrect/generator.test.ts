@@ -25,14 +25,11 @@ const ALL_SHAPES: CorrectionShape[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Determinism
-// ---------------------------------------------------------------------------
 
 test("generator: same seed → byte-identical corpus hash", () => {
   const a = generateMemCorrectCorpus(BASE);
   const b = generateMemCorrectCorpus(BASE);
   assert.equal(corpusHash(a), corpusHash(b));
-  // Structural equality too: every field deep-equal.
   assert.deepEqual(a.scenarios, b.scenarios);
 });
 
@@ -54,7 +51,6 @@ test("generator: determinism holds across persona/fact scales", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Taxonomy coverage
 // ---------------------------------------------------------------------------
 
 test("generator: corpus covers all four correction shapes", () => {
@@ -95,7 +91,6 @@ test("generator: establishing transcripts are non-empty and ISO-timestamped", ()
 });
 
 // ---------------------------------------------------------------------------
-// Schema validation + no-PII
 // ---------------------------------------------------------------------------
 
 test("schema: generated corpus validates", () => {
@@ -127,7 +122,6 @@ test("schema: every fact token originates from a synthetic pool (no-PII)", () =>
 
 test("schema: validator rejects a hand-corrupted scenario", () => {
   const corpus = generateMemCorrectCorpus(BASE);
-  // Corrupt: empty namespace on first scenario.
   const corrupted = {
     ...corpus,
     scenarios: corpus.scenarios.map((s, i) =>
@@ -160,7 +154,6 @@ test("schema: validator rejects a scoped scenario missing its twin", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Input validation
 // ---------------------------------------------------------------------------
 
 test("generator: rejects invalid seed", () => {
@@ -179,7 +172,6 @@ test("generator: rejects unparseable nowIso", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Persona coverage sanity
 // ---------------------------------------------------------------------------
 
 test("generator: namespaces derive from the synthetic persona pool only", () => {

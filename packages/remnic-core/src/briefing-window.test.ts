@@ -53,12 +53,6 @@ function captureLogs(): { lines: string[]; restore: () => void } {
   };
 }
 
-/**
- * The slow-double test below deliberately exercises the REAL abort-timer
- * protocol (AbortController armed by production setTimeout) against the
- * platform clock; mock timers cannot drive a deadline the code under test
- * arms itself.
- */
 function delay(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);

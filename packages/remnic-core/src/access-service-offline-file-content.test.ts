@@ -522,8 +522,6 @@ test("offline apply rejects JSON-escaped support-passport markers (#2387)", asyn
     const storage = new StorageManager(root);
     await storage.ensureDirectories();
     const { service } = createManifestService({ root, storage });
-    // The raw frontmatter text never contains the literal marker substring;
-    // only JSON.parse of the structured-attribute value reconstructs it.
     const escaped = Buffer.from([
       "---",
       "id: escaped-marker",

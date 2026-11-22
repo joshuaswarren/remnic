@@ -81,7 +81,6 @@ test("acceptance scenario: 20-fact seeded corpus failure attribution (>= 90% acc
   const storeDir = path.join(tmpDir, "memories");
   await mkdir(storeDir, { recursive: true });
 
-  // Facts 6..20 are written to disk store (Facts 1..5 never written -> extraction_miss)
   const writtenMemories: AttributionMemory[] = [];
   for (let i = 5; i < 20; i++) {
     const memId = `mem-${i + 1}`;
@@ -91,7 +90,6 @@ test("acceptance scenario: 20-fact seeded corpus failure attribution (>= 90% acc
     writtenMemories.push({ id: memId, content });
   }
 
-  // Facts 11..20 are indexed (Facts 6..10 written but not indexed -> index_miss)
   const indexedMemIds = new Set(Array.from({ length: 10 }, (_, k) => `mem-${k + 11}`));
 
   const distractorMem: AttributionMemory = {
@@ -99,18 +97,15 @@ test("acceptance scenario: 20-fact seeded corpus failure attribution (>= 90% acc
     content: "Avery Quill enjoys hiking in local nature reserves",
   };
 
-  // Environment setup
   const env: AttributionEnvironment = {
     listMemories: async () => writtenMemories,
     oracleSearch: async (query, limit) => {
-      // Returns matching indexed memories
       const results: { id: string }[] = [];
       for (const mem of writtenMemories) {
         if (indexedMemIds.has(mem.id) && query.includes(mem.content.split(" ")[2] || "")) {
           results.push({ id: mem.id });
         }
       }
-      // If query matched an indexed fact directly
       const foundIdx = GOLD_STATEMENTS.findIndex((g) => g === query);
       if (foundIdx >= 10 && foundIdx < 20) {
         return [{ id: `mem-${foundIdx + 1}` }].slice(0, limit);
@@ -118,12 +113,10 @@ test("acceptance scenario: 20-fact seeded corpus failure attribution (>= 90% acc
       return results.slice(0, limit);
     },
     recall: async (query, limit) => {
-      // Find which task question this is
       const taskMatch = query.match(/fact (\d+)/);
       if (!taskMatch) return [];
       const factNum = parseInt(taskMatch[1], 10); // 1..20
 
-      // Tasks 11..15: distractor at rank 1, gold at rank 2 (limit=1 misses gold -> retrieval_miss cap)
       if (factNum >= 11 && factNum <= 15) {
         const goldMem = writtenMemories.find((m) => m.id === `mem-${factNum}`);
         if (limit === 1) {
@@ -132,7 +125,6 @@ test("acceptance scenario: 20-fact seeded corpus failure attribution (>= 90% acc
         return [distractorMem, goldMem!];
       }
 
-      // Tasks 16..20: gold at rank 1 (recalled into context)
       if (factNum >= 16 && factNum <= 20) {
         const goldMem = writtenMemories.find((m) => m.id === `mem-${factNum}`);
         return [goldMem!].slice(0, limit);
@@ -144,7 +136,6 @@ test("acceptance scenario: 20-fact seeded corpus failure attribution (>= 90% acc
     replayLimit: 10,
   };
 
-  // Build 20 tasks
   const tasks = GOLD_STATEMENTS.map((gold, idx) => {
     const factNum = idx + 1;
     const recalledText = factNum >= 16 ? gold : undefined;
@@ -164,7 +155,6 @@ test("acceptance scenario: 20-fact seeded corpus failure attribution (>= 90% acc
 
   const report = await attributeRun(runResult, env, { threshold: 0.6 });
 
-  // Evaluate confusion matrix
   const expectedClasses: Record<string, string> = {};
   for (let i = 1; i <= 5; i++) expectedClasses[`task-${String(i).padStart(2, "0")}`] = "extraction_miss";
   for (let i = 6; i <= 10; i++) expectedClasses[`task-${String(i).padStart(2, "0")}`] = "index_miss";
@@ -200,14 +190,12 @@ test("runAttributeCliCommand handles store run reference and options", async () 
   await mkdir(resultsDir, { recursive: true });
   await mkdir(memoryDir, { recursive: true });
 
-  // Write a memory file
   await writeFile(
     path.join(memoryDir, "fact1.md"),
     '---\nid: "mem-1"\n---\nAvery Quill prefers Earl Grey tea with lemon\n',
     "utf8"
   );
 
-  // Write a benchmark result JSON
   const fakeResult: BenchmarkResult = {
     meta: {
       id: "run-abc-123",
@@ -260,7 +248,6 @@ test("runAttributeCliCommand handles store run reference and options", async () 
   const resultPath = path.join(resultsDir, "run-abc-123.json");
   await writeFile(resultPath, JSON.stringify(fakeResult, null, 2), "utf8");
 
-  // Test 1: CLI table output with memoryDir
   const cliResTable = await runAttributeCliCommand({
     runRef: "run-abc-123",
     resultsDir,
@@ -271,7 +258,6 @@ test("runAttributeCliCommand handles store run reference and options", async () 
   assert.match(cliResTable.output, /Attribution Report \(Run: run-abc-123\)/);
   assert.match(cliResTable.output, /use_miss/);
 
-  // Test 2: CLI JSON output
   const cliResJson = await runAttributeCliCommand({
     runRef: "run-abc-123",
     resultsDir,
@@ -284,7 +270,6 @@ test("runAttributeCliCommand handles store run reference and options", async () 
   assert.strictEqual(parsed.runId, "run-abc-123");
   assert.strictEqual(parsed.totals.use_miss, 1);
 
-  // Test 3: Determinism across invocations
   const cliResTable2 = await runAttributeCliCommand({
     runRef: "run-abc-123",
     resultsDir,
@@ -292,7 +277,6 @@ test("runAttributeCliCommand handles store run reference and options", async () 
   });
   assert.strictEqual(cliResTable.output, cliResTable2.output);
 
-  // Test 4: Unknown runRef
   const cliResErr = await runAttributeCliCommand({
     runRef: "nonexistent-run",
     resultsDir,
@@ -300,7 +284,6 @@ test("runAttributeCliCommand handles store run reference and options", async () 
   assert.strictEqual(cliResErr.exitCode, 1);
   assert.match(cliResErr.output, /not found/);
 
-  // Test 5: Honest unavailable output when memoryDir is omitted and no recallText
   const fakeResultNoRecalled: BenchmarkResult = {
     ...fakeResult,
     meta: { ...fakeResult.meta, id: "run-no-recalled" },
@@ -389,10 +372,6 @@ test("runAttributeCliCommand returns exitCode 1 for invalid or unreadable memory
   }
 });
 
-// The result-reference resolver validates files before resolving, so a
-// corrupt result surfaces as a stable not-found error; raw parse errors never
-// reach CLI output. (The separate load-failure catch guards only the
-// resolve-then-load race window and stays untestable without mocking.)
 test("runAttributeCliCommand reports corrupt result files with a stable not-found error", async () => {
   const tmpDir = await mkdtemp(path.join(tmpdir(), "bench-cli-badfile-"));
   try {

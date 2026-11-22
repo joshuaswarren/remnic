@@ -511,10 +511,6 @@ test("getMemoryForActiveMemory passes a raw id through unchanged (no resolver ca
 });
 
 test("getMemoryForActiveMemory returns not_found when a handle cannot be resolved (#1582, cursor review)", async () => {
-  // A missing session key, unknown handle, or ambiguous handle makes the
-  // orchestrator resolver THROW. The active-memory get path must yield the SAME
-  // not_found contract a bad raw id gets — not propagate the throw and crash an
-  // OpenClaw active-memory caller.
   const orchestrator = {
     config: { namespacesEnabled: false },
     resolveSelfNamespace: () => "readable-session",
@@ -529,7 +525,6 @@ test("getMemoryForActiveMemory returns not_found when a handle cannot be resolve
   const result = await getMemoryForActiveMemory(
     orchestrator as never,
     "[m:dead]",
-    // No sessionKey → resolver throws "without a session key".
     {},
   );
   assert.equal(result.error, "not_found");

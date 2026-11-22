@@ -1,48 +1,4 @@
-/**
- * trust-score.ts — unified TrustScore pure module (issue #1577 PR 1).
- *
- * Combines the trust-relevant signals Remnic already computes — memory worth
- * (Laplace-smoothed outcome probability + recency decay), provenance strength,
- * faithfulness verdict, corroboration count, contradiction status, and optional
- * domain calibration — into ONE deterministic score in `[0, 1]` plus a band
- * (`high` / `medium` / `low` / `quarantine`) and a fully-explained component
- * breakdown for X-ray.
- *
- * Contract rules (mirror the battle-tested `memory-worth.ts` "corrupt inputs
- * fail safely" header — read it before changing anything here):
- *
- *   1. **No signals → neutral.** An empty `TrustSignals` yields score `0.5`,
- *      band `medium`, and a recall multiplier of exactly `1.0`. Uninstrumented
- *      memories are NEVER penalized (rule 39 — byte-identical ranking when the
- *      feature is off; neutral prior when on but a memory has no data).
- *   2. **Corrupt / out-of-range component → that component collapses to
- *      neutral**, never to an extreme. A `NaN` weight or a `corroborationCount`
- *      of `-3` is treated as "no signal", not as damning evidence. Precedent:
- *      `memory-worth.ts` `classifyCounter`.
- *   3. **Deterministic.** Same inputs → identical result. All weights come from
- *      the caller (config); no wall clock, no RNG, no hidden constants.
- *   4. **Explainable.** Every active component is echoed in the result with its
- *      normalized weight and contribution, so X-ray can render the basis
- *      without re-deriving the math.
- *   5. **`quarantine` is reserved for hard negatives** — `faithfulness:
- *      "contradicted"` or `contradiction: "pending_review"`. Quarantined items
- *      are excluded from injection but MUST stay visible in X-ray with the
- *      reason (rule 34 — exclusion must never look like "no result").
- *
- * This module is deliberately framework-free: it takes already-collected
- * signals and config weights, returns a score. The signal ADAPTERS (reading
- * frontmatter / counters / review queues) live in `trust-score-stage.ts` so
- * this file stays pure and trivially property-testable.
- */
 
-/**
- * Per-component weights. Defined canonically in `types.ts` (the PluginConfig
- * home) and re-exported here so callers of the pure scorer don't need a second
- * import path. Every field is optional and defaults to
- * `DEFAULT_TRUST_WEIGHTS`; weights are sum-normalized at score time, so only
- * their relative magnitudes matter (rule 51: invalid weight rejected at config
- * parse, here we only defend against runtime corruption).
- */
 export type { TrustWeights } from "./types.js";
 import type { TrustWeights } from "./types.js";
 
@@ -117,14 +73,12 @@ export interface TrustScoreResult {
   neutral: boolean;
 }
 
-/** Band thresholds on the blended score. */
 export const TRUST_BAND_THRESHOLDS = {
   high: 0.7,
   medium: 0.45,
   low: 0.2,
 } as const;
 
-/** Neutral prior: the score an empty-signal memory receives. */
 export const NEUTRAL_TRUST_SCORE = 0.5;
 
 /**
@@ -139,12 +93,6 @@ function sanitizeWeight(value: number | undefined): number | undefined {
   return value;
 }
 
-/**
- * Merge caller weights over the defaults, dropping corrupt entries. Exposed for
- * config parse so an invalid weight is rejected once at the boundary (rule 51
- * spirit) — but the scorer defends again here so a hand-built bench fixture
- * cannot poison the math.
- */
 export function resolveTrustWeights(
   override: Readonly<TrustWeights> | undefined,
 ): Required<TrustWeights> {
@@ -165,13 +113,6 @@ function clampUnit(value: number): number {
   return value;
 }
 
-/**
- * Coerce an already-`[0,1]` signal (domain calibration, etc.) for the scorer.
- * Returns `undefined` when absent or corrupt so the component is DROPPED — a
- * single corrupt signal must not be read as damning evidence nor as a neutral
- * contribution that masquerades as "we measured this". Mirrors the
- * `classifyCounter` precedent from `memory-worth.ts`.
- */
 function unitValue(value: number | undefined): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
@@ -184,9 +125,6 @@ function provenanceValue(tag: TrustSignals["provenance"]): number | undefined {
   if (tag === undefined) return undefined;
   if (tag === "verified") return 1;
   if (tag === "unverified") return 0.5;
-  // "none" is meaningful negative evidence (no surviving source span), not
-  // neutral. It pulls toward 0 but gently so a single unprovenanced fact is
-  // not damned on its own.
   if (tag === "none") return 0.25;
   return undefined;
 }
@@ -195,16 +133,8 @@ function provenanceValue(tag: TrustSignals["provenance"]): number | undefined {
 function faithfulnessValue(verdict: TrustSignals["faithfulness"]): number | undefined {
   if (verdict === undefined) return undefined;
   if (verdict === "entailed") return 1;
-  // "unchecked" means the gate ran but could not verify — it carries NO signal.
-  // Return undefined (absent) so a memory whose ONLY signal is unchecked
-  // faithfulness scores truly neutral, not "active 0.5". This stops the
-  // epistemic hedge from spuriously firing on unverifiable memories (review
-  // Oqg_0: unchecked-as-absent for hedging) and stops the component from
-  // masquerading as measured evidence.
   if (verdict === "unchecked") return undefined;
   if (verdict === "unsupported") return 0.35;
-  // "contradicted" is a hard negative — it also forces quarantine (see below),
-  // but as a component it contributes 0 so the blended score sinks.
   if (verdict === "contradicted") return 0;
   return undefined;
 }
@@ -228,7 +158,6 @@ function feedbackValue(fb: TrustSignals["feedback"]): number | undefined {
   const down =
     typeof fb.down === "number" && Number.isFinite(fb.down) && fb.down >= 0 ? fb.down : 0;
   if (up === 0 && down === 0) return undefined;
-  // Laplace: (up+1)/(up+down+2). Clamped defensively.
   return clampUnit((up + 1) / (up + down + 2));
 }
 
@@ -248,7 +177,6 @@ function recencyValue(signals: TrustSignals): number | undefined {
     return undefined;
   const halfLife = signals.recencyHalfLifeDays;
   if (typeof halfLife !== "number" || !Number.isFinite(halfLife) || halfLife <= 0) return undefined;
-  // 2^(-age/halfLife): age 0 → 1, age=halfLife → 0.5, age≫halfLife → ~0.
   return clampUnit(Math.pow(2, -signals.ageDays / halfLife));
 }
 
@@ -274,8 +202,6 @@ export function computeTrustScore(
 ): TrustScoreResult {
   const resolved = resolveTrustWeights(weights);
 
-  // Build the (component → value) map, skipping absent/corrupt signals.
-  // Each value is already clamped to [0,1] by its mapper.
   const candidates: Array<{ key: keyof TrustWeights; value: number }> = [];
   const push = (key: keyof TrustWeights, value: number | undefined) => {
     if (value === undefined) return;
@@ -291,7 +217,6 @@ export function computeTrustScore(
   push("feedback", feedbackValue(signals.feedback));
   push("recency", recencyValue(signals));
 
-  // No usable signal → neutral prior, multiplier exactly 1.0.
   if (candidates.length === 0) {
     return {
       score: NEUTRAL_TRUST_SCORE,
@@ -301,14 +226,7 @@ export function computeTrustScore(
     };
   }
 
-  // Sum-normalize the active weights so absent components redistribute their
-  // weight to the present ones (a memory with only memory-worth data is scored
-  // purely on memory-worth, not half-scored because other signals are absent).
   const activeWeightSum = candidates.reduce((acc, c) => acc + resolved[c.key], 0);
-  // When every present signal's weight is 0 (operator explicitly disabled
-  // the only components the memory has), fall back to the neutral prior
-  // rather than damning the memory to score 0. A disabled signal is not a
-  // negative signal — it carries no information (review P2: zero-weight).
   if (activeWeightSum <= 0) {
     return {
       score: NEUTRAL_TRUST_SCORE,
@@ -327,21 +245,13 @@ export function computeTrustScore(
     components[c.key] = { value: c.value, weight: w };
   }
 
-  // Clamp the blend: floating-point noise can drift a hair outside [0,1].
   const score = clampUnit(blended);
 
-  // Hard negatives are quarantined regardless of the blended score, so a
-  // corroborated-but-contradicted fact is still excluded from injection.
   const band = bandForScore(score, isHardNegative(signals));
 
   return { score, band, components, neutral: false };
 }
 
-/**
- * Resolve the band from the blended score, accounting for hard-negative
- * quarantine. Extracted so the thresholds live in ONE place (X-ray, injection,
- * and tests all agree on the mapping).
- */
 export function bandForScore(score: number, hardNegative: boolean): TrustBand {
   if (hardNegative) return "quarantine";
   const s = clampUnit(score);
@@ -368,17 +278,14 @@ export function trustMultiplier(
 ): number {
   const min = typeof minMultiplier === "number" && Number.isFinite(minMultiplier) ? minMultiplier : 0.5;
   const max = typeof maxMultiplier === "number" && Number.isFinite(maxMultiplier) ? maxMultiplier : 1.25;
-  // Defend against an inverted contract (min > max): pick the tighter bound.
   const lo = Math.min(min, max);
   const hi = Math.max(min, max);
   const s = clampUnit(score);
   if (s === NEUTRAL_TRUST_SCORE) return 1;
   if (s < NEUTRAL_TRUST_SCORE) {
-    // Map [0, 0.5) → [lo, 1). score 0 → lo, score →0.5 → 1.
     const t = s / NEUTRAL_TRUST_SCORE; // [0,1)
     return lo + (1 - lo) * t;
   }
-  // Map (0.5, 1] → (1, hi]. score 0.5 → 1, score 1 → hi.
   const t = (s - NEUTRAL_TRUST_SCORE) / (1 - NEUTRAL_TRUST_SCORE); // (0,1]
   return 1 + (hi - 1) * t;
 }
@@ -426,8 +333,6 @@ function describeWeakness(components: Record<string, TrustScoreComponent>): stri
   const rec = components.recency;
   if (rec && rec.value <= 0.3) parts.push("stale");
   if (parts.length === 0) {
-    // No single component is weak but the blend is below high — name the
-    // weakest one explicitly so the hedge is never vacuous.
     let weakest: { key: string; value: number } | null = null;
     for (const [key, comp] of Object.entries(components)) {
       if (!weakest || comp.value < weakest.value) weakest = { key, value: comp.value };

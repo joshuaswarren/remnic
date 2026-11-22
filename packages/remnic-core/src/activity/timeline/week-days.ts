@@ -7,7 +7,6 @@ export interface WeekDaysInput {
   weekStartIso: string;
 }
 
-/** Parse `weekStartIso` as YYYY-MM-DD. Return `[start, start+6]`. */
 export function listWeekDates({ weekStartIso }: WeekDaysInput): string[] {
   if (!isValidActivityDate(weekStartIso)) {
     throw new RangeError(`Invalid week start "${weekStartIso}"; expected YYYY-MM-DD.`);

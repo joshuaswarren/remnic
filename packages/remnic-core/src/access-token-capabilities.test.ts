@@ -1,17 +1,3 @@
-/**
- * Comprehensive tests for per-token capabilities (issue #1837).
- *
- * Locks in EVERY semantic of the capability system:
- *   - legacy token (absent record) ⇒ full access
- *   - present ops allow-list ⇒ default-deny, listed-only
- *   - explicitly empty ops ⇒ deny all (fail-closed)
- *   - namespaces allow-list ⇒ in-scope only
- *   - monitor-scoped token ⇒ monitoring ops allowed, content + admin denied
- *   - malformed input at mint ⇒ rejected
- *   - new token without flags ⇒ explicit versioned unrestricted record
- *   - capabilities survive persist + reload round-trip
- *   - boundary run() enforces for every registered op (no bypass)
- */
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -48,15 +34,11 @@ import {
 } from "./access-token-capabilities.js";
 import { buildTokenEntry, generateToken, loadTokenStore } from "./tokens.js";
 
-// Importing access-operations registers the boundary operations as a side
-// effect — we enumerate them in the critical-coverage test below.
 import "./access-operations.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
 import { parseConfig } from "./config.js";
 import type { StorageManager } from "./storage.js";
 
-// ---------------------------------------------------------------------------
-// Test fixtures
 // ---------------------------------------------------------------------------
 
 function mockService(): EngramAccessService {
@@ -73,7 +55,6 @@ async function makeTempTokenPath(): Promise<{ dir: string; tokensPath: string }>
 }
 
 // ===========================================================================
-// 1. Legacy token (absent capabilities record) ⇒ full access
 // ===========================================================================
 
 test("legacy token: absent record is unrestricted on every axis", () => {
@@ -98,7 +79,6 @@ test("legacy token: null record is also treated as unrestricted", () => {
 });
 
 // ===========================================================================
-// 2. Present ops allow-list ⇒ listed op permitted, unlisted rejected
 // ===========================================================================
 
 test("ops allow-list: validateCapabilitiesForMint accepts valid ops", () => {
@@ -128,7 +108,6 @@ test("ops allow-list: isCapabilityRestricted is true", () => {
 });
 
 // ===========================================================================
-// 3. Explicitly EMPTY ops array ⇒ deny ALL ops (fail-closed)
 // ===========================================================================
 
 test("empty ops: validateCapabilitiesForMint preserves empty array", () => {
@@ -139,7 +118,6 @@ test("empty ops: validateCapabilitiesForMint preserves empty array", () => {
 
 test("empty ops: every op is denied (fail-closed, NOT unrestricted)", () => {
   const caps = validateCapabilitiesForMint({ ops: [] }, OPERATION_NAMES);
-  // Sample across the catalog — every one must be denied.
   for (const opName of ["recall", "memory_store", "memory_get", "wearables_status"]) {
     assert.equal(capabilityAllowsOp(caps, opName), false, `${opName} must be denied`);
   }
@@ -147,7 +125,6 @@ test("empty ops: every op is denied (fail-closed, NOT unrestricted)", () => {
 });
 
 // ===========================================================================
-// 4. Namespaces allow-list ⇒ in-scope permitted, out-of-scope rejected
 // ===========================================================================
 
 test("namespaces allow-list: validateCapabilitiesForMint accepts valid namespaces", () => {
@@ -185,10 +162,6 @@ test("empty namespaces: deny all (fail-closed)", () => {
 });
 
 // -------------------------------------------------------------------------
-// 4b. Effective-namespace chokepoint (issue #1850) — the SINGLE function the
-//     HTTP query/body routes, MCP dispatch, and id-loaded contradiction routes
-//     all route through. Models undefined→default mapping, fail-closed, and
-//     no-op-for-unrestricted.
 // -------------------------------------------------------------------------
 
 test("resolveEffectiveNamespace: present value wins; empty/undefined → default", () => {
@@ -200,13 +173,10 @@ test("resolveEffectiveNamespace: present value wins; empty/undefined → default
 
 test("enforceNamespaceAllowList: no-op for unrestricted tokens (absent + explicit-unrestricted)", () => {
   const scoped = validateCapabilitiesForMint({ namespaces: ["default"] }, OPERATION_NAMES);
-  // Legacy token (absent capabilities record) — unrestricted.
   assert.doesNotThrow(() => enforceNamespaceAllowList(undefined, "anything", "default"));
   assert.doesNotThrow(() => enforceNamespaceAllowList(null, undefined, "default"));
-  // Explicit-unrestricted record ({version:1}, no namespaces axis).
   const explicitUnrestricted = validateCapabilitiesForMint(undefined, OPERATION_NAMES);
   assert.doesNotThrow(() => enforceNamespaceAllowList(explicitUnrestricted, "anything", "default"));
-  // Sanity: the scoped token IS restricted (control for the tests below).
   assert.equal(isCapabilityRestricted(scoped), true);
 });
 
@@ -224,10 +194,6 @@ test("enforceNamespaceAllowList: scoped token — explicit unlisted namespace re
 });
 
 test("enforceNamespaceAllowList: undefined maps to default — allow-list INCLUDING default passes (legacy pair fix)", () => {
-  // The round-4 bug: a legacy pair carries namespace:undefined, which
-  // downstream storage maps to the server default. A scoped token whose
-  // allow-list INCLUDES the default must be permitted; the prior
-  // assertNamespaceAllowed(caps, undefined) wrongly denied it.
   const caps = validateCapabilitiesForMint({ namespaces: ["default"] }, OPERATION_NAMES);
   assert.doesNotThrow(() => enforceNamespaceAllowList(caps, undefined, "default"));
 });
@@ -241,9 +207,6 @@ test("enforceNamespaceAllowList: undefined maps to default — allow-list NOT in
 });
 
 test("enforceNamespaceAllowList: absent server default + scoped token → fail closed", () => {
-  // No request namespace AND no configured default ⇒ an undefined effective
-  // namespace cannot satisfy any allow-list; fail closed rather than let an
-  // unconfigured server silently admit the default tenant.
   const caps = validateCapabilitiesForMint({ namespaces: ["default"] }, OPERATION_NAMES);
   assert.throws(
     () => enforceNamespaceAllowList(caps, undefined, undefined),
@@ -252,7 +215,6 @@ test("enforceNamespaceAllowList: absent server default + scoped token → fail c
 });
 
 // ===========================================================================
-// 5. Monitor-scoped token — monitoring ops allowed, content + admin denied
 // ===========================================================================
 
 const MONITOR_OPS = ["maintenance_status", "quality_status", "procedural_stats", "recall_timings"];
@@ -262,7 +224,6 @@ test("monitor-scoped token: only monitoring ops are permitted", () => {
   for (const op of MONITOR_OPS) {
     assert.equal(capabilityAllowsOp(caps, op), true, `${op} must be allowed`);
   }
-  // Memory-content ops must be denied.
   for (const denied of ["memory_store", "memory_get", "memory_search", "recall", "observe"]) {
     assert.equal(capabilityAllowsOp(caps, denied), false, `${denied} must be denied`);
   }
@@ -270,8 +231,6 @@ test("monitor-scoped token: only monitoring ops are permitted", () => {
 
 test("monitor-scoped token: isCapabilityRestricted → true (operator gate would reject)", () => {
   const caps = validateCapabilitiesForMint({ ops: MONITOR_OPS }, OPERATION_NAMES);
-  // requireOperatorToken() checks isCapabilityRestricted — a scoped token
-  // must be flagged so operator/admin routes deny it.
   assert.equal(isCapabilityRestricted(caps), true);
 });
 
@@ -282,7 +241,6 @@ test("monitor-scoped token: content op throws EngramAccessForbiddenError", () =>
 });
 
 // ===========================================================================
-// 6. Malformed input at mint ⇒ rejected (validateCapabilitiesForMint throws)
 // ===========================================================================
 
 test("malformed mint: unknown op name is rejected", () => {
@@ -337,7 +295,6 @@ test("isValidNamespaceValue: accepts simple identifiers, rejects traversal/separ
 });
 
 // ===========================================================================
-// 7. New token without flags ⇒ explicit versioned unrestricted record
 // ===========================================================================
 
 test("validateCapabilitiesForMint(undefined) yields explicit {version:1} (not omitted)", () => {
@@ -361,8 +318,6 @@ test("buildTokenEntry without capabilities records explicit {version:1}", () => 
   assert.equal(entry.capabilities?.ops, undefined);
   assert.equal(entry.capabilities?.namespaces, undefined);
   assert.equal(isCapabilityRestricted(entry.capabilities), false);
-  // Distinguishable from legacy: legacy has capabilities === undefined,
-  // new-unrestricted has capabilities === {version:1}.
   assert.notEqual(entry.capabilities, undefined);
 });
 
@@ -374,7 +329,6 @@ test("explicit-unrestricted token still has full access", () => {
 });
 
 // ===========================================================================
-// 8. Capabilities survive token-store PERSIST + RELOAD round-trip
 // ===========================================================================
 
 test("persist + reload: scoped capabilities survive round-trip", async () => {
@@ -449,7 +403,6 @@ test("persist + reload: deny-all (empty ops) survives round-trip", async () => {
 });
 
 // ===========================================================================
-// 9. normalizeCapabilities (load-time normalization)
 // ===========================================================================
 
 test("normalizeCapabilities: absent ⇒ undefined (legacy)", () => {
@@ -477,18 +430,11 @@ test("normalizeCapabilities: rejects non-object", () => {
   assert.throws(() => normalizeCapabilities([1]), /must be an object/i);
 });
 // ===========================================================================
-// 9b. Mint/load version symmetry (issue #1837 r11) — validateCapabilitiesForMint
-//     and normalizeCapabilities MUST treat the version marker identically:
-//     an absent/undefined version coerces to the current default (1) in both,
-//     and an explicitly-wrong version is rejected by both. The prior asymmetry
-//     let {version: undefined} pass mint (coerced to {version:1}) yet THROW on
-//     load — a record that mint-validated had to also load-normalize.
 // ===========================================================================
 
 test("version symmetry: undefined version coerces to 1 in BOTH mint and load", () => {
   const minted = validateCapabilitiesForMint({ version: undefined, ops: ["recall"] }, OPERATION_NAMES);
   assert.deepEqual(minted, { version: TOKEN_CAPABILITIES_VERSION, ops: ["recall"] });
-  // The minted record must load-normalize without throwing (the original bug).
   const loaded = normalizeCapabilities(minted);
   assert.deepEqual(loaded, { version: TOKEN_CAPABILITIES_VERSION, ops: ["recall"] });
 });
@@ -496,14 +442,11 @@ test("version symmetry: undefined version coerces to 1 in BOTH mint and load", (
 test("version symmetry: absent version key coerces to 1 in BOTH mint and load", () => {
   const minted = validateCapabilitiesForMint({ ops: ["recall"] }, OPERATION_NAMES);
   assert.deepEqual(minted, { version: TOKEN_CAPABILITIES_VERSION, ops: ["recall"] });
-  // A present record with NO version key loads as version 1 (no throw).
   const loaded = normalizeCapabilities({ ops: ["recall"] });
   assert.deepEqual(loaded, { version: TOKEN_CAPABILITIES_VERSION, ops: ["recall"] });
 });
 
 test("version symmetry: undefined-version record round-trips mint → load", () => {
-  // The mint output is what is persisted; feeding it back through the load
-  // normalizer must reproduce it exactly (mint ⇄ load equivalence).
   const minted = validateCapabilitiesForMint(
     { version: undefined, namespaces: ["default"] },
     OPERATION_NAMES,
@@ -536,20 +479,10 @@ test("version symmetry: version 1 is accepted identically by mint AND load", () 
 });
 
 // ===========================================================================
-// 10. CRITICAL COVERAGE — boundary run() enforces for EVERY registered op
-//     These tests run FIRST in section 10, before any test that resets the
-//     registry, so the ops registered by the module-level import are present.
 // ===========================================================================
 
 test("CRITICAL: every registered op blocks handler under deny-all ALS (no bypass)", async () => {
-  // Enumerate every operation registered through the boundary. Under a
-  // deny-all capability ({version:1, ops:[]}), the handler must NEVER execute
-  // for ANY op — proving no op bypasses the capability chokepoint.
   //
-  // Ops with permissive schemas (accept {}) pass zod and hit the capability
-  // gate → EngramAccessForbiddenError. Ops with strict schemas reject {} at
-  // zod → EngramAccessInputError. In BOTH cases the handler body is not
-  // reached. If ANY op's handler ran, that would be a security hole.
   const denyAll: TokenCapabilities = { version: 1, ops: [] };
   const registered = listRegisteredOperations();
   assert.ok(registered.length > 10, `expected many registered ops; got ${registered.length}`);
@@ -565,13 +498,11 @@ test("CRITICAL: every registered op blocks handler under deny-all ALS (no bypass
     await tokenCapabilityStore.run(denyAll, async () => {
       try {
         await op?.run({}, ctx);
-        // If we reach here, the handler executed under deny-all — SECURITY HOLE.
         assert.fail(`SECURITY HOLE: op "${opName}" handler ran under deny-all capabilities`);
       } catch (err) {
         if (err instanceof EngramAccessForbiddenError) {
           reachedGate.push(opName);
         } else if (err instanceof EngramAccessInputError) {
-          // Schema rejected {} before the gate — still safe, handler didn't run.
           rejectedAtInput.push(opName);
         } else {
           assert.fail(
@@ -582,9 +513,6 @@ test("CRITICAL: every registered op blocks handler under deny-all ALS (no bypass
     });
   }
 
-  // At least one op must have a permissive-enough schema to reach the gate,
-  // proving the capability check actually fires (not just that all ops fail
-  // at input validation).
   assert.ok(
     reachedGate.length > 0,
     `expected at least one op to reach the capability gate under deny-all; reachedGate=[${reachedGate.join(", ")}] rejectedAtInput=[${rejectedAtInput.join(", ")}]`
@@ -592,9 +520,6 @@ test("CRITICAL: every registered op blocks handler under deny-all ALS (no bypass
 });
 
 test("CRITICAL: ops that reach the gate are individually denied under scoped ALS", async () => {
-  // For ops with permissive schemas (they accept {}), verify that under a
-  // scoped-to-different-ops ALS, they throw EngramAccessForbiddenError —
-  // proving each op is individually gated by its own name.
   const scopedAway: TokenCapabilities = {
     version: 1,
     ops: ["nonexistent_placeholder_op"],
@@ -623,13 +548,6 @@ test("CRITICAL: ops that reach the gate are individually denied under scoped ALS
 });
 
 test("CRITICAL: review_resolve enforces token namespace allow-list on the loaded pair (issue #1850 round 9)", async () => {
-  // Direct boundary-handler test (the "batch-ops" path). review_resolve selects
-  // its target BY pairId, so the pair's namespace comes from the record — NOT
-  // a request param. A namespace-scoped bearer must NOT mutate a pair in a
-  // namespace outside its allow-list. The handler must load the pair, assert
-  // its intrinsic namespace via enforceNamespaceAllowList, and fail closed
-  // BEFORE executeResolution. Runs before the registry reset below so the
-  // module-registered op is present.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-batch-review-resolve-scoped-"));
   const allowedPair = writePair(dir, {
     namespace: "ns_a",
@@ -663,8 +581,6 @@ test("CRITICAL: review_resolve enforces token namespace allow-list on the loaded
   const op = getOperation("review_resolve");
   if (!op) { assert.fail("review_resolve must be registered"); }
   try {
-    // ── scoped to ns_a (ops axis absent ⇒ op-gate no-op): denied-namespace pair
-    //    rejects EngramAccessForbiddenError BEFORE mutation ──
     await assert.rejects(
       () => tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, () =>
         op.run({ pairId: deniedPair.pairId, verb: "both-valid" }, ctx)),
@@ -677,7 +593,6 @@ test("CRITICAL: review_resolve enforces token namespace allow-list on the loaded
       "the denied pair must remain unresolved (no mutation leak)",
     );
 
-    // ── scoped to ns_a: allowed-namespace pair resolves and is mutated ──
     await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, () =>
       op.run({ pairId: allowedPair.pairId, verb: "both-valid" }, ctx));
     assert.equal(
@@ -686,7 +601,6 @@ test("CRITICAL: review_resolve enforces token namespace allow-list on the loaded
       "the allowed pair is marked resolved",
     );
 
-    // ── unrestricted (namespaces axis absent): the denied-namespace pair is reachable ──
     await tokenCapabilityStore.run({ version: 1 }, () =>
       op.run({ pairId: deniedPair.pairId, verb: "both-valid" }, ctx));
     assert.equal(
@@ -700,8 +614,6 @@ test("CRITICAL: review_resolve enforces token namespace allow-list on the loaded
 });
 
 // -------------------------------------------------------------------------
-// Structural enforcement tests — these reset the registry and register
-// custom test ops, so they run AFTER the critical-coverage enumeration.
 // -------------------------------------------------------------------------
 
 test("defineOperation run(): under scoped ALS, listed op passes, unlisted rejected", async () => {
@@ -719,18 +631,15 @@ test("defineOperation run(): under scoped ALS, listed op passes, unlisted reject
 
   const ctx = mockCtx();
 
-  // Under a scoped ALS that DOES list the op → handler runs.
   const allowsOp: TokenCapabilities = { version: 1, ops: ["memory_get"] };
   const resultAllowed = await tokenCapabilityStore.run(allowsOp, () => op.run({}, ctx));
   assert.deepEqual(resultAllowed, { ok: true });
   assert.equal(handlerCalls, 1);
 
-  // Under a scoped ALS that does NOT list the op → EngramAccessForbiddenError.
   const deniesOp: TokenCapabilities = { version: 1, ops: ["recall"] };
   await assert.rejects(() => tokenCapabilityStore.run(deniesOp, () => op.run({}, ctx)), EngramAccessForbiddenError);
   assert.equal(handlerCalls, 1, "handler must not run for denied op");
 
-  // Under empty-ops (deny-all) ALS → EngramAccessForbiddenError.
   const denyAll: TokenCapabilities = { version: 1, ops: [] };
   await assert.rejects(() => tokenCapabilityStore.run(denyAll, () => op.run({}, ctx)), EngramAccessForbiddenError);
   assert.equal(handlerCalls, 1, "handler must not run under deny-all");
@@ -746,29 +655,21 @@ test("defineOperation run(): legacy/unrestricted ALS → handler runs", async ()
   });
   const ctx = mockCtx();
 
-  // No ALS set (undefined store) → unrestricted → handler runs.
   const result = await op.run({}, ctx);
   assert.deepEqual(result, { ok: true });
 
-  // Explicit-unrestricted capabilities ({version:1}) → handler runs.
   const unrestricted: TokenCapabilities = { version: 1 };
   const result2 = await tokenCapabilityStore.run(unrestricted, () => op.run({}, ctx));
   assert.deepEqual(result2, { ok: true });
 });
 
 test("defineOperation run(): namespaces enforcement via assertNamespaceAllowed pattern", async () => {
-  // The boundary run() checks ops via the ALS. Namespace enforcement is
-  // additionally handled in the HTTP layer's resolveNamespace(). Here we
-  // verify the capability primitives the handler layer relies on.
   const scopedNs = validateCapabilitiesForMint({ namespaces: ["default"] }, OPERATION_NAMES);
   assert.doesNotThrow(() => assertNamespaceAllowed(scopedNs, "default"));
   assert.throws(() => assertNamespaceAllowed(scopedNs, "other"), EngramAccessForbiddenError);
 });
 
 test("CRITICAL: boundary enforcement reads from tokenCapabilityStore ALS", async () => {
-  // Prove the enforcement check reads the ALS value, not a static/closure
-  // variable. The same op must be denied under one ALS and allowed under
-  // another within the same process.
   __resetRegistryForTest();
   const op = defineOperation({
     name: "memory_get",
@@ -778,39 +679,25 @@ test("CRITICAL: boundary enforcement reads from tokenCapabilityStore ALS", async
   });
   const ctx = mockCtx();
 
-  // Denied under scoped ALS.
   await assert.rejects(
     () => tokenCapabilityStore.run({ version: 1, ops: ["recall"] }, () => op.run({}, ctx)),
     EngramAccessForbiddenError
   );
 
-  // Allowed under different scoped ALS that includes this op.
   const result = await tokenCapabilityStore.run({ version: 1, ops: ["memory_get"] }, () => op.run({}, ctx));
   assert.deepEqual(result, { ran: true });
 
-  // Allowed under no ALS (undefined).
   assert.deepEqual(await op.run({}, ctx), { ran: true });
 });
 
 // ===========================================================================
-// assertFleetWideOperationAllowed — fleet-wide maintenance guard (issue #1850 round 10).
-// Distinct class from the id-addressed routes (round 9) and param-namespace
-// ops (round 4): maintenance ops that run ACROSS ALL namespaces carry no
-// `namespace` arg, so the tools/call effective-namespace gate never fires. A
-// namespace-scoped token must not trigger cross-namespace maintenance.
 // ===========================================================================
 
 test("assertFleetWideOperationAllowed: no-op for unrestricted / legacy tokens", () => {
-  // Legacy (absent record) — unrestricted.
   assert.doesNotThrow(() => assertFleetWideOperationAllowed(undefined));
   assert.doesNotThrow(() => assertFleetWideOperationAllowed(null));
-  // Explicit-unrestricted (version present, no namespaces axis).
   const explicitUnrestricted = validateCapabilitiesForMint(undefined, OPERATION_NAMES);
   assert.doesNotThrow(() => assertFleetWideOperationAllowed(explicitUnrestricted));
-  // Op-scoped but namespace-UNrestricted ⇒ still allowed: the fleet-wide
-  // concern is the namespaces axis; the ops axis is enforced separately by
-  // assertOperationAllowed. A token with only an ops allow-list may run the
-  // op (it cannot exceed its op scope, and has no namespace restriction).
   const opScoped = validateCapabilitiesForMint({ ops: ["graph_edge_decay_run"] }, OPERATION_NAMES);
   assert.doesNotThrow(() => assertFleetWideOperationAllowed(opScoped));
 });
@@ -824,10 +711,6 @@ test("assertFleetWideOperationAllowed: namespace-SCOPED token is denied (fail cl
 });
 
 test("assertFleetWideOperationAllowed: scoped token whose allow-list INCLUDES the default is STILL denied (fleet-wide ≠ default)", () => {
-  // A fleet-wide op affects EVERY namespace — it is not equivalent to an op
-  // scoped to the default namespace. enforceNamespaceAllowList maps undefined
-  // → default and would wrongly PASS such a token; the fleet-wide guard must
-  // NOT (that is the whole point of a dedicated guard for this class).
   const scopedWithDefault = validateCapabilitiesForMint({ namespaces: ["default"] }, OPERATION_NAMES);
   assert.throws(
     () => assertFleetWideOperationAllowed(scopedWithDefault),

@@ -1,9 +1,3 @@
-/**
- * Noncontent stage timing for slow/failed observe requests (25s incident).
- * A failed request must record which stage blocked it (phase attribution) in
- * the `access-observe-failed` log line without leaking message content,
- * session keys, namespaces or principals, and must still throw unchanged.
- */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,9 +17,7 @@ interface OrchestratorInternals {
 }
 
 function makeService(memoryDir: string): EngramAccessService {
-  // SAFETY: the probe drives only the observe scope path on this orchestrator.
   const orch = Object.create(Orchestrator.prototype) as Orchestrator;
-  // SAFETY: the probe sets exactly these two internal fields.
   const internals: OrchestratorInternals = {
     config: parseConfig({
       namespacesEnabled: true,
@@ -59,7 +51,6 @@ test("a rejected observe logs phase attribution with stage durations and still t
   initLogger(backend, false, { timestamps: false });
   try {
     const service = makeService(dir);
-    // SAFETY: the literal sets the request fields the scope path reads.
     const rejectedRequest = {
       sessionKey: "sess-timing-1",
       authenticatedPrincipal: "alice",
@@ -77,11 +68,9 @@ test("a rejected observe logs phase attribution with stage durations and still t
     const failed = lines.filter((l) => l.includes("access-observe-failed"));
     assert.equal(failed.length, 1, `expected exactly one access-observe-failed line, got: ${failed}`);
     const line = failed[0] ?? "";
-    // Phase attribution: the blocked stage (scope) plus total and message count.
     assert.match(line, /totalMs=\d+/);
     assert.match(line, /messages=2/);
     assert.match(line, /scopeMs=\d+/);
-    // Noncontent: no message bodies, session key, namespace or principal.
     assert.ok(!line.includes("secret"), `leaked content in: ${line}`);
     assert.ok(!line.includes("sess-timing-1"), `leaked session key in: ${line}`);
     assert.ok(!line.includes("victim-secret"), `leaked namespace in: ${line}`);
@@ -92,8 +81,6 @@ test("a rejected observe logs phase attribution with stage durations and still t
   }
 });
 
-// Plain-object orchestrator for full observe success/failure paths (mirrors
-// the access-service-observe-lcm-parity harness).
 function makeProbe(options: {
   enqueueObserveMessages: (sessionKey: string, messages: unknown[]) => Promise<void> | void;
 }) {
@@ -117,8 +104,6 @@ function makeProbe(options: {
   });
   const contexts = new Map<string, CodingContext>();
   const extractionCalls: string[][] = [];
-  // SAFETY: the probe exercises the observe surface; the rest of Orchestrator
-  // is unused on this path.
   const orch = {
     config,
     getCodingContextForSession: (sk: string | undefined) => (sk ? contexts.get(sk) : null) ?? null,
@@ -155,8 +140,6 @@ test("a slow successful observe logs access-observe-slow with per-stage duration
     },
   };
   initLogger(backend, false, { timestamps: false });
-  // Deterministic monotonic clock: every read advances 6s, so each timed
-  // stage records exactly 6000ms and the total exceeds the slow threshold.
   let now = 0;
   const realPerformanceNow = performance.now;
   performance.now = () => (now += 6000);
@@ -165,7 +148,6 @@ test("a slow successful observe logs access-observe-slow with per-stage duration
       enqueueObserveMessages: (_sessionKey) => {},
     });
     const service = new EngramAccessService(orch);
-    // SAFETY: the literal sets the request fields the observe path reads.
     const slowRequest = {
       sessionKey: "alice:sess-slow",
       authenticatedPrincipal: "alice",
@@ -184,7 +166,6 @@ test("a slow successful observe logs access-observe-slow with per-stage duration
     const totalMs = Number(/totalMs=(\d+)/.exec(line)?.[1]);
     assert.ok(totalMs >= 10_000, `slow line must exceed threshold, got totalMs=${totalMs}`);
     assert.match(line, /messages=2/);
-    // Real stages are attributed, including the durable-buffer terminal stage.
     assert.match(line, /scopeMs=6000/);
     assert.match(line, /durable-bufferMs=6000/);
     assert.ok(!line.includes("sess-slow") && !line.includes("alice") && !line.includes("body"));
@@ -234,7 +215,6 @@ test("a failed awaited LCM archival records the lcm-accept phase and still throw
     const line = failed[0] ?? "";
     assert.match(line, /totalMs=\d+/);
     assert.match(line, /messages=2/);
-    // The rejected LCM accept is attributed with its duration, alongside earlier stages.
     assert.match(line, /scopeMs=\d+/);
     assert.match(line, /lcm-acceptMs=\d+/);
     assert.ok(!line.includes("sess-lcmfail"), `leaked session key in: ${line}`);

@@ -1,13 +1,3 @@
-/**
- * Disclosure-step planning for recall navigation (issue #1956).
- *
- * The ladder itself is NOT redefined here: `types.ts` designates
- * `RECALL_DISCLOSURE_LEVELS` the single source of truth and forbids
- * hard-coding disclosure strings elsewhere, so a second copy could drift out
- * of agreement with recall validation and rendering. This module only adds
- * the rule that an expansion must go strictly deeper, so a caller cannot
- * re-pay recall budget for output it already holds. Pure — no I/O.
- */
 
 import {
   isRecallDisclosure,

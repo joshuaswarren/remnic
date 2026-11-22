@@ -1,9 +1,3 @@
-/**
- * Resolver decision tree for the MECE taxonomy.
- *
- * Given extracted content and its MemoryCategory, determines which
- * taxonomy category the knowledge should be filed under.
- */
 
 import type { MemoryCategory } from "../types.js";
 import type { ResolverDecision, Taxonomy, TaxonomyCategory } from "./types.js";
@@ -33,13 +27,11 @@ export function resolveCategory(
 ): ResolverDecision {
   const contentTokens = tokenizeKeywordText(content);
 
-  // Step 1: find matching categories
   const matches = taxonomy.categories.filter((cat) =>
     cat.memoryCategories.includes(memoryCategory),
   );
 
   if (matches.length === 0) {
-    // No taxonomy category accepts this MemoryCategory — fall back
     const fallback =
       taxonomy.categories.find((c) => c.id === DEFAULT_CATEGORY_ID) ??
       taxonomy.categories[0];
@@ -81,13 +73,11 @@ export function resolveCategory(
     };
   }
 
-  // Multiple matches — use filing rule keyword heuristics + priority
   const scored = matches.map((cat) => ({
     cat,
     keywordScore: computeKeywordScoreForTokens(contentTokens, cat),
   }));
 
-  // Sort by keyword score descending, then priority ascending (lower wins)
   scored.sort((a, b) => {
     if (b.keywordScore !== a.keywordScore) return b.keywordScore - a.keywordScore;
     return a.cat.priority - b.cat.priority;
@@ -102,7 +92,6 @@ export function resolveCategory(
       };
   const runnerUp = scored[1];
 
-  // Confidence is higher when keyword match clearly differentiates
   const confidence =
     best.keywordScore > 0 && (!runnerUp || best.keywordScore > runnerUp.keywordScore)
       ? 0.9
@@ -128,10 +117,6 @@ export function resolveCategory(
   };
 }
 
-/**
- * Compute a simple keyword overlap score between content and
- * a category's filing rules + description.
- */
 function computeKeywordScoreForTokens(contentTokens: Set<string>, cat: TaxonomyCategory): number {
   let score = 0;
   const ruleText = [...cat.filingRules, cat.description]
@@ -149,9 +134,6 @@ function computeKeywordScoreForTokens(contentTokens: Set<string>, cat: TaxonomyC
 }
 
 function tokenizeKeywordText(value: string): Set<string> {
-  // CJK bigrams tokenize BOTH sides (content and filing rules), so a
-  // taxonomy written in a CJK language matches CJK content; Latin-only
-  // taxonomies see no change (issue #2192).
   const latin = (value.toLowerCase().match(/[a-z0-9]+/g) ?? [])
     .filter((word) => word.length >= 3 && !TAXONOMY_KEYWORD_STOPWORDS.has(word));
   return new Set([...latin, ...cjkBigrams(value)]);

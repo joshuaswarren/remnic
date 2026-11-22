@@ -311,8 +311,6 @@ async function listNamespaceStorageDirs(memoryDir: string, rootReal: string): Pr
     if (isErrnoCode(err, "ENOENT")) return [];
     throw err;
   }
-  // A symlinked namespaces directory can point outside the store. Reject the
-  // whole tree rather than following it.
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return [];
   const nsReal = await realpath(nsRoot);
   assertPathInsideRoot(rootReal, nsReal, nsRoot);
@@ -345,8 +343,6 @@ function namespaceFromDirName(dirName: string): string | null {
   if (dirName.startsWith("ns-")) {
     const decoded = namespaceIdentityFromToken(dirName);
     if (decoded === null) return null;
-    // `ns-default` is the empty identity. It is the migrated default store,
-    // not a foreign namespace.
     if (decoded.length === 0) return "default";
     return isSafeRouteNamespace(decoded) ? decoded : null;
   }
@@ -390,9 +386,6 @@ async function collectCorrectionDir(
   if (!names) return;
   for (const name of names) {
     if (!name.startsWith("correction-") || !name.endsWith(".md")) continue;
-    // A timestamped name outside this week is historical. Skip it before
-    // lstat or realpath so a large corrections directory stays inside the
-    // weekly budget.
     const filenameMs = correctionFilenameTimestampMs(name);
     if (filenameMs !== null && isoWeekId(new Date(filenameMs)) !== weekId) continue;
     const filePath = path.join(dir, name);
@@ -476,9 +469,6 @@ async function readCorrectionCandidate(
   const raw = readRawMemoryDocument(memory);
   if (!raw) return null;
   if (rawFrontmatterScalar(raw, "category") !== "correction") return null;
-  // Missing status is the writer default (`active`). Any other explicit
-  // status, including forgotten, stays out of compounding so a forget is
-  // not copied back into recall or promotion.
   const status = rawFrontmatterScalar(raw, "status");
   if (status && status !== "active") return null;
   const created = rawFrontmatterScalar(raw, "created");

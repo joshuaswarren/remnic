@@ -1,15 +1,3 @@
-/**
- * Coding-graph regression gate (issue #1557 step 3).
- *
- * Compares a benchmark report against a tracked baseline with a generous
- * tolerance. Hard-fails on gross regression — a real failing step, not a
- * warning (rule 50: no `|| true`). Tightening the baseline is a deliberate
- * PR act, mirroring `check-ratchets --update` (rule 50).
- *
- * The baseline is bench-owned (separate file from the structural ratchets
- * in scripts/ratchet-baseline.json). New metrics are additive: only keys
- * present in BOTH the report and the baseline are compared.
- */
 
 import type {
   CodingGraphBenchReport,
@@ -20,7 +8,6 @@ import type {
 } from "./types.js";
 import { DEFAULT_TOLERANCE_PERCENT } from "./types.js";
 
-// ---------------------------------------------------------------------------
 // Extract comparable metric values from a report.
 //
 // lowerIsBetter keys: time-based metrics (ms).
@@ -95,11 +82,6 @@ export function compareMachineFingerprints(
   if (report.arch !== baseline.arch) differing.push("arch");
   if (report.platform !== baseline.platform) differing.push("platform");
   if (nodeMajor(report) !== nodeMajor(baseline)) differing.push("nodeVersion(major)");
-  // cpuModel is nullable — null means "unknown / undetected", not "different".
-  // Only count a cpuModel difference when BOTH sides report a concrete model,
-  // so a null cpuModel does not spuriously skip the gate and hide a real
-  // regression on the same machine class (cursor Bugbot: 'Fingerprint skip
-  // omits cpuModel validation').
   if (
     report.cpuModel !== null &&
     baseline.cpuModel !== null &&
@@ -111,26 +93,12 @@ export function compareMachineFingerprints(
   return { differingFields: differing };
 }
 
-/**
- * Validate the load-bearing fields of a machine fingerprint. JSON-loaded
- * fingerprints bypass TS's nominal types, so a corrupt artifact may carry
- * `machine: {}` or `nodeVersion` as a non-string; compareMachineFingerprints
- * → nodeMajor then calls .replace on an invalid value and throws instead of
- * returning the intended corrupt-artifact failure. Returns the names of
- * fields that are missing or have the wrong runtime type.
- * (chatgpt-codex-connector #1688 P2: 'Validate fingerprint field types'.)
- */
 function invalidFingerprintFields(fp: MachineFingerprint): string[] {
   const bad: string[] = [];
   if (typeof fp.arch !== "string") bad.push("arch");
   if (typeof fp.platform !== "string") bad.push("platform");
-  // nodeVersion feeds nodeMajor's .replace — a non-string throws.
   if (typeof fp.nodeVersion !== "string") bad.push("nodeVersion");
   if (typeof fp.cpuCores !== "number" || !Number.isFinite(fp.cpuCores)) bad.push("cpuCores");
-  // cpuModel is nullable (the harness sets null when no CPUs are detected),
-  // but it must still be a string-or-null — a number/object/undefined (a
-  // missing key) is corruption (cursor Bugbot: 'Fingerprint skip omits
-  // cpuModel validation').
   if (fp.cpuModel !== null && typeof fp.cpuModel !== "string") bad.push("cpuModel");
   return bad;
 }
@@ -150,11 +118,6 @@ export function checkCodingGraphRegression(
   tolerancePercent: number = DEFAULT_TOLERANCE_PERCENT,
 ): RegressionGateResult {
 
-  // Guard: a regression comparison is only meaningful when the report's
-  // fixture matches the baseline's fixture on EVERY knob. A different seed
-  // or language produces a structurally different synthetic repo, so timing
-  // deltas across mismatched fixtures are meaningless. Compare all keys
-  // present in the baseline config so new knobs are covered automatically.
   const reportFixture = report.fixture.config;
   const baselineFixture = baseline.fixtureConfig;
   const mismatchedKeys = (Object.keys(baselineFixture) as Array<
@@ -174,14 +137,6 @@ export function checkCodingGraphRegression(
     };
   }
 
-  // Guard: schema-version compatibility. extractMetrics below
-  // unconditionally dereferences v2-only fields (e.g.
-  // incrementalModifiedUpdate); a pre-v2 report lacks them and would
-  // throw a TypeError before any skip could run — defeating the
-  // cross-environment robustness the machine guard targets
-  // (kilo-code-bot review of #1688). A schema mismatch is a structural
-  // incompatibility: fail with an actionable message instead of
-  // crashing or silently skipping.
   if (report.schemaVersion !== baseline.schemaVersion) {
     return {
       passed: false,
@@ -193,13 +148,6 @@ export function checkCodingGraphRegression(
     };
   }
 
-  // Field-presence + finite-number guard: a corrupt/partial v2 report
-  // may carry schemaVersion 2 yet lack a required metric field, have a
-  // nested sub-field missing, or carry a non-numeric value from a malformed
-  // JSON (e.g. fullIndexLocsPerSecond: "oops"). extractMetrics feeds these
-  // values into ratio math; a NaN result silently passes the gate. Validate
-  // every metric as a finite number before comparing or skipping
-  // (chatgpt-codex-connector #1688 P2: 'Validate metric values as finite').
   const metricChecks: ReadonlyArray<readonly [string, unknown]> = [
     ["incrementalUpdate.p50", report.incrementalUpdate?.p50],
     ["incrementalUpdate.p95", report.incrementalUpdate?.p95],
@@ -226,16 +174,6 @@ export function checkCodingGraphRegression(
     };
   }
 
-  // Baseline-side metric value guard: the report guard above only
-  // validates report values. A corrupt baseline JSON could carry a
-  // non-numeric metric (e.g. fullIndexLocsPerSecond: "oops") that reaches
-  // the comparison loop where measVal / baseVal yields NaN, and NaN >
-  // tolerance is false so the gate silently passes. The baseline is loaded
-  // from JSON and carries the regression thresholds, so require every
-  // PRESENT baseline metric to be a finite number. A metric that is simply
-  // absent stays additive (skipped below), preserving the "keys present in
-  // BOTH" contract — only a present non-number is corruption
-  // (chatgpt-codex-connector #1688 P2: 'Validate baseline metrics').
   const badBaselineMetrics = (Object.keys(METRIC_DIRECTION) as RegressionMetricKey[])
     .filter((key) => {
       const v = baseline.metrics[key];
@@ -252,14 +190,6 @@ export function checkCodingGraphRegression(
     };
   }
 
-  // Machine-fingerprint presence + field-type guard: a corrupt JSON report
-  // or baseline may carry a null fingerprint OR a fingerprint with wrong-
-  // typed fields (e.g. machine: {} or nodeVersion as a number).
-  // compareMachineFingerprints → nodeMajor calls .replace on nodeVersion; a
-  // non-string throws instead of returning the intended corrupt-artifact
-  // failure. Reject both missing and wrong-typed fingerprints before
-  // comparing (chatgpt-codex-connector #1688 P2: 'Validate fingerprint
-  // field types').
   const reportFpBad = report.machine == null ? ["<missing>"] : invalidFingerprintFields(report.machine);
   const baselineFpBad = baseline.machine == null ? ["<missing>"] : invalidFingerprintFields(baseline.machine);
   if (reportFpBad.length > 0 || baselineFpBad.length > 0) {
@@ -275,13 +205,6 @@ export function checkCodingGraphRegression(
         " — the artifact is incomplete or corrupt. Regenerate it (#1688).",
     };
   }
-  // Guard (#1688 item 2): a timing comparison is only meaningful on the
-  // same machine class. A baseline carries a fingerprint (arch/platform/
-  // nodeVersion/cpuModel/cores); a report from a different machine class
-  // can fail the gate on legitimate hardware variance rather than a real
-  // regression. When the fingerprints differ on a load-bearing field, SKIP
-  // the comparison (passed: true + skipped: true) and surface the mismatch
-  // so a human decides whether cross-machine numbers are comparable.
   const mismatch = compareMachineFingerprints(report.machine, baseline.machine);
   if (mismatch.differingFields.length > 0) {
     return {
@@ -348,7 +271,6 @@ export function checkCodingGraphRegression(
 }
 
 // ---------------------------------------------------------------------------
-// Baseline construction helpers.
 // ---------------------------------------------------------------------------
 
 /**

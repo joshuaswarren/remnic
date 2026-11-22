@@ -38,11 +38,6 @@ export interface MergeFrontmatterUpdate {
 const ISO_TIMESTAMP =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
-/**
- * Require a full ISO 8601 instant whose calendar components round-trip.
- * `Date.parse` alone accepts `123` and rolls `2026-02-30` over into March,
- * and this value is echoed verbatim into frontmatter.
- */
 function assertIsoInstant(value: unknown, field: string): string {
   if (typeof value !== "string" || !ISO_TIMESTAMP.test(value)) {
     throw new RangeError(`${field} must be a full ISO 8601 instant, got ${JSON.stringify(value)}`);
@@ -51,7 +46,6 @@ function assertIsoInstant(value: unknown, field: string): string {
   if (Number.isNaN(ms)) {
     throw new RangeError(`${field} must be a full ISO 8601 instant, got ${JSON.stringify(value)}`);
   }
-  // Reject a rolled-over calendar date (2026-02-30 -> 2026-03-02).
   if (!new Date(ms).toISOString().startsWith(value.slice(0, 10))) {
     throw new RangeError(`${field} is not a real calendar date: ${JSON.stringify(value)}`);
   }
@@ -82,9 +76,6 @@ function normalizeSource(source: MergeProvenanceSource, index: number): MergePro
   if (source.charStart !== undefined && source.charEnd !== undefined && source.charEnd < source.charStart) {
     throw new RangeError(`${label}.charEnd must be >= charStart`);
   }
-  // Copy every canonical field, including the optional ones: dropping
-  // observedAt or the offsets here would make the serializer discard the
-  // clone, turning "append provenance" into "erase provenance".
   const copy: MergeProvenanceSource = {
     sessionKey: source.sessionKey,
     observedAt: source.observedAt,
@@ -108,11 +99,8 @@ function sourceKey(source: MergeProvenanceSource): string {
 }
 
 export function buildMergeFrontmatterUpdate(input: {
-  /** Existing sources already on the merge target. */
   targetSources?: readonly MergeProvenanceSource[];
-  /** Sources from the incoming fact being merged in. */
   incomingSources: readonly MergeProvenanceSource[];
-  /** Existing reinforcement_count on the target, if any. */
   targetReinforcementCount?: number;
   nowIso: string;
 }): MergeFrontmatterUpdate {

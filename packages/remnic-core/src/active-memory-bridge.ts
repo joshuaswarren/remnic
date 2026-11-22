@@ -288,14 +288,6 @@ export async function getMemoryForActiveMemory(
       ? await orchestrator.getStorageForNamespace(namespace)
       : orchestrator.storage;
 
-  // Issue #1582 — resolve a `[m:xxxx]` handle to its memory id against the
-  // caller's session before the storage read, so OpenClaw active-memory agents
-  // can cite injected handles through the SAME shared path as memory_get /
-  // correction (cursor review). Raw ids pass through unchanged.
-  //
-  // A handle that misses, collides, or has no session key becomes not_found —
-  // the SAME behavior a bad raw id yields below — instead of throwing, so an
-  // active-memory caller gets a uniform not-found contract (cursor review).
   let resolvedId = id;
   if (isHandleToken(id) && typeof orchestrator.resolveMemoryIdOrHandle === "function") {
     try {

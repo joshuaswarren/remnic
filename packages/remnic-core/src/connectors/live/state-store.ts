@@ -1,25 +1,3 @@
-/**
- * @remnic/core — Live Connectors State Store (issue #683 PR 1/N)
- *
- * Persists per-connector cursor + sync metadata to
- *   `<memoryDir>/state/connectors/<id>.json`
- *
- * Reasons this lives next to memory data, not in user config:
- *   - cursors are *operational* state that should travel with the memory
- *     directory when a user moves it across machines;
- *   - it keeps memory + ingest provenance co-located so tooling that backs up
- *     the memory directory captures cursor state too.
- *
- * Atomic-write contract (CLAUDE.md gotcha #54):
- *   - We NEVER `rmSync(target)` before `renameSync(tmp, target)`.
- *   - Writes go to a sibling tmp file and `rename()` swaps it in.
- *   - On error, the tmp file is best-effort cleaned up; the previous good
- *     state file is left untouched.
- *
- * Privacy: cursors are opaque connector-defined strings. We do not log them
- * and do not surface them through user-visible APIs. Document content NEVER
- * touches this module.
- */
 
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -110,9 +88,6 @@ interface ConnectorStateLockOptions {
   readonly unrefHeartbeat?: boolean;
 }
 
-/**
- * Resolve `<memoryDir>/state/connectors/`, expanding `~` per CLAUDE.md #17.
- */
 function resolveConnectorsDir(memoryDir: string): string {
   if (typeof memoryDir !== "string" || memoryDir.length === 0) {
     throw new TypeError("memoryDir must be a non-empty string");
@@ -162,8 +137,6 @@ function isConnectorStateShape(value: unknown): value is ConnectorState {
   if (typeof v.id !== "string") return false;
   if (typeof v.lastSyncStatus !== "string") return false;
   if (!["success", "error", "never"].includes(v.lastSyncStatus)) return false;
-  // totalDocsImported is a cumulative count — fractional values would corrupt
-  // metrics on later increments. Mirror the boundary check in writeConnectorState.
   if (typeof v.totalDocsImported !== "number" || !Number.isInteger(v.totalDocsImported)) return false;
   if (v.totalDocsImported < 0) return false;
   if (typeof v.updatedAt !== "string") return false;
@@ -231,30 +204,14 @@ function isSameFileIdentity(left: import("node:fs").Stats, right: import("node:f
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-/**
- * Reject any path component along `<memoryDir>/state/connectors/<id>.json`
- * that is a symlink. Without this guard, a symlink in any of those
- * components would let `fs.readFile` escape the memory root and consume an
- * arbitrary outside file as cursor state — silently poisoning sync state and
- * violating the project-wide rule against symlink traversal.
- *
- * `lstat` is used (not `stat`) so we observe the link itself rather than its
- * target. Missing components are tolerated — the caller's `readFile` /
- * `mkdir` will surface ENOENT in its normal way.
- *
- * (PR #724 review.)
- */
 async function assertNoSymlinkOnPath(memoryDir: string, filePath: string): Promise<void> {
   const expandedRoot = expandTildePath(memoryDir);
-  // Normalize so `..` segments can't bypass the prefix check below.
   const root = path.resolve(expandedRoot);
   const target = path.resolve(filePath);
   const rel = path.relative(root, target);
-  // path.relative() yields a "../..." prefix when target escapes root.
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
     throw new Error(`connector state path ${target} escapes memory root ${root}`);
   }
-  // Walk every component from root to target (inclusive) and lstat each.
   const segments = rel.length === 0 ? [] : rel.split(path.sep);
   let current = root;
   const componentsToCheck = [current];
@@ -268,7 +225,6 @@ async function assertNoSymlinkOnPath(memoryDir: string, filePath: string): Promi
       stat = await fs.lstat(component);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        // Not yet created — that's fine; caller's readFile/mkdir handles it.
         continue;
       }
       throw err;
@@ -638,10 +594,6 @@ export async function writeConnectorState(
       `writeConnectorState(): state.id ${JSON.stringify(state.id)} does not match id argument ${JSON.stringify(id)}`
     );
   }
-  // Full boundary validation. Persisting an out-of-shape record would brick
-  // the connector's cursor file: subsequent `readConnectorState` calls would
-  // throw `ConnectorStateCorruptionError` until manual repair. JS callers
-  // bypassing TS types must be rejected here, not later. (PR #724 review.)
   if (!VALID_SYNC_STATUSES.has(state.lastSyncStatus as ConnectorSyncStatus)) {
     throw new Error(
       `writeConnectorState(): lastSyncStatus must be one of ${[...VALID_SYNC_STATUSES].join(", ")}, got ${JSON.stringify(state.lastSyncStatus)}`
@@ -689,8 +641,6 @@ export async function writeConnectorState(
 
   const dir = resolveConnectorsDir(memoryDir);
   const targetPath = path.join(dir, `${id}.json`);
-  // Reject planted symlinks before mkdir/write so a redirected target can't
-  // overwrite an arbitrary file outside the memory root. (PR #724 review.)
   await assertNoSymlinkOnPath(memoryDir, targetPath);
   await fs.mkdir(dir, { recursive: true });
   const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -730,9 +680,6 @@ export async function writeConnectorState(
  */
 export async function listConnectorStates(memoryDir: string): Promise<ConnectorState[]> {
   const dir = resolveConnectorsDir(memoryDir);
-  // Refuse to enumerate through a symlinked state directory — a planted
-  // symlink at <memoryDir>/state or <memoryDir>/state/connectors would
-  // otherwise let reads escape the memory root. (PR #724 review.)
   await assertNoSymlinkOnPath(memoryDir, dir);
   let entries: string[];
   try {
@@ -751,11 +698,8 @@ export async function listConnectorStates(memoryDir: string): Promise<ConnectorS
       if (state !== null) out.push(state);
     } catch (err) {
       if (err instanceof ConnectorStateCorruptionError) {
-        // Skip corrupt files; preserve availability of the rest.
         continue;
       }
-      // Anything else (EACCES, EIO, ENOTDIR, ...) is a real operational
-      // failure. Fail loudly so the scheduler / CLI can surface it.
       throw err;
     }
   }

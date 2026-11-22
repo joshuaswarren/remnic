@@ -4,7 +4,6 @@
  * null, undefined, and [] are empty. A non-array throws. Any other array is not empty.
  */
 
-/** True when the observation set is absent or has no items. */
 export function isEmptyObservationSet(items: unknown): boolean {
   if (items == null) return true;
   if (!Array.isArray(items)) {

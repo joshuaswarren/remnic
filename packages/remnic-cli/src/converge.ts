@@ -150,13 +150,6 @@ async function discoverCursorNamespaces(memoryDir: string, peerUrl: string): Pro
   return [...namespaces].sort();
 }
 
-/**
- * The plan cache is an optimization, never a prerequisite: a cache root
- * that cannot be created or written (read-only audit mount, broken parent
- * dir) degrades to an uncached plan instead of blocking `converge plan`.
- * The busy lock is real cross-process coordination and still fails the
- * run (#2803 review).
- */
 async function openPlanCache(memoryDir: string, scope: string): Promise<ConvergePlanCache | null> {
   try {
     return await ConvergePlanCache.open(memoryDir, scope);
@@ -453,7 +446,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
   }
   const unresolvedCount = plan.byNamespace.reduce((acc, report) => acc + report.unresolved, 0);
   if (unresolvedCount > 0) {
-    // Every policy stops when its conflict rule cannot choose a safe resolution.
     return finish({
       converged: false,
       status: "stopped_unresolved_conflicts",
@@ -880,7 +872,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
       else actualTransfers.failed += 1;
     }
   };
-  // Bounded batches overlap per-file IO waits; counters are commutative.
   const TRANSFER_BATCH_SIZE = rawConcurrency;
   const actionable = plan.entries.filter((entry) => entry.action !== "identical");
   for (let i = 0; i < actionable.length; i += TRANSFER_BATCH_SIZE) {
@@ -1038,7 +1029,6 @@ Subcommands:
     } else if (arg === "--dry-run") {
       dryRun = true;
     } else if (arg === "--interval") {
-      // Flag-present-but-value-absent is malformed, not "use the default":
       // an operator who typed `--interval` alone must hear about it, not
       // silently get a 300s watch (codex P1 / coderabbit round 2).
       const raw = rest[i + 1];

@@ -6,11 +6,6 @@ import test from "node:test";
 
 import { StorageManager } from "../storage.js";
 
-/**
- * COS-388c Finding C2: ordinary entity reads must not follow a symlink at
- * `entities/<id>.md` to content outside the memory dir. List skips the
- * same entry. A normal entity file still reads.
- */
 test("readEntity refuses entities/evil.md symlink outside the memory dir (C2)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-c2-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-c2-out-"));

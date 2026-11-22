@@ -88,11 +88,9 @@ test("buildStandup derives every section from the prior active day and stays det
     // Blockers strip list markers (no doubled bullets) and come from P.
     assert.ok(a.blockers.some((line) => line === "[15:20] Editor — blocker: waiting on review"));
     assert.doesNotMatch(a.markdown, /- - /);
-    // Grid: exactly hours 9, 10, 11, 14, 15 non-empty; Monday empty.
     assert.match(a.activityGrid, /^prior day 2026-08-14 — 24 hour buckets/);
     assert.match(a.activityGrid, /^non-empty hours: 9, 10, 11, 14, 15$/m);
     assert.match(a.markdown, /## Today \(2026-08-17\)\n_No activity digest._/);
-    // Zero commitments → explicit empty-priorities message, never invented.
     assert.match(a.markdown, /## Today's priorities\n- \(no tracked commitments — add priorities manually\)/);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -145,7 +143,6 @@ test("buildStandup lists open commitments as priorities and overdue ones as bloc
     const brief = buildStandup(memoryDir, "2026-08-17");
     // Overdue commitment is a blocker candidate, not a priority.
     assert.ok(brief.blockers.some((line) => line.startsWith("commitment past due: overdue-1 says: ship the thing")));
-    // Fulfiled, pending-review, and non-commitment facts never appear.
     const priorities = brief.priorities.join("\n");
     assert.ok(priorities.includes("due-soon says: ship the thing (due 2026-08-19)"));
     assert.ok(priorities.includes("open-1 says: ship the thing"));

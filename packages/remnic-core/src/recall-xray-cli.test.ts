@@ -6,7 +6,6 @@ import {
   parseXrayCliOptions,
 } from "./recall-xray-cli.js";
 
-// ─── parseXrayBudgetFlag ─────────────────────────────────────────────────
 
 test("parseXrayBudgetFlag returns undefined for missing values", () => {
   assert.equal(parseXrayBudgetFlag(undefined), undefined);
@@ -45,7 +44,6 @@ test("parseXrayBudgetFlag rejects non-finite values", () => {
   );
 });
 
-// ─── parseXrayCliOptions ─────────────────────────────────────────────────
 
 test("parseXrayCliOptions defaults format to text when absent", () => {
   const parsed = parseXrayCliOptions("hi", {});

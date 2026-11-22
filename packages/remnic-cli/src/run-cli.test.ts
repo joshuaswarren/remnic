@@ -58,7 +58,6 @@ test("runCli captures stdout written via console.log", async () => {
 });
 
 test("runCli captures stdout written via process.stdout.write directly", async () => {
-  // The default usage path (no command / unknown command) writes through
   // console.log, which routes through process.stdout.write — verify
   // capture works for that path too.
   const result = await runCli([]);
@@ -67,14 +66,12 @@ test("runCli captures stdout written via process.stdout.write directly", async (
 });
 
 test("runCli captures exitCode 1 from process.exit(1) without terminating the process", async () => {
-  // `remnic daemon <invalid>` writes the usage line and calls process.exit(1).
   const result = await runCli(["daemon", "bogus-action"]);
   assert.equal(result.exitCode, 1);
   assert.match(result.stdout, /Usage: remnic daemon/);
 });
 
 test("runCli captures exitCode from a subcommand that exits with explicit code", async () => {
-  // `remnic tree generate --max-per-category notanumber` exits 1 with an
   // explicit numeric argument; this exercises the typeof-code === 'number'
   // branch of the intercepted process.exit.
   const result = await runCli(["tree", "generate", "--max-per-category", "notanumber"]);
@@ -83,7 +80,6 @@ test("runCli captures exitCode from a subcommand that exits with explicit code",
 });
 
 test("runCli captures uncaught throws as exitCode 1 + Fatal line on stderr", async () => {
-  // `remnic xray` with no query throws synchronously inside cmdXray via
   // parseXrayCliOptions. The dispatcher does not catch it, so it unwinds
   // to runCli — mirroring the binary's auto-runner .catch handler.
   const result = await runCli(["xray"]);
@@ -103,7 +99,6 @@ test("runCli honours the cwd override and restores it afterwards", async () => {
   } finally {
     await rm(isolated, { recursive: true, force: true });
   }
-  // finally in runCli restored process.cwd — verify from the host side too.
   assert.equal(process.cwd(), cwdBefore);
 });
 
@@ -111,7 +106,6 @@ test("runCli honours env overrides and restores prior values afterwards", async 
   const previousValue = process.env.REMNIC_TEST_ENV_VAR;
   process.env.REMNIC_TEST_ENV_VAR = "original";
   try {
-    // Use a command that doesn't read this var — we only need to verify
     // set/restore semantics. The var is set during the run and restored
     // to "original" afterwards.
     await runCli(["status"], {
@@ -128,7 +122,6 @@ test("runCli honours env overrides and restores prior values afterwards", async 
 });
 
 test("runCli deletes env keys mapped to undefined and restores them afterwards", async () => {
-  // Pre-existing key gets deleted during the run, restored afterwards.
   const previousValue = process.env.REMNIC_TEST_DELETE_VAR;
   process.env.REMNIC_TEST_DELETE_VAR = "set";
   try {
@@ -149,7 +142,6 @@ test("runCli restores process.stdout / process.stderr / console even on a throw"
   const originalStdoutWrite = process.stdout.write;
   const originalConsoleLog = console.log;
   await runCli(["xray", "--format", "bogus-format-value"]);
-  // If finally didn't restore, subsequent writes would be lost to the
   // captured buffer. Verify the bindings are the same identity.
   assert.equal(process.stdout.write, originalStdoutWrite);
   assert.equal(console.log, originalConsoleLog);
@@ -163,7 +155,6 @@ test("runCli routes custom stdout/stderr sinks instead of the default buffer", a
     stderr: { write: (chunk) => void stderrChunks.push(chunk) },
   });
   assert.equal(result.exitCode, 1);
-  // The captured buffers stay empty because the custom sink was used.
   assert.equal(result.stdout, "");
   assert.equal(result.stderr, "");
   assert.ok(stdoutChunks.join("").includes("Usage: remnic daemon"));
@@ -215,7 +206,6 @@ test("runCli's swapped process.stdout / process.stderr are accepted by child_pro
       return true;
     },
   };
-  // `daemon bogus-action` prints a usage line to stdout via console.log,
   // which routes through runCli's swapped console.log -> stdout sink,
   // triggering our probe on the first write.
   await runCli(["daemon", "bogus-action"], { stdout: probeStdout });
@@ -224,7 +214,6 @@ test("runCli's swapped process.stdout / process.stderr are accepted by child_pro
 });
 
 test("runCli captures @remnic/core logger output (CONSOLE_LOGGER late-binds console.*)", async () => {
-  // Regression for the #1613 review thread on logger pre-binding
   // (PRRT_kwDORJXyws6OXb9H): @remnic/core's default CONSOLE_LOGGER
   // backend must late-bind console.* so that runCli's console swap
   // routes log.info/warn/error through the capture buffer. With the old
@@ -233,7 +222,6 @@ test("runCli captures @remnic/core logger output (CONSOLE_LOGGER late-binds cons
   // before runCli could swap them, so log.warn / log.info output
   // escaped RunCliResult and polluted the test runner's real stderr.
   const { log, initLogger } = await import("@remnic/core");
-  // initLogger() with no args pins _backend to CONSOLE_LOGGER. Under
   // late-binding this resolves console.* at call time (picking up the
   // swap); under the old pre-bound form it captured the originals.
   initLogger();
@@ -241,7 +229,6 @@ test("runCli captures @remnic/core logger output (CONSOLE_LOGGER late-binds cons
   const result = await runCli(["daemon", "bogus-action"], {
     stdout: {
       write: (chunk: string) => {
-        // Emit a core-logger line from INSIDE the run — runCli has
         // already swapped console.warn by the time the dispatcher
         // writes its first stdout line, so late-binding routes log.warn
         // through the swapped console.warn -> stderr sink. Under
@@ -262,7 +249,6 @@ test("runCli captures @remnic/core logger output (CONSOLE_LOGGER late-binds cons
 });
 
 test("runCli rejects concurrent calls (process-global swap hazard)", async () => {
-  // Regression for the #1613 review thread on concurrent invocation
   // (PRRT_kwDORJXyws6OXfNf): runCli swaps process-wide globals
   // (process.stdout/stderr/exit/argv, console.*, cwd, env). Two
   // concurrent calls would snapshot each other's fakes and restore in
@@ -276,16 +262,13 @@ test("runCli rejects concurrent calls (process-global swap hazard)", async () =>
     () => runCli(["status"]),
     /another runCli call is in progress/,
   );
-  // Let the first finish and clear the guard.
   await first;
-  // After the first completes, a new call must succeed — the guard was
   // cleared in finally.
   const result = await runCli(["status"]);
   assert.equal(result.exitCode, 0);
 });
 
 test("formatConsoleArgs substitutes printf-style specifiers via util.format", () => {
-  // Regression for the #1613 review thread on formatConsoleArgs
   // (PRRT_kwDORJXyws6OXhGV): the old custom formatter joined args with
   // spaces without substituting printf-style specifiers, so a core log
   // line like log.info("found %d items in %s", 3, "scope") was captured
@@ -293,17 +276,14 @@ test("formatConsoleArgs substitutes printf-style specifiers via util.format", ()
   // scope". Using util.format (the exact function console.* uses
   // internally) makes captured output byte-identical to the binary's
   // console output.
-    // %d / %s substitution
   assert.equal(
     formatConsoleArgs(["found %d items in %s", 3, "scope"]),
     "found 3 items in scope\n",
   );
-  // %j (JSON) substitution
   assert.equal(
     formatConsoleArgs(["config: %j", { verbose: true }]),
     'config: {"verbose":true}\n',
   );
-  // No specifiers — plain join with newline (matches console.log)
   assert.equal(
     formatConsoleArgs(["hello", "world"]),
     "hello world\n",

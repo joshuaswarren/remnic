@@ -1,9 +1,3 @@
-/**
- * Peer registry tests — issue #679 PR 1/5.
- *
- * Covers schema + storage primitives only. No reasoner, recall, or CLI
- * coverage in this PR. All fixtures are synthetic.
- */
 
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
@@ -31,8 +25,6 @@ import {
 } from "./index.js";
 
 // ──────────────────────────────────────────────────────────────────────
-// Fixtures
-// ──────────────────────────────────────────────────────────────────────
 
 const makeTempDir = (): Promise<string> => managedMakeTempDir("peers-test-");
 
@@ -49,7 +41,6 @@ function samplePeer(overrides: Partial<Peer> = {}): Peer {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Round-trip
 // ──────────────────────────────────────────────────────────────────────
 
 test("writePeer + readPeer round-trips identity", async () => {
@@ -133,13 +124,11 @@ test("readPeer returns null for a non-existent peer", async () => {
 
 test("readPeer returns null when the peers root does not exist", async () => {
   const dir = await makeTempDir();
-  // makeTempDir creates the dir but no peers/ subtree.
   const loaded = await readPeer(dir, "self");
   assert.equal(loaded, null);
 });
 
 // ──────────────────────────────────────────────────────────────────────
-// listPeers
 // ──────────────────────────────────────────────────────────────────────
 
 test("listPeers enumerates multiple peers in deterministic order", async () => {
@@ -154,7 +143,6 @@ test("listPeers enumerates multiple peers in deterministic order", async () => {
   }
   const listed = await listPeers(dir);
   assert.equal(listed.length, 3);
-  // Listing is sorted by id.
   assert.deepEqual(
     listed.map((p) => p.id),
     ["agent.codex", "human.alex", "self"],
@@ -176,7 +164,6 @@ test("listPeers returns [] when peers root does not exist", async () => {
 test("listPeers skips directory entries with invalid peer ids", async () => {
   const dir = await makeTempDir();
   await writePeer(dir, samplePeer({ id: "ok", displayName: "OK" }));
-  // Create stray directory with an illegal name — should be ignored.
   await fs.mkdir(path.join(dir, "peers", "..hidden"), { recursive: true });
   await fs.mkdir(path.join(dir, "peers", "has space"), { recursive: true });
   const listed = await listPeers(dir);
@@ -198,7 +185,6 @@ test("listPeers skips directories that lack identity.md", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────
-// Validation
 // ──────────────────────────────────────────────────────────────────────
 
 test("PEER_ID_PATTERN accepts canonical ids", () => {
@@ -255,7 +241,6 @@ test("writePeer rejects invalid kind", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────
-// Interaction log — monotonic append
 // ──────────────────────────────────────────────────────────────────────
 
 test("appendInteractionLog appends entries in order", async () => {
@@ -287,7 +272,6 @@ test("appendInteractionLog appends entries in order", async () => {
   const raw = await readInteractionLogRaw(dir, peerId);
   const lines = raw.trim().split("\n");
   assert.equal(lines.length, 3);
-  // Entries appear in append order — verify by timestamp prefix.
   assert.ok(lines[0].includes("[2026-04-25T00:00:01.000Z]"));
   assert.ok(lines[0].includes("(message)"));
   assert.ok(lines[0].includes("first turn"));
@@ -341,7 +325,6 @@ test("appendInteractionLog escapes embedded newlines so each entry stays one lin
 
 test("appendInteractionLog creates peer directory on demand", async () => {
   const dir = await makeTempDir();
-  // No prior writePeer — the log helper should still work.
   await appendInteractionLog(dir, "self", {
     timestamp: "2026-04-25T00:00:00.000Z",
     kind: "message",
@@ -427,7 +410,6 @@ test("readInteractionLogRaw returns empty string when log does not exist", async
 });
 
 // ──────────────────────────────────────────────────────────────────────
-// Profile read/write (schema scaffold)
 // ──────────────────────────────────────────────────────────────────────
 
 test("writePeerProfile + readPeerProfile round-trips fields and provenance", async () => {
@@ -476,7 +458,6 @@ test("readPeerProfile returns null when profile does not exist", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────
-// On-disk shape — confirms the YAML+markdown contract
 // ──────────────────────────────────────────────────────────────────────
 
 test("identity.md is YAML frontmatter + markdown body", async () => {
@@ -485,7 +466,6 @@ test("identity.md is YAML frontmatter + markdown body", async () => {
   await writePeer(dir, peer);
   const file = path.join(dir, "peers", "self", "identity.md");
   const raw = await fs.readFile(file, "utf8");
-  // Frontmatter open + close, then a body section.
   assert.ok(raw.startsWith("---\n"));
   const lines = raw.split("\n");
   const closeIndex = lines.indexOf("---", 1);
@@ -501,7 +481,6 @@ test("identity.md is YAML frontmatter + markdown body", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────
-// deletePeer (Cursor M, PR #756) — symlink-safe unlink contract.
 // ──────────────────────────────────────────────────────────────────────
 
 test("deletePeer removes identity.md and is idempotent", async () => {
@@ -527,18 +506,12 @@ test("deletePeer rejects invalid peer ids", async () => {
 
 test("deletePeer refuses to follow a symlinked identity.md", async () => {
   const dir = await makeTempDir();
-  // Build a peer dir without writing identity.md, then plant a symlink at
-  // identity.md pointing outside memoryDir. A naive `fs.unlink` would
-  // remove the symlink itself, but the safe-delete contract refuses to
-  // touch it (we can't safely distinguish symlink-removal from following
-  // a redirected-target unlink without lstat).
   const peerDir = path.join(dir, "peers", "alice");
   await fs.mkdir(peerDir, { recursive: true });
   const outsideTarget = path.join(dir, "outside-target.md");
   await fs.writeFile(outsideTarget, "should not be deleted", "utf8");
   await fs.symlink(outsideTarget, path.join(peerDir, "identity.md"));
   await assert.rejects(() => deletePeer(dir, "alice"), /symlink/);
-  // The outside file is intact.
   const stillThere = await fs.readFile(outsideTarget, "utf8");
   assert.equal(stillThere, "should not be deleted");
 });
@@ -556,10 +529,8 @@ test("deletePeer leaves sibling profile and interaction log intact", async () =>
   await writePeerProfile(dir, profile);
   const result = await deletePeer(dir, "alice");
   assert.equal(result, true);
-  // Profile survives.
   const reread = await readPeerProfile(dir, "alice");
   assert.ok(reread, "profile should still exist after deletePeer");
-  // Identity is gone.
   const identity = await readPeer(dir, "alice");
   assert.equal(identity, null);
 });

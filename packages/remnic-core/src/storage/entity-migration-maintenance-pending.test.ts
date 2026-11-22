@@ -7,9 +7,6 @@ import test from "node:test";
 import { StorageManager, normalizeEntityName } from "../storage.js";
 import { drainMaintenanceSettlements, writeMaintenancePending } from "./entity-migration-maintenance-pending.js";
 
-// Issue #3286: a crash between the reference rewrite and the completion hook
-// must not leave the QMD index stale. A "maintenance pending" marker beside the
-// migration journal makes the next startup's no-op replay fire the hook once.
 const MAINTENANCE_PENDING_PREFIX = "entity-canonical-id-maintenance.pending";
 
 /** Pending-marker files currently on disk (temp files excluded). */
@@ -24,16 +21,8 @@ interface SeededCorpus {
   canonical: string;
 }
 
-/**
- * Seed a corpus with one legacy-typed entity file and one memory referencing
- * it by the legacy id, so a later run has a real rewrite to perform. The
- * legacy file keeps its old id as the filename while its `Type:` was retyped —
- * the production legacy shape (see entity-canonical-id-collision.test.ts).
- */
 async function seedLegacyCorpus(): Promise<SeededCorpus> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-3286-pending-"));
-  // Create the directory skeleton (facts/ is date-partitioned on write, so
-  // the raw file below lands in a directory ensureDirectories has made).
   await new StorageManager(dir).ensureDirectories();
   const name = "Nightly Ingest";
   const legacy = normalizeEntityName(name, "automation");
@@ -45,10 +34,6 @@ async function seedLegacyCorpus(): Promise<SeededCorpus> {
     + `# ${name}\n\n**Type:** automation-cron-job\n\nRuns at 02:00.\n`,
     "utf8",
   );
-  // Seed the memory file fully raw with the legacy entityRef: writeMemoryFrontmatter
-  // would canonicalize the ref through the journal this pass is about to build,
-  // and a raw edit after a cached read would serve the stale parse (the corpus
-  // version only moves on managed writes).
   const memoryPath = path.join(dir, "facts", new Date().toISOString().slice(0, 10), "note-3286.md");
   await writeFile(
     memoryPath,
@@ -84,16 +69,12 @@ test("a crash after the rewrite but before the hook fires the hook once on the n
   const { dir } = await seedLegacyCorpus();
   const hook = { calls: 0 };
   try {
-    // Pass 1: the migration rewrites; the hook throws to emulate the crash
-    // between the rewrite and maintenance being requested.
     const first = new StorageManager(dir);
     countHook(first, hook, true);
     await first.ensureDirectories();
     await first.drainEntityCanonicalIdMigration();
     assert.equal(hook.calls, 1, "precondition: the rewriting pass reached the hook");
 
-    // Pass 2: a fresh manager replays a no-op journal; the pending marker
-    // must fire the hook exactly once, then clear itself.
     const second = new StorageManager(dir);
     countHook(second, hook);
     await second.ensureDirectories();
@@ -101,7 +82,6 @@ test("a crash after the rewrite but before the hook fires the hook once on the n
     assert.equal(hook.calls, 2, "the no-op replay must fire the hook once via the pending marker");
     assert.equal((await pendingMarkers(dir)).length, 0, "the marker must clear after the hook");
 
-    // Pass 3: ordinary no-op startup stays quiet.
     const third = new StorageManager(dir);
     countHook(third, hook);
     await third.ensureDirectories();
@@ -138,7 +118,6 @@ test("a process with no hook wired keeps the marker so a later wired start fires
   const { dir } = await seedLegacyCorpus();
   const hook = { calls: 0 };
   try {
-    // A CLI-only process runs the rewrite with nothing to request maintenance.
     const bare = new StorageManager(dir);
     await bare.ensureDirectories();
     await bare.drainEntityCanonicalIdMigration();
@@ -185,9 +164,6 @@ test("a hook that refuses the request (shutdown) keeps the marker for the next s
 test("an async hook keeps the marker until its maintenance pass is served, and keeps it when that fails", async () => {
   const { dir } = await seedLegacyCorpus();
   try {
-    // The real hook only ARMS a debounced timer; its promise settles when the
-    // pass has run. Clearing at request time would lose the re-index to a crash
-    // or destroy() inside the debounce window (review finding on #3287).
     const served = Promise.withResolvers<boolean>();
     const first = new StorageManager(dir);
     first.onEntityMigrationComplete = () => served.promise;
@@ -199,7 +175,6 @@ test("an async hook keeps the marker until its maintenance pass is served, and k
     await drainMaintenanceSettlements(path.join(dir, "state"));
     assert.equal((await pendingMarkers(dir)).length, 1, "a pass that did not serve the request keeps the marker");
 
-    // A later start still owes it; this time the pass is served.
     const retry = Promise.withResolvers<boolean>();
     const second = new StorageManager(dir);
     second.onEntityMigrationComplete = () => retry.promise;
@@ -220,8 +195,6 @@ test("clearing one run's marker never deletes a marker a concurrent run armed me
   try {
     const stateDir = path.join(dir, "state");
     const first = new StorageManager(dir);
-    // Another process takes the migration lock after this run released it and
-    // arms its own marker before this run's hook returns and its clear starts.
     let concurrentArm: Promise<string> | undefined;
     first.onEntityMigrationComplete = () => {
       concurrentArm = writeMaintenancePending(stateDir);

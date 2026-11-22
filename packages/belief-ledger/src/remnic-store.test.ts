@@ -516,8 +516,6 @@ describe("RemnicLedgerStore", () => {
     await withTempDir("tombstone", async (dir) => {
       const storage = new StorageManager(dir);
       await storage.ensureDirectories();
-      // Wire the tombstone invariant exactly as the orchestrator does — without
-      // this, appendTombstone is a no-op and writeMemory never checks tombstones.
       storage.setTombstonesConfig({
         enabled: true,
         semanticMatch: false,
@@ -536,13 +534,6 @@ describe("RemnicLedgerStore", () => {
         },
         { now: "2026-06-03T12:00:00Z" },
       );
-      // Tombstone the exact body writeMemory receives — a blocked claim lands
-      // pending_review, which getClaim hides (HIDDEN_REMNIC_STATUSES). Without
-      // the pre-readback guard, createClaim throws a misleading "could not be
-      // read back" error that looks transient → callers retry → duplicate rows.
-      // writeMemory enriches the content with a structured-attributes suffix
-      // before hashing for the tombstone chokepoint (storage.ts:3728-3749), so
-      // the tombstone rawContent must match the ENRICHED body, not the raw body.
       const { serializeClaimBody, claimToStructuredAttributes } = await import("./schema.js");
       const { normalizeAttributePairs } = await import("@remnic/core/storage");
       const pendingClaim = { ...input, id: "pending", memoryId: "pending" };

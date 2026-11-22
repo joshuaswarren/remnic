@@ -1,18 +1,3 @@
-/**
- * Tests for the secure-store encryption primitives (issue #690 PR 1/4).
- *
- * These tests are pure: no I/O, no clock dependence beyond the
- * deterministic-ish `createdAt` round-trip (which we override).
- *
- * Note on KDF parameters
- * ----------------------
- * The default scrypt params (N = 2^17, r = 8, p = 1) take ~100-200 ms
- * per derivation on CI hardware. To keep the test suite fast, the
- * majority of tests use a low-cost (N = 2^10) param set. ONE test
- * (`deriveKeyScrypt with default OWASP-acceptable params produces a
- * 32-byte key`) exercises the real defaults end-to-end so we don't
- * silently regress them.
- */
 
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, open as openFile, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -80,7 +65,6 @@ import {
   readMaybeEncryptedFileFromChunks,
 } from "./secure-fs.js";
 
-/** Cheap scrypt params for tests — still hex-correct but ~milliseconds. */
 const FAST_SCRYPT: ScryptParams = {
   N: 1 << 10,
   r: 8,
@@ -96,7 +80,6 @@ const FAST_ARGON2ID: Argon2idParams = {
   keyLength: 32,
 };
 
-// ─── kdf.ts ─────────────────────────────────────────────────────────────
 
 test("deriveKeyScrypt is deterministic for the same passphrase + salt + params", () => {
   const salt = Buffer.alloc(KDF_SALT_LENGTH, 0x42);
@@ -123,7 +106,6 @@ test("deriveKeyScrypt produces different keys for different salts", () => {
 });
 
 test("deriveKeyScrypt with default OWASP-acceptable params produces a 32-byte key", () => {
-  // Smoke-test the real defaults so they don't silently regress.
   const salt = Buffer.alloc(KDF_SALT_LENGTH, 0x99);
   const key = deriveKeyScrypt("default-params-smoke-test", salt);
   assert.equal(key.length, KDF_KEY_LENGTH);
@@ -246,7 +228,6 @@ test("constantTimeEqual returns false for different-length buffers", () => {
   assert.equal(constantTimeEqual(a, b), false);
 });
 
-// ─── cipher.ts ──────────────────────────────────────────────────────────
 
 test("seal/open round-trip on a small payload", () => {
   const salt = generateSalt();
@@ -260,7 +241,6 @@ test("seal/open round-trip on a small payload", () => {
 test("seal/open round-trip on a large payload (1 MiB)", () => {
   const salt = generateSalt();
   const key = deriveKeyScrypt("pw", salt, FAST_SCRYPT);
-  // Deterministic-ish 1 MiB pattern so failures are easier to read.
   const plaintext = Buffer.alloc(1024 * 1024);
   for (let i = 0; i < plaintext.length; i++) {
     plaintext[i] = i & 0xff;
@@ -302,9 +282,7 @@ test("seal produces a different ciphertext for the same plaintext (random IV)", 
   const plaintext = Buffer.from("same plaintext, twice");
   const a = seal(key, salt, plaintext);
   const b = seal(key, salt, plaintext);
-  // Header bytes differ in the IV section even though salt is identical.
   assert.equal(a.equals(b), false, "fresh IV must produce fresh ciphertext");
-  // ...but both decrypt to the same plaintext.
   assert.ok(open(key, a).equals(plaintext));
   assert.ok(open(key, b).equals(plaintext));
 });
@@ -314,10 +292,8 @@ test("seal envelope layout matches the documented format", () => {
   const key = deriveKeyScrypt("pw", salt, FAST_SCRYPT);
   const sealed = seal(key, salt, Buffer.from("payload"));
   assert.equal(sealed[ENVELOPE_LAYOUT.version], ENVELOPE_VERSION);
-  // Salt bytes round-trip exactly.
   const saltSlice = sealed.subarray(ENVELOPE_LAYOUT.salt, ENVELOPE_LAYOUT.salt + ENVELOPE_SALT_LENGTH);
   assert.ok(saltSlice.equals(salt));
-  // Total length = header + ciphertext("payload" is 7 bytes).
   assert.equal(sealed.length, ENVELOPE_HEADER_SIZE + 7);
 });
 
@@ -333,7 +309,6 @@ test("open fails when ciphertext is tampered", () => {
   const salt = generateSalt();
   const key = deriveKeyScrypt("pw", salt, FAST_SCRYPT);
   const sealed = seal(key, salt, Buffer.from("the quick brown fox"));
-  // Flip a bit in the ciphertext region.
   const tampered = Buffer.from(sealed);
   tampered[ENVELOPE_LAYOUT.ciphertext] ^= 0x01;
   assert.throws(() => open(key, tampered));
@@ -361,7 +336,6 @@ test("open fails on truncated envelope", () => {
   const salt = generateSalt();
   const key = deriveKeyScrypt("pw", salt, FAST_SCRYPT);
   const sealed = seal(key, salt, Buffer.from("payload"));
-  // Cut into the auth-tag region.
   const truncated = sealed.subarray(0, ENVELOPE_HEADER_SIZE - 4);
   assert.throws(() => open(key, truncated), /envelope too short|envelope/);
 });
@@ -419,11 +393,9 @@ test("generateSalt returns a 16-byte buffer", () => {
   const s1 = generateSalt();
   const s2 = generateSalt();
   assert.equal(s1.length, ENVELOPE_SALT_LENGTH);
-  // Two random salts should virtually never collide.
   assert.equal(s1.equals(s2), false);
 });
 
-// ─── metadata.ts ────────────────────────────────────────────────────────
 
 test("buildMetadata + serialize + parse round-trip (scrypt)", () => {
   const salt = Buffer.alloc(KDF_SALT_LENGTH, 0xab);
@@ -462,7 +434,6 @@ test("buildMetadata defaults createdAt to a parseable ISO string when omitted", 
   const salt = Buffer.alloc(KDF_SALT_LENGTH, 0);
   const meta = buildMetadata({ algorithm: "scrypt", salt });
   assert.ok(typeof meta.createdAt === "string");
-  // Throws if not a parseable date.
   const date = new Date(meta.createdAt);
   assert.equal(Number.isNaN(date.getTime()), false);
 });
@@ -550,7 +521,6 @@ test("validateMetadata rejects non-power-of-2 N", () => {
     algorithm: "scrypt",
     salt: Buffer.alloc(KDF_SALT_LENGTH, 0),
   });
-  // Mutate the kdf params after construction; validation must catch it.
   if (meta.kdf.algorithm === "scrypt") {
     meta.kdf.params.N = 1000;
   }
@@ -565,7 +535,6 @@ test("serializeMetadata produces stable top-level key order", () => {
     createdAt: "2026-04-25T00:00:00.000Z",
   });
   const json = serializeMetadata(meta);
-  // The four required top-level keys should appear in this order.
   const formatIdx = json.indexOf('"format"');
   const formatVersionIdx = json.indexOf('"formatVersion"');
   const kdfIdx = json.indexOf('"kdf"');
@@ -576,11 +545,8 @@ test("serializeMetadata produces stable top-level key order", () => {
   );
 });
 
-// ─── End-to-end primitive flow (no I/O) ────────────────────────────────
 
 test("end-to-end: build metadata → derive key → seal → open round-trip", () => {
-  // Simulates the full primitive flow that a future storage layer
-  // (PR 3/4) will perform — but with everything in memory.
   const salt = generateSalt();
   const meta = buildMetadata({
     algorithm: "scrypt",
@@ -588,7 +554,6 @@ test("end-to-end: build metadata → derive key → seal → open round-trip", (
     createdAt: "2026-04-25T00:00:00.000Z",
   });
   const reparsed = parseMetadata(serializeMetadata(meta));
-  // Re-derive the key from the parsed metadata's salt.
   const recoveredSalt = decodeMetadataSalt(reparsed);
   assert.ok(recoveredSalt.equals(salt));
   const key = deriveKeyScrypt("user-passphrase", recoveredSalt, FAST_SCRYPT);
@@ -779,8 +744,6 @@ test("tampered envelope salt fails decryption (codex P1 — header AAD)", () => 
   const salt = generateSalt();
   const key = deriveKeyScrypt("passphrase", salt, FAST_SCRYPT);
   const envelope = Buffer.from(seal(key, salt, Buffer.from("secret")));
-  // Salt sits at envelope bytes [1, 17). Flipping a byte there must
-  // trigger auth failure now that the header is bound into AAD.
   envelope[5] = envelope[5] ^ 0xff;
   assert.throws(() => open(key, envelope), /auth|tag|decrypt|unable/i);
 });
@@ -798,10 +761,8 @@ test("metadata rejects keyLength != 32 (codex P2 — match cipher AES-256)", () 
   );
 });
 
-// ─── header.ts — Thread 6: even-length hex verifier (#737) ──────────────
 
 test("parseHeader rejects odd-length verifier hex (thread 6 — even-length guard)", () => {
-  // Build a valid header, then manually patch the verifier to odd length.
   const salt = Buffer.alloc(KDF_SALT_LENGTH, 0x11);
   const { header } = buildHeaderFromPassphrase({
     passphrase: "test-pass",
@@ -809,7 +770,6 @@ test("parseHeader rejects odd-length verifier hex (thread 6 — even-length guar
     algorithm: "scrypt",
     params: { N: 1 << 10, r: 8, p: 1, keyLength: 32, maxmem: 64 * 1024 * 1024 },
   });
-  // Make the verifier odd-length by trimming one hex char.
   const badJson = JSON.stringify({
     format: HEADER_FORMAT,
     formatVersion: HEADER_FORMAT_VERSION,
@@ -850,13 +810,9 @@ test("parseHeader rejects non-hex characters in verifier (thread 6)", () => {
   assert.throws(() => parseHeader(badJson), /hex/i);
 });
 
-// ─── passphrase-reader.ts — Thread 5: prompts to stderr (#737) ──────────
 
 test("non-TTY prompt is written to errorStream, not output (thread 5)", async () => {
-  // Build an in-memory PassThrough pair to act as piped stdin.
   const inputStream = new PassThrough();
-  // Write the passphrase line before creating the reader so the stream
-  // is already buffered and the readline interface drains it immediately.
   inputStream.end("test-passphrase\n");
 
   const stdoutChunks: string[] = [];
@@ -877,7 +833,6 @@ test("non-TTY prompt is written to errorStream, not output (thread 5)", async ()
   const passphrase = await reader("Enter passphrase: ");
 
   assert.equal(passphrase, "test-passphrase");
-  // The prompt must appear on stderr, not stdout.
   const stderr = stderrChunks.join("");
   const stdout = stdoutChunks.join("");
   assert.ok(stderr.includes("Enter passphrase: "), `expected prompt on stderr but got: ${JSON.stringify(stderr)}`);
@@ -887,10 +842,8 @@ test("non-TTY prompt is written to errorStream, not output (thread 5)", async ()
   );
 });
 
-// ─── passphrase-reader.ts — Thread 7: surrogate-safe backspace (#737) ───
 
 test("backspace removes full non-BMP (emoji) code point atomically (thread 7)", async () => {
-  // Simulate TTY raw-mode input with a PassThrough that claims isTTY.
   const inputStream = new PassThrough() as PassThrough & {
     isTTY: boolean;
     isRaw: boolean;
@@ -911,10 +864,6 @@ test("backspace removes full non-BMP (emoji) code point atomically (thread 7)", 
 
   const readPromise = reader("Passphrase: ");
 
-  // Type: 'a', then emoji U+1F511 (KEY, encodes as surrogate pair in
-  // UTF-16: 🔑), then backspace (DEL = 0x7f), then Enter.
-  // After the backspace the emoji must be fully removed, leaving just 'a'.
-  // We encode as UTF-8 bytes the way a terminal would send them.
   const aBytes = Buffer.from("a", "utf8");
   const emojiBytes = Buffer.from("\u{1F511}", "utf8"); // 4 bytes in UTF-8
   const delByte = Buffer.from([0x7f]);
@@ -949,7 +898,6 @@ test("backspace on BMP character removes exactly one character (thread 7 — reg
 
   const readPromise = reader("Passphrase: ");
 
-  // Type 'abc', backspace twice, then Enter — should yield 'a'.
   inputStream.push(Buffer.from("abc", "utf8"));
   inputStream.push(Buffer.from([0x7f]));
   inputStream.push(Buffer.from([0x7f]));
@@ -961,11 +909,6 @@ test("backspace on BMP character removes exactly one character (thread 7 — reg
 });
 
 test("secure-store migration encrypts memory category dirs but leaves the questions queue plaintext", async () => {
-  // #1546 routes decision/preference/... memories into their own dirs, which
-  // must be encryptable at rest. But questions/ is written/resolved via plain
-  // readFile/writeFile (writeQuestion/resolveQuestion), so encrypting it would
-  // make resolveQuestion() read ciphertext as UTF-8 and corrupt the file
-  // (codex #1563 review). Migration must seal decisions/ but skip questions/.
   const tempRoot = await mkdtemp(path.join(tmpdir(), "remnic-secure-store-questions-"));
   try {
     const memoryDir = path.join(tempRoot, "memory");
@@ -1029,22 +972,17 @@ test("chunked encrypted reads fill the header across positioned short reads", as
 test("probeEncryptedRegularFileHeader detects encryption, treats absent as false, and refuses non-regular paths (#2033)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "remnic-probe-header-"));
   try {
-    // Plaintext regular file → not encrypted.
     const plainPath = path.join(dir, "plain.jsonl");
     await writeFile(plainPath, "row-1\nrow-2\n", "utf8");
     assert.equal(await probeEncryptedRegularFileHeader(plainPath), false, "plaintext file is not encrypted");
 
-    // Encrypted-at-rest regular file → encrypted.
     const encPath = path.join(dir, "enc.jsonl");
     const key = Buffer.alloc(32, 5);
     await writeFile(encPath, encryptFileBody("secret\n", key, filePathAad(encPath, dir)));
     assert.equal(await probeEncryptedRegularFileHeader(encPath), true, "encrypted file detected via magic header");
 
-    // Absent file → false (nothing to probe), not a throw.
     assert.equal(await probeEncryptedRegularFileHeader(path.join(dir, "missing.jsonl")), false);
 
-    // A symlink (even to a regular file) is REFUSED before opening — a poisoned
-    // link must never redirect the probe outside our tree (#2033).
     const linkPath = path.join(dir, "link.jsonl");
     await symlink(plainPath, linkPath);
     await assert.rejects(
@@ -1058,7 +996,6 @@ test("probeEncryptedRegularFileHeader detects encryption, treats absent as false
       }
     );
 
-    // A directory is likewise non-regular and refused.
     await assert.rejects(() => probeEncryptedRegularFileHeader(dir), /non-regular state path/);
   } finally {
     await rm(dir, { recursive: true, force: true });

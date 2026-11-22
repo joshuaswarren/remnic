@@ -1,15 +1,3 @@
-/**
- * Synthetic multi-hop fixture for the retrieval-graph benchmark
- * (issue #559 PR 5).
- *
- * Each case seeds PPR on a small memory pool and checks whether the
- * graph-aware tier surfaces memories that are two hops from the seed
- * via `supersedes` / `lineage` / `derived-from` / `mentions` edges
- * — memories that lexical-only recall would miss.
- *
- * The fixture is intentionally deterministic (no clock / RNG / I/O)
- * so CI runs produce byte-identical results.
- */
 
 import type { MemoryEdgeSource } from "@remnic/core";
 

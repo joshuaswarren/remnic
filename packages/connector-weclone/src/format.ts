@@ -30,7 +30,6 @@ export function formatMemoryBlock(
     return "";
   }
 
-  // Sort by confidence descending; undefined confidence sorts last
   const sorted = [...memories].sort((a, b) => {
     const aConf = a.confidence ?? -1;
     const bConf = b.confidence ?? -1;

@@ -17,12 +17,6 @@ export interface ConfiguredNamespace {
   invalid: boolean;
 }
 
-/**
- * Read the raw configured write namespace (issue #1888 improvement 3). It is not
- * a parsed EngramConfig field — a client/plugin sets it in the raw record — so it
- * is captured here to lint against the parsed namespace policy. A present-but-blank
- * `namespace` is surfaced as invalid rather than silently skipped.
- */
 export function readConfiguredNamespace(remnicCfg: Record<string, unknown>): ConfiguredNamespace {
   if (!("namespace" in remnicCfg)) return { invalid: false };
   const value = remnicCfg.namespace;
@@ -32,13 +26,6 @@ export function readConfiguredNamespace(remnicCfg: Record<string, unknown>): Con
   return { invalid: true };
 }
 
-/**
- * Build the config-time namespace-policy lint row (issue #1888 improvement 3). A
- * configured write namespace that is writable by no one (no default, no policy
- * granting a writer) has every write rejected by the ACL and dead-lettered; catch
- * it at config time before a session silently loses memory. Returns undefined when
- * there is nothing to lint (no configured namespace and the value was not invalid).
- */
 export function buildNamespacePolicyCheck(args: {
   invalid: boolean;
   configuredNamespace?: string;

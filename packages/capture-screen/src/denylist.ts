@@ -1,13 +1,4 @@
-/**
- * Capture-time deny-lists, checked FIRST — before any text extraction, hashing,
- * or spool write. A match records NOTHING (not even metadata): the snapshot is
- * dropped whole. Three independent lists, each glob/substring matched
- * case-insensitively: application name, window title, and browser URL. Built-in
- * defaults cover common secret managers and private-browsing windows; the
- * user's config entries are additive.
- */
 
-/** Secret managers whose windows must never be captured. */
 export const DEFAULT_DENY_APPS: readonly string[] = ["1Password*", "Bitwarden*", "KeePass*"];
 
 /** Private/incognito window-title heuristics (browsers signal these in the title). */
@@ -55,12 +46,6 @@ function firstMatch(patterns: readonly string[], value: string, kind: string): s
   return null;
 }
 
-/**
- * The first deny rule that fires for this candidate, or null. Built-in defaults
- * are always checked in addition to the user lists. The returned string names
- * the rule (`app:1Password*`, `title:*incognito*`, `url:...`) for the
- * `test-snapshot` diagnostic.
- */
 export function matchDenyRule(candidate: DenyCandidate, lists: DenyLists): string | null {
   const appRule = firstMatch([...DEFAULT_DENY_APPS, ...lists.apps], candidate.app, "app");
   if (appRule !== null) return appRule;

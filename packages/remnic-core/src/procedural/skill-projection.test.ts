@@ -1,6 +1,3 @@
-/**
- * Regression tests for the skill-bundle projection contract (issue #2369).
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -92,7 +89,6 @@ test("never projects a non-active status (every status enumerated)", () => {
     ]);
     assert.deepEqual(bundles, [], `${status} must not project`);
   }
-  // Sanity: the same memory projects once its status is active.
   assert.equal(
     projectProceduresToSkills([makeProcedure({ id: "procedure-ok", title: "Do active work", status: "active" })])
       .length,
@@ -115,7 +111,6 @@ test("duplicate titles yield distinct stable slugs", () => {
   ];
   const first = projectProceduresToSkills(memories).map((b) => b.slug);
   assert.deepEqual(first, ["deploy-the-service", "deploy-the-service-2", "deploy-the-service-3"]);
-  // Stable across runs, and stable when the input order changes (sort is total).
   assert.deepEqual(projectProceduresToSkills([...memories].reverse()).map((b) => b.slug), first);
 });
 
@@ -145,7 +140,6 @@ test("maxSkills caps the projection and 0 disables it", () => {
     makeProcedure({ id: "procedure-b", title: "Task B", updated: "2026-08-18T02:00:00.000Z" }),
   ];
   assert.equal(projectProceduresToSkills(memories, { maxSkills: 1 }).length, 1);
-  // Newest first.
   assert.equal(projectProceduresToSkills(memories, { maxSkills: 1 })[0].slug, "task-a");
   assert.deepEqual(projectProceduresToSkills(memories, { maxSkills: 0 }), []);
 });
@@ -202,7 +196,6 @@ test("parseSkillProjectionConfig defaults off, coerces strings, and rejects garb
     enabled: true,
     maxSkills: 5,
   });
-  // String "false"/"0" must read as falsy / as the documented disable value.
   assert.deepEqual(parseSkillProjectionConfig({ enabled: "false", maxSkills: "0" }), {
     enabled: false,
     maxSkills: 0,

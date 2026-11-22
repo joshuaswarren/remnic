@@ -103,8 +103,6 @@ async function reclaimAbandonedGenerationStages(offlineDir: string): Promise<voi
       try {
         process.kill(owner.pid, 0);
       } catch (error) {
-        // EPERM/unknown ownership and reused PIDs are conservative keeps.
-        // Age alone never proves that an oversized transfer is abandoned.
         if ((error as NodeJS.ErrnoException).code === "ESRCH") {
           await removeStage(offlineDir, dir);
         }
@@ -159,9 +157,6 @@ export async function stageGenerationMembersForApply(options: {
     await writeFile(path.join(stagingRoot, "owner.json"), JSON.stringify({
       pid: process.pid, hostname: hostname(),
     }), { mode: 0o600, flag: "wx" });
-    // The fresh staging root has no keyring header of its own; inherit the
-    // parent vault's secure-store policy so staged bytes are encrypted at
-    // rest with the same key instead of plaintext-downgrading the vault.
     const configured = await createConfiguredOfflineStorage(options.memoryDir, options.secureStoreEncryptOnWrite);
     const stagingStorage = new StorageManager(stagingRoot);
     if (configured.secureStoreRequired) stagingStorage.setSecureStoreRequired(true);

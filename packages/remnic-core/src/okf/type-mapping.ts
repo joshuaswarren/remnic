@@ -1,11 +1,3 @@
-/**
- * OKF v0.1 `type` mapping (issue #1946) — the single source of truth for
- * the inert `type` metadata emitted alongside Remnic's canonical fields.
- *
- * `category` remains the canonical internal field; `type` is
- * presentation/interop metadata for OKF consumers and NEVER overrides
- * `category` on parse (the parser reads `type` into its own field only).
- */
 import path from "node:path";
 
 /** OKF `type` values derived from Remnic memory categories. */
@@ -60,12 +52,6 @@ export const OKF_DECISION_RECORD_TYPE = "Decision Record";
 export const OKF_ARCHITECTURE_CARD_TYPE = "Architecture Card";
 export const OKF_CODE_MODULE_TYPE = "Code Module";
 
-/**
- * OKF §6/§7 reserve `index.md` and `log.md` for bundle-level files with a
- * different contract. Remnic never writes them (separate issue), and writes
- * targeting those basenames are rejected outright so a stray ID can never
- * shadow a reserved bundle file.
- */
 export const OKF_RESERVED_BASENAMES: Readonly<Record<string, true>> = Object.freeze({
   "index.md": true,
   "log.md": true,

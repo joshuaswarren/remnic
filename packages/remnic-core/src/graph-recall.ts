@@ -1,15 +1,3 @@
-/**
- * Graph-based retrieval integration (issue #559 PR 4 of 5).
- *
- * Pure helper that composes `extractGraphEdges` (PR 2) and `queryGraph`
- * (PR 3) into a single retrieval surface. Operators opt in via the
- * `recallGraphEnabled` config flag; until the `retrieval-graph` bench in
- * PR 5 justifies flipping the default, this tier ships disabled.
- *
- * Kept as a pure function so the orchestrator can call it with whatever
- * candidate pool it has (hot cache, recent window, QMD first-pass, etc.)
- * without forcing a specific storage contract on this module.
- */
 
 import {
   DEFAULT_PPR_DAMPING,
@@ -20,11 +8,6 @@ import {
   queryGraph,
 } from "./graph-retrieval.js";
 
-/**
- * Subset of `PluginConfig` that governs the graph retrieval tier. Kept
- * as a local interface so this module does not pull in the full
- * `PluginConfig` import — `orchestrator.ts` can pass the fields directly.
- */
 export interface GraphRecallConfig {
   /** Master enable flag. When false, `runGraphRecall` is a no-op. */
   recallGraphEnabled: boolean;
@@ -93,19 +76,6 @@ export interface GraphRecallRun {
   converged: boolean;
 }
 
-/**
- * Pure graph retrieval run.
- *
- * 1. Short-circuits to `{ ran: false }` when the feature flag is off,
- *    `topK <= 0`, or the memory pool is empty. No graph is built, no
- *    PPR runs — this preserves the zero-cost guarantee for
- *    `recallGraphEnabled: false` (the default).
- * 2. Otherwise builds the retrieval graph from the candidate pool via
- *    `buildGraphFromMemories` (PR 2 extractor).
- * 3. Runs Personalized PageRank via `queryGraph` (PR 3).
- * 4. Projects ranked nodes to memory-typed ids only — entity and agent
- *    nodes never appear in the recall result set.
- */
 export function runGraphRecall(
   config: GraphRecallConfig,
   options: GraphRecallOptions,
@@ -163,8 +133,6 @@ export function runGraphRecall(
       ? config.recallGraphIterations
       : DEFAULT_PPR_ITERATIONS;
 
-  // PPR runs without a topK so we can post-filter non-memory nodes without
-  // the trim dropping memory-typed results. We apply topK after projection.
   const ppr = queryGraph(graph, options.seedIds, {
     damping,
     iterations,

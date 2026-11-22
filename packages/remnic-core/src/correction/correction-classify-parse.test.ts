@@ -1,13 +1,3 @@
-/**
- * parseClassifyResponse regression tests (issue #3134).
- *
- * Proves the correction planner's single LLM-response parse chokepoint:
- *  - fenced JSON responses (```json … ```) parse into real actions instead of
- *    degrading to the deterministic fallback (#3134, same class as #1514);
- *  - genuinely non-JSON responses still return the byte-identical
- *    deterministic fallback (rule 13);
- *  - bare JSON keeps parsing through the same candidate chain.
- */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 

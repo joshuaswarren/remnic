@@ -1,16 +1,3 @@
-/**
- * Meeting building orchestration (issue #1900, Phase 4 slice 2).
- *
- * Ties the pure pieces together: detect the day's meetings, fuse each window's
- * transcript + screen context, and compose idempotent records. Day data is
- * supplied through an injected source so fixtures (and the later activity/
- * wearables wiring) share one code path — no hidden IO here.
- *
- * Gated on `meetings.enabled`: a disabled subsystem builds nothing on every
- * surface (degradation-matrix row). Degrades within an enabled build too — a
- * window with no audio yields an empty transcript, and no activity yields a
- * record with no screen-context section — because `fuseMeeting` handles both.
- */
 
 import { detectMeetings } from "./detect.js";
 import { fuseMeeting, type MeetingFusionOptions } from "./fuse.js";
@@ -83,7 +70,6 @@ export function buildMeetingRecordsForDay(
   });
 }
 
-/** Per-meeting outcome of a day build. */
 export interface MeetingBuildOutcome {
   id: string;
   startUtc: string;
@@ -96,7 +82,6 @@ export interface MeetingBuildOutcome {
   written: boolean;
 }
 
-/** Result of building one day's meetings. */
 export interface MeetingsDayBuildSummary {
   date: string;
   /** False when `meetings.enabled` is off (zero behavior). */
@@ -150,7 +135,6 @@ export interface MeetingsBuilderHooks {
   reindex?(summary: MeetingsDayBuildSummary): void | Promise<void>;
 }
 
-/** Orchestrates a store-backed build of a day's meetings. */
 export class MeetingsBuilder {
   constructor(
     private readonly opts: {
@@ -176,17 +160,11 @@ export class MeetingsBuilder {
       return { date, enabled: false, meetings: [], built: 0, skipped: 0, removed: [] };
     }
     const data = await this.opts.source.loadDayData(date);
-    // The source contract is loadDayData(date) → THAT day's signals. If the
-    // returned detection day disagrees, records would be written under
-    // data.detection.date while listing/adoption/reconciliation run on `date`,
-    // orphaning records and mis-keying the summary — reject the desync loudly.
     if (data.detection.date !== date) {
       throw new RangeError(
         `meetings: day source returned detection.date "${data.detection.date}" for requested day "${date}".`,
       );
     }
-    // Existing records for the day, so an overlapping shifted-start resync keeps
-    // its original id instead of being deleted + re-created under a new one.
     const existing = await this.opts.store.listMeetingSummaries(date);
     const claimed = new Set<string>();
     const resolveMeetingId = (meeting: DetectedMeeting): string =>
@@ -201,16 +179,8 @@ export class MeetingsBuilder {
     let built = 0;
     let skipped = 0;
     const builtIds = new Set<string>();
-    // Ids that existed before THIS build, so a same-id rewrite (contentHash
-    // changed) is distinguished from a brand-new record and from an untouched one.
     const priorIds = new Set(existing.map((summary) => summary.id));
-    // Built ids whose stored record was IDENTICAL this build (nothing rewritten):
-    // the generator must skip them so an idempotent rebuild triggers no LLM calls
-    // and no duplicate memories.
     const unchangedIds: string[] = [];
-    // Built ids that already existed and were rewritten this build (same id, new
-    // contentHash): the generator must refresh (retract + regenerate) their stale
-    // episode/summary memories.
     const updatedIds: string[] = [];
     for (const record of records) {
       const save = await this.opts.store.saveMeetingRecord(record);
@@ -233,9 +203,6 @@ export class MeetingsBuilder {
         written: save.written,
       });
     }
-    // Reconcile genuinely stale records: a prior build's meeting the current
-    // rebuild neither reproduced nor adopted (by overlap) is deleted so it does
-    // not linger and orphan its provenance. Delete only within THIS day's dir.
     const removed: string[] = [];
     for (const existingId of await this.opts.store.listMeetingIds(date)) {
       if (builtIds.has(existingId)) continue;
@@ -243,15 +210,6 @@ export class MeetingsBuilder {
       removed.push(existingId);
     }
     const summary: MeetingsDayBuildSummary = { date, enabled: true, meetings, built, skipped, removed };
-    // Memory generation runs behind the seam: the deterministic engine hands the
-    // built records, removed ids, and the unchanged/updated id sets to the
-    // injected generator and folds the returned counts + reindex signal into the
-    // summary. The engine never imports the memory-gen module.
-    //
-    // The record writes above already succeeded; a generator rejection must NOT
-    // fail the whole build and lose those persisted records. Isolate it exactly
-    // like the reindex hook: surface a generic warning, log the detail, and let
-    // the next build regenerate the missing memories.
     let outcome: MeetingMemoryOutcome | undefined;
     if (this.opts.memoryGenerator !== undefined) {
       try {
@@ -268,27 +226,10 @@ export class MeetingsBuilder {
     }
     if (outcome?.episodes !== undefined) summary.episodes = outcome.episodes;
     if (outcome?.facts !== undefined) summary.facts = outcome.facts;
-    // A SUCCESSFUL generation can still raise non-fatal warnings (e.g. a summary
-    // dep degraded). The fatal catch above leaves `outcome` undefined, so these
-    // paths are mutually exclusive: fold the generator's own warning strings into
-    // the same `memoryWarning` the CLI/JSON already surfaces so a green build does
-    // not silently hide them. These are generator-authored strings, not raw error
-    // text, so surfacing them is safe.
     if (outcome?.warnings !== undefined && outcome.warnings.length > 0) {
       summary.memoryWarning = outcome.warnings.join("; ");
     }
-    // Meeting records AND their episode/summary memories live inside the QMD
-    // collection root. Fire the isolated reindex whenever anything discoverable
-    // changed — records written/removed (engine) OR newly written episodes/facts
-    // (folded into outcome.reindexNeeded). A rebuild whose records were unchanged
-    // (built == 0 && removed == 0) but whose prior episode write had failed still
-    // creates active memories that must be indexed now, not left dark until the
-    // next scheduled maintenance pass.
     if (built > 0 || removed.length > 0 || (outcome?.reindexNeeded ?? false)) {
-      // The store mutation already succeeded; a reindex-hook rejection must not
-      // fail the whole build. Log the detail and surface a GENERIC warning — the
-      // raw error must not leak to the CLI's stdout — then let the next scheduled
-      // index update catch up.
       try {
         await this.opts.hooks?.reindex?.(summary);
       } catch (err) {
@@ -299,18 +240,6 @@ export class MeetingsBuilder {
     return summary;
   }
 
-  /**
-   * Pick the existing same-day record whose window best overlaps `meeting` and
-   * reuse its id — but ONLY when adoption is safe: the windows substantially
-   * coincide (overlap covers a majority of the shorter window), OR a corroborating
-   * identity signal (same app, same title, or a shared transcript source) is
-   * BACKED by a non-marginal overlap (>= a quarter of the shorter window). Coarse
-   * identity signals alone never license adoption across a thin sliver of overlap,
-   * or two genuinely different back-to-back same-app meetings would overwrite each
-   * other's record and `show <old-id>` would point at the wrong meeting. Candidate
-   * selection is deterministic (max overlap, then earliest start, then id).
-   * Returns the detector's fresh id when nothing qualifies.
-   */
   private adoptExistingId(
     meeting: DetectedMeeting,
     existing: readonly MeetingRecordSummary[],
@@ -336,16 +265,8 @@ export class MeetingsBuilder {
       if (better) best = { record, overlap, existingDurationMs: eEnd - eStart };
     }
     if (best === undefined) return meeting.id;
-    // Adoption bar (issue #1900): substantial overlap OR a corroborating identity
-    // signal that is BACKED by a non-marginal overlap — otherwise treat as
-    // removed + new. App name and transcript-source label are COARSE (many
-    // distinct meetings carry "Zoom"/"desktop"), so an identity match on its own
-    // must not license adoption across a thin sliver of overlap, or two genuinely
-    // different back-to-back same-app meetings would clobber each other's record.
     const shorterWindowMs = Math.min(dEnd - dStart, best.existingDurationMs);
     if (shorterWindowMs <= 0) return meeting.id;
-    // A shifted-start resync of the SAME meeting: overlap covers a majority of the
-    // shorter window. Adopts on its own.
     const substantial = best.overlap * 2 >= shorterWindowMs;
     const sharedSource = meeting.sources.some((source) => best!.record.sources.includes(source));
     const sameApp =
@@ -355,8 +276,6 @@ export class MeetingsBuilder {
     const meetingTitle = meeting.title?.trim() ?? "";
     const sameTitle = meetingTitle.length > 0 && meetingTitle === (best.record.title?.trim() ?? "");
     const hasIdentitySignal = sharedSource || sameApp || sameTitle;
-    // Non-marginal overlap gate: an identity signal only corroborates when the
-    // windows overlap by at least a quarter of the shorter window.
     const nonMarginalOverlap = best.overlap * 4 >= shorterWindowMs;
     if (!substantial && !(hasIdentitySignal && nonMarginalOverlap)) return meeting.id;
     claimed.add(best.record.id);
