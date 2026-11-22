@@ -1098,9 +1098,8 @@ export class AccessRecallSurface {
         },
       );
       recallStartedAt = capturedRecallStartedAt;
-      // Cancellation covers queueing + recall/capture. Post-capture shaping is
-      // intentionally not wired for mid-I/O abort in this change, but do not
-      // begin that work after the caller has already canceled.
+      // Cancellation covers queueing, recall/capture and post-capture shaping:
+      // each awaited shaping step is followed by another abort check.
       throwIfAborted(request.abortSignal, "recall X-ray aborted before postprocessing");
       // Re-check namespace after capture: the recall may have served
       // from a different namespace than the caller requested.  Drop
@@ -1152,6 +1151,7 @@ export class AccessRecallSurface {
               }
             }),
           );
+          throwIfAborted(request.abortSignal, "recall X-ray aborted during postprocessing");
           const tagged = snapshot.results.map((result, index) => ({
             result,
             tags: tagsByIndex[index] ?? [],
@@ -1248,6 +1248,7 @@ export class AccessRecallSurface {
               : disclosure === "raw"
                 ? []
                 : null;
+          throwIfAborted(request.abortSignal, "recall X-ray aborted during postprocessing");
           const rawExcerptText =
             rawExcerpts && rawExcerpts.length > 0
               ? rawExcerpts.map((e) => e.content).join("\n")
@@ -1272,6 +1273,7 @@ export class AccessRecallSurface {
               }
             }),
           );
+          throwIfAborted(request.abortSignal, "recall X-ray aborted during postprocessing");
           const firstReadableIndex = memoryByIndex.findIndex((m) => m !== null);
           const baseDir =
             (await this.deps.orchestrator.getStorage(namespace)).dir;

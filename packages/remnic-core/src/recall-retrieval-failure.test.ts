@@ -9,6 +9,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -26,7 +27,7 @@ import {
   type RecallContextComposition,
 } from "./recall-context-composition.js";
 import type { SearchBackend, SearchDegradation, SearchExecutionOptions } from "./search/port.js";
-import { DEFAULT_RECALL_DISCLOSURE, type PluginConfig } from "./types.js";
+import { DEFAULT_RECALL_DISCLOSURE, type PluginConfig, type QmdSearchResult } from "./types.js";
 
 const TIMEOUT_DEGRADATION: SearchDegradation = {
   backend: "qmd",
@@ -40,12 +41,13 @@ function searchBackend(
   observed: { calls: number },
   degrade: boolean,
   onSearch?: (query: string) => Promise<void>,
+  results: QmdSearchResult[] = [],
 ): SearchBackend {
   const search = async (query: string, execution?: SearchExecutionOptions) => {
     observed.calls += 1;
     if (degrade) execution?.onDegradation?.(TIMEOUT_DEGRADATION);
     await onSearch?.(query);
-    return [];
+    return results;
   };
   const backend: Partial<SearchBackend> = {
     async probe() {
@@ -958,4 +960,41 @@ test("a tag-filtered recall while the secure store is locked preserves the unloc
     },
     { recallOuterTimeoutMs: 400 },
   );
+});
+
+test("recall X-ray stops post-capture shaping once the caller aborts (#3547)", async () => {
+  await withOrchestrator("remnic-xray-abort-shaping-", false, async (orchestrator, observed) => {
+    const storage = await orchestrator.getStorage("default");
+    const { id } = await storage.writeMemory("fact", "writing rules apply here: keep sentences short");
+    const memory = (await storage.readAllMemories()).find((m) => m.content.includes("keep sentences short"));
+    assert.ok(memory);
+    const hit: QmdSearchResult = { docid: id, path: path.relative(storage.dir, memory.path), snippet: "writing rules", score: 0.9 };
+    Object.assign(orchestrator, { qmd: searchBackend(observed, false, undefined, [hit]) });
+    const controller = new AbortController();
+    const read = storage.readMemoryByPath.bind(storage);
+    const surface = readFileSync(new URL("./access-recall-surface.ts", import.meta.url), "utf8").split("\n");
+    const shapingStartsAfter = surface.findIndex((line) => line.includes("recall X-ray aborted before postprocessing")) + 1;
+    assert.ok(shapingStartsAfter > 0);
+    let shapingReads = 0;
+    storage.readMemoryByPath = async (p: string) => {
+      // abort from inside post-capture shaping: the recall surface frame sits after the pre-shaping check
+      const frame = /access-recall-surface\.ts:(\d+)/.exec(new Error().stack ?? "");
+      if (frame && Number(frame[1]) > shapingStartsAfter) {
+        shapingReads += 1;
+        controller.abort();
+      }
+      return read(p);
+    };
+    await assert.rejects(
+      () =>
+        new EngramAccessService(orchestrator).recallXray({
+          query: QUERY,
+          sessionKey: "xray-abort-shaping",
+          disclosure: "chunk",
+          abortSignal: controller.signal,
+        }),
+      (err: Error) => err.name === "AbortError",
+    );
+    assert.ok(shapingReads > 0);
+  });
 });
