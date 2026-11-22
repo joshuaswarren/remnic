@@ -417,18 +417,70 @@ export async function synthesizeCalibrationRules(
 // ─── Recall Section ──────────────────────────────────────────────────────────
 
 /**
+ * Lexical similarity score in `[0, 1]` between a query and a calibration
+ * rule — the same token-overlap idiom as `session-experience-recall.ts`
+ * (Jaccard over lowercase tokens longer than two chars). Shared code so
+ * the ranker and any future embedding scorer share one field mapping:
+ * the rule's *when/how* text, not its id.
+ */
+export function calibrationRuleQueryScore(
+  rule: CalibrationRule,
+  query: string,
+): number {
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length > 2);
+  const queryTokens = new Set(norm(query));
+  const ruleTokens = new Set(
+    norm(
+      `${rule.condition} ${rule.modelTendency} ${rule.userExpectation} ${rule.calibration}`,
+    ),
+  );
+  if (queryTokens.size === 0 || ruleTokens.size === 0) return 0;
+  let inter = 0;
+  for (const t of queryTokens) {
+    if (ruleTokens.has(t)) inter++;
+  }
+  const union = new Set([...queryTokens, ...ruleTokens]);
+  return inter / Math.max(1, union.size);
+}
+
+/**
+ * Order calibration rules by query relevance (issue #3552). Highest
+ * lexical-similarity first; ties and all-zero scores keep index order, so
+ * an unscoreable query yields the historical include-all ordering.
+ */
+export function rankCalibrationRulesForQuery(
+  rules: readonly CalibrationRule[],
+  query: string,
+): CalibrationRule[] {
+  return rules
+    .map((rule, index) => ({ rule, index, score: calibrationRuleQueryScore(rule, query) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((entry) => entry.rule);
+}
+
+/**
  * Build a recall section from calibration rules relevant to the current query.
- * Uses the LLM to select which rules apply to the current context.
+ * Rules are similarity-ranked against the query before `maxRules` and
+ * `maxChars` caps apply, so relevant rules win the budget instead of
+ * whichever happen to sit earliest in the index. When nothing matches
+ * the query the index order is preserved — the include-all fallback.
  */
 export function buildCalibrationRecallSection(
   rules: CalibrationRule[],
   query: string,
   maxChars: number = 1200,
+  maxRules?: number,
 ): string | null {
   if (rules.length === 0) return null;
 
-  // Simple relevance: include all rules (they're already filtered to this user)
-  // In production, could use embedding similarity to filter
+  const ranked = rankCalibrationRulesForQuery(rules, query);
+  const selected =
+    maxRules !== undefined ? ranked.slice(0, Math.max(0, maxRules)) : ranked;
+
   const lines: string[] = [
     "## Model Calibration (learned from past corrections)",
     "",
@@ -438,7 +490,7 @@ export function buildCalibrationRecallSection(
 
   let totalChars = lines.join("\n").length;
 
-  for (const rule of rules) {
+  for (const rule of selected) {
     const line = `- **${rule.condition}**: ${rule.modelTendency} → Instead: ${rule.calibration}`;
     if (totalChars + line.length + 1 > maxChars) break;
     lines.push(line);
