@@ -83,6 +83,8 @@ test("matchesPatterns honors * and ? anywhere in a filename pattern (#3549)", ()
   assert.equal(matchesPatterns("scan-7.png", ["scan-??.png"]), false);
   assert.equal(matchesPatterns("a.b.c", ["*.*.*"]), true);
   assert.equal(matchesPatterns("exact.bin", ["EXACT.BIN"]), true);
+  assert.equal(matchesPatterns("a.png", ["?.png"]), true);
+  assert.equal(matchesPatterns("\u{1F4F7}.png", ["?.png"]), true);
   assert.equal(matchesPatterns("x".repeat(200), ["*".repeat(20) + "y"]), false);
 });
 

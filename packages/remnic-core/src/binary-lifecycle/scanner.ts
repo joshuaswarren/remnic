@@ -14,10 +14,12 @@ import type { BinaryLifecycleConfig, BinaryLifecycleManifest } from "./types.js"
 /**
  * Case-insensitive glob match of one filename (no directory part) against one
  * pattern: `*` matches any run of characters, `?` exactly one, every other
- * character itself. Two-pointer backtracking, O(name x pattern) worst case and
+ * character itself, all over Unicode code points. Two-pointer backtracking, O(name x pattern) worst case and
  * no regular expression, so a hostile pattern cannot blow up.
  */
-function globMatches(name: string, pattern: string): boolean {
+function globMatches(nameText: string, patternText: string): boolean {
+  const name = Array.from(nameText);
+  const pattern = Array.from(patternText);
   let n = 0;
   let p = 0;
   let starP = -1;
