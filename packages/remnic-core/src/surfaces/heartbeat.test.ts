@@ -365,6 +365,12 @@ test("heartbeat surface watch catches callback failures instead of leaking unhan
       ].join("\n"),
       "utf8",
     );
+    // The watch debounces 25 ms after a file event, and file-event latency
+    // varies on a loaded runner: wait for the warning instead of a fixed
+    // sleep, then give a second (duplicate) warning time to show up.
+    for (let waited = 0; warnings.length === 0 && waited < 2_000; waited += 25) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   } finally {
     console.warn = originalWarn;
