@@ -376,6 +376,7 @@ export class NamespaceStorageRouter {
     // (used by extraction and shared-promotion paths) strip citations consistently,
     // matching the behaviour of the primary this.storage instance in the orchestrator.
     sm.citationTemplate = this.config.inlineSourceAttributionFormat;
+    sm.citationTemplateHistory = this.config.inlineSourceAttributionFormatHistory;
     // #1522: install the post-write catalog touch at the chokepoint — every
     // successful write on this StorageManager records the namespace touch.
     this.bindCatalogWriteHook(sm, ns);

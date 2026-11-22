@@ -1923,6 +1923,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private offlineSyncDigestCacheWriteTimer: ReturnType<typeof setTimeout> | null = null;
   /** Optional: set by the orchestrator after construction to enable template-aware citation stripping during legacy hash rebuild. */
   citationTemplate: string = DEFAULT_CITATION_FORMAT;
+  citationTemplateHistory: string[] = [];
   /** Post-write catalog hook (#1522). Installed by the namespace router; fire-and-forget. */
   onCatalogWrite?: () => void;
   /** Post-write embedding hook (#2019). Installed by the orchestrator; fire-and-forget. */
@@ -3142,7 +3143,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // and the normalized-text tier must match re-extraction, which hashes
       // the citation-stripped contentHashSource. Idempotent on pre-stripped
       // text (e.g. recordSupersession).
-      const strippedRawContent = stripCitationForTemplate(input.rawContent, this.citationTemplate);
+      const strippedRawContent = stripCitationForTemplate(input.rawContent, this.citationTemplate, this.citationTemplateHistory);
       // Canonicalization + post-append recheck (#2213) live in the helper.
       return await entityRefs.appendCanonicalizedTombstone(
         this.stateDir,
@@ -3212,7 +3213,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const all = [...(await this.readAllMemories()), ...(await this.readAllColdMemories())];
     // Pure projection (lifecycle/tombstones.ts) keeps this method thin (#1520).
     const retired = collectRetiredMemoriesForRebuild(all, {
-      stripCitation: (text) => stripCitationForTemplate(text, this.citationTemplate),
+      stripCitation: (text) => stripCitationForTemplate(text, this.citationTemplate, this.citationTemplateHistory),
       supersessionKeysForFact,
     });
     return await store.rebuild(retired);
@@ -3428,7 +3429,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
   private storedContentIdentityCandidates(content: string): string[] {
     return storedContentIdentityCandidates(content, (value) =>
-      hasCitationForTemplate(value, this.citationTemplate) ? stripCitationForTemplate(value, this.citationTemplate) : value
+      hasCitationForTemplate(value, this.citationTemplate, this.citationTemplateHistory) ? stripCitationForTemplate(value, this.citationTemplate, this.citationTemplateHistory) : value
     );
   }
 
