@@ -959,7 +959,16 @@ function formatLogEntry(entry: PeerInteractionLogEntry): string {
  * Creates `peers/{id}/` and `interactions.log.md` if needed. The file is
  * append-only by contract — this helper never rewrites prior entries.
  * Returns the absolute path of the log file (useful for tests).
+ *
+ * Concurrency contract: appends to the same file are serialized
+ * in-process via a per-file promise chain — entries land in submission
+ * order and a single entry can never be split by another writer's chunk
+ * (#3564). Ordering across separate PROCESSES is still the caller's
+ * responsibility (POSIX gives atomicity per write, not ordering).
  */
+// Per-file tail of the append chain. Bounded to files with an in-flight
+// write: the writer deletes its entry when it is still the tail.
+const appendQueues = new Map<string, Promise<void>>();
 export async function appendInteractionLog(
   memoryDir: string,
   peerId: string,
@@ -999,11 +1008,21 @@ export async function appendInteractionLog(
   await assertPeerDirNotEscaped(memoryDir, peerId);
   const file = interactionsPath(memoryDir, peerId);
   const line = formatLogEntry(entry) + "\n";
-  // `appendFile` creates the file if it does not exist. POSIX guarantees
-  // writes < PIPE_BUF are atomic; entries on this path are well under
-  // that bound. Ordering across concurrent writers is the caller's
-  // responsibility for now — the reasoner runs serially in PR 2/5.
-  await appendFileNoFollow(file, line);
+  // `appendFile` creates the file if it does not exist. Serialize writes
+  // per file so concurrent callers' entries land in submission order —
+  // `fh.writeFile` chunks a large entry across multiple writes, and an
+  // unqueued writer could otherwise interleave between them (#3564).
+  // The chain tail is kept on a .catch(() => {}) so one failed append
+  // does not poison the queue for followers.
+  const prev = appendQueues.get(file) ?? Promise.resolve();
+  const write = prev.then(() => appendFileNoFollow(file, line));
+  const tail = write.catch(() => {});
+  appendQueues.set(file, tail);
+  try {
+    await write;
+  } finally {
+    if (appendQueues.get(file) === tail) appendQueues.delete(file);
+  }
   return file;
 }
 

@@ -297,6 +297,36 @@ test("appendInteractionLog appends entries in order", async () => {
   assert.ok(lines[2].includes("third turn"));
 });
 
+test("appendInteractionLog serializes concurrent appends to one peer — #3564", async () => {
+  // Concurrent callers may append to the same peer's log (the reasoner is
+  // serial today, but the helper is a public export — nothing enforces
+  // submission order). A large entry is chunked across multiple writes
+  // internally; without per-file serialization a concurrent small write
+  // lands BETWEEN those chunks, corrupting the large entry or reordering
+  // the log. Contract: entries appear in submission order, each intact.
+  const dir = await makeTempDir();
+  const peerId = "agent.codex";
+  const big = `BIG-${"x".repeat(4 << 20)}-BIG-END`;
+  const [fileA, fileB] = await Promise.all([
+    appendInteractionLog(dir, peerId, {
+      timestamp: "2026-04-25T00:00:01.000Z",
+      kind: "message",
+      summary: big,
+    }),
+    appendInteractionLog(dir, peerId, {
+      timestamp: "2026-04-25T00:00:02.000Z",
+      kind: "message",
+      summary: "SMALL-END",
+    }),
+  ]);
+  assert.equal(fileA, fileB);
+  const raw = await readInteractionLogRaw(dir, peerId);
+  const lines = raw.trim().split("\n");
+  assert.equal(lines.length, 2, `expected 2 intact lines, got ${lines.length}`);
+  assert.ok(lines[0].includes("BIG-") && lines[0].includes("BIG-END"));
+  assert.ok(lines[1].includes("SMALL-END"));
+});
+
 test("appendInteractionLog escapes embedded newlines so each entry stays one line", async () => {
   const dir = await makeTempDir();
   const peerId = "human.alex";
