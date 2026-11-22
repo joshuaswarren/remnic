@@ -362,10 +362,14 @@ test("request bounds the whole call: a trickling body cannot outlive the timeout
       maxRetries: 0,
     });
     const outcome = await Promise.race([
-      client.recall("what matters?").then(
-        () => "resolved" as const,
-        (err: unknown) => (err instanceof Error ? `err:${err.message}` : "err"),
-      ),
+      (async () => {
+        try {
+          await client.recall("what matters?");
+          return "resolved" as const;
+        } catch (err) {
+          return err instanceof Error ? (`err:${err.message}` as const) : "err";
+        }
+      })(),
       new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 4_000)),
     ]);
     assert.notEqual(outcome, "hung", "recall must not wait on a body that never ends");
