@@ -51,9 +51,8 @@ export interface ChatToolExecutor {
   reviewList(runId?: string): Promise<string>;
   scopeInspect(): Promise<string>;
   /**
-   * Generate a correction plan.  Returns a JSON string with a planId and
-   * a diff preview.  When the Correction Contract (#1580) is not merged,
-   * this is a stub that returns a not-available marker.
+   * Generate a correction plan via the Correction Contract (#1580).  Returns
+   * a planId and a human-readable diff preview for the confirmation prompt.
    */
   correctionPlan(request: string): Promise<{ planId: string; preview: string }>;
   /**
