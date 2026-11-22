@@ -131,7 +131,7 @@ async function writeFileNoFollowIfAbsent(file: string, data: string): Promise<bo
 
 /** Append to a file, refusing to follow symlinks AND verifying parent
  * inode stability (codex P1 round 9). */
-async function appendFileNoFollow(file: string, data: string): Promise<void> {
+export async function appendFileNoFollow(file: string, data: string): Promise<void> {
   await assertParentDirInodeStable(file);
   const fh = await openNoFollow(
     file,
@@ -274,7 +274,7 @@ async function assertPeersRootNotSymlink(memoryDir: string): Promise<void> {
  * target. The dir handle is held across the mkdir, then we lstat
  * the candidate and reject if it's a symlink.
  */
-async function mkdirPeerDirAtomic(memoryDir: string, peerId: string): Promise<void> {
+export async function mkdirPeerDirAtomic(memoryDir: string, peerId: string): Promise<void> {
   const root = peersRoot(memoryDir);
   // Ensure the root exists as a real directory, not a symlink. Use
   // mkdir + lstat: if mkdir succeeds (or EEXIST), lstat must report
@@ -326,7 +326,7 @@ async function mkdirPeerDirAtomic(memoryDir: string, peerId: string): Promise<vo
  * can lstat it and realpath-check containment. For first-time writes,
  * call `mkdirPeerDirAtomic` BEFORE this; for reads, this alone.
  */
-async function assertPeerDirNotEscaped(memoryDir: string, peerId: string): Promise<void> {
+export async function assertPeerDirNotEscaped(memoryDir: string, peerId: string): Promise<void> {
   const candidate = peerDir(memoryDir, peerId);
   const root = peersRoot(memoryDir);
   // 1. The peers root must not be a symlink (defensive — writers
@@ -361,7 +361,7 @@ function profilePath(memoryDir: string, peerId: string): string {
   return path.join(peerDir(memoryDir, peerId), "profile.md");
 }
 
-function interactionsPath(memoryDir: string, peerId: string): string {
+export function interactionsPath(memoryDir: string, peerId: string): string {
   return path.join(peerDir(memoryDir, peerId), "interactions.log.md");
 }
 
@@ -898,113 +898,12 @@ export async function listPeers(memoryDir: string): Promise<Peer[]> {
 // Interaction log (append-only)
 // ──────────────────────────────────────────────────────────────────────
 
-function sanitizeLogField(value: string): string {
-  // Cursor Medium: every interaction-log field — not just summary —
-  // must collapse newlines so a malicious or buggy `timestamp` /
-  // `kind` / `sessionId` value can't break the one-line-per-entry
-  // invariant the append-only log relies on. Replace CR/LF/Tab with
-  // a single space; trim leading/trailing whitespace.
-  return value.replace(/[\r\n\t]+/g, " ").trim();
-}
-
-function isCanonicalIsoTimestamp(value: string): boolean {
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) && new Date(ms).toISOString() === value;
-}
-
 function parseIsoTimestampMs(value: string): number | null {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
     return null;
   }
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? ms : null;
-}
-
-function assertCanonicalIsoTimestamp(value: string, field: string): void {
-  if (!isCanonicalIsoTimestamp(value)) {
-    throw new Error(`${field} must be a canonical ISO-8601 timestamp`);
-  }
-}
-
-function formatLogEntry(entry: PeerInteractionLogEntry): string {
-  // One line per entry. We use a leading bullet so the file remains
-  // readable as ordinary markdown. Order: timestamp, kind, optional
-  // session id, summary. ALL fields are passed through `sanitizeLogField`
-  // so a stray newline anywhere can't shatter the append-only invariant
-  // (cursor Medium on PR #723).
-  //
-  // Cursor Low on PR #736: the previous bare `session=<id>` token was
-  // ambiguous with summaries that literally start with `session=`
-  // (e.g. summary `"session=foo bar"` round-tripped to
-  // `{sessionId: "foo", summary: "bar"}`). New entries wrap the
-  // session marker in square brackets — `[session=<id>]` — which a
-  // sanitized summary can never start with (sanitizeLogField never
-  // emits `[` as the first character of a summary that originally
-  // started with `session=`, and bracketed metadata is unambiguously
-  // distinct from `session=` text). Old entries written by previous
-  // code remain parseable through the legacy fallback in
-  // `parseLogLine`.
-  const ts = sanitizeLogField(entry.timestamp);
-  const kind = sanitizeLogField(entry.kind);
-  const summary = sanitizeLogField(entry.summary);
-  const session = entry.sessionId
-    ? ` [session=${sanitizeLogField(entry.sessionId)}]`
-    : "";
-  return `- [${ts}] (${kind})${session} ${summary}`;
-}
-
-/**
- * Append one entry to a peer's interaction log.
- *
- * Creates `peers/{id}/` and `interactions.log.md` if needed. The file is
- * append-only by contract — this helper never rewrites prior entries.
- * Returns the absolute path of the log file (useful for tests).
- */
-export async function appendInteractionLog(
-  memoryDir: string,
-  peerId: string,
-  entry: PeerInteractionLogEntry,
-): Promise<string> {
-  assertValidPeerId(peerId);
-  // Codex P2 round 10: trim() before the empty check matches what
-  // sanitizeLogField does at format time. A whitespace-only
-  // `timestamp` or `kind` would previously pass validation and then
-  // be normalized to "" later, producing an entry like `- [] ()`
-  // that breaks downstream parsers.
-  if (typeof entry.timestamp !== "string" || entry.timestamp.trim() === "") {
-    throw new Error("interaction entry must have a non-whitespace timestamp");
-  }
-  assertCanonicalIsoTimestamp(entry.timestamp.trim(), "interaction entry timestamp");
-  if (typeof entry.kind !== "string" || entry.kind.trim() === "") {
-    throw new Error("interaction entry must have a non-whitespace kind");
-  }
-  if (typeof entry.summary !== "string") {
-    throw new Error("interaction entry must have a string summary");
-  }
-  // Codex P2 round 6/8/9: optional sessionId must be a non-empty
-  // string OR strictly `undefined` (omitted). null and empty string
-  // are both rejected explicitly: the previous behavior silently
-  // dropped them during formatting, which reinterprets invalid input
-  // instead of failing fast like other validators in this module.
-  // Codex P2 round 12: trim() before the empty check matches what
-  // sanitizeLogField does at format time. Whitespace-only sessionId
-  // would otherwise pass validation and produce a `session=` token
-  // with an empty value that breaks downstream log parsers.
-  if (entry.sessionId !== undefined) {
-    if (typeof entry.sessionId !== "string" || entry.sessionId.trim() === "") {
-      throw new Error("interaction entry sessionId must be a non-whitespace string when provided");
-    }
-  }
-  await mkdirPeerDirAtomic(memoryDir, peerId);
-  await assertPeerDirNotEscaped(memoryDir, peerId);
-  const file = interactionsPath(memoryDir, peerId);
-  const line = formatLogEntry(entry) + "\n";
-  // `appendFile` creates the file if it does not exist. POSIX guarantees
-  // writes < PIPE_BUF are atomic; entries on this path are well under
-  // that bound. Ordering across concurrent writers is the caller's
-  // responsibility for now — the reasoner runs serially in PR 2/5.
-  await appendFileNoFollow(file, line);
-  return file;
 }
 
 // ──────────────────────────────────────────────────────────────────────
