@@ -1098,9 +1098,10 @@ export class AccessRecallSurface {
         },
       );
       recallStartedAt = capturedRecallStartedAt;
-      // Cancellation covers queueing + recall/capture. Post-capture shaping is
-      // intentionally not wired for mid-I/O abort in this change, but do not
-      // begin that work after the caller has already canceled.
+      // Cancellation covers queueing + recall/capture AND post-capture
+      // shaping: a check sits at each mid-I/O boundary below so a cancel
+      // that lands between steps stops the pipeline rather than running
+      // shaping to completion (issue #3547).
       throwIfAborted(request.abortSignal, "recall X-ray aborted before postprocessing");
       // Re-check namespace after capture: the recall may have served
       // from a different namespace than the caller requested.  Drop
@@ -1152,6 +1153,7 @@ export class AccessRecallSurface {
               }
             }),
           );
+          throwIfAborted(request.abortSignal, "recall X-ray aborted during tag filtering");
           const tagged = snapshot.results.map((result, index) => ({
             result,
             tags: tagsByIndex[index] ?? [],
@@ -1233,6 +1235,7 @@ export class AccessRecallSurface {
                   authenticatedPrincipal,
                 )
               : undefined;
+          throwIfAborted(request.abortSignal, "recall X-ray aborted before raw-excerpt fetch");
           const rawExcerpts =
             disclosure === "raw" && !rawExcerptsSuppressed
               ? await this.deps.fetchRawExcerpts(disclosure, {
@@ -1262,6 +1265,7 @@ export class AccessRecallSurface {
           //       updated, tags, entityRef) in the token estimate, so the
           //       summary reflects real spend rather than only payload-body
           //       spend (Cursor Low review on PR #699).
+          throwIfAborted(request.abortSignal, "recall X-ray aborted before result reads");
           const memoryByIndex = await Promise.all(
             snapshot.results.map(async (result) => {
               try {
@@ -1275,6 +1279,7 @@ export class AccessRecallSurface {
           const firstReadableIndex = memoryByIndex.findIndex((m) => m !== null);
           const baseDir =
             (await this.deps.orchestrator.getStorage(namespace)).dir;
+          throwIfAborted(request.abortSignal, "recall X-ray aborted during result decoration");
           const decorated = snapshot.results.map((result, index) => {
             const memory = memoryByIndex[index];
             if (!memory) {
@@ -1378,6 +1383,7 @@ export class AccessRecallSurface {
               authenticatedPrincipal,
             )
           : undefined;
+      throwIfAborted(request.abortSignal, "recall X-ray aborted before recall response build");
       return {
         ...xrayResponse,
         recall: await this.deps.buildRecallResponseFromXraySnapshot({
