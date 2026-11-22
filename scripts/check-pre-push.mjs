@@ -133,6 +133,18 @@ const CHECKS = [
     hint: "A changed line adds a ReDoS-shaped regex. Use bounded quantifiers such as \\s{0,8}, or scan with indexOf.",
   },
   {
+    name: "scoped anti-slop",
+    argv: ["node", "scripts/check-anti-slop.mjs"],
+    // CI's lint job runs this gate; without it here a type assertion on an
+    // added line passed check:pre-push and failed CI (#3616). Same base as
+    // the other changed-line gates.
+    env: {
+      REMNIC_ANTI_SLOP_BASE_REF:
+        process.env.REMNIC_ANTI_SLOP_BASE_REF ?? resolvedBase?.ref ?? "origin/main",
+    },
+    hint: "An added line trips an anti-slop rule (for example a type assertion without a SAFETY: comment). Fix the line, or justify it the way the rule message asks.",
+  },
+  {
     name: "envelope belt",
     argv: ["node", "scripts/check-envelope-belt.mjs"],
     hint: "A memory write bypasses composeMemoryEnvelope / storage.writeSealedMemory.",
