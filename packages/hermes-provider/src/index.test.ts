@@ -348,10 +348,11 @@ test("non-JSON client errors preserve HTTP status and are not retried", async ()
 // holds response.json() with no deadline. One deadline covers connect,
 // headers and body.
 test("request bounds the whole call: a trickling body cannot outlive the timeout", async () => {
-  const require2 = createRequire(import.meta.url) as NodeRequire;
-  const { startTricklingDaemon } = require2("../../../tests/helpers/stalled-daemon.cjs") as {
+  const require2 = createRequire(import.meta.url);
+  const helpers: {
     startTricklingDaemon: () => Promise<{ url: string; close: () => void }>;
-  };
+  } = require2("../../../tests/helpers/stalled-daemon.cjs");
+  const { startTricklingDaemon } = helpers;
   const trickle = await startTricklingDaemon();
   try {
     const client = new HermesClient({

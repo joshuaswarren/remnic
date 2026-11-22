@@ -410,10 +410,11 @@ test("a non-loopback remote origin refuses the local daemon lifecycle; loopback 
 // holds response.json() with no deadline. One deadline covers connect,
 // headers and body.
 test("daemon calls bound the whole request: a trickling body cannot outlive the deadline", async () => {
-  const require2 = createRequire(import.meta.url) as NodeRequire;
-  const { startTricklingDaemon } = require2("../../../tests/helpers/stalled-daemon.cjs") as {
+  const require2 = createRequire(import.meta.url);
+  const helpers: {
     startTricklingDaemon: () => Promise<{ url: string; close: () => void }>;
-  };
+  } = require2("../../../tests/helpers/stalled-daemon.cjs");
+  const { startTricklingDaemon } = helpers;
   const trickle = await startTricklingDaemon();
   try {
     const outcome = await Promise.race([
