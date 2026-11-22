@@ -566,12 +566,12 @@ function excerptRow(id: number, turnIndex: number, content: string) {
 }
 
 test("#3546: excerpts containing a result's provenance quote attach to that result, leftovers stay on the first", async () => {
-  const memA = attributionMemory("mem-a", "alpha verbatim quote");
-  const memB = attributionMemory("mem-b", "beta verbatim quote");
+  const memA = attributionMemory("mem-a", "the alpha verbatim quote span");
+  const memB = attributionMemory("mem-b", "the beta verbatim quote span");
   const rows = [
     excerptRow(1, 3, "query-relevant turn with no provenance span"),
-    excerptRow(2, 4, "prefix alpha verbatim quote suffix"),
-    excerptRow(3, 5, "beta verbatim quote appears here"),
+    excerptRow(2, 4, "prefix the alpha verbatim quote span suffix"),
+    excerptRow(3, 5, "the beta verbatim quote span appears here"),
   ];
   const probe = makeRawExcerptProbe({
     config: { principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }] },
@@ -639,5 +639,44 @@ test("#3546: memories without provenance quotes claim nothing — excerpts fall 
     response.results[1]?.rawExcerpts,
     undefined,
     "second result carries no excerpts when nothing attributed to it",
+  );
+});
+
+test("#3546: quotes under the attribution length floor claim nothing", async () => {
+  // Kilos's review on the PR: a very short quote substring-matches
+  // unrelated transcript text. Quotes below the floor are ignored for
+  // attribution, so their excerpts keep the first-result fallback.
+  const probe = makeRawExcerptProbe({
+    config: { principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }] },
+    snapshotNamespace: "pi-geek",
+    sessionKey: SESSION_KEY,
+    memories: new Map([
+      ["mem-a", attributionMemory("mem-a", "")],
+      ["mem-b", attributionMemory("mem-b", "it")],
+    ]),
+    excerptRows: [
+      excerptRow(1, 3, "turn three"),
+      excerptRow(2, 4, "a turn where it happens"),
+    ],
+  });
+
+  const { response } = await probeCast<ExecuteRecallInternals>(
+    probe.service,
+  ).executeRecall({
+    query: "what database are we using?",
+    sessionKey: SESSION_KEY,
+    authenticatedPrincipal: "pi-geek",
+    disclosure: "raw",
+  });
+
+  assert.deepEqual(
+    response.results[1]?.rawExcerpts,
+    undefined,
+    "a two-char quote must not attribute the excerpt containing it",
+  );
+  assert.deepEqual(
+    response.results[0]?.rawExcerpts?.map((e) => e.turnIndex),
+    [3, 4],
+    "below-floor quotes keep the excerpt on the first result",
   );
 });

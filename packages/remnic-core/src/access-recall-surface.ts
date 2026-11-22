@@ -36,6 +36,7 @@ import { lastRecallTimingsFor } from "./recall-timings.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
 import { StorageManager } from "./index.js";
 import { DEFAULT_RECALL_DISCLOSURE, type MemoryFile, type RecallDisclosure, type RecallPlanMode, isRecallDisclosure } from "./types.js";
+import { attributeRawExcerpts } from "./access-recall-excerpt-attribution.js";
 import {
   EngramAccessInputError,
   shapeMemorySummary,
@@ -180,64 +181,6 @@ export interface AccessRecallSurfaceDeps {
     primaryNamespace: string,
     recallNamespaces?: readonly string[],
   ): Promise<{ storage: StorageManager; dir: string } | null>;
-}
-
-/**
- * Attribute LCM raw excerpts to recall results via provenance quotes
- * (issue #3546). Every memory extracted since #1575 carries verbatim
- * `frontmatter.sources[].quote` spans — the same utterance text the LCM
- * archive stores — so an excerpt whose content contains a result's quote
- * is attributed to that result (earliest matching result wins). Excerpts
- * no result claims stay anchored to the first result: query-relevant
- * transcript context with no provenance match keeps the pre-#3546
- * placement, and no excerpt is silently dropped. Memories without
- * provenance quotes (legacy, or spans disabled) claim nothing; an empty
- * excerpt set attaches as `[]` to the first result exactly as before.
- */
-export function attributeRawExcerpts(
-  memories: readonly MemoryFile[],
-  excerpts: EngramAccessMemorySummary["rawExcerpts"] | undefined,
-): Array<EngramAccessMemorySummary["rawExcerpts"] | undefined> {
-  const attributed: Array<EngramAccessMemorySummary["rawExcerpts"] | undefined> =
-    memories.map(() => undefined);
-  if (!excerpts) return attributed;
-  if (excerpts.length === 0 || memories.length === 0) {
-    if (memories.length > 0) attributed[0] = excerpts;
-    return attributed;
-  }
-  const claimed = new Set<number>();
-  const claimedIndices: number[][] = memories.map(() => []);
-  memories.forEach((memory, index) => {
-    const quotes = (memory.frontmatter.sources ?? [])
-      .map((source) => source.quote?.trim())
-      .filter((quote): quote is string => Boolean(quote));
-    if (quotes.length === 0) return;
-    for (const [excerptIndex, excerpt] of excerpts.entries()) {
-      if (claimed.has(excerptIndex)) continue;
-      if (quotes.some((quote) => excerptIncludesQuote(excerpt, quote))) {
-        claimed.add(excerptIndex);
-        claimedIndices[index].push(excerptIndex);
-      }
-    }
-  });
-  for (const [index, indices] of claimedIndices.entries()) {
-    if (index !== 0 && indices.length > 0) {
-      attributed[index] = indices.map((excerptIndex) => excerpts[excerptIndex]);
-    }
-  }
-  // First result: its own matches plus every unclaimed excerpt, restored
-  // to transcript order.
-  attributed[0] = excerpts.filter(
-    (_, excerptIndex) => claimedIndices[0].includes(excerptIndex) || !claimed.has(excerptIndex),
-  );
-  return attributed;
-}
-
-function excerptIncludesQuote(
-  excerpt: NonNullable<EngramAccessMemorySummary["rawExcerpts"]>[number],
-  quote: string,
-): boolean {
-  return excerpt.content.includes(quote);
 }
 
 export class AccessRecallSurface {
