@@ -16,6 +16,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { fixtureGitEnv } from "./helpers/fixture-git.mjs";
 import {
   parseRegistry,
   parseStabilityDeclarations,
@@ -51,7 +52,7 @@ const BASE_REGISTRY = {
 };
 
 function git(cwd, args) {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: fixtureGitEnv() });
 }
 
 async function writeFileIn(root, relativePath, contents) {

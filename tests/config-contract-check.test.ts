@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { fixtureGitEnv } from "./helpers/fixture-git.mjs";
 import { runContractCheck } from "../scripts/config-contract/contract-check.ts";
 import type { ContractCheckResult } from "../scripts/config-contract/contract-check.ts";
 
@@ -267,7 +268,7 @@ function initGitRepo(root: string): void {
     execFileSync(
       "git",
       ["-C", root, "-c", "user.email=t@example.com", "-c", "user.name=fixture", ...args],
-      { stdio: "ignore" },
+      { stdio: "ignore", env: fixtureGitEnv() },
     );
   };
   git("init", "-q");
@@ -306,6 +307,7 @@ test("grandfather ban: a prior entry passes; a newly added entry is rejected (#1
     // Pin the base at the committed manifest (holds only the prior entries).
     execFileSync("git", ["-C", fixture.root, "update-ref", "refs/remotes/origin/main", "HEAD"], {
       stdio: "ignore",
+      env: fixtureGitEnv(),
     });
     // The prior entries exist at the base → accepted, their violations suppressed.
     const accepted = fixture.run();
@@ -359,6 +361,7 @@ test("baseline ref is configurable for fork-safe resolution (#1990)", () => {
     // The true PR base lives at a non-default ref (fork's origin/main differs).
     execFileSync("git", ["-C", fixture.root, "update-ref", "refs/remotes/origin/pr-base", "HEAD"], {
       stdio: "ignore",
+      env: fixtureGitEnv(),
     });
     // Resolving against the configured base ref keeps the ban active: a new
     // exception absent from that base is rejected.
