@@ -10,7 +10,6 @@ import {
 } from "@remnic/core/causal-behavior";
 import { parseConfig } from "@remnic/core/config";
 import { recordCausalTrajectory } from "@remnic/core/causal-trajectory";
-import { writeChainIndex, resolveChainsDir, type CausalEdge } from "@remnic/core/causal-chain";
 
 // ─── synthesizeCausalPreferences ─────────────────────────────────────────────
 
