@@ -246,6 +246,18 @@ export function parseRegistry(raw, source = REGISTRY_PATH) {
  * }} input
  * @returns {string[]} violations, empty when clean
  */
+/** Package names in a changeset's frontmatter (`"name": bump` lines between the first two `---`). */
+export function changesetPackageNames(text) {
+  const lines = text.split(/\r?\n/);
+  if (lines[0] !== "---") return [];
+  const names = [];
+  for (let i = 1; i < lines.length && lines[i] !== "---"; i += 1) {
+    const m = lines[i].match(/^"([^"]+)":/);
+    if (m) names.push(m[1]);
+  }
+  return names;
+}
+
 export function evaluateReleaseDiscipline(input) {
   const {
     changedFiles,
@@ -263,7 +275,15 @@ export function evaluateReleaseDiscipline(input) {
 
   // (a) changeset stability
   const levels = new Set();
+  const workspaceNames = new Set(packages.map((pkg) => pkg.name));
   for (const changeset of changesets) {
+    for (const name of changesetPackageNames(changeset.text)) {
+      if (!workspaceNames.has(name)) {
+        violations.push(
+          `${changeset.path}: "${name}" is not a workspace package. Name the published package (for example "@remnic/core").`,
+        );
+      }
+    }
     const declared = parseStabilityDeclarations(changeset.text);
     for (const bad of declared.invalid) {
       violations.push(

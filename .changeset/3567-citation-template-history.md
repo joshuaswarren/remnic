@@ -1,5 +1,6 @@
 ---
-"remnic-core": patch
+"@remnic/core": patch
+Stability: stable
 ---
 
 Stability: stable
