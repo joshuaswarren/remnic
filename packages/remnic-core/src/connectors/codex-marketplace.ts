@@ -462,29 +462,33 @@ async function resolveGit(
   gitUrl: string,
   logger: MarketplaceLogger,
 ): Promise<MarketplaceManifest> {
+  if (gitUrl.startsWith("-")) {
+    throw new Error(`Invalid git source: ${gitUrl} (must not look like a flag)`);
+  }
+
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-marketplace-git-"));
   const cloneDir = path.join(tmpDir, "repo");
 
-  logger.debug?.(`cloning git source for marketplace manifest: ${gitUrl}`);
   try {
-    await execFileAsync(
-      "git",
-      ["clone", "--quiet", "--depth", "1", gitUrl, cloneDir],
-      {
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-        timeout: GIT_CLONE_TIMEOUT_MS,
-      },
-    );
-  } catch (err) {
-    // SAFETY: the only awaited call in the try block is the git clone, and
-    // execFile rejections are always ExecFileException carrying the child's
-    // stderr.
-    const stderr = (err as ExecFileException).stderr?.toString().trim();
-    const detail = stderr || (err instanceof Error ? err.message : String(err));
-    throw new Error(`Failed to clone git source ${gitUrl}: ${detail}`);
-  }
+    logger.debug?.(`cloning git source for marketplace manifest: ${gitUrl}`);
+    try {
+      await execFileAsync(
+        "git",
+        ["clone", "--quiet", "--depth", "1", "--", gitUrl, cloneDir],
+        {
+          env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+          timeout: GIT_CLONE_TIMEOUT_MS,
+        },
+      );
+    } catch (err) {
+      // SAFETY: the only awaited call in the try block is the git clone, and
+      // execFile rejections are always ExecFileException carrying the child's
+      // stderr.
+      const stderr = (err as ExecFileException).stderr?.toString().trim();
+      const detail = stderr || (err instanceof Error ? err.message : String(err));
+      throw new Error(`Failed to clone git source ${gitUrl}: ${detail}`);
+    }
 
-  try {
     return resolveLocal(cloneDir, logger);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });

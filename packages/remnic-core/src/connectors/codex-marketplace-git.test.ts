@@ -107,6 +107,24 @@ test("#3611 git source resolves a local-path remote by cloning", async () => {
   }
 });
 
+test("#3611 flag-shaped git source is rejected before clone", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-mkt-cfg-"));
+  try {
+    const result = await installFromMarketplace(
+      "--upload-pack=/bin/false",
+      "git",
+      marketplaceConfig(memoryDir),
+    );
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.errors.some((e) => e.includes("must not look like a flag")),
+      `expected the flag guard, got: ${result.errors.join("; ")}`,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("#3611 non-repo git source fails as a clone error, not the stub", async () => {
   const notRepo = await mkdtemp(path.join(os.tmpdir(), "remnic-mkt-notgit-"));
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-mkt-cfg-"));
