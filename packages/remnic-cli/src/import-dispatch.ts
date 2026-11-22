@@ -24,6 +24,10 @@
 //   --help, -h             Print usage.
 
 import fs from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { unzipSync } from "fflate";
 
 import {
   runImporter,
@@ -221,6 +225,20 @@ function rejectLeftoverImportArgs(args: readonly string[], command: string): voi
 }
 
 /**
+ * Test seams for the `--file *.zip` path (issue #3542). Production uses the
+ * real extractor/detector; tests inject fakes so no archive or temp dir is
+ * needed.
+ */
+export interface ZipImportDeps {
+  /** Extract `zipPath` to a fresh directory and return its path. */
+  extractZipToDir?: (zipPath: string) => string;
+  /** Detect importable files inside the extracted directory. */
+  detector?: (dir: string) => DetectedBundleEntry[];
+  /** Remove the extraction directory afterwards. */
+  rmDir?: (dir: string) => void;
+}
+
+/**
  * Execute `remnic import` given already-parsed args. The IO parameter is
  * injected so tests can assert on the CLI's behaviour without touching the
  * filesystem or loading real importer packages.
@@ -228,11 +246,15 @@ function rejectLeftoverImportArgs(args: readonly string[], command: string): voi
 export async function runImportCommand(
   args: ImportDispatchArgs,
   io: ImportDispatchIO,
+  deps: ZipImportDeps = {},
 ): Promise<RunImporterResult> {
-  if (args.file && (isZipFilePath(args.file) || /\.(tgz|tar\.gz)$/i.test(args.file))) {
+  if (args.file && /\.(tgz|tar\.gz)$/i.test(args.file)) {
     throw new Error(
       `unpack first: archive imports are not supported ('${args.file}'). Extract the archive, then pass the directory.`,
     );
+  }
+  if (args.file && isZipFilePath(args.file)) {
+    return runZipImportCommand(args, args.file, io, deps);
   }
   const adapter = await io.loadAdapter(args.adapter);
 
@@ -305,6 +327,107 @@ export async function runImportCommand(
     );
   }
   return result;
+}
+
+/**
+ * `--file <export>.zip` (issue #3542): extract the archive to a temp dir and
+ * run the bundle detector over it — a zip is just an unflattened bundle.
+ * Entries are filtered to `args.adapter` when one was given, then each goes
+ * through the normal single-file pipeline; per-entry failures surface to
+ * stderr without aborting the rest (same policy as bundle mode). The temp
+ * dir is always removed.
+ */
+async function runZipImportCommand(
+  args: ImportDispatchArgs,
+  zipPath: string,
+  io: ImportDispatchIO,
+  deps: ZipImportDeps,
+): Promise<RunImporterResult> {
+  const extract = deps.extractZipToDir ?? extractZipToTempDir;
+  const detect = deps.detector ?? detectBundleEntries;
+  const rmDir =
+    deps.rmDir ?? ((dir) => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const dir = extract(zipPath);
+  try {
+    const entries = detect(dir).filter(
+      (entry) => !args.adapter || entry.adapter === args.adapter,
+    );
+    if (entries.length === 0) {
+      throw new Error(
+        `no '${args.adapter ?? "supported"}' exports found in '${zipPath}'. ` +
+          "Expected one of: memory.json, projects.json, conversations.json, My Activity.json, mem0.json.",
+      );
+    }
+    io.stdout(
+      `Extracted ${entries.length} import${entries.length === 1 ? "" : "s"} from '${zipPath}':`,
+    );
+    for (const entry of entries) {
+      io.stdout(`  - ${entry.adapter} → ${entry.filePath}`);
+    }
+
+    const results: RunImporterResult[] = [];
+    let firstError: unknown;
+    for (const entry of entries) {
+      try {
+        const perEntryArgs: ImportDispatchArgs = {
+          adapter: entry.adapter,
+          file: entry.filePath,
+          dryRun: args.dryRun,
+          includeConversations:
+            args.includeConversations || entry.includeConversations === true,
+        };
+        if (args.batchSize !== undefined) perEntryArgs.batchSize = args.batchSize;
+        if (args.rateLimit !== undefined) perEntryArgs.rateLimit = args.rateLimit;
+        results.push(await runImportCommand(perEntryArgs, io, deps));
+      } catch (err) {
+        firstError ??= err;
+        io.stderr(
+          `  adapter '${entry.adapter}' failed on ${entry.filePath}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    if (results.length === 0) {
+      throw firstError instanceof Error
+        ? firstError
+        : new Error(`every import in '${zipPath}' failed`);
+    }
+    return {
+      adapter: args.adapter ?? "bundle",
+      sourceLabel: `zip:${path.basename(zipPath)}`,
+      memoriesPlanned: results.reduce((n, r) => n + r.memoriesPlanned, 0),
+      memoriesWritten: results.reduce((n, r) => n + r.memoriesWritten, 0),
+      batchesProcessed: results.reduce((n, r) => n + r.batchesProcessed, 0),
+      dryRun: args.dryRun,
+      importedAt: results[0]?.importedAt ?? new Date().toISOString(),
+    };
+  } finally {
+    rmDir(dir);
+  }
+}
+
+/**
+ * Extract `zipPath` into a fresh temp directory. Member paths are normalized
+ * and anything escaping the root (absolute or `..`) is rejected — a hostile
+ * archive must not write outside the temp dir.
+ */
+function extractZipToTempDir(zipPath: string): string {
+  const members = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
+  const dir = fs.mkdtempSync(path.join(tmpdir(), "remnic-import-zip-"));
+  for (const [name, bytes] of Object.entries(members)) {
+    const rel = path.posix.normalize(name.replace(/\\/g, "/"));
+    if (rel === ".." || rel.startsWith("../") || path.posix.isAbsolute(rel)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      throw new Error(`refusing unsafe path in archive '${zipPath}': '${name}'`);
+    }
+    if (name.endsWith("/")) continue;
+    const out = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(out, bytes);
+  }
+  return dir;
 }
 
 function isZipFilePath(filePath: string): boolean {

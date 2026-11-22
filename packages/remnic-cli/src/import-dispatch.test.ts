@@ -346,26 +346,74 @@ describe("runImportCommand — slice 1 integration", () => {
     assert.equal(writeTargetCalls, 0);
   });
 
-  it("rejects ZIP --file inputs instead of decoding binary archives as UTF-8 text", async () => {
-    const { target } = makeTarget();
-    const adapter = makeFakeAdapter([]);
+  it("imports memories from a --file .zip by extracting to a temp dir and running the bundle detector (#3542)", async () => {
+    const memories: ImportedMemory[] = [
+      { content: "remember me", sourceLabel: "chatgpt" },
+    ];
+    const { target, received } = makeTarget();
+    const adapter = makeFakeAdapter(memories);
     const { io } = makeIo({ adapter, target });
+
+    const result = await runImportCommand(
+      {
+        adapter: "chatgpt",
+        file: "/tmp/export.zip",
+        dryRun: false,
+        includeConversations: false,
+      },
+      io,
+      {
+        extractZipToDir: () => "/tmp/fake-extract",
+        detector: () => [
+          { adapter: "chatgpt", filePath: "/tmp/fake-extract/memory.json" },
+        ],
+        rmDir: () => {},
+      },
+    );
+
+    assert.equal(result.memoriesWritten, 1);
+    assert.equal(received.length, 1);
+  });
+
+  it("filters zip entries to the requested adapter and rejects non-zip archives", async () => {
+    const memories: ImportedMemory[] = [
+      { content: "remember me", sourceLabel: "chatgpt" },
+    ];
+    const { target } = makeTarget();
+    const adapter = makeFakeAdapter(memories);
+    const { io } = makeIo({ adapter, target });
+
+    const result = await runImportCommand(
+      {
+        adapter: "chatgpt",
+        file: "/tmp/multi-export.zip",
+        dryRun: true,
+        includeConversations: false,
+      },
+      io,
+      {
+        extractZipToDir: () => "/tmp/fake-extract",
+        detector: () => [
+          { adapter: "chatgpt", filePath: "/tmp/fake-extract/memory.json" },
+          { adapter: "claude", filePath: "/tmp/fake-extract/projects.json" },
+        ],
+        rmDir: () => {},
+      },
+    );
+
+    assert.equal(result.memoriesPlanned, 1);
+    assert.equal(result.adapter, "chatgpt");
 
     await assert.rejects(
       () =>
         runImportCommand(
           {
             adapter: "chatgpt",
-            file: "/tmp/export.ZIP",
+            file: "/tmp/export.tgz",
             dryRun: true,
             includeConversations: false,
           },
-          {
-            ...io,
-            readFile: async () => {
-              throw new Error("ZIP path should be rejected before reading");
-            },
-          },
+          io,
         ),
       /unpack first/,
     );

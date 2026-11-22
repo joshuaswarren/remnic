@@ -36,24 +36,25 @@
     "@remnic/core": "workspace:^",
     "@remnic/plugin-pi": "workspace:^",
     "@remnic/server": "workspace:^",
+    "fflate": "^0.8.3",
     "yaml": "^2.4.2"
   },
   "peerDependencies": {
     "@remnic/bench": "^10.0.168",
-    "@remnic/plugin-openclaw": "^10.0.168",
+    "@remnic/capture-audio": "^10.0.168",
+    "@remnic/connector-bee": "^10.0.168",
+    "@remnic/connector-limitless": "^10.0.168",
+    "@remnic/connector-omi": "^10.0.168",
     "@remnic/export-weclone": "^10.0.168",
-    "@remnic/import-weclone": "^10.0.168",
     "@remnic/import-chatgpt": "^10.0.168",
     "@remnic/import-claude": "^10.0.168",
     "@remnic/import-gemini": "^10.0.168",
     "@remnic/import-lossless-claw": "^10.0.168",
     "@remnic/import-mem0": "^10.0.168",
-    "@remnic/import-supermemory": "^10.0.168",
     "@remnic/import-okf": "^10.0.168",
-    "@remnic/connector-limitless": "^10.0.168",
-    "@remnic/connector-bee": "^10.0.168",
-    "@remnic/connector-omi": "^10.0.168",
-    "@remnic/capture-audio": "^10.0.168"
+    "@remnic/import-supermemory": "^10.0.168",
+    "@remnic/import-weclone": "^10.0.168",
+    "@remnic/plugin-openclaw": "^10.0.168"
   },
   "peerDependenciesMeta": {
     "@remnic/bench": {
@@ -104,20 +105,20 @@
   },
   "devDependencies": {
     "@remnic/bench": "workspace:*",
-    "@remnic/plugin-openclaw": "workspace:*",
+    "@remnic/connector-bee": "workspace:*",
+    "@remnic/connector-limitless": "workspace:*",
+    "@remnic/connector-omi": "workspace:*",
     "@remnic/export-weclone": "workspace:*",
-    "@remnic/import-weclone": "workspace:*",
     "@remnic/import-chatgpt": "workspace:*",
     "@remnic/import-claude": "workspace:*",
     "@remnic/import-gemini": "workspace:*",
     "@remnic/import-lossless-claw": "workspace:*",
     "@remnic/import-mem0": "workspace:*",
     "@remnic/import-supermemory": "workspace:*",
+    "@remnic/import-weclone": "workspace:*",
+    "@remnic/plugin-openclaw": "workspace:*",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3",
-    "@remnic/connector-limitless": "workspace:*",
-    "@remnic/connector-bee": "workspace:*",
-    "@remnic/connector-omi": "workspace:*"
+    "typescript": "^5.9.3"
   },
   "license": "MIT",
   "repository": {
