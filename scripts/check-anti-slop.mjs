@@ -125,6 +125,16 @@ function diagnosticKey(diagnostic, contents) {
   return `${diagnostic.code}::${labels.join("|")}`;
 }
 
+// The stage directory lives inside the worktree's real git directory, which is
+// NOT <repo>/.git in a linked worktree (there .git is a FILE, so mkdir there
+// fails with ENOTDIR). `git rev-parse --absolute-git-dir` returns the worktree's
+// own git dir for both layouts.
+function gitDirPath(repoRoot) {
+  const result = execGit(repoRoot, ["rev-parse", "--absolute-git-dir"]);
+  if (result.status !== 0 || result.stdout.trim().length === 0) return join(repoRoot, ".git");
+  return result.stdout.trim();
+}
+
 // Lint the base revision of each tracked changed file and count the finding
 // keys that already existed, keyed by the file's repo-relative path. Files with
 // no base revision (new files) get no baseline, so every finding blocks; a base
@@ -135,7 +145,7 @@ function diagnosticKey(diagnostic, contents) {
 function baseFindingKeys(repoRoot, baseRef, files) {
   const keysByFile = new Map();
   if (files.length === 0) return keysByFile;
-  const stageRoot = join(repoRoot, ".git", "anti-slop-base");
+  const stageRoot = join(gitDirPath(repoRoot), "anti-slop-base");
   const staged = [];
   try {
     rmSync(stageRoot, { recursive: true, force: true });
@@ -148,16 +158,18 @@ function baseFindingKeys(repoRoot, baseRef, files) {
       staged.push(file);
     }
     if (staged.length === 0) return keysByFile;
-    const baseDiagnostics = lintChangedFiles(repoRoot, staged.map((file) => join(".git", "anti-slop-base", file)));
+    const baseDiagnostics = lintChangedFiles(repoRoot, staged.map((file) => join(stageRoot, file)));
     if (baseDiagnostics === null) return keysByFile; // unusable baseline: line-scoped check still applies
     for (const diagnostic of baseDiagnostics) {
       if (!isAntiSlopDiagnostic(diagnostic) || !Array.isArray(diagnostic.labels) || diagnostic.labels.length === 0) continue;
-      // oxlint reports paths relative to the cwd (the repo root), not the stage root.
-      const stagedPath = isNonEmptyText(diagnostic.filename)
-        ? relative(repoRoot, resolve(repoRoot, diagnostic.filename)).split(sep).join("/")
-        : null;
-      if (stagedPath === null || !stagedPath.startsWith(".git/anti-slop-base/")) continue;
-      const originalFile = stagedPath.slice(".git/anti-slop-base/".length);
+      // oxlint reports paths relative to the cwd (the repo root) or absolute,
+      // depending on how the file was passed; resolve against the repo root and
+      // then map back from the stage root.
+      if (!isNonEmptyText(diagnostic.filename)) continue;
+      const absolute = resolve(repoRoot, diagnostic.filename);
+      const stagedPath = relative(stageRoot, absolute).split(sep).join("/");
+      if (stagedPath === "" || stagedPath.startsWith("..")) continue;
+      const originalFile = stagedPath;
       let counts = keysByFile.get(originalFile);
       if (counts === undefined) {
         counts = new Map();

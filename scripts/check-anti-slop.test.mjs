@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -157,6 +157,26 @@ test("a second identical finding on unchanged lines blocks even when one already
   write(root, "twin.ts", head);
   const result = runGate(root, ["--base", "HEAD"]);
   assertStatus(result, 1, "second identical finding is new even though its text repeats the baseline");
+  assert.match(result.stderr, /anti-slop\(no-widen-then-assert\)/);
+});
+
+test("the gate runs inside a linked git worktree, where .git is a file", (t) => {
+  // A linked worktree has a .git FILE, not a directory, so a stage directory
+  // under <repo>/.git fails with ENOTDIR. The stage lives in the worktree's real
+  // git dir instead.
+  const root = makeRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const SAFETY = "// SAFETY: fixture\n";
+  write(root, "escape.ts", `${SAFETY}const config = input as { name: string };\nconst orchestrator = config as { name: string };\n`);
+  commitAll(root, "base without widening");
+  const worktree = join(root, "..", `linked-${basename(root)}`);
+  git(root, ["worktree", "add", "-q", "-b", "feature", worktree]);
+  t.after(() => rmSync(worktree, { recursive: true, force: true }));
+  assert.equal(existsSync(join(worktree, ".git")), true);
+  assert.equal(statSync(join(worktree, ".git")).isFile(), true, "linked worktree .git must be a file");
+  write(worktree, "escape.ts", `${SAFETY}const config: unknown = input as { name: string };\nconst orchestrator = config as { name: string };\n`);
+  const result = runGate(worktree, ["--base", "HEAD"]);
+  assertStatus(result, 1, "linked worktree with a finding introduced on an unchanged line");
   assert.match(result.stderr, /anti-slop\(no-widen-then-assert\)/);
 });
 
