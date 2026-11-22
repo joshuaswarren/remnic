@@ -135,6 +135,20 @@ test("a valid Stability line satisfies the changeset rule", async () => {
   );
 });
 
+test("a changeset naming a package outside the workspace fails (#3670)", async () => {
+  await withFixture(
+    async ({ write }) => {
+      await write("packages/remnic-core/src/recall.ts", "export const recall = 1;\n");
+      await write(".changeset/recall.md", `---\n"remnic-core": patch\n---\n\nTighten recall ordering.\n\nStability: stable\n`);
+    },
+    (result) => {
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr + result.stdout, /remnic-core/);
+      assert.match(result.stderr + result.stdout, /not a workspace package/);
+    },
+  );
+});
+
 test("a malformed Stability value fails instead of being normalized", async () => {
   await withFixture(
     async ({ write }) => {
