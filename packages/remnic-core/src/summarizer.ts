@@ -107,11 +107,16 @@ export function summarizeHourlyStatus(stats: HourlySummarizerRunStats): {
   };
 }
 
+export type HourlySummarizerLlmClients = {
+  localLlm?: Pick<LocalLlmClient, "chatCompletion">;
+  fallbackLlm?: Pick<FallbackLlmClient, "parseWithSchema">;
+};
+
 export class HourlySummarizer {
   private summariesDir: string;
   private config: PluginConfig;
-  private localLlm: LocalLlmClient;
-  private fallbackLlm: FallbackLlmClient;
+  private localLlm: Pick<LocalLlmClient, "chatCompletion">;
+  private fallbackLlm: Pick<FallbackLlmClient, "parseWithSchema">;
   private modelRegistry: ModelRegistry;
   private transcript?: TranscriptManager;
   /** Orchestrator-owned stop signal: refuses new summaries and aborts the
@@ -123,7 +128,8 @@ export class HourlySummarizer {
     gatewayConfig?: GatewayConfig,
     modelRegistry?: ModelRegistry,
     transcript?: TranscriptManager,
-    shutdownSignal?: AbortSignal
+    shutdownSignal?: AbortSignal,
+    llmClients?: HourlySummarizerLlmClients
   ) {
     this.config = config;
     this.summariesDir = path.join(config.memoryDir, "summaries", "hourly");
@@ -132,10 +138,12 @@ export class HourlySummarizer {
     this.shutdownSignal = shutdownSignal;
 
     // Initialize local LLM client with shared model registry
-    this.localLlm = new LocalLlmClient(config, this.modelRegistry, shutdownSignal);
+    this.localLlm = llmClients?.localLlm ?? new LocalLlmClient(config, this.modelRegistry, shutdownSignal);
 
     // Initialize fallback client with gateway config
-    this.fallbackLlm = new FallbackLlmClient(gatewayConfig, fallbackLlmRuntimeContextFromConfig(config));
+    this.fallbackLlm =
+      llmClients?.fallbackLlm ??
+      new FallbackLlmClient(gatewayConfig, fallbackLlmRuntimeContextFromConfig(config));
 
     if (
       !gatewayConfig?.agents?.defaults?.model?.primary &&
