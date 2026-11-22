@@ -16,6 +16,7 @@ function git(cwd, ...args) {
 function createRepo() {
   const root = mkdtempSync(path.join(os.tmpdir(), "remnic-agent-checkpoint-"));
   git(root, "init");
+  git(root, "config", "core.hooksPath", "/dev/null");
   git(root, "config", "user.email", "dev@example.com");
   git(root, "config", "user.name", "Dev");
   writeFileSync(path.join(root, "README"), "ok\n");

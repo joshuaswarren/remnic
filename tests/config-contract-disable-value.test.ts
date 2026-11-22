@@ -427,6 +427,7 @@ test("runDisableValueCheck fails closed when the shrink-only baseline cannot be 
   try {
     const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args], { stdio: ["ignore", "pipe", "ignore"] });
     git("init", "-q");
+    git("config", "core.hooksPath", "/dev/null");
     git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "init");
     const grandfatherPath = path.join(dir, "gf.json");
     await writeFile(
