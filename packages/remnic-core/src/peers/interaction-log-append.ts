@@ -4,6 +4,8 @@
  * exceeded its grandfathered ceiling). Read/parse stays in storage.ts.
  */
 
+import { z } from "zod";
+
 import type { PeerInteractionLogEntry } from "./types.js";
 import {
   appendFileNoFollow,
@@ -12,6 +14,26 @@ import {
   interactionsPath,
   mkdirPeerDirAtomic,
 } from "./storage.js";
+
+// Boundary decode for the untrusted entry argument. The checks below
+// carry the Codex P2 review history: trim() before the empty check
+// matches what sanitizeLogField does at format time (round 10/12); a
+// whitespace-only timestamp or kind would previously pass validation
+// and then be normalized to "" later, producing an entry like
+// `- [] ()` that breaks downstream parsers; optional sessionId must be
+// a non-empty string OR strictly `undefined` — null and "" are both
+// rejected explicitly (rounds 6/8/9) because silently dropping them
+// reinterprets invalid input instead of failing fast.
+const NON_WHITESPACE_TIMESTAMP = "interaction entry must have a non-whitespace timestamp";
+const NON_WHITESPACE_KIND = "interaction entry must have a non-whitespace kind";
+const STRING_SUMMARY = "interaction entry must have a string summary";
+const NON_WHITESPACE_SESSION = "interaction entry sessionId must be a non-whitespace string when provided";
+const interactionEntrySchema = z.object({
+  timestamp: z.string({ error: NON_WHITESPACE_TIMESTAMP }).trim().min(1, NON_WHITESPACE_TIMESTAMP),
+  kind: z.string({ error: NON_WHITESPACE_KIND }).trim().min(1, NON_WHITESPACE_KIND),
+  summary: z.string({ error: STRING_SUMMARY }),
+  sessionId: z.string({ error: NON_WHITESPACE_SESSION }).trim().min(1, NON_WHITESPACE_SESSION).optional(),
+});
 
 function sanitizeLogField(value: string): string {
   // Cursor Medium: every interaction-log field — not just summary —
@@ -81,39 +103,16 @@ export async function appendInteractionLog(
   entry: PeerInteractionLogEntry,
 ): Promise<string> {
   assertValidPeerId(peerId);
-  // Codex P2 round 10: trim() before the empty check matches what
-  // sanitizeLogField does at format time. A whitespace-only
-  // `timestamp` or `kind` would previously pass validation and then
-  // be normalized to "" later, producing an entry like `- [] ()`
-  // that breaks downstream parsers.
-  if (typeof entry.timestamp !== "string" || entry.timestamp.trim() === "") {
-    throw new Error("interaction entry must have a non-whitespace timestamp");
+  const parsedEntry = interactionEntrySchema.safeParse(entry);
+  if (!parsedEntry.success) {
+    throw new Error(parsedEntry.error.issues[0]?.message ?? "invalid interaction entry");
   }
-  assertCanonicalIsoTimestamp(entry.timestamp.trim(), "interaction entry timestamp");
-  if (typeof entry.kind !== "string" || entry.kind.trim() === "") {
-    throw new Error("interaction entry must have a non-whitespace kind");
-  }
-  if (typeof entry.summary !== "string") {
-    throw new Error("interaction entry must have a string summary");
-  }
-  // Codex P2 round 6/8/9: optional sessionId must be a non-empty
-  // string OR strictly `undefined` (omitted). null and empty string
-  // are both rejected explicitly: the previous behavior silently
-  // dropped them during formatting, which reinterprets invalid input
-  // instead of failing fast like other validators in this module.
-  // Codex P2 round 12: trim() before the empty check matches what
-  // sanitizeLogField does at format time. Whitespace-only sessionId
-  // would otherwise pass validation and produce a `session=` token
-  // with an empty value that breaks downstream log parsers.
-  if (entry.sessionId !== undefined) {
-    if (typeof entry.sessionId !== "string" || entry.sessionId.trim() === "") {
-      throw new Error("interaction entry sessionId must be a non-whitespace string when provided");
-    }
-  }
+  const e = parsedEntry.data;
+  assertCanonicalIsoTimestamp(e.timestamp, "interaction entry timestamp");
   await mkdirPeerDirAtomic(memoryDir, peerId);
   await assertPeerDirNotEscaped(memoryDir, peerId);
   const file = interactionsPath(memoryDir, peerId);
-  const line = formatLogEntry(entry) + "\n";
+  const line = formatLogEntry(e) + "\n";
   // `appendFile` creates the file if it does not exist. Serialize writes
   // per file so concurrent callers' entries land in enqueue order —
   // `fh.writeFile` chunks a large entry across multiple writes, and an
