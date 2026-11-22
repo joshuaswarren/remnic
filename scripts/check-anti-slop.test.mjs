@@ -120,6 +120,46 @@ test("a widening added on a changed line reports at an unchanged line and must s
   assert.match(result.stderr, /anti-slop\(no-widen-then-assert\)/);
 });
 
+test("a second identical finding on unchanged lines blocks even when one already existed", (t) => {
+  // Twin-scope fixture from the 3625 review: deleting the shadowing scope makes
+  // the untouched inner assert resolve to the widened binding, so the same rule
+  // fires twice with identical span text on unchanged lines. A set-keyed
+  // baseline would hide the new occurrence; only counting catches it.
+  const root = makeRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const base = [
+    "// SAFETY: fixture",
+    "function outer(input: unknown) {",
+    "  const config: unknown = input as { name: string };",
+    "  const o1 = config as { name: string };",
+    "  {",
+    "    const config = input as { name: string };",
+    "    // SAFETY: fixture",
+    "    const o2 = config as { name: string };",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  const head = [
+    "// SAFETY: fixture",
+    "function outer(input: unknown) {",
+    "  const config: unknown = input as { name: string };",
+    "  const o1 = config as { name: string };",
+    "  {",
+    "    // SAFETY: fixture",
+    "    const o2 = config as { name: string };",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  write(root, "twin.ts", base);
+  commitAll(root, "base with one widening pair");
+  write(root, "twin.ts", head);
+  const result = runGate(root, ["--base", "HEAD"]);
+  assertStatus(result, 1, "second identical finding is new even though its text repeats the baseline");
+  assert.match(result.stderr, /anti-slop\(no-widen-then-assert\)/);
+});
+
 test("introduced violations fail even when another violation is removed", (t) => {
   const root = makeRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));

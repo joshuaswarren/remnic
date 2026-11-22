@@ -125,11 +125,13 @@ function diagnosticKey(diagnostic, contents) {
   return `${diagnostic.code}::${labels.join("|")}`;
 }
 
-// Lint the base revision of each tracked changed file and collect the finding
+// Lint the base revision of each tracked changed file and count the finding
 // keys that already existed, keyed by the file's repo-relative path. Files with
 // no base revision (new files) get no baseline, so every finding blocks; a base
-// revision that fails to lint simply contributes no keys, falling back to the
-// line-scoped check for that file.
+// revision that fails to lint simply contributes no counts, falling back to the
+// line-scoped check for that file. Counts are per key (multiset), so a change
+// that creates a SECOND finding identical to a baseline one still blocks: a
+// set-keyed baseline would hide it.
 function baseFindingKeys(repoRoot, baseRef, files) {
   const keysByFile = new Map();
   if (files.length === 0) return keysByFile;
@@ -154,14 +156,15 @@ function baseFindingKeys(repoRoot, baseRef, files) {
         : null;
       if (stagedPath === null || !stagedPath.startsWith(".git/anti-slop-base/")) continue;
       const originalFile = stagedPath.slice(".git/anti-slop-base/".length);
-      let keys = keysByFile.get(originalFile);
-      if (keys === undefined) {
-        keys = new Set();
-        keysByFile.set(originalFile, keys);
+      let counts = keysByFile.get(originalFile);
+      if (counts === undefined) {
+        counts = new Map();
+        keysByFile.set(originalFile, counts);
       }
       try {
         const contents = readFileSync(join(stageRoot, originalFile));
-        keys.add(diagnosticKey(diagnostic, contents));
+        const key = diagnosticKey(diagnostic, contents);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
       } catch {
         // unreadable staged copy: skip this finding's key
       }
@@ -307,6 +310,7 @@ function main() {
   const baseKeysByFile = baseFindingKeys(repoRoot, baseRef, trackedSourcesList);
 
   const scannedFiles = new Set(changedFiles);
+  const headCountsByFile = new Map();
   const sources = new Map();
   const violations = [];
   const internalErrors = [];
@@ -341,12 +345,22 @@ function main() {
     }
     const addedLines = addedLinesByFile.get(file);
     const overlap = ranges.find(([start, end]) => addedLines === null || linesIntersect(start, end, addedLines));
-    const baseKeys = addedLines === null ? undefined : baseKeysByFile.get(file);
-    const introduced = baseKeys !== undefined && !baseKeys.has(diagnosticKey(diagnostic, sources.get(file).contents));
+    const baseCounts = addedLines === null ? undefined : baseKeysByFile.get(file);
+    let seenCounts = headCountsByFile.get(file);
+    if (seenCounts === undefined) {
+      seenCounts = new Map();
+      headCountsByFile.set(file, seenCounts);
+    }
+    const key = diagnosticKey(diagnostic, sources.get(file).contents);
+    const seen = (seenCounts.get(key) ?? 0) + 1;
+    seenCounts.set(key, seen);
+    const introduced = baseCounts !== undefined && seen > (baseCounts.get(key) ?? 0);
     if (overlap || introduced) {
       const [startLine, endLine] = overlap ?? ranges[0];
       const at = startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
-      const why = overlap ? "on added/changed lines" : "introduced by this change (absent from the base revision)";
+      const why = overlap
+        ? "on added/changed lines"
+        : "introduced by this change (occurs more often than in the base revision)";
       violations.push(`${file}:${at}: ${diagnostic.code} ${diagnostic.message} (${why})`);
     }
   }
