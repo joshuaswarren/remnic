@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { crc32, deflateRawSync } from "node:zlib";
 import { parseChatGPTExport } from "@remnic/import-chatgpt";
+import { readZipEntries } from "./zip-entries.js";
 import { describe, it } from "node:test";
 
 import {
@@ -814,6 +815,36 @@ describe("runImportCommand ChatGPT export ZIP (#3542)", () => {
         ),
       /inflates past its declared size/,
     );
+  });
+
+  it("refuses a tiny entry that declares a huge size before inflating it", async () => {
+    const { target } = makeTarget();
+    const { adapter } = makeCapturingAdapter();
+    const { io } = makeIo({ adapter, target });
+    await assert.rejects(
+      () =>
+        runImportCommand(
+          { adapter: "chatgpt", file: "/tmp/export.zip", dryRun: true, includeConversations: false },
+          {
+            ...io,
+            readFileBytes: async () =>
+              zipOf([{ name: "conversations.json", data: "[]", declaredSize: 3_000_000_000 }]),
+          },
+        ),
+      /exceeds the per-entry limit/,
+    );
+  });
+
+  it("caps the total size of the extracted entries", () => {
+    const zip = zipOf([
+      { name: "memory.json", data: "[" + " ".repeat(98) + "]" },
+      { name: "conversations.json", data: "[" + " ".repeat(98) + "]" },
+    ]);
+    assert.throws(
+      () => readZipEntries(zip, () => true, { maxEntryBytes: 100, maxTotalBytes: 150 }),
+      /exceeds the total limit/,
+    );
+    assert.equal(readZipEntries(zip, () => true, { maxEntryBytes: 100, maxTotalBytes: 200 }).size, 2);
   });
 
   it("refuses an entry whose CRC does not match", async () => {
