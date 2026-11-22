@@ -117,6 +117,8 @@ type BackendRecordOptions = {
 
 export class NamespaceSearchRouter {
   private readonly cache = new Map<string, Promise<NamespaceBackendRecord>>();
+  // Scoped to the backend record's lifetime; a native result supersedes older CLI probes.
+  private readonly nativeHealthRevision = new WeakMap<Promise<NamespaceBackendRecord>, number>();
   private readonly healthResultCache = new Map<
     string,
     { expiresAt: number; value: NamespaceSearchHealth }
@@ -350,6 +352,9 @@ export class NamespaceSearchRouter {
     }
     if (operational) {
       this.healthResultCache.delete(key);
+      if (pending) {
+        this.nativeHealthRevision.set(pending, (this.nativeHealthRevision.get(pending) ?? 0) + 1);
+      }
       return operational();
     }
     const cached = this.healthResultCache.get(key);
@@ -359,6 +364,7 @@ export class NamespaceSearchRouter {
       return { ...cached.value };
     }
 
+    const nativeRevision = pending && this.nativeHealthRevision.get(pending);
     const record = await this.createBackendRecordFor(
       key,
       execution,
@@ -368,6 +374,7 @@ export class NamespaceSearchRouter {
         failOpenMissingGuardedCollection: false,
       },
     );
+    let health: NamespaceSearchHealth;
     try {
       const liveRecord = await this.liveCachedRecordForHealth(key, record, execution);
       const diagnosticBackend = liveRecord?.backend ?? record.backend;
@@ -383,31 +390,32 @@ export class NamespaceSearchRouter {
           ? "missing"
           : record.collectionState;
 
-      const health = this.describeHealth(
+      health = this.describeHealth(
         record, diagnosticBackend,
         execution?.signal?.aborted ? "unknown" : collectionState,
         execution?.signal?.aborted ? null : backendStatus,
         liveRecord?.available ?? record.available,
       );
-
-      // Cache only a healthy answer that carries backlog data when the backend
-      // reports status. A degraded or incomplete answer must re-probe so a
-      // readiness poll sees recovery on the next call, not one TTL late.
-      if (
-        operational === undefined && this.cache.get(key) === pending &&
-        execution?.signal?.aborted !== true &&
-        !isSearchHealthDegraded(health, health.embeddingBacklogThreshold)
-      ) {
-        this.healthResultCache.set(key, {
-          expiresAt: Date.now() + HEALTH_RESULT_CACHE_TTL_MS,
-          value: { ...health },
-        });
-      }
-      return { ...health };
     } finally {
       const dispose = (record.backend as { dispose?: () => void | Promise<void> }).dispose;
       await dispose?.call(record.backend);
     }
+
+    if (execution?.signal?.aborted || this.cache.get(key) !== pending ||
+        (pending && this.nativeHealthRevision.get(pending) !== nativeRevision)) {
+      return { ...health, collectionState: "unknown", pendingEmbeddings: null, oldestPendingAgeMs: null };
+    }
+    // Cache only a healthy, unsuperseded diagnostic.
+    if (
+      operational === undefined &&
+      !isSearchHealthDegraded(health, health.embeddingBacklogThreshold)
+    ) {
+      this.healthResultCache.set(key, {
+        expiresAt: Date.now() + HEALTH_RESULT_CACHE_TTL_MS,
+        value: { ...health },
+      });
+    }
+    return health;
   }
 
   private describeHealth(
@@ -453,14 +461,17 @@ export class NamespaceSearchRouter {
     const backend = record.backend;
     const daemonMode = daemonModeForBackend(backend);
     const operationalIdentity = backend.operationalHealthIdentity?.();
-    const current = () => !execution?.signal?.aborted && this.cache.get(key) === pending &&
-      !record.disposed && resolveQmdCapabilities(this.config).qmd !== false && record.backend === backend &&
-      record.available && backend.isAvailable() && daemonModeForBackend(backend) === daemonMode &&
+    const ownsRecord = () => !execution?.signal?.aborted && this.cache.get(key) === pending &&
+      !record.disposed && resolveQmdCapabilities(this.config).qmd !== false && record.backend === backend;
+    const current = () => ownsRecord() && record.available && backend.isAvailable() &&
+      daemonModeForBackend(backend) === daemonMode &&
       backend.operationalHealthIdentity?.() === operationalIdentity;
     const refused = () => this.describeHealth(
       record, backend, record.collectionState === "missing" ? "missing" : "unknown", null,
       record.available && !record.disposed,
     );
+    // A failed initial probe never established an operational connection.
+    if (!record.available && record.collectionState === "unknown" && ownsRecord()) return undefined;
     if (!current()) return refused;
     if (!backend.readOperationalHealth) return undefined;
     if (record.collectionState === "missing") return refused;
@@ -504,6 +515,7 @@ export class NamespaceSearchRouter {
     if (!pending) return null;
     const cachedRecord = await awaitWithAbort(pending, execution?.signal).catch(() => null);
     if (!cachedRecord) return null;
+    if (!cachedRecord.available && cachedRecord.collectionState === "unknown" && !cachedRecord.disposed) return null;
     if (cachedRecord.collection !== disposableRecord.collection) return null;
     if (cachedRecord.memoryDir !== disposableRecord.memoryDir) return null;
     return cachedRecord;

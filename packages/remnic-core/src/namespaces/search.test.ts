@@ -1647,6 +1647,61 @@ test("operational health precedes an existing healthy result cache and never dis
   assert.equal(created, 3, "the native removal must have invalidated the old CLI result");
 });
 
+test("an older CLI diagnostic cannot publish readiness after native removal", async t => {
+  let snapshot: OperationalSearchHealth | undefined;
+  let created = 0;
+  const { promise: entered, resolve: statusEntered } = Promise.withResolvers<void>();
+  const { promise: status, resolve: releaseStatus } = Promise.withResolvers<SearchBackendStatus>();
+  t.after(() => releaseStatus(operationalSnapshot));
+  const live = new FakeBackend(false, [], { ensure: "present" }, true);
+  t.mock.method(live, "status", () => {
+    statusEntered();
+    return status;
+  });
+  Object.assign(live, { readOperationalHealth: async () => snapshot });
+  const router = new NamespaceSearchRouter(config(),
+    { storageFor: async () => ({ dir: "/fixture/notes" }) }, () => {
+      created++;
+      return created === 1 ? live
+        : new FakeBackend(false, [], { check: created === 2 ? "present" : "missing" });
+    });
+  t.after(() => router.dispose());
+  await router.ensureNamespaceCollection("shared");
+  const older = router.healthForNamespace("shared");
+  await entered;
+  snapshot = { ...operationalSnapshot, collectionState: "missing", pendingEmbeddings: null };
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "missing");
+  snapshot = undefined;
+  releaseStatus(operationalSnapshot);
+  const stale = await older;
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "missing");
+  assert.equal(created, 3);
+  assert.equal(stale.collectionState, "unknown");
+  assert.equal(stale.pendingEmbeddings, null);
+});
+
+test("health re-probes after a cached operational backend failed startup", async t => {
+  let created = 0;
+  const cold = new FakeBackend(false);
+  cold.available = false;
+  const router = new NamespaceSearchRouter(config(),
+    { storageFor: async () => ({ dir: "/fixture/notes" }) }, () => {
+      if (++created === 1) return cold;
+      const diagnostic = new FakeBackend(false, [], { check: "present" });
+      diagnostic.statusResult = operationalSnapshot;
+      return diagnostic;
+    });
+  t.after(() => router.dispose());
+  assert.equal(await router.ensureNamespaceCollection("shared"), "unknown");
+  const recovered = await router.healthForNamespace("shared");
+  assert.equal(recovered.available, true);
+  assert.equal(recovered.collectionState, "present");
+  assert.equal(recovered.pendingEmbeddings, 0);
+  assert.equal(isSearchHealthDegraded(recovered, recovered.embeddingBacklogThreshold), false);
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "present");
+  assert.equal(created, 2);
+});
+
 test("CLI-only health caches a recognized QMD report with no pending embeddings", async t => {
   let created = 0;
   const router = new NamespaceSearchRouter(config(),
