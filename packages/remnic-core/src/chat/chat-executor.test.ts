@@ -10,18 +10,31 @@ type Calls = {
   pending: unknown[];
 };
 
-function harness(planOut: unknown, plans: unknown[] = []) {
+interface PlanStub {
+  planId: string;
+  namespace: string;
+  classification: string;
+  confidence: number;
+  affected: { memoryId: string }[];
+  warnings: string[];
+  diff: string;
+}
+
+function harness(planOut: PlanStub, plans: PlanStub[] = []) {
   const calls: Calls = { plan: [], apply: [], pending: [] };
   const service = {
-    correctionPlan: async (req: unknown) => {
+    correctionPlan: async (req: { text: string; namespace?: string; sessionKey?: string; principal?: string }) => {
       calls.plan.push(req);
       return planOut;
     },
-    correctionApply: async (planId: unknown, opts: unknown) => {
+    correctionApply: async (
+      planId: string,
+      opts: { confirm?: boolean; namespace?: string; sessionKey?: string; principal?: string },
+    ) => {
       calls.apply.push([planId, opts]);
       return { status: "applied" };
     },
-    correctionListPending: async (opts: unknown) => {
+    correctionListPending: async (opts: { namespace?: string; sessionKey?: string; principal?: string }) => {
       calls.pending.push(opts);
       return plans;
     },
@@ -37,7 +50,7 @@ function harness(planOut: unknown, plans: unknown[] = []) {
   return { calls, executor };
 }
 
-const plan = {
+const plan: PlanStub = {
   planId: "plan-real",
   namespace: "ns-1",
   classification: "wrong",

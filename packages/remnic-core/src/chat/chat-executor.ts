@@ -15,6 +15,12 @@ import type { EngramAccessService } from "../access-service.js";
 import type { CorrectionPlan } from "../correction/index.js";
 import type { ChatToolExecutor } from "./chat-engine.js";
 
+interface ChatCallerScope {
+  namespace?: string;
+  sessionKey?: string;
+  principal?: string;
+}
+
 export interface ChatExecutorBindings {
   service: EngramAccessService;
   principal?: string;
@@ -38,6 +44,11 @@ function formatPlanPreview(plan: CorrectionPlan): string {
  */
 export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExecutor {
   const { service, principal, namespace, sessionKey } = bindings;
+
+  const scope: ChatCallerScope = {};
+  if (namespace) scope.namespace = namespace;
+  if (sessionKey) scope.sessionKey = sessionKey;
+  if (principal) scope.principal = principal;
 
   return {
     async memorySearch(query: string, maxResults?: number): Promise<string> {
@@ -103,11 +114,6 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
     // interface, so the contract is honored in one place.
 
     async correctionPlan(request: string): Promise<{ planId: string; preview: string }> {
-      const scope = {
-        ...(namespace ? { namespace } : {}),
-        ...(sessionKey ? { sessionKey } : {}),
-        ...(principal ? { principal } : {}),
-      };
       // The engine asks for a previously-planned correction via the
       // "retrieve plan <id>" convention (confirmation fast-path).  Serve it
       // from listPending so the preview shown is the real plan, not a
@@ -127,12 +133,7 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
     async correctionApply(planId: string): Promise<string> {
       // The engine runs correctionApply only after the user confirms the plan
       // (session.confirmedPlanIds), so the service-level confirm gate is met.
-      const outcome = await service.correctionApply(planId, {
-        confirm: true,
-        ...(namespace ? { namespace } : {}),
-        ...(sessionKey ? { sessionKey } : {}),
-        ...(principal ? { principal } : {}),
-      });
+      const outcome = await service.correctionApply(planId, { confirm: true, ...scope });
       return JSON.stringify(outcome);
     },
 
