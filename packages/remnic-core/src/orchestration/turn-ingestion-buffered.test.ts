@@ -267,6 +267,7 @@ test("buffered ingest: a new session refused at the session-entry cap keeps the 
     (err: Error) => {
       assert.ok(err instanceof ReplayAdmissionRefusedError);
       assert.match(err.message, /session-entry cap \(3\)/);
+      assert.match(err.message, /entry capacity/, "operators grepping the old text still find entry-cap refusals");
       assert.doesNotMatch(err.message, /per-session turn cap/);
       return true;
     },
