@@ -205,7 +205,7 @@ test("#3611 scheme-less github.com/owner/repo resolves via the github route", as
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-mkt-cfg-"));
   const prevFetch = globalThis.fetch;
   const calls: string[] = [];
-  globalThis.fetch = async (input: unknown) => {
+  globalThis.fetch = async (input: Parameters<typeof fetch>[0]) => {
     calls.push(String(input));
     return new Response(MANIFEST, { status: 200 });
   };
