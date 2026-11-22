@@ -47,25 +47,63 @@ interface Attachment {
  * stop at the first current/transition successor. Returns undefined when the
  * walk dead-ends (no or blank successor, successor id absent from the input)
  * or revisits an id (cycle), so callers treat the entry as an orphan.
+ *
+ * `resolved` memoizes per-entry outcomes across calls (#3565): every id
+ * traversed gets its own cached resolution (its own depth), so one long
+ * chain resolves in a single pass instead of O(n^2) re-walks.
  */
 function resolveHead(
   entry: StateViewEntry,
   byId: ReadonlyMap<string, StateViewEntry>,
+  resolved: Map<string, HeadResolution | undefined>,
 ): HeadResolution | undefined {
-  const visited = new Set<string>();
+  const cached = resolved.get(entry.memoryId);
+  if (cached !== undefined || resolved.has(entry.memoryId)) return cached;
+  const path: string[] = [entry.memoryId];
+  const visited = new Set<string>(path);
   let current = entry;
   let depth = 0;
   for (;;) {
     const successorId = current.supersededById;
-    if (successorId === undefined || successorId.trim() === "") return undefined;
-    const successor = byId.get(successorId);
-    if (successor === undefined) return undefined;
+    const successor =
+      successorId === undefined || successorId.trim() === ""
+        ? undefined
+        : byId.get(successorId);
+    if (successor === undefined || successorId === undefined) break;
+    const hit = resolved.get(successorId);
+    if (hit !== undefined || resolved.has(successorId)) {
+      // A node with a known outcome: splice its resolution on with an
+      // offset, or propagate the dead-end.
+      const result =
+        hit === undefined
+          ? undefined
+          : { headId: hit.headId, depth: depth + 1 + hit.depth };
+      for (let i = 0; i < path.length; i++) {
+        resolved.set(
+          path[i],
+          result === undefined
+            ? undefined
+            : { headId: result.headId, depth: result.depth - i },
+        );
+      }
+      return result;
+    }
     depth += 1;
-    if (successor.stateLabel !== "historical") return { headId: successorId, depth };
-    if (visited.has(successorId)) return undefined;
+    if (successor.stateLabel !== "historical") {
+      // Head found: every path node resolves to it at its own depth.
+      for (let i = 0; i < path.length; i++) {
+        resolved.set(path[i], { headId: successorId, depth: depth - i });
+      }
+      return { headId: successorId, depth };
+    }
+    if (visited.has(successorId)) break;
     visited.add(successorId);
+    path.push(successorId);
     current = successor;
   }
+  // Dead-end or cycle: every node on the path is an orphan.
+  for (const id of path) resolved.set(id, undefined);
+  return undefined;
 }
 
 function compareStrings(a: string, b: string): number {
@@ -97,12 +135,11 @@ export function buildStateEvidencePackets(
     if (!byId.has(entry.memoryId)) byId.set(entry.memoryId, entry);
   }
 
-  // ponytail: per-entry chain walks are O(n^2) on one long chain; recall-sized
-  // result sets stay tiny, memoize if packet building ever moves offline.
   const packets: StateEvidencePacket[] = [];
   const packetByHead = new Map<string, StateEvidencePacket>();
   const attachments: Attachment[] = [];
   const orphanHistoryIds: string[] = [];
+  const resolved = new Map<string, HeadResolution | undefined>();
 
   for (const [id, entry] of byId) {
     if (entry.stateLabel !== "historical") {
@@ -111,7 +148,7 @@ export function buildStateEvidencePackets(
       packets.push(packet);
       continue;
     }
-    const head = resolveHead(entry, byId);
+    const head = resolveHead(entry, byId, resolved);
     if (head === undefined) orphanHistoryIds.push(id);
     else attachments.push({ headId: head.headId, historyId: id, depth: head.depth });
   }

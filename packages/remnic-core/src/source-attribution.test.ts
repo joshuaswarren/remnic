@@ -1518,3 +1518,60 @@ test("citation matcher resists polynomial ReDoS on hostile unterminated input (C
   const valid = parseAllCitations("body [Source:  doc-1 , 2026-06-08 ]");
   assert.equal(valid.length, 1);
 });
+
+test("#3567 hasCitationForTemplate: default fast path consults configured prior templates", () => {
+  // Fact written while a custom template was configured; config later reverted
+  // to the default. The marker does not match the default shape, so the old
+  // `template === DEFAULT_CITATION_FORMAT` fast path returned false and the
+  // body was double-cited / hash-mismatched on reprocess.
+  const priorTemplate = "[src:{agent}/{session}@{date}]";
+  const body = "Latency improved after the index rebuild.";
+  const cited = attachCitation(
+    body,
+    { agent: "scout", session: "agent:scout:alpha", ts: "2026-04-10T14:25:07Z" },
+    priorTemplate,
+  );
+
+  // The prior template is out of history: the miss stands (documents the
+  // operator contract — list prior formats in inlineSourceAttributionFormatHistory).
+  assert.equal(hasCitationForTemplate(cited, DEFAULT_CITATION_FORMAT), false);
+
+  // With the prior template declared, the same check detects it.
+  assert.equal(
+    hasCitationForTemplate(cited, DEFAULT_CITATION_FORMAT, [priorTemplate]),
+    true,
+  );
+});
+
+test("#3567 stripCitationForTemplate strips a prior-template marker under a reverted config", () => {
+  const priorTemplate = "[src:{agent}/{session}@{date}]";
+  const body = "Latency improved after the index rebuild.";
+  const cited = attachCitation(
+    body,
+    { agent: "scout", session: "agent:scout:alpha", ts: "2026-04-10T14:25:07Z" },
+    priorTemplate,
+  );
+
+  assert.equal(
+    stripCitationForTemplate(cited, DEFAULT_CITATION_FORMAT, [priorTemplate]),
+    body,
+  );
+});
+
+test("#3567 attachCitation does not double-cite a body carrying a prior-template marker", () => {
+  const priorTemplate = "[src:{agent}/{session}@{date}]";
+  const body = "Latency improved after the index rebuild.";
+  const cited = attachCitation(
+    body,
+    { agent: "scout", session: "agent:scout:alpha", ts: "2026-04-10T14:25:07Z" },
+    priorTemplate,
+  );
+
+  const reattached = attachCitation(
+    cited,
+    { agent: "planner", session: "agent:planner:main", ts: "2026-06-01T00:00:00Z" },
+    DEFAULT_CITATION_FORMAT,
+    [priorTemplate],
+  );
+  assert.equal(reattached, cited);
+});

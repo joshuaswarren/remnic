@@ -1368,9 +1368,8 @@ export class RecallInternalCoordinator {
           return null;
         }
         const section = buildCalibrationRecallSection(
-          rules.slice(0, this.deps.config.calibrationMaxRulesPerRecall),
-          retrievalQuery,
-          this.deps.config.calibrationMaxChars,
+          rules, retrievalQuery, this.deps.config.calibrationMaxChars,
+          this.deps.config.calibrationMaxRulesPerRecall,
         );
         recordRecallSectionMetric({
           section: "calibrationRules",

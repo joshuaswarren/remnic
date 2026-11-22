@@ -68,6 +68,16 @@ async function waitForFlushPlanProcessingQueueToEmpty(): Promise<void> {
   assert.fail("flush-plan processing queue did not settle");
 }
 
+/** The ingest claims the plan by rename (#2303), so a poll can land while no plan file exists. */
+async function readFlushPlanIfPresent(planPath: string): Promise<string | null> {
+  try {
+    return await readFile(planPath, "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 async function stopGlobalThisRuntime() {
   const maybeStop = new Set<unknown>();
   const maybeDestroy = new Set<unknown>();
@@ -4781,7 +4791,7 @@ test("session_start processes flush-plan files by default", async () => {
 
     assert.equal(ingestCalls, 1);
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      if ((await readFlushPlanIfPresent(flushPlanPath)) === "") break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.equal(await readFile(flushPlanPath, "utf8"), "");
@@ -5070,7 +5080,7 @@ test("gateway_start flush-plan replay is not bounded by the reset-hook timeout",
 
     releaseIngest();
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      if ((await readFlushPlanIfPresent(flushPlanPath)) === "") break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.equal(
@@ -5193,7 +5203,7 @@ test("session_end fences flush-plan processing after an earlier drain times out"
 
     releaseFirstIngest();
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      if ((await readFlushPlanIfPresent(flushPlanPath)) === "") break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.equal(
@@ -5295,7 +5305,7 @@ test("queued flush-plan processing keeps the caller deadline after waiting behin
     await writeFile(flushPlanPath, firstContent + tailContent, "utf8");
     releaseFirstIngest();
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      if ((await readFile(flushPlanPath, "utf8")) === tailContent) break;
+      if ((await readFlushPlanIfPresent(flushPlanPath)) === tailContent) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
 
@@ -5394,7 +5404,7 @@ test("flush-plan processing queue is shared across registry closures", async () 
 
     releaseFirstIngest();
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      if ((await readFlushPlanIfPresent(flushPlanPath)) === "") break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.equal(await readFile(flushPlanPath, "utf8"), "");
@@ -5479,7 +5489,7 @@ test("flush-plan processing queue canonicalizes symlinked workspace paths", asyn
 
     releaseFirstIngest();
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      if ((await readFlushPlanIfPresent(flushPlanPath)) === "") break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.equal(await readFile(flushPlanPath, "utf8"), "");
@@ -5587,7 +5597,7 @@ test("flush-plan processing queue survives service stop while a drain is in flig
 
     releaseFirstIngest?.();
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      if ((await readFlushPlanIfPresent(flushPlanPath)) === "") break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.equal(await readFile(flushPlanPath, "utf8"), "");

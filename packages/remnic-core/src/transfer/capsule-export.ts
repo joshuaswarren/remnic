@@ -499,7 +499,8 @@ function shouldInclude(
  *
  * Defaults (chosen to be safe + least-surprising):
  *  - `version`           — `0.1.0` (capsule authors override per release).
- *  - `schemaVersion`     — `taxonomy-v1` until the taxonomy registry stabilizes.
+ *  - `schemaVersion`     — `taxonomy-v1` (the only member of
+ *    {@link CAPSULE_TAXONOMY_VERSIONS}; see issue 3572).
  *  - `parentCapsule`     — `null` (explicit "no parent" sentinel).
  *  - `description`       — empty string. Capsule authors override.
  *  - `retrievalPolicy`   — empty `tierWeights` map + `directAnswerEnabled: false`.

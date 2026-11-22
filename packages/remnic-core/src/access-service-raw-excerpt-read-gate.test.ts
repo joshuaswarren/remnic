@@ -29,6 +29,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
+import type { EngramAccessRecallRequest } from "./access-service.js";
 import { CrossNamespaceBudget } from "./cross-namespace-budget.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { LastRecallSnapshot } from "./recall-state.js";
@@ -40,6 +41,7 @@ import {
 } from "./coding/coding-namespace.js";
 import type { RecallXraySnapshot } from "./recall-xray.js";
 import type { StorageManager } from "./storage.js";
+import type { RecallExecResult } from "./access-recall-concurrency.js";
 import type { CodingContext, MemoryFile, PluginConfig } from "./types.js";
 
 interface RawExcerptProbe {
@@ -69,6 +71,17 @@ function makeRawExcerptProbe(options: {
   memoryFixture?: MemoryFile;
   /** Snapshot the recallWithXrayCapture stub returns (null → empty x-ray). */
   xraySnapshot?: RecallXraySnapshot | null;
+  /** snapshot.memoryIds → getMemoryById fixtures (recall results path). */
+  memories?: ReadonlyMap<string, MemoryFile>;
+  /** Rows the LCM stub's `searchContextFull` returns. */
+  excerptRows?: Array<{
+    id: number;
+    turn_index: number;
+    role: string;
+    content: string;
+    session_id: string;
+    score: number;
+  }>;
 }): RawExcerptProbe {
   const searchSessionIds: Array<string | undefined> = [];
   const contexts = new Map<string, CodingContext>();
@@ -101,7 +114,7 @@ function makeRawExcerptProbe(options: {
       .update("what database are we using?")
       .digest("hex"),
     queryLen: 5,
-    memoryIds: [],
+    memoryIds: [...(options.memories?.keys() ?? [])],
     namespace: options.snapshotNamespace,
     recallNamespaces: [options.snapshotNamespace],
     includedMemories: [],
@@ -113,8 +126,8 @@ function makeRawExcerptProbe(options: {
       options.onMemoryRead?.(path);
       return options.memoryFixture ?? null;
     },
-    async getMemoryById() {
-      return null;
+    async getMemoryById(id: string) {
+      return options.memories?.get(id) ?? null;
     },
   });
 
@@ -159,7 +172,7 @@ function makeRawExcerptProbe(options: {
         sessionId?: string,
       ) => {
         searchSessionIds.push(sessionId);
-        return [];
+        return options.excerptRows ?? [];
       },
     },
   });
@@ -191,7 +204,7 @@ function probeCast<T>(value: NonNullable<unknown>): T {
 }
 
 type ExecuteRecallInternals = {
-  executeRecall: (request: unknown) => Promise<unknown>;
+  executeRecall: (request: EngramAccessRecallRequest) => Promise<RecallExecResult>;
 };
 
 type RawExcerptInternals = {
@@ -525,6 +538,164 @@ test("scope-profile raw excerpts preserve successful sibling LCM keys when one k
 });
 
 // ──────────────────────────────────────────────────────────────────────
+// #3546: raw excerpts are attributed per result via the memory's
+// provenance quotes (#1575 `sources[].quote`), not glued to results[0].
+// ──────────────────────────────────────────────────────────────────────
+
+function attributionMemory(id: string, quote: string): MemoryFile {
+  return {
+    path: `/synthetic/store/${id}.md`,
+    content: `synthetic body ${id}`,
+    frontmatter: {
+      id,
+      category: "preference",
+      created: "2026-11-01T00:00:00Z",
+      updated: "2026-11-01T00:00:00Z",
+      source: "test",
+      confidence: 0.9,
+      confidenceTier: "explicit",
+      tags: ["fixture"],
+      sources: quote
+        ? [
+            {
+              sessionKey: SESSION_KEY,
+              observedAt: "2026-11-01T00:00:00Z",
+              quote,
+            },
+          ]
+        : [],
+    },
+  };
+}
+
+function excerptRow(id: number, turnIndex: number, content: string) {
+  return {
+    id,
+    turn_index: turnIndex,
+    role: "assistant",
+    content,
+    session_id: SESSION_KEY,
+    score: 1,
+  };
+}
+
+test("#3546: excerpts containing a result's provenance quote attach to that result, leftovers stay on the first", async () => {
+  const memA = attributionMemory("mem-a", "the alpha verbatim quote span");
+  const memB = attributionMemory("mem-b", "the beta verbatim quote span");
+  const rows = [
+    excerptRow(1, 3, "query-relevant turn with no provenance span"),
+    excerptRow(2, 4, "prefix the alpha verbatim quote span suffix"),
+    excerptRow(3, 5, "the beta verbatim quote span appears here"),
+  ];
+  const probe = makeRawExcerptProbe({
+    config: { principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }] },
+    snapshotNamespace: "pi-geek",
+    sessionKey: SESSION_KEY,
+    memories: new Map([
+      ["mem-a", memA],
+      ["mem-b", memB],
+    ]),
+    excerptRows: rows,
+  });
+
+  const { response } = await probeCast<ExecuteRecallInternals>(
+    probe.service,
+  ).executeRecall({
+    query: "what database are we using?",
+    sessionKey: SESSION_KEY,
+    authenticatedPrincipal: "pi-geek",
+    disclosure: "raw",
+  });
+
+  const [first, second] = response.results;
+  // mem-b's provenance quote lives in turn 5 — that excerpt belongs to mem-b.
+  assert.deepEqual(
+    second?.rawExcerpts?.map((e) => e.turnIndex),
+    [5],
+    "excerpt containing mem-b's provenance quote must attach to mem-b",
+  );
+  // mem-a matched turn 4; the unclaimed query-relevant turn 3 stays anchored
+  // to the first result — no excerpt is silently dropped.
+  assert.deepEqual(
+    first?.rawExcerpts?.map((e) => e.turnIndex),
+    [3, 4],
+    "first result keeps its own matches plus unattributed excerpts, in transcript order",
+  );
+});
+
+test("#3546: memories without provenance quotes claim nothing — excerpts fall back to the first result", async () => {
+  const probe = makeRawExcerptProbe({
+    config: { principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }] },
+    snapshotNamespace: "pi-geek",
+    sessionKey: SESSION_KEY,
+    memories: new Map([
+      ["mem-a", attributionMemory("mem-a", "")],
+      ["mem-b", attributionMemory("mem-b", "")],
+    ]),
+    excerptRows: [excerptRow(1, 3, "turn three"), excerptRow(2, 4, "turn four")],
+  });
+
+  const { response } = await probeCast<ExecuteRecallInternals>(
+    probe.service,
+  ).executeRecall({
+    query: "what database are we using?",
+    sessionKey: SESSION_KEY,
+    authenticatedPrincipal: "pi-geek",
+    disclosure: "raw",
+  });
+
+  assert.deepEqual(
+    response.results[0]?.rawExcerpts?.map((e) => e.turnIndex),
+    [3, 4],
+    "with no provenance quotes anywhere the whole set stays on the first result (pre-#3546 shape)",
+  );
+  assert.equal(
+    response.results[1]?.rawExcerpts,
+    undefined,
+    "second result carries no excerpts when nothing attributed to it",
+  );
+});
+
+test("#3546: quotes under the attribution length floor claim nothing", async () => {
+  // Kilos's review on the PR: a very short quote substring-matches
+  // unrelated transcript text. Quotes below the floor are ignored for
+  // attribution, so their excerpts keep the first-result fallback.
+  const probe = makeRawExcerptProbe({
+    config: { principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }] },
+    snapshotNamespace: "pi-geek",
+    sessionKey: SESSION_KEY,
+    memories: new Map([
+      ["mem-a", attributionMemory("mem-a", "")],
+      ["mem-b", attributionMemory("mem-b", "it")],
+    ]),
+    excerptRows: [
+      excerptRow(1, 3, "turn three"),
+      excerptRow(2, 4, "a turn where it happens"),
+    ],
+  });
+
+  const { response } = await probeCast<ExecuteRecallInternals>(
+    probe.service,
+  ).executeRecall({
+    query: "what database are we using?",
+    sessionKey: SESSION_KEY,
+    authenticatedPrincipal: "pi-geek",
+    disclosure: "raw",
+  });
+
+  assert.deepEqual(
+    response.results[1]?.rawExcerpts,
+    undefined,
+    "a two-char quote must not attribute the excerpt containing it",
+  );
+  assert.deepEqual(
+    response.results[0]?.rawExcerpts?.map((e) => e.turnIndex),
+    [3, 4],
+    "below-floor quotes keep the excerpt on the first result",
+  );
+});
+
+// ──────────────────────────────────────────────────────────────────────
 // #3547: an abort that lands during post-capture shaping stops the
 // pipeline — shaping must not run to completion for a canceled caller.
 // ──────────────────────────────────────────────────────────────────────
@@ -540,7 +711,13 @@ test("#3547: abort during x-ray decoration reads throws AbortError instead of co
     namespace: "pi-geek",
     tierExplain: null,
     results: [
-      { memoryId: "mem-a", path: "facts/a.md", servedBy: "hybrid", scoreDecomposition: { final: 0.9 }, admittedBy: ["budget", "namespace"] },
+      {
+        memoryId: "mem-a",
+        path: "facts/a.md",
+        servedBy: "hybrid",
+        scoreDecomposition: { final: 0.9 },
+        admittedBy: ["budget", "namespace"],
+      },
     ],
     appliedResultLimit: 10,
     appliedResults: [],

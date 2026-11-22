@@ -11,11 +11,12 @@ export function normalizeStoredHashSource(
   raw: string,
   citationEnabled: boolean,
   citationTemplate: string,
+  citationHistory: readonly string[] = [],
 ): string {
   return ContentHashIndex.normalizeContent(
     sanitizeMemoryContent(
-      citationEnabled && hasCitationForTemplate(raw, citationTemplate)
-        ? stripCitationForTemplate(raw, citationTemplate)
+      citationEnabled && hasCitationForTemplate(raw, citationTemplate, citationHistory)
+        ? stripCitationForTemplate(raw, citationTemplate, citationHistory)
         : raw,
     ).text,
   );
@@ -26,6 +27,7 @@ export function applyInlineCitation(
   citationEnabled: boolean,
   citationTemplate: string,
   citationContextBase: Omit<CitationContext, "ts">,
+  citationHistory: readonly string[] = [],
 ): string {
   if (!citationEnabled) return content;
   if (typeof content !== "string" || content.length === 0) return content;
@@ -33,5 +35,5 @@ export function applyInlineCitation(
     ...citationContextBase,
     ts: new Date().toISOString(),
   };
-  return attachCitation(content, citationContext, citationTemplate);
+  return attachCitation(content, citationContext, citationTemplate, citationHistory);
 }

@@ -8,6 +8,8 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+
+import { fixtureGitEnv } from "./helpers/fixture-git.mjs";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -46,6 +48,7 @@ function git(cwd, args) {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: fixtureGitEnv(),
   });
 }
 

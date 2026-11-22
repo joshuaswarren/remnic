@@ -156,3 +156,43 @@ test("input entries are not mutated", () => {
   buildStateEvidencePackets(entries);
   assert.deepEqual(entries, snapshot);
 });
+
+test("shared chain suffixes resolve each entry at its own depth — #3565", () => {
+  // Diamond: two predecessors share one suffix chain. A memoized walk must
+  // give every entry its OWN depth (a1/a2 = 3, b = 2, c = 1), not the depth
+  // of whichever entry populated the cache entry it shared.
+  const entries: StateViewEntry[] = [
+    { memoryId: "head", stateLabel: "current" },
+    { memoryId: "a1", stateLabel: "historical", supersededById: "b" },
+    { memoryId: "a2", stateLabel: "historical", supersededById: "b" },
+    { memoryId: "b", stateLabel: "historical", supersededById: "c" },
+    { memoryId: "c", stateLabel: "historical", supersededById: "head" },
+  ];
+  const out = buildStateEvidencePackets(entries);
+  assert.deepEqual(out, {
+    packets: [{ headId: "head", historyIds: ["c", "b", "a1", "a2"] }],
+    orphanHistoryIds: [],
+  });
+});
+
+test("a long chain resolves in one pass, preserving per-entry depth order — #3565", () => {
+  // 600-entry chain: nearest-to-head ordering must hold end-to-end. Guards
+  // the O(n) memoized walk against off-by-one depth corruption at scale.
+  const n = 600;
+  const entries: StateViewEntry[] = [{ memoryId: "head", stateLabel: "current" }];
+  for (let i = n - 1; i >= 0; i--) {
+    entries.push({
+      memoryId: `h${i}`,
+      stateLabel: "historical",
+      supersededById: i === n - 1 ? "head" : `h${i + 1}`,
+    });
+  }
+  const out = buildStateEvidencePackets(entries);
+  const packet = out.packets.find((p) => p.headId === "head");
+  assert.ok(packet);
+  assert.equal(packet.historyIds.length, n);
+  assert.deepEqual(
+    packet.historyIds,
+    Array.from({ length: n }, (_, i) => `h${n - 1 - i}`),
+  );
+});

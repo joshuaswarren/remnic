@@ -9,13 +9,15 @@
 // change whose sources are all covered by ignorePatterns lint to zero matches
 // instead of erroring.
 //
-// ponytail: line-scoped only — a future alias/dataflow rule may report a span
-// on an unchanged line while the violation sits on an added one, and such
-// unchanged-line reports escape this gate. Whole-file scan or a ratcheted
-// baseline are the later upgrades if that starts happening.
+// Ratcheted baseline: tracked files are also linted at the base revision, and a
+// finding is reported when it lands on an added/changed line OR when the same
+// rule does not fire on the same source text in the base revision. That second
+// arm catches findings a change introduces whose span sits on an unchanged line
+// (e.g. no-widen-then-assert reporting at the assert while the widening is the
+// added line) without flagging debt that already existed.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -114,6 +116,79 @@ export function spanLines(span, lineStarts, byteLength = Infinity) {
   return [start, end];
 }
 
+// Stable across line shifts: the rule plus the exact reported source text, so a
+// finding that merely moved keeps its identity while any text edit changes it.
+function diagnosticKey(diagnostic, contents) {
+  const labels = diagnostic.labels.map((label) => contents
+    .subarray(label.span.offset, label.span.offset + label.span.length)
+    .toString("utf8"));
+  return `${diagnostic.code}::${labels.join("|")}`;
+}
+
+// The stage directory lives inside the worktree's real git directory, which is
+// NOT <repo>/.git in a linked worktree (there .git is a FILE, so mkdir there
+// fails with ENOTDIR). `git rev-parse --absolute-git-dir` returns the worktree's
+// own git dir for both layouts.
+function gitDirPath(repoRoot) {
+  const result = execGit(repoRoot, ["rev-parse", "--absolute-git-dir"]);
+  if (result.status !== 0 || result.stdout.trim().length === 0) return join(repoRoot, ".git");
+  return result.stdout.trim();
+}
+
+// Lint the base revision of each tracked changed file and count the finding
+// keys that already existed, keyed by the file's repo-relative path. Files with
+// no base revision (new files) get no baseline, so every finding blocks; a base
+// revision that fails to lint simply contributes no counts, falling back to the
+// line-scoped check for that file. Counts are per key (multiset), so a change
+// that creates a SECOND finding identical to a baseline one still blocks: a
+// set-keyed baseline would hide it.
+function baseFindingKeys(repoRoot, baseRef, files) {
+  const keysByFile = new Map();
+  if (files.length === 0) return keysByFile;
+  const stageRoot = join(gitDirPath(repoRoot), "anti-slop-base");
+  const staged = [];
+  try {
+    rmSync(stageRoot, { recursive: true, force: true });
+    for (const file of files) {
+      const result = execGit(repoRoot, ["show", `${baseRef}:${file}`]);
+      if (result.status !== 0 || !result.stdout) continue;
+      const target = join(stageRoot, file);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, result.stdout);
+      staged.push(file);
+    }
+    if (staged.length === 0) return keysByFile;
+    const baseDiagnostics = lintChangedFiles(repoRoot, staged.map((file) => join(stageRoot, file)));
+    if (baseDiagnostics === null) return keysByFile; // unusable baseline: line-scoped check still applies
+    for (const diagnostic of baseDiagnostics) {
+      if (!isAntiSlopDiagnostic(diagnostic) || !Array.isArray(diagnostic.labels) || diagnostic.labels.length === 0) continue;
+      // oxlint reports paths relative to the cwd (the repo root) or absolute,
+      // depending on how the file was passed; resolve against the repo root and
+      // then map back from the stage root.
+      if (!isNonEmptyText(diagnostic.filename)) continue;
+      const absolute = resolve(repoRoot, diagnostic.filename);
+      const stagedPath = relative(stageRoot, absolute).split(sep).join("/");
+      if (stagedPath === "" || stagedPath.startsWith("..")) continue;
+      const originalFile = stagedPath;
+      let counts = keysByFile.get(originalFile);
+      if (counts === undefined) {
+        counts = new Map();
+        keysByFile.set(originalFile, counts);
+      }
+      try {
+        const contents = readFileSync(join(stageRoot, originalFile));
+        const key = diagnosticKey(diagnostic, contents);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      } catch {
+        // unreadable staged copy: skip this finding's key
+      }
+    }
+  } finally {
+    rmSync(stageRoot, { recursive: true, force: true });
+  }
+  return keysByFile;
+}
+
 function linesIntersect(startLine, endLine, addedLines) {
   for (let line = startLine; line <= endLine; line += 1) {
     if (addedLines.has(line)) return true;
@@ -169,6 +244,10 @@ function addedLinesForTrackedFile(repoRoot, baseRef, file) {
   return parseHunkAddedLines(diff);
 }
 
+// Returns the diagnostics, or null when the tool itself failed (spawn error,
+// non-0/1 exit, unusable JSON). The caller decides whether null fails closed;
+// baseFindingKeys treats null as "no baseline" so a base revision that cannot
+// be linted falls back to the line-scoped check instead of killing the gate.
 function lintChangedFiles(repoRoot, files) {
   const result = spawnSync(
     process.execPath,
@@ -185,18 +264,16 @@ function lintChangedFiles(repoRoot, files) {
     ],
     { cwd: repoRoot, encoding: "utf8", timeout: OXLINT_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
   );
-  if (result.error) fail(`oxlint failed to run: ${result.error.message}`);
-  if (result.status !== 0 && result.status !== 1) {
-    fail(`oxlint exited with status ${result.status ?? "null"} (${result.signal ?? "no signal"}): ${result.stderr.trim()}`);
-  }
+  if (result.error) return null;
+  if (result.status !== 0 && result.status !== 1) return null;
   try {
     const diagnostics = parseOxlintJson(result.stdout);
     if (result.status === 1 && diagnostics.length === 0) {
-      throw new Error("oxlint failed without diagnostics");
+      return null;
     }
     return diagnostics;
-  } catch (error) {
-    return fail(`could not use oxlint output: ${error.message}`);
+  } catch {
+    return null;
   }
 }
 
@@ -245,12 +322,19 @@ function main() {
   for (const file of trackedSources) {
     if (!addedLinesByFile.has(file)) addedLinesByFile.set(file, addedLinesForTrackedFile(repoRoot, baseRef, file));
   }
+  const trackedSourcesList = [...new Set(trackedSources)];
+  const baseKeysByFile = baseFindingKeys(repoRoot, baseRef, trackedSourcesList);
 
   const scannedFiles = new Set(changedFiles);
+  const headCountsByFile = new Map();
   const sources = new Map();
   const violations = [];
   const internalErrors = [];
-  for (const diagnostic of lintChangedFiles(repoRoot, changedFiles)) {
+  const headDiagnostics = lintChangedFiles(repoRoot, changedFiles);
+  if (headDiagnostics === null) {
+    fail("oxlint failed to run or produced unusable output; failing closed");
+  }
+  for (const diagnostic of headDiagnostics) {
     const file = isNonEmptyText(diagnostic.filename) ? relative(repoRoot, resolve(repoRoot, diagnostic.filename)).split(sep).join("/") : null;
     if (file === null || !scannedFiles.has(file)) {
       internalErrors.push(`diagnostic for unscanned path ${JSON.stringify(diagnostic.filename)}: ${diagnostic.message}`);
@@ -271,7 +355,7 @@ function main() {
       }
       if (!sources.has(file)) {
         const contents = readFileSync(join(repoRoot, file));
-        sources.set(file, { byteLength: contents.length, lineStarts: byteLineStarts(contents) });
+        sources.set(file, { contents, byteLength: contents.length, lineStarts: byteLineStarts(contents) });
       }
       const source = sources.get(file);
       ranges = diagnostic.labels.map((label) => spanLines(label.span, source.lineStarts, source.byteLength));
@@ -281,10 +365,23 @@ function main() {
     }
     const addedLines = addedLinesByFile.get(file);
     const overlap = ranges.find(([start, end]) => addedLines === null || linesIntersect(start, end, addedLines));
-    if (overlap) {
-      const [startLine, endLine] = overlap;
+    const baseCounts = addedLines === null ? undefined : baseKeysByFile.get(file);
+    let seenCounts = headCountsByFile.get(file);
+    if (seenCounts === undefined) {
+      seenCounts = new Map();
+      headCountsByFile.set(file, seenCounts);
+    }
+    const key = diagnosticKey(diagnostic, sources.get(file).contents);
+    const seen = (seenCounts.get(key) ?? 0) + 1;
+    seenCounts.set(key, seen);
+    const introduced = baseCounts !== undefined && seen > (baseCounts.get(key) ?? 0);
+    if (overlap || introduced) {
+      const [startLine, endLine] = overlap ?? ranges[0];
       const at = startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
-      violations.push(`${file}:${at}: ${diagnostic.code} ${diagnostic.message}`);
+      const why = overlap
+        ? "on added/changed lines"
+        : "introduced by this change (occurs more often than in the base revision)";
+      violations.push(`${file}:${at}: ${diagnostic.code} ${diagnostic.message} (${why})`);
     }
   }
 

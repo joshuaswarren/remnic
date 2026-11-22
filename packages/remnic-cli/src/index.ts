@@ -5713,19 +5713,12 @@ async function cmdExtensions(action: string, rest: string[]): Promise<void> {
       break;
     }
 
-    case "reload": {
-      // No-op stub reserved for future caching
-      console.log("Extension cache reloaded (no-op: caching not yet implemented).");
-      break;
-    }
-
     default:
-      console.log(`Usage: remnic extensions <list|show|validate|reload>
+      console.log(`Usage: remnic extensions <list|show|validate>
 
   list                 List discovered extensions
   show <name>          Print instructions.md content
   validate             Validate all extensions, exit non-zero on errors
-  reload               Reserved for future caching (no-op)
 `);
       break;
   }
@@ -13442,7 +13435,7 @@ Usage:
     marketplace validate    Validate a marketplace.json file
     marketplace install     Install from a marketplace source
   remnic quarantine <list|replay> [--namespace <ns>] [--principal <p>] [--json]  Inspect/replay ACL-rejected writes
-  remnic extensions <list|show|validate|reload>  Manage memory extensions
+  remnic extensions <list|show|validate>         Manage memory extensions
   remnic space <list|switch|create|delete|push|pull|share|promote|audit>  Manage spaces
     create accepts --parent <id> to set parent-child relationship
   remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|attribute|drift-gen|coding|security> [benchmark...] [--quick] [--all] [--dataset-dir <path>] [--results-dir <path>] [--baselines-dir <path>] [--threshold <value>] [--detail] [--format <json|csv|html>] [--output <path>] [--target remnic-ai] [--json]

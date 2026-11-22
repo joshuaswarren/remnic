@@ -1293,6 +1293,37 @@ test("claims past the concurrency bound are re-listed on the next tick, in page 
   }
 });
 
+test("a live session at its per-session turn cap drains ahead of an older claim backlog", async () => {
+  const queue = new ExtractionQueueCoordinator(1);
+  const claimKeys: string[] = [];
+  for (let i = 1; i <= 17; i += 1) claimKeys.push("claim-" + String(i).padStart(2, "0"));
+  const state: StubState = {
+    counts: new Map([
+      ["live-under-cap", { turns: 3, retainedTurns: 0 }],
+      ["live-capped", { turns: 3, retainedTurns: 1 }],
+    ]),
+    claimed: new Set(claimKeys),
+    claimTurns: new Map(claimKeys.map((key) => [key, 50])),
+    claimedThisRun: new Set(),
+    outcomes: [],
+    drained: [],
+  };
+  const deps: BacklogSchedulerDeps = { ...makeDeps(state, queue), maxTurnsPerSession: () => 4 };
+  const scheduler = new BacklogScheduler(deps, { pollMs: 3_600_000 });
+  scheduler.start();
+  try {
+    // start() runs the first tick; a second tick runs once its drain settles.
+    await scheduler.tickForTest();
+    await scheduler.settleForTest();
+    const drainedKeys = state.drained.map((entry) => entry.key);
+    assert.equal(drainedKeys[0], "live-capped", "the capped live session takes the only slot before the claim page");
+    assert.equal(drainedKeys[1], claimKeys[0], "once it is claimed and drained, the claim backlog drains in page order");
+    assert.ok(!drainedKeys.includes("live-under-cap"), "an under-cap live session keeps waiting behind the claim page");
+  } finally {
+    await scheduler.stop();
+  }
+});
+
 // ── Provider-breaker churn guard ────────────────────────────────────────────
 //
 // While the shared provider breaker is OPEN inside its cooldown, a full
