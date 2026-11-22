@@ -1,5 +1,5 @@
 {
-  "total": 63755,
+  "total": 63760,
   "files": {
     "packages/belief-ledger/src/remnic-store.test.ts": 4,
     "packages/bench/scripts/generate-procedural-recall-baseline.ts": 7,
@@ -387,7 +387,7 @@
     "packages/hermes-provider/src/index.test.ts": 4,
     "packages/hermes-provider/src/index.ts": 35,
     "packages/import-chatgpt/src/adapter.ts": 1,
-    "packages/import-chatgpt/src/parser.ts": 69,
+    "packages/import-chatgpt/src/parser.ts": 74,
     "packages/import-chatgpt/src/transform.ts": 11,
     "packages/import-claude/src/adapter.ts": 1,
     "packages/import-claude/src/parser.ts": 35,
