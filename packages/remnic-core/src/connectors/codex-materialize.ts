@@ -611,50 +611,30 @@ export function renderMemoryMd(ctx: RenderContext): string {
   lines.push(`applies_to: cwd=*; reuse_rule=namespace-match`);
   lines.push("");
 
-  // One "task" per top-level topic cluster. For the first cut we group by
-  // memory category so the schema validator always sees at least one task.
-  const byCategory = groupMemoriesByCategory(ctx.memories);
-  let taskIndex = 1;
-  if (byCategory.size === 0) {
-    lines.push(`## Task ${taskIndex}: baseline — no memories yet`);
-    lines.push("");
-    lines.push("### rollout_summary_files");
-    for (const r of ctx.rolloutSummaries) {
+  // One task per namespace: there is no topic clustering yet, so a task per
+  // memory category would emit identical rollout lists under every task and
+  // claim per-task scoping that does not exist. The documented contract is a
+  // single task carrying all rollouts until real clustering lands (#3614).
+  const activeMemories = ctx.memories.filter(
+    (m) => !m.frontmatter.status || m.frontmatter.status === "active",
+  );
+  lines.push(`## Task 1: ${ctx.namespace} memories, outcome=surface-to-codex`);
+  lines.push("");
+  lines.push("### rollout_summary_files");
+  const rollouts = ctx.rolloutSummaries.slice(0, 5);
+  if (rollouts.length === 0) {
+    lines.push("- (none)");
+  } else {
+    for (const r of rollouts) {
       lines.push(
         `- rollout_summaries/${sanitizeSlug(r.slug)}.md (cwd=${r.cwd ?? "*"}, rollout_path=${r.rolloutPath ?? ""}, updated_at=${r.updatedAt ?? ""}, thread_id=${r.threadId ?? ""})`,
       );
     }
-    if (ctx.rolloutSummaries.length === 0) {
-      lines.push("- (none)");
-    }
-    lines.push("");
-    lines.push("### keywords");
-    lines.push(`- ${ctx.namespace}`);
-    lines.push("");
-    taskIndex += 1;
-  } else {
-    for (const [category, mems] of byCategory) {
-      lines.push(`## Task ${taskIndex}: ${category} memories, outcome=surface-to-codex`);
-      lines.push("");
-      lines.push("### rollout_summary_files");
-      const relevantRollouts = ctx.rolloutSummaries.slice(0, 5);
-      if (relevantRollouts.length === 0) {
-        lines.push("- (none)");
-      } else {
-        for (const r of relevantRollouts) {
-          lines.push(
-            `- rollout_summaries/${sanitizeSlug(r.slug)}.md (cwd=${r.cwd ?? "*"}, rollout_path=${r.rolloutPath ?? ""}, updated_at=${r.updatedAt ?? ""}, thread_id=${r.threadId ?? ""})`,
-          );
-        }
-      }
-      lines.push("");
-      lines.push("### keywords");
-      const keywords = collectKeywords(mems, category, ctx.namespace);
-      lines.push(`- ${keywords.join(", ")}`);
-      lines.push("");
-      taskIndex += 1;
-    }
   }
+  lines.push("");
+  lines.push("### keywords");
+  lines.push(`- ${collectKeywords(activeMemories, ctx.namespace).join(", ")}`);
+  lines.push("");
 
   lines.push("## User preferences");
   const prefs = pickCategory(ctx.memories, ["preference"]);
@@ -932,18 +912,6 @@ function oneLineSummary(memory: MemoryFile): string {
   return `${raw.slice(0, 157)}...`;
 }
 
-function groupMemoriesByCategory(memories: MemoryFile[]): Map<string, MemoryFile[]> {
-  const map = new Map<string, MemoryFile[]>();
-  for (const memory of memories) {
-    if (memory.frontmatter.status && memory.frontmatter.status !== "active") continue;
-    const category = memory.frontmatter.category ?? "unknown";
-    const list = map.get(category) ?? [];
-    list.push(memory);
-    map.set(category, list);
-  }
-  return map;
-}
-
 function pickCategory(memories: MemoryFile[], categories: string[]): MemoryFile[] {
   const allowed = new Set(categories);
   return memories.filter(
@@ -953,13 +921,19 @@ function pickCategory(memories: MemoryFile[], categories: string[]): MemoryFile[
   );
 }
 
-function collectKeywords(memories: MemoryFile[], category: string, namespace: string): string[] {
+function collectKeywords(memories: MemoryFile[], namespace: string): string[] {
   const keywords = new Set<string>();
-  keywords.add(category);
   keywords.add(namespace);
-  for (const mem of memories.slice(0, 10)) {
+  // Two passes so the tag flood cannot crowd out a category: every active
+  // memory's category is guaranteed a slot, then tags fill what remains.
+  for (const mem of memories) {
+    const category = (mem.frontmatter.category ?? "").trim();
+    if (category.length > 0) keywords.add(category);
+  }
+  for (const mem of memories) {
     for (const tag of mem.frontmatter.tags ?? []) {
-      if (typeof tag === "string" && tag.trim().length > 0) keywords.add(tag.trim());
+      const trimmed = tag.trim();
+      if (trimmed.length > 0) keywords.add(trimmed);
     }
   }
   return [...keywords].slice(0, 16);
