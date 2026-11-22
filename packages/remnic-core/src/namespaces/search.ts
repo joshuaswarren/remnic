@@ -162,7 +162,7 @@ export class NamespaceSearchRouter {
     if (maxResults === 0) return [];
 
     const method = options.mode ?? "search";
-    const namespaces = Array.from(new Set(options.namespaces.map((value) => value.trim()).filter(Boolean)));
+    const namespaces = Array.from(new Set(options.namespaces.map(normalizeNamespaceIdentity).filter(Boolean)));
     if (namespaces.length === 0) return [];
 
     const resultsByNamespace = await Promise.all(
@@ -292,7 +292,7 @@ export class NamespaceSearchRouter {
     execution?: SearchExecutionOptions,
     options?: { strict?: boolean; force?: boolean },
   ): Promise<NamespaceUpdateResult> {
-    const unique = Array.from(new Set(namespaces.map((value) => value.trim()).filter(Boolean)));
+    const unique = Array.from(new Set(namespaces.map(normalizeNamespaceIdentity).filter(Boolean)));
     const eligible = (await Promise.all(
       unique.map(async (namespace) => {
         const record = await this.backendRecordFor(namespace);
@@ -321,7 +321,7 @@ export class NamespaceSearchRouter {
   }
 
   async embedNamespaces(namespaces: string[], options?: { strict?: boolean }): Promise<void> {
-    const unique = Array.from(new Set(namespaces.map((value) => value.trim()).filter(Boolean)));
+    const unique = Array.from(new Set(namespaces.map(normalizeNamespaceIdentity).filter(Boolean)));
     await Promise.all(
       unique.map(async (namespace) => {
         const record = await this.backendRecordFor(namespace);
@@ -343,20 +343,14 @@ export class NamespaceSearchRouter {
     namespace: string,
     execution?: SearchExecutionOptions,
   ): Promise<NamespaceSearchHealth> {
-    const key = namespace.trim() || this.config.defaultNamespace;
+    const key = this.namespaceKey(namespace);
     let pending = this.cache.get(key);
     let operational = await this.operationalHealthForNamespace(key, execution);
     if (!operational && this.cache.get(key) !== pending) {
       pending = this.cache.get(key);
       operational = await this.operationalHealthForNamespace(key, execution);
     }
-    if (operational) {
-      this.healthResultCache.delete(key);
-      if (pending) {
-        this.nativeHealthRevision.set(pending, (this.nativeHealthRevision.get(pending) ?? 0) + 1);
-      }
-      return operational();
-    }
+    if (operational) return operational();
     const cached = this.healthResultCache.get(key);
     if (operational === undefined && this.cache.get(key) === pending &&
       cached && cached.expiresAt > Date.now() &&
@@ -479,7 +473,7 @@ export class NamespaceSearchRouter {
     if (!current() || !storage) return refused;
     const expectedCollection = () => namespaceCollectionName(this.config.qmdCollection, key, {
       defaultNamespace: this.config.defaultNamespace,
-      useLegacyDefaultCollection: key === this.config.defaultNamespace && storage.dir === this.config.memoryDir,
+      useLegacyDefaultCollection: key === this.namespaceKey("") && storage.dir === this.config.memoryDir,
     });
     if (record.memoryDir !== storage.dir || record.collection !== expectedCollection()) return refused;
 
@@ -501,9 +495,13 @@ export class NamespaceSearchRouter {
     if (!canPublish()) return refused;
     if (snapshot === undefined) return undefined;
     // The public caller resumes after this helper; invalidation can run in between.
-    return () => canPublish()
-      ? this.describeHealth(record, backend, snapshot.collectionState, snapshot)
-      : refused();
+    return () => {
+      if (!canPublish()) return refused();
+      const health = this.describeHealth(record, backend, snapshot.collectionState, snapshot);
+      this.healthResultCache.delete(key);
+      this.nativeHealthRevision.set(pending, (this.nativeHealthRevision.get(pending) ?? 0) + 1);
+      return health;
+    };
   }
 
   private async liveCachedRecordForHealth(
@@ -584,12 +582,16 @@ export class NamespaceSearchRouter {
     );
   }
 
+  private namespaceKey(namespace: string): string {
+    return normalizeNamespaceIdentity(namespace) || normalizeNamespaceIdentity(this.config.defaultNamespace);
+  }
+
   private async backendRecordFor(
     namespace: string,
     execution?: SearchExecutionOptions,
   ): Promise<NamespaceBackendRecord> {
     await this.drainPendingDisposals();
-    const key = namespace.trim() || this.config.defaultNamespace;
+    const key = this.namespaceKey(namespace);
     const existing = this.cache.get(key);
     if (existing) return await existing;
 
@@ -607,14 +609,13 @@ export class NamespaceSearchRouter {
   }
 
   private async createBackendRecordFor(
-    namespace: string,
+    key: string,
     execution: SearchExecutionOptions | undefined,
     options: BackendRecordOptions,
   ): Promise<NamespaceBackendRecord> {
-    const key = namespace.trim() || this.config.defaultNamespace;
     const storage = await this.storageRouter.storageFor(key);
     const useLegacyDefaultCollection =
-      key === this.config.defaultNamespace && storage.dir === this.config.memoryDir;
+      key === this.namespaceKey("") && storage.dir === this.config.memoryDir;
     const filtersNestedNamespaces =
       resolveNamespaceCapabilities(this.config).namespaces === true && useLegacyDefaultCollection;
     const rootHostEmbeddingScope =

@@ -706,16 +706,16 @@ test("clearCache releases evicted namespace backend handles before recreation", 
   assert.equal(createCalls, 2);
 });
 
-test("legacy default namespace root auto-creates its base collection (broad root, #1929)", async () => {
+test("a spelling alias of the legacy default namespace auto-creates its base collection (#1929)", async () => {
   const backend = new FakeBackend(false);
   const router = new NamespaceSearchRouter(
-    config(),
+    { ...config(), defaultNamespace: "cafe\u0301" },
     { storageFor: async () => ({ dir: "/tmp/remnic" }) },
     () => backend,
   );
   const controller = new AbortController();
 
-  const state = await router.ensureNamespaceCollection("main", {
+  const state = await router.ensureNamespaceCollection("caf\u00e9", {
     signal: controller.signal,
   });
 
@@ -1622,28 +1622,32 @@ const operationalSnapshot: OperationalSearchHealth = {
   totalFiles: 0, embeddedFiles: null,
 };
 
-test("operational health precedes an existing healthy result cache and never disposes the live backend", async t => {
+test("native removal invalidates CLI readiness across equivalent namespace spellings", async t => {
   let snapshot: OperationalSearchHealth | undefined;
   let created = 0;
+  const composed = "caf\u00e9";
+  const decomposed = "cafe\u0301";
   const live = new FakeBackend(false, [], { ensure: "present" }, true);
   live.statusResult = { ...operationalSnapshot };
   Object.assign(live, { readOperationalHealth: async () => snapshot });
   const missing = new FakeBackend(false, [], { check: "missing" });
+  const present = new FakeBackend(false, [], { check: "present" });
+  present.statusResult = operationalSnapshot;
   const router = new NamespaceSearchRouter(config(),
     { storageFor: async () => ({ dir: "/fixture/notes" }) },
-    () => ++created === 1 ? live : created === 2 ? new FakeBackend(false, [], { check: "present" }) : missing);
+    () => ++created === 1 ? live : created === 2 ? present : missing);
   t.after(() => router.dispose());
-  await router.ensureNamespaceCollection("shared");
-  assert.equal((await router.healthForNamespace("shared")).collectionState, "present");
+  await router.ensureNamespaceCollection(decomposed);
+  assert.equal((await router.healthForNamespace(composed)).collectionState, "present");
   assert.equal(created, 2);
-  assert.equal((await router.healthForNamespace("shared")).collectionState, "present");
+  assert.equal((await router.healthForNamespace(composed)).collectionState, "present");
   assert.equal(created, 2, "absent older capability must retain the guarded diagnostic TTL");
   snapshot = { ...operationalSnapshot, collectionState: "missing", pendingEmbeddings: null };
-  assert.equal((await router.healthForNamespace("shared")).collectionState, "missing");
+  assert.equal((await router.healthForNamespace(decomposed)).collectionState, "missing");
   assert.equal(created, 2);
   assert.equal(live.disposed, 0);
   snapshot = undefined; // Operational metadata became unavailable after the removal.
-  assert.equal((await router.healthForNamespace("shared")).collectionState, "missing");
+  assert.equal((await router.healthForNamespace(composed)).collectionState, "missing");
   assert.equal(created, 3, "the native removal must have invalidated the old CLI result");
 });
 
@@ -1678,6 +1682,42 @@ test("an older CLI diagnostic cannot publish readiness after native removal", as
   assert.equal(created, 3);
   assert.equal(stale.collectionState, "unknown");
   assert.equal(stale.pendingEmbeddings, null);
+});
+
+test("a cancelled poll does not invalidate another poll's CLI readiness", async t => {
+  const { promise: entered, resolve: statusEntered } = Promise.withResolvers<void>();
+  const { promise: status, resolve: releaseStatus } = Promise.withResolvers<SearchBackendStatus>();
+  const { promise: storage, resolve: releaseStorage } = Promise.withResolvers<{ dir: string }>();
+  const { promise: paused, resolve: storageEntered } = Promise.withResolvers<void>();
+  const dir = "/fixture/notes";
+  t.after(() => { releaseStatus(operationalSnapshot); releaseStorage({ dir }); });
+  let pauseStorage = false;
+  let created = 0;
+  const live = new FakeBackend(false, [], { ensure: "present" }, true);
+  t.mock.method(live, "status", () => { statusEntered(); return status; });
+  Object.assign(live, { readOperationalHealth: async () => undefined });
+  const router = new NamespaceSearchRouter(config(), {
+    storageFor: async () => {
+      if (pauseStorage) { storageEntered(); return storage; }
+      return { dir };
+    },
+  }, () => ++created === 1 ? live : new FakeBackend(false, [], { check: "present" }));
+  t.after(() => router.dispose());
+  await router.ensureNamespaceCollection("shared");
+  const older = router.healthForNamespace("shared");
+  await entered;
+  pauseStorage = true;
+  const controller = new AbortController();
+  const cancelled = router.healthForNamespace("shared", { signal: controller.signal });
+  await paused;
+  controller.abort();
+  assert.equal((await cancelled).collectionState, "unknown");
+  pauseStorage = false;
+  releaseStorage({ dir });
+  releaseStatus(operationalSnapshot);
+  assert.equal((await older).collectionState, "present");
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "present");
+  assert.equal(created, 2, "the successful diagnostic still uses the TTL");
 });
 
 test("health re-probes after a cached operational backend failed startup", async t => {
