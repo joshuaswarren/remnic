@@ -1875,7 +1875,7 @@ test("cold health refuses status errors, unknown backlog and unsupported version
     }],
     ["status error", backend => {
       backend.statusResult = Object.assign({
-        pendingEmbeddings: null, oldestPendingAgeMs: null, totalFiles: null, embeddedFiles: null,
+        pendingEmbeddings: 0, oldestPendingAgeMs: null, totalFiles: null, embeddedFiles: null,
       }, { error: "synthetic status failure" });
     }],
     ["unknown backlog", backend => {
