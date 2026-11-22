@@ -976,12 +976,6 @@ export class AccessRecallSurface {
         },
       );
       recallStartedAt = capturedRecallStartedAt;
-<<<<<<< HEAD
-      // Cancellation covers queueing + recall/capture. Post-capture shaping is
-=======
-      // Cancellation covers queueing, capture, and post-capture shaping:
-      // a check sits at each mid-I/O boundary below (issue #3547).
->>>>>>> origin/main
       throwIfAborted(request.abortSignal, "recall X-ray aborted before postprocessing");
       const namespaceMismatch =
         requestedNamespace !== undefined &&
@@ -1081,20 +1075,7 @@ export class AccessRecallSurface {
             rawExcerpts && rawExcerpts.length > 0
               ? rawExcerpts.map((e) => e.content).join("\n")
               : "";
-<<<<<<< HEAD
-=======
-          // Pre-load every memory in parallel so we can:
-          //   (a) re-attribute raw excerpts to the *first readable* result
-          //       rather than always to index 0 (Cursor Low review on PR
-          //       #699: a missing/unreadable result[0] orphaned the excerpt
-          //       budget); and
-          //   (b) include the metadata fields `shapeMemorySummary` actually
-          //       emits at every depth (id, path, category, status, created,
-          //       updated, tags, entityRef) in the token estimate, so the
-          //       summary reflects real spend rather than only payload-body
-          //       spend (Cursor Low review on PR #699).
           throwIfAborted(request.abortSignal, "recall X-ray aborted before result reads");
->>>>>>> origin/main
           const memoryByIndex = await Promise.all(
             snapshot.results.map(async (result) => {
               try {
