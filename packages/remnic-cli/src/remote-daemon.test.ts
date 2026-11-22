@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import {
   hostedOnlyDaemonRefusalMessage,
   probeDaemonHealth,
@@ -402,4 +403,26 @@ test("a non-loopback remote origin refuses the local daemon lifecycle; loopback 
 
   delete process.env.REMNIC_DAEMON_URL;
   assert.equal(resolveHostedOnlyDaemonRefusal("/nonexistent/remnic.config.json"), undefined);
+});
+
+// Issue #3534: daemonFetch cleared its abort timer the moment response headers
+// arrived, so a front that sends headers then stalls or trickles the body
+// holds response.json() with no deadline. One deadline covers connect,
+// headers and body.
+test("daemon calls bound the whole request: a trickling body cannot outlive the deadline", async () => {
+  const require2 = createRequire(import.meta.url);
+  const helpers: {
+    startTricklingDaemon: () => Promise<{ url: string; close: () => void }>;
+  } = require2("../../../tests/helpers/stalled-daemon.cjs");
+  const { startTricklingDaemon } = helpers;
+  const trickle = await startTricklingDaemon();
+  try {
+    const outcome = await Promise.race([
+      printHealthCheck(trickle.url, undefined, 1500).then(() => "returned" as const),
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 4_000)),
+    ]);
+    assert.equal(outcome, "returned", "health check must return; the trickling body may not outlive the deadline");
+  } finally {
+    trickle.close();
+  }
 });

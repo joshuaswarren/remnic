@@ -290,10 +290,19 @@ async function daemonFetch(
   try {
     const headers: Record<string, string> = { accept: "application/json" };
     if (token) headers.authorization = `Bearer ${token}`;
-    return await fetch(url, {
+    const response = await fetch(url, {
       ...init,
       headers: { ...headers, ...init?.headers as Record<string, string> | undefined },
       signal: controller.signal,
+    });
+    // The deadline covers the body too (issue #3534): buffer it while the
+    // timer is still armed, then hand callers a fully-read response so their
+    // .json() cannot wait on a daemon that stalls or trickles the body.
+    const text = await response.text();
+    return new Response(text === "" ? null : text, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
     });
   } finally {
     clearTimeout(timeoutId);

@@ -410,8 +410,9 @@ export class HermesClient {
           signal: controller.signal,
         });
 
-        clearTimeout(timeout);
-        timeout = undefined;
+        // The timer stays armed: the deadline covers connect, headers and
+        // body (issue #3534). It is cleared in the finally once this
+        // attempt's body read — or its failure — settles.
 
         // Success responses
         if (response.ok) {
@@ -459,7 +460,6 @@ export class HermesClient {
         lastError = new Error(`HTTP ${response.status}`);
         continue;
       } catch (err) {
-        if (timeout !== undefined) clearTimeout(timeout);
         if (err instanceof HermesError) throw err;
         if (err instanceof DOMException && err.name === "AbortError") {
           lastError = new Error(`request timed out after ${this.timeoutMs}ms`);
@@ -467,6 +467,8 @@ export class HermesClient {
         }
         lastError = err as Error;
         continue;
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
       }
     }
 
