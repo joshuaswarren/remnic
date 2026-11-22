@@ -6,7 +6,6 @@
  * the next one without a shrink will breach the fail-at. Catching it
  * pre-push costs ~50 ms; catching it in CI costs ~3 minutes of worker rebuild.
  */
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -34,9 +33,9 @@ if (bytes < HARD_CAP) {
     `[manifest-headroom] WARN — ${bytes} bytes exceeds fail-at ${FAIL_AT} ` +
       `(hard cap ${HARD_CAP}). Shrink before the next config-adding feature lands.`,
   );
-  // Soft-fail so it surfaces in CI logs without blocking unrelated PRs;
-  // promote to process.exit(1) once the runway is back below FAIL_AT.
-  process.exit(0);
+  // Blocking again (issue 3618): the minified size is back below FAIL_AT,
+  // so exceeding the fail-at must block pre-push instead of only logging.
+  process.exit(1);
 }
 console.error(
   `[manifest-headroom] FAIL — ${bytes} bytes exceeds hard cap ${HARD_CAP}. ` +
