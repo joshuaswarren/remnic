@@ -7676,11 +7676,20 @@ export function registerCli(
             console.log("Buffer is empty. Nothing to extract.");
             return;
           }
-          console.log(`Extracting ${outcome.turns} buffered turns...`);
-          const reason = outcome.reason ? `, reason=${outcome.reason}` : "";
           console.log(
-            `Extraction finished: status=${outcome.status}, persisted=${outcome.persistedCount}${reason}`,
+            `Extracting ${outcome.turns} buffered turn(s) across ${outcome.entries.length} session(s)...`,
           );
+          console.log(
+            `Extraction finished: drained=${outcome.drained}/${outcome.entries.length} sessions, persisted=${outcome.persistedCount}`,
+          );
+          for (const entry of outcome.failed) {
+            console.log(
+              `  failed: ${entry.key}: ${entry.error ?? `status=${entry.status}${entry.reason ? `, reason=${entry.reason}` : ""}`}`,
+            );
+          }
+          if (outcome.failed.length > 0) {
+            process.exitCode = 1;
+          }
         });
 
       cmd
