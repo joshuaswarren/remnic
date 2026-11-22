@@ -143,6 +143,12 @@ export interface SearchBackendStatus {
   embeddedFiles: number | null;
 }
 
+export interface OperationalSearchHealth extends SearchBackendStatus {
+  collectionState: "present" | "missing" | "unknown";
+  /** Recheck the captured operational owner after the caller's final await. */
+  isCurrent?: () => boolean;
+}
+
 /**
  * Abstract search backend interface.
  *
@@ -167,8 +173,25 @@ export interface SearchBackend {
   checkAvailability?(execution?: SearchExecutionOptions): Promise<boolean>;
   isAvailable(): boolean;
   debugStatus(): string;
+  /** Opaque current operational generation; observing it must not acquire a process. */
+  operationalHealthIdentity?(): object | null;
+  getVersionStatus?(): {
+    installedVersion: string | null;
+    supportedVersion: string;
+    supported: boolean;
+    upgradeAvailable: boolean;
+    capabilities?: { doctor?: boolean };
+  } | null;
   /** Optional embedding backlog status for health surfaces. */
   status?(): Promise<SearchBackendStatus>;
+  /**
+   * Fresh health from an already-owned operational connection only.
+   * Undefined means the optional capability is absent: use existing diagnostics.
+   */
+  readOperationalHealth?(
+    memoryDir: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<OperationalSearchHealth | undefined>;
 
   // ── Search ──
   search(

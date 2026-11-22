@@ -1,4 +1,4 @@
-import { resolveNamespaceCapabilities } from "../capabilities.js";
+import { resolveNamespaceCapabilities, resolveQmdCapabilities } from "../capabilities.js";
 import path from "node:path";
 import { realpathSync } from "node:fs";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
@@ -6,6 +6,8 @@ import type {
   SearchBackend,
   SearchExecutionOptions,
   SearchQueryOptions,
+  SearchBackendStatus,
+  OperationalSearchHealth,
 } from "../search/port.js";
 import { reportSearchDegradation } from "../search/port.js";
 import { createSearchBackend } from "../search/factory.js";
@@ -90,13 +92,15 @@ export function embeddingBacklogExceeds(pending: number | null, threshold: numbe
  * reports it, and `healthForNamespace` refuses to cache it.
  */
 export function isSearchHealthDegraded(
-  health: Pick<NamespaceSearchHealth, "available" | "collectionState" | "pendingEmbeddings">,
+  health: Pick<NamespaceSearchHealth, "available" | "collectionState" | "pendingEmbeddings"> &
+    Partial<Pick<NamespaceSearchHealth, "supported">>,
   backlogThreshold: number,
 ): boolean {
   const active = health.available && health.collectionState !== "missing";
   return (
     !active ||
     health.collectionState === "unknown" ||
+    health.supported === false ||
     embeddingBacklogExceeds(health.pendingEmbeddings, backlogThreshold)
   );
 }
@@ -113,6 +117,8 @@ type BackendRecordOptions = {
 
 export class NamespaceSearchRouter {
   private readonly cache = new Map<string, Promise<NamespaceBackendRecord>>();
+  // Scoped to the backend record's lifetime; a native result supersedes older CLI probes.
+  private readonly nativeHealthRevision = new WeakMap<Promise<NamespaceBackendRecord>, number>();
   private readonly healthResultCache = new Map<
     string,
     { expiresAt: number; value: NamespaceSearchHealth }
@@ -156,7 +162,7 @@ export class NamespaceSearchRouter {
     if (maxResults === 0) return [];
 
     const method = options.mode ?? "search";
-    const namespaces = Array.from(new Set(options.namespaces.map((value) => value.trim()).filter(Boolean)));
+    const namespaces = Array.from(new Set(options.namespaces.map(normalizeNamespaceIdentity).filter(Boolean)));
     if (namespaces.length === 0) return [];
 
     const resultsByNamespace = await Promise.all(
@@ -286,7 +292,7 @@ export class NamespaceSearchRouter {
     execution?: SearchExecutionOptions,
     options?: { strict?: boolean; force?: boolean },
   ): Promise<NamespaceUpdateResult> {
-    const unique = Array.from(new Set(namespaces.map((value) => value.trim()).filter(Boolean)));
+    const unique = Array.from(new Set(namespaces.map(normalizeNamespaceIdentity).filter(Boolean)));
     const eligible = (await Promise.all(
       unique.map(async (namespace) => {
         const record = await this.backendRecordFor(namespace);
@@ -315,7 +321,7 @@ export class NamespaceSearchRouter {
   }
 
   async embedNamespaces(namespaces: string[], options?: { strict?: boolean }): Promise<void> {
-    const unique = Array.from(new Set(namespaces.map((value) => value.trim()).filter(Boolean)));
+    const unique = Array.from(new Set(namespaces.map(normalizeNamespaceIdentity).filter(Boolean)));
     await Promise.all(
       unique.map(async (namespace) => {
         const record = await this.backendRecordFor(namespace);
@@ -337,12 +343,22 @@ export class NamespaceSearchRouter {
     namespace: string,
     execution?: SearchExecutionOptions,
   ): Promise<NamespaceSearchHealth> {
-    const key = namespace.trim() || this.config.defaultNamespace;
+    const key = this.namespaceKey(namespace);
+    let pending = this.cache.get(key);
+    let operational = await this.operationalHealthForNamespace(key, execution);
+    if (!operational && this.cache.get(key) !== pending) {
+      pending = this.cache.get(key);
+      operational = await this.operationalHealthForNamespace(key, execution);
+    }
+    if (operational) return operational();
     const cached = this.healthResultCache.get(key);
-    if (cached && cached.expiresAt > Date.now()) {
+    if (operational === undefined && this.cache.get(key) === pending &&
+      cached && cached.expiresAt > Date.now() &&
+      !execution?.signal?.aborted && resolveQmdCapabilities(this.config).qmd !== false) {
       return { ...cached.value };
     }
 
+    const nativeRevision = pending && this.nativeHealthRevision.get(pending);
     const record = await this.createBackendRecordFor(
       key,
       execution,
@@ -352,18 +368,12 @@ export class NamespaceSearchRouter {
         failOpenMissingGuardedCollection: false,
       },
     );
+    let health: NamespaceSearchHealth;
     try {
       const liveRecord = await this.liveCachedRecordForHealth(key, record, execution);
       const diagnosticBackend = liveRecord?.backend ?? record.backend;
-      const versionStatus =
-        "getVersionStatus" in diagnosticBackend &&
-        typeof diagnosticBackend.getVersionStatus === "function"
-          ? diagnosticBackend.getVersionStatus()
-          : null;
-      const daemonMode = daemonModeForBackend(diagnosticBackend);
       const backendStatus =
-        "status" in diagnosticBackend &&
-        typeof diagnosticBackend.status === "function"
+        diagnosticBackend.status
           ? await Promise.race([
               diagnosticBackend.status().catch(() => null),
               new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000).unref?.()),
@@ -374,42 +384,124 @@ export class NamespaceSearchRouter {
           ? "missing"
           : record.collectionState;
 
-      const health: NamespaceSearchHealth = {
-        collection: record.collection,
-        memoryDir: record.memoryDir,
-        available: liveRecord?.available ?? record.available,
-        collectionState,
-        debugStatus: diagnosticBackend.debugStatus(),
-        installedVersion: versionStatus?.installedVersion ?? null,
-        supportedVersion: versionStatus?.supportedVersion ?? null,
-        supported: versionStatus?.supported ?? null,
-        upgradeAvailable: versionStatus?.upgradeAvailable ?? null,
-        doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
-        daemonMode,
-        pendingEmbeddings: backendStatus?.pendingEmbeddings ?? null,
-        oldestPendingAgeMs: backendStatus?.oldestPendingAgeMs ?? null,
-        embeddingBacklogThreshold: this.config.qmdEmbeddingBacklogThreshold,
-      };
-
-      // Cache only a healthy answer that carries backlog data when the backend
-      // reports status. A degraded or incomplete answer must re-probe so a
-      // readiness poll sees recovery on the next call, not one TTL late.
-      const statusMissing = backendStatus === null && "status" in diagnosticBackend;
-      if (
-        execution?.signal?.aborted !== true &&
-        !statusMissing &&
-        !isSearchHealthDegraded(health, health.embeddingBacklogThreshold)
-      ) {
-        this.healthResultCache.set(key, {
-          expiresAt: Date.now() + HEALTH_RESULT_CACHE_TTL_MS,
-          value: { ...health },
-        });
-      }
-      return { ...health };
+      health = this.describeHealth(
+        record, diagnosticBackend,
+        execution?.signal?.aborted ? "unknown" : collectionState,
+        execution?.signal?.aborted ? null : backendStatus,
+        liveRecord?.available ?? record.available,
+      );
     } finally {
       const dispose = (record.backend as { dispose?: () => void | Promise<void> }).dispose;
       await dispose?.call(record.backend);
     }
+
+    if (execution?.signal?.aborted || this.cache.get(key) !== pending ||
+        (pending && this.nativeHealthRevision.get(pending) !== nativeRevision)) {
+      return { ...health, collectionState: "unknown", pendingEmbeddings: null, oldestPendingAgeMs: null };
+    }
+    // Cache only a healthy, unsuperseded diagnostic.
+    if (
+      operational === undefined &&
+      !isSearchHealthDegraded(health, health.embeddingBacklogThreshold)
+    ) {
+      this.healthResultCache.set(key, {
+        expiresAt: Date.now() + HEALTH_RESULT_CACHE_TTL_MS,
+        value: { ...health },
+      });
+    }
+    return health;
+  }
+
+  private describeHealth(
+    record: NamespaceBackendRecord,
+    diagnosticBackend: SearchBackend,
+    collectionState: CollectionState,
+    backendStatus: SearchBackendStatus | null,
+    available = record.available,
+  ): NamespaceSearchHealth {
+    const versionStatus = diagnosticBackend.getVersionStatus?.();
+    const statusFailed = diagnosticBackend.status &&
+      (backendStatus === null || "error" in backendStatus ||
+        !Number.isSafeInteger(backendStatus.pendingEmbeddings) ||
+        backendStatus.pendingEmbeddings === null || backendStatus.pendingEmbeddings < 0);
+    return {
+      collection: record.collection,
+      memoryDir: record.memoryDir,
+      available,
+      collectionState: collectionState !== "missing" && (statusFailed || versionStatus?.supported === false)
+        ? "unknown" : collectionState,
+      debugStatus: diagnosticBackend.debugStatus(),
+      installedVersion: versionStatus?.installedVersion ?? null,
+      supportedVersion: versionStatus?.supportedVersion ?? null,
+      supported: versionStatus?.supported ?? null,
+      upgradeAvailable: versionStatus?.upgradeAvailable ?? null,
+      doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
+      daemonMode: daemonModeForBackend(diagnosticBackend),
+      pendingEmbeddings: backendStatus?.pendingEmbeddings ?? null,
+      oldestPendingAgeMs: backendStatus?.oldestPendingAgeMs ?? null,
+      embeddingBacklogThreshold: this.config.qmdEmbeddingBacklogThreshold,
+    };
+  }
+
+  private async operationalHealthForNamespace(
+    key: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<(() => NamespaceSearchHealth) | null | undefined> {
+    const pending = this.cache.get(key);
+    if (!pending) return undefined;
+    if (execution?.signal?.aborted || resolveQmdCapabilities(this.config).qmd === false) return null;
+    const record = await awaitWithAbort(pending, execution?.signal).catch(() => null);
+    if (!record) return null;
+    const backend = record.backend;
+    const daemonMode = daemonModeForBackend(backend);
+    const operationalIdentity = backend.operationalHealthIdentity?.();
+    const ownsRecord = () => !execution?.signal?.aborted && this.cache.get(key) === pending &&
+      !record.disposed && resolveQmdCapabilities(this.config).qmd !== false && record.backend === backend;
+    const current = () => ownsRecord() && record.available && backend.isAvailable() &&
+      daemonModeForBackend(backend) === daemonMode &&
+      backend.operationalHealthIdentity?.() === operationalIdentity;
+    const refused = () => this.describeHealth(
+      record, backend, record.collectionState === "missing" ? "missing" : "unknown", null,
+      record.available && !record.disposed,
+    );
+    // A failed initial probe never established an operational connection.
+    if (!record.available && record.collectionState === "unknown" && ownsRecord()) return undefined;
+    if (!current()) return refused;
+    if (!backend.readOperationalHealth) return undefined;
+    if (record.collectionState === "missing") return refused;
+    const storage = await awaitWithAbort(this.storageRouter.storageFor(key), execution?.signal).catch(() => null);
+    if (!current() || !storage) return refused;
+    const expectedCollection = () => namespaceCollectionName(this.config.qmdCollection, key, {
+      defaultNamespace: this.config.defaultNamespace,
+      useLegacyDefaultCollection: key === this.namespaceKey("") && storage.dir === this.config.memoryDir,
+    });
+    if (record.memoryDir !== storage.dir || record.collection !== expectedCollection()) return refused;
+
+    let snapshot: OperationalSearchHealth | null | undefined;
+    try {
+      snapshot = await awaitWithAbort(
+        backend.readOperationalHealth(storage.dir, execution), execution?.signal,
+      );
+    } catch {
+      return refused;
+    }
+    if (snapshot === null) return refused;
+    const currentStorage = await awaitWithAbort(
+      this.storageRouter.storageFor(key), execution?.signal,
+    ).catch(() => null);
+    const canPublish = () => current() && currentStorage?.dir === storage.dir &&
+      record.memoryDir === storage.dir && record.collection === expectedCollection() &&
+      snapshot?.isCurrent?.() !== false;
+    if (!canPublish()) return refused;
+    if (snapshot === undefined) return undefined;
+    // The public caller resumes after this helper; invalidation can run in between.
+    return () => {
+      if (!canPublish()) return refused();
+      const health = this.describeHealth(record, backend, snapshot.collectionState, snapshot);
+      this.healthResultCache.delete(key);
+      this.nativeHealthRevision.set(pending, (this.nativeHealthRevision.get(pending) ?? 0) + 1);
+      return health;
+    };
   }
 
   private async liveCachedRecordForHealth(
@@ -421,6 +513,7 @@ export class NamespaceSearchRouter {
     if (!pending) return null;
     const cachedRecord = await awaitWithAbort(pending, execution?.signal).catch(() => null);
     if (!cachedRecord) return null;
+    if (!cachedRecord.available && cachedRecord.collectionState === "unknown" && !cachedRecord.disposed) return null;
     if (cachedRecord.collection !== disposableRecord.collection) return null;
     if (cachedRecord.memoryDir !== disposableRecord.memoryDir) return null;
     return cachedRecord;
@@ -489,12 +582,16 @@ export class NamespaceSearchRouter {
     );
   }
 
+  private namespaceKey(namespace: string): string {
+    return normalizeNamespaceIdentity(namespace) || normalizeNamespaceIdentity(this.config.defaultNamespace);
+  }
+
   private async backendRecordFor(
     namespace: string,
     execution?: SearchExecutionOptions,
   ): Promise<NamespaceBackendRecord> {
     await this.drainPendingDisposals();
-    const key = namespace.trim() || this.config.defaultNamespace;
+    const key = this.namespaceKey(namespace);
     const existing = this.cache.get(key);
     if (existing) return await existing;
 
@@ -512,14 +609,13 @@ export class NamespaceSearchRouter {
   }
 
   private async createBackendRecordFor(
-    namespace: string,
+    key: string,
     execution: SearchExecutionOptions | undefined,
     options: BackendRecordOptions,
   ): Promise<NamespaceBackendRecord> {
-    const key = namespace.trim() || this.config.defaultNamespace;
     const storage = await this.storageRouter.storageFor(key);
     const useLegacyDefaultCollection =
-      key === this.config.defaultNamespace && storage.dir === this.config.memoryDir;
+      key === this.namespaceKey("") && storage.dir === this.config.memoryDir;
     const filtersNestedNamespaces =
       resolveNamespaceCapabilities(this.config).namespaces === true && useLegacyDefaultCollection;
     const rootHostEmbeddingScope =
