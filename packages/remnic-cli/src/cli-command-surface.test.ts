@@ -33,6 +33,11 @@ import { after, before, test } from "node:test";
 
 import { runCli } from "./run-cli.js";
 
+// ── Isolate HOME for the entire file ────────────────────────────────────────
+// The dispatcher runs migrateFromEngram() for every non-migrate command; that
+// reads/writes ~/.engram + ~/.remnic. Point HOME at a temp dir so the one-shot
+// migration is a no-op against empty state and no test touches the developer's
+// real config.
 let tempHome = "";
 let originalHome: string | undefined;
 
@@ -56,6 +61,19 @@ after(async () => {
 // dispatch-contract discriminator.
 const BANNER_MARKER = "remnic — Remnic memory CLI";
 
+/**
+ * The full set of top-level command names handled by `main()`'s switch
+ * (CommandName union in index.ts). Every entry must dispatch to a handler, not
+ * the default banner. Keeping this list explicit means a renamed or dropped
+ * command is caught here even before the docs-parity check runs.
+ */
+/**
+ * Commands advertised in the catch-all help banner (the user-facing
+ * inventory). Every entry here MUST appear in the banner — otherwise the
+ * command is unreachable through documented usage (the #1518 regression
+ * class). `action-confidence` is a real dispatch target but is intentionally
+ * not user-documented (advisory-only); it is covered by the dispatch test.
+ */
 const DOCUMENTED_COMMANDS = [
   "init",
   "migrate",
@@ -105,6 +123,8 @@ const DOCUMENTED_COMMANDS = [
 const ALL_COMMAND_NAMES = [...DOCUMENTED_COMMANDS, "action-confidence"] as const;
 
 // ════════════════════════════════════════════════════════════════════════════
+// 1. Surface enumeration — the catch-all help lists every documented command
+// ════════════════════════════════════════════════════════════════════════════
 
 test("unknown command prints the catch-all help banner", async () => {
   const result = await runCli(["__definitely_not_a_command__"]);
@@ -131,11 +151,29 @@ test("the catch-all banner advertises every top-level command", async () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// 2. Dispatch contract — recognised commands never print the catch-all banner
 // ════════════════════════════════════════════════════════════════════════════
 
 test("every recognised command dispatches to its own handler, not the banner", async () => {
+  // Invoke each command with a minimal argument shape that reaches its handler
+  // WITHOUT initialising the orchestrator, hitting the network, or requiring a
+  // daemon / API key. We assert ONLY that the catch-all banner is absent —
+  // i.e. the dispatcher routed to the command's case, not default.
   //
+  // Heavy commands (query, xray, briefing, enrich, binary, onboard, curate,
+  // review, sync, wearables-sync) are deliberately excluded: they boot the
+  // orchestrator or scan the filesystem and would make this suite slow /
+  // environment-dependent. Their dispatch is covered by the per-command
+  // signature tests + their own subsystem suites. The fast commands here give
+  // full coverage of the switch's routing branches that can be exercised
+  // deterministically.
   const fast: Record<string, string[]> = {
+    // NOTE: `init` and `migrate` are intentionally excluded — both have
+    // filesystem side effects (init writes remnic.config.json to cwd;
+    // migrate writes ~/.remnic state). init is covered by its dedicated
+    // cwd-isolated test below; migrate's dispatch is covered by its own
+    // subsystem tests. Keeping them out of this map avoids polluting the
+    // worktree root with stray files.
     status: ["status"],
     doctor: ["doctor"],
     config: ["config"],
@@ -293,6 +331,7 @@ test("bench attribute dispatch forwards paired QMD fallback arguments", async ()
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// 3. Happy-path signatures — deterministic output for load-bearing commands
 // ════════════════════════════════════════════════════════════════════════════
 
 test("status prints the server-status label (running state is environment-dependent)", async () => {
@@ -310,6 +349,8 @@ test("status --json emits a JSON object with the running + pidFile fields", asyn
 });
 
 test("config with no config file reports it is missing", async () => {
+  // resolveConfigPath() walks up from cwd, so isolate cwd in a temp dir with
+  // no remnic.config.json ancestor (the worktree root has a real one).
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-cfg-"));
   try {
     const result = await runCli(["config"], { cwd: dir });
@@ -407,6 +448,7 @@ test("init creates remnic.config.json in the cwd and reports the path", async ()
     assert.equal(fs.existsSync(created), true, "init did not write the config file");
     const written = JSON.parse(fs.readFileSync(created, "utf8"));
     assert.equal(typeof written, "object");
+    // init is idempotent: a second run reports the config already exists.
     const second = await runCli(["init"], { cwd: dir });
     assert.equal(second.exitCode, 0);
     assert.match(second.stdout, /Config already exists/);
@@ -449,6 +491,7 @@ test("capsule with no subaction prints the capsule usage block (no banner)", asy
 test("tree generate rejects a non-numeric --max-per-category value", async () => {
   const result = await runCli(["tree", "generate", "--max-per-category", "abc"]);
   assert.notEqual(result.exitCode, 0);
+  // The handler prints the invalid value on stderr and exits 1.
   assert.match(result.stderr, /Invalid --max-per-category/);
 });
 
@@ -472,6 +515,9 @@ test("capsule lineage without --fork-id is rejected with an error", async () => 
 });
 
 test("oauth --help renders the oauth usage block (no banner)", async () => {
+  // Same pattern as `tree` / `capsule` no-subaction tests: --help is a
+  // deterministic in-process branch and should never fall through to the
+  // catch-all banner.
   const result = await runCli(["oauth", "--help"]);
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /Usage: remnic oauth/);
@@ -486,6 +532,7 @@ test("oauth with an unknown subcommand prints usage and exits non-zero", async (
   // the bogus subcommand. With no REMNIC_AUTH_TOKEN in the test env
   // (the file-level isolation strips it) the token-gate fires before the
   // subcommand switch — but the contract we care about is "non-zero exit
+  // + clear error", which both paths satisfy. Accept either message.
   const result = await runCli(["oauth", "__bogus__"]);
   assert.notEqual(result.exitCode, 0);
   assert.match(
@@ -495,21 +542,30 @@ test("oauth with an unknown subcommand prints usage and exits non-zero", async (
 });
 
 test("oauth pending --format rejects an invalid value", async () => {
+  // Bad --format values are rejected before the operator-token check,
+  // so this is deterministic regardless of env state.
   const result = await runCli(["oauth", "pending", "--format", "xml"]);
   assert.notEqual(result.exitCode, 0);
   assert.match(result.stderr, /Invalid --format/);
 });
 
 test("oauth pending --format rejects a bare flag with no value", async () => {
+  // `--format` requires a value; a bare flag must error rather than
+  // silently default to "text" (CLAUDE.md rule 51 / cursor review #611).
   const result = await runCli(["oauth", "pending", "--format"]);
   assert.notEqual(result.exitCode, 0);
   assert.match(result.stderr, /--format requires a value/);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// token generate — flag-value-vs-connector positional parsing (issue #1850 #5)
 // ════════════════════════════════════════════════════════════════════════════
 
 test("token generate: --ops value is not mistaken for the connector (flags-first parse)", async () => {
+  // `token generate --ops recall monitor` must resolve connector=monitor,
+  // not the --ops value "recall". The prior `rest.find(a => !a.startsWith("-"))`
+  // grabbed the first non-flag token, which was the --ops value. HOME is
+  // isolated at the file level so the generated token lands in the temp store.
   const result = await runCli(["token", "generate", "--ops", "recall", "monitor"]);
   assert.equal(result.exitCode, 0, "token generate should succeed with a valid connector");
   assert.match(result.stdout, /Generated token for monitor:/, "connector must be monitor, not the --ops value");
@@ -521,12 +577,17 @@ test("token generate: --ops value is not mistaken for the connector (flags-first
 });
 
 test("token generate: connector-first ordering still resolves the connector", async () => {
+  // Symmetric: connector before the flags must still resolve correctly.
   const result = await runCli(["token", "generate", "monitor", "--ops", "recall"]);
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /Generated token for monitor:/);
 });
 
 test("token generate: a bare --ops value with no connector is a usage error, not a misparse", async () => {
+  // `token generate --ops monitor` (no real connector): before the fix the
+  // --ops value "monitor" was grabbed as the connector and a token minted;
+  // now the value is consumed by --ops and the missing connector is a clean
+  // usage error (non-zero exit).
   const result = await runCli(["token", "generate", "--ops", "monitor"]);
   assert.notEqual(result.exitCode, 0, "a missing connector must exit non-zero");
   assert.match(result.stderr, /Usage: remnic token generate <connector-id>/);

@@ -1,32 +1,5 @@
 "use strict";
 
-/**
- * Shared Remnic host hook runner (issues #1440, #1518, #2483).
- *
- * One parameterized cross-platform Node.js implementation of the host hook
- * contract (session-start | user-prompt-recall | post-tool-observe |
- * session-end [+ pre-compact where the host emits it]). Each host package
- * ships a byte-identical copy of this file next to a thin wrapper that calls
- * `run(config)` with the per-host knobs: client id, token connector
- * priority, connector install hint, log file/tag names, and the Codex-only
- * events (pre-compact drain+flush, session-end materialization).
- *
- * CANONICAL SOURCE: scripts/hook-runner/remnic-hook-core.cjs. The copies in
- * packages/plugin-claude-code/hooks/bin/ and packages/plugin-codex/hooks/bin/
- * are generated — edit the canonical file, then run
- * `npm run sync:hook-runner` (CI fails on drift via
- * `npm run check:hook-runner-sync`).
- *
- * Fail-open everywhere: any unexpected error degrades to `{"continue":true}`.
- *
- * Security note (issue #1518 "guard shell interpolation"): every value that
- * originates from the hook payload (session id, cwd, transcript path, prompt,
- * tool name) is passed to child processes via argv or stdin — NEVER via a
- * string-interpolated shell command. `spawn`/`spawnSync` are called with
- * fixed literal argument arrays and `shell: false` (except on Windows, where
- * `.cmd` shims require `shell: true` with fixed literal args), so a payload
- * field containing shell metacharacters cannot achieve command injection.
- */
 
 const fs = require("fs");
 const os = require("os");
@@ -35,8 +8,6 @@ const http = require("http");
 const https = require("https");
 const { execFileSync, spawn, spawnSync } = require("child_process");
 
-// it re-enters through the same per-host config. When the core is required
-// by a wrapper, `require.main` is the wrapper's module.
 const ENTRY_FILE = (require.main && require.main.filename) || __filename;
 
 function run(config) {
@@ -47,38 +18,19 @@ function run(config) {
   const LOG_FILES = config.logFiles;
   const LOG_TAGS = config.logTags;
   const DEFAULT_LOG_FILE = config.defaultLogFile;
-  // agy, "DEVIN_PROJECT_DIR" for Devin). The active host's variable wins so
-  // a stray cross-host variable cannot reroute another host's recall; the
-  // shared fallbacks below only apply when the host's own variable is unset.
   const PROJECT_DIR_ENV = config.projectDirEnv || "";
 
   const HOME = process.env.HOME || process.env.USERPROFILE || os.homedir();
 
-  // @remnic/plugin-pi's `remnicDaemonUrl`). A full REMNIC_DAEMON_URL
-  // (e.g. "http://host.tailnet:4318" or "https://remnic.internal:443")
-  // takes precedence and lets a host talk to a shared central daemon over
-  // Tailscale/LAN/VPN. The legacy REMNIC_HOST/REMNIC_PORT pair remains
-  // supported as a backward-compat fallback so existing installs and the
-  // test harness (which spins a mock on 127.0.0.1:<port>) keep working.
   const RAW_DAEMON_URL = process.env.REMNIC_DAEMON_URL || process.env.ENGRAM_DAEMON_URL || "";
   const HOST = process.env.REMNIC_HOST || process.env.ENGRAM_HOST || "127.0.0.1";
   const PORT = process.env.REMNIC_PORT || process.env.ENGRAM_PORT || "4318";
 
-  // for TLS daemons (common for remote/private deployments behind a proxy).
-  //
-  // An EXPLICIT but invalid REMNIC_DAEMON_URL (missing scheme, typo, e.g.
-  // "host:4318") must NOT silently fall through to REMNIC_HOST/REMNIC_PORT —
-  // that would route recall/observe/flush to a local daemon and corrupt the
-  // wrong memory store. Instead we disable the daemon entirely (all HTTP
-  // calls fail open) and surface the misconfiguration once on stderr so the
-  // operator fixes the URL rather than debugging silent cross-store writes
-  // (#1571 review).
   let DAEMON_CONFIG_ERROR = "";
   const DAEMON_URL = (function resolveDaemonUrl() {
     if (RAW_DAEMON_URL) {
       try {
         const parsed = new URL(RAW_DAEMON_URL);
-        // protocol "host:" and would otherwise silently route to localhost.
         if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed;
       } catch {
         /* handled below */
@@ -99,11 +51,6 @@ function run(config) {
     }
   })();
 
-  // REMNIC_DAEMON_URL=http://gw/remnic). Mirrors plugin-pi's daemon-URL +
-  // route concatenation — without this, a path-qualified base URL has its
-  // prefix silently dropped and requests hit the host root (#1571 review).
-  // Trailing slashes are stripped so "/remnic/" + "/engram/v1/observe"
-  // becomes "/remnic/engram/v1/observe"; a bare root ("/") yields "".
   const DAEMON_BASE_PATH = DAEMON_URL ? DAEMON_URL.pathname.replace(/\/+$/, "") : "";
 
   // URL.hostname keeps the brackets on IPv6 literals ("[::1]"); Node's
@@ -113,9 +60,6 @@ function run(config) {
     ? DAEMON_URL.hostname.replace(/^\[|\]$/g, "")
     : "";
 
-  // cleartext. Remote-daemon-over-http is a supported deployment shape
-  // (trusted LAN/Tailscale), so this warns rather than refuses — but the
-  // operator should see the exposure once per hook invocation batch.
   if (DAEMON_URL && DAEMON_URL.protocol === "http:" && !isLoopbackHost(DAEMON_HOSTNAME)) {
     if (process.env.REMNIC_HOOK_QUIET !== "1") {
       try {
@@ -134,31 +78,17 @@ function run(config) {
     return /^127(?:\.\d{1,3}){3}$/.test(h);
   }
 
-  // itself so the (slow) observe runs in the background and never blocks the
-  // host past the short PostToolUse timeout — mirroring the original
-  // `( … ) & disown`.
   const OBSERVE_WORKER = "__observe-worker__";
 
-  // contention. The foreground session-end hook gives up after ~5s so the
-  // host is never blocked; this worker waits longer for a still-running
-  // observe worker to release the session lock, then performs the same
-  // drain + cursor cleanup.
   const SESSION_END_DRAIN = "__session-end-drain__";
 
-  // drain: an in-flight observe worker's /engram/v1/observe can take up to
-  // 120s, so the drain waits roughly that long before giving up and leaving
-  // cursor state for the stale-lock reaper.
   const _sedRaw = process.env.REMNIC_SESSION_END_DRAIN_LOCK_RETRIES;
   const _sedParsed = _sedRaw != null && _sedRaw !== "" ? Number.parseInt(_sedRaw, 10) : 1200;
   const SESSION_END_DRAIN_LOCK_RETRIES = Number.isFinite(_sedParsed) && _sedParsed >= 0 ? _sedParsed : 1200;
 
-  // long handlePreCompact waits for a detached PostToolUse observe worker
-  // (whose own /observe can run up to 120s) to release the session lock
-  // before skipping the drain+flush. 15s covers a typical observe round-trip
-  // on a healthy daemon; a pathologically slow worker that outlasts this is
-  // left for the next cycle rather than blocking compaction indefinitely.
   const _pcRaw = process.env.REMNIC_PRECOMPACT_LOCK_RETRIES;
   const _pcParsed = _pcRaw != null && _pcRaw !== "" ? Number.parseInt(_pcRaw, 10) : 150;
+  // 0 is honored (immediate busy-skip); NaN/negative falls back to the 150 default.
   const PRECOMPACT_LOCK_RETRIES = Number.isFinite(_pcParsed) && _pcParsed >= 0 ? _pcParsed : 150;
 
   function makeLogger(event) {
@@ -186,11 +116,6 @@ function run(config) {
   }
 
   function readStdin() {
-    // the host on fd 0; the detached observe worker gets it from the pipe the
-    // foreground writes. We deliberately do NOT consult an env var here — an
-    // inherited REMNIC_HOOK_INPUT in the parent environment would otherwise
-    // override the piped payload and the worker could observe stale/empty
-    // input (#1443 review).
     try {
       return fs.readFileSync(0, "utf8");
     } catch {
@@ -198,8 +123,9 @@ function run(config) {
     }
   }
 
-  // JSON.parse only yields plain objects, arrays, and primitives, so
-  // Object.prototype.toString is the exact string test here.
+  // Antigravity CLI documents camelCase payload fields (conversationId,
+  // transcriptPath, lastUserInput). Apply them only when the snake_case key
+  // is absent so existing host payloads are unchanged.
   function isHookString(v) {
     return Object.prototype.toString.call(v) === "[object String]";
   }
@@ -275,14 +201,6 @@ function run(config) {
     return false;
   }
 
-  // names (OPENCLAW_REMNIC_ACCESS_TOKEN, REMNIC_AUTH_TOKEN) before the two
-  // legacy aliases (OPENCLAW_ENGRAM_ACCESS_TOKEN, ENGRAM_AUTH_TOKEN), so a
-  // stale leftover from a pre-rename install cannot outrank the credential
-  // the daemon is actually running with. REMNIC_AUTH_TOKEN matters because
-  // the documented standalone-server setup authenticates the daemon with it
-  // alone and never mints a connector token — without it the health probe
-  // 401s and the hook wrongly reports "daemon not running", silently
-  // skipping recall/observe.
   function resolveToken() {
     for (const file of [
       path.join(HOME, ".remnic", "tokens.json"),
@@ -293,8 +211,6 @@ function run(config) {
         const store = JSON.parse(fs.readFileSync(file, "utf8"));
         const tokens = Array.isArray(store.tokens) ? store.tokens : [];
         const byConnector = (c) => tokens.find((t) => t && t.connector === c);
-        // lookups in TOKEN_CONNECTORS order, then the same order against the
-        // legacy flat store keys.
         let tok = "";
         for (const c of TOKEN_CONNECTORS) {
           const t = (byConnector(c) || {}).token;
@@ -325,18 +241,7 @@ function run(config) {
     );
   }
 
-  // whether to advance/clear the cursor (fixes the data-loss bug in #1442).
   //
-  // All requests route through the parsed DAEMON_URL (#1571), so a host can
-  // target a remote/central daemon (Tailscale/LAN/VPN, plain or TLS) by
-  // setting REMNIC_DAEMON_URL — same transport contract as @remnic/plugin-pi.
-  //
-  // Namespace chokepoint (#1571): every observe/recall/flush body carries the
-  // optional REMNIC_NAMESPACE / ENGRAM_NAMESPACE override so a namespaced
-  // install archives + flushes under one key — without it, buffered
-  // observations land on the default key while a namespaced flush drains a
-  // different (empty) queue, and most in-session memory never flushes before
-  // compaction. An explicit bodyObj.namespace still takes precedence.
   // One deadline for the whole request: connect, response headers, and body.
   // req.setTimeout() is an idle timer that does not arm until the socket
   // connects and restarts on every byte, so a daemon address that drops
@@ -353,6 +258,7 @@ function run(config) {
 
   function httpPost(urlPath, token, bodyObj, timeoutMs) {
     if (DAEMON_URL === null) {
+      // Explicit-but-invalid REMNIC_DAEMON_URL — disabled, fail open (see
       // resolveDaemonUrl). Callers treat this like a dead daemon.
       return Promise.resolve({ ok: false, status: 0, body: "" });
     }
@@ -406,21 +312,8 @@ function run(config) {
     });
   }
 
-  // resolveToken() call: the probe must authenticate with the exact bearer
-  // the operation it gates will send. Re-resolving could pick up a rotated
-  // tokens.json (or an inherited REMNIC_HOOK_TOKEN the foreground handlers
-  // ignore) and green-light a probe whose recall then 401s.
   //
-  // When the daemon has an auth token configured, every route — including
-  // /engram/v1/live — returns 401 to unauthenticated requests, so an
-  // unauthenticated probe makes the hook wrongly report "daemon not running"
-  // and skip recall/observe. Unauthenticated daemons ignore the header.
   //
-  // One aggregate budget: readiness-gated /engram/v1/live first, and only a
-  // 404 (daemon predating the live route) retries the legacy diagnostic
-  // /engram/v1/health with the remaining time. 401/503 are final answers.
-  // Diagnostic health can outlive this liveness probe's deadline, which is
-  // why the gate probes liveness at all (#3257).
   function httpHealthy(timeoutMs, token) {
     if (DAEMON_URL === null) return Promise.resolve(false);
     const transport = DAEMON_URL.protocol === "https:" ? https : http;
@@ -475,6 +368,8 @@ function run(config) {
     return hash.toString(16).padStart(8, "0");
   }
 
+  // Mirrors packages/remnic-core/src/coding/git-context.ts normalizeOriginUrl.
+  // Keep in sync so the hook-computed projectId matches the daemon's.
   function normalizeOriginUrl(raw) {
     let u = (raw || "").trim();
     if (!u) return "";
@@ -529,6 +424,7 @@ function run(config) {
     }
   }
 
+  // ── transcript parsing ─────────────────────────────────────────────────────
   // JSONL hosts (Claude Code, Codex): one JSON object per line with
   // {type:"user"|"assistant", message:{role, content}}.
   function parseJsonlTranscript(transcriptPath) {
@@ -568,8 +464,6 @@ function run(config) {
   const ATIF_MESSAGE_CAP = 8000;
   const ATIF_TOOL_CALL_ARG_CAP = 500;
   const ATIF_TOOL_RESULT_CAP = 2000;
-  // JSON.parse only yields plain objects, arrays, and primitives, so
-  // `instanceof Object && !Array.isArray` is an exact plain-object test.
   function isJsonObject(v) {
     return v instanceof Object && !Array.isArray(v);
   }
@@ -656,6 +550,8 @@ function run(config) {
   // can supply config.resolveTranscriptPath(input) to derive it — e.g. from
   // the session id and a well-known transcript directory.
   function transcriptPathFor(input) {
+    // Antigravity CLI documents camelCase payload fields (transcriptPath);
+    // snake_case wins when both are present so existing hosts are unchanged.
     const transcriptPath = input.transcript_path || input.transcriptPath || "";
     if (isString(transcriptPath) && transcriptPath) {
       // A payload path that exists is authoritative. A missing path falls
@@ -681,13 +577,6 @@ function run(config) {
     return "";
   }
 
-  // env var (Devin: DEVIN_PROJECT_DIR; Claude Code compat: CLAUDE_PROJECT_DIR;
-  // Antigravity: AGY_PROJECT_DIR).
-  // env var. The active host's variable (config.projectDirEnv) wins; the
-  // shared fallbacks preserve the pre-existing hosts' behavior when the
-  // host's own variable is unset. AGY_PROJECT_DIR is intentionally absent
-  // from the shared fallback — agy reaches it through its own projectDirEnv,
-  // so a stray AGY variable can never reroute another host's recall.
   function cwdFor(input) {
     const cwd = input.cwd || "";
     if (isString(cwd) && cwd) return cwd;
@@ -795,13 +684,6 @@ function run(config) {
     return true;
   }
 
-  // flush succeeds (or there is nothing left to flush). Its content is the
-  // observed-message checkpoint, which handleSessionStart restores into the
-  // cursor when a session resumes under the same id. Detached observe
-  // workers queued behind the session lock check this under the lock and
-  // exit instead of treating the missing cursor as 0 and replaying the
-  // whole transcript. The file is tiny and persists for the life of the
-  // state dir, like leftover locks from crashed sessions.
   function sessionDone(doneFile) {
     try {
       const info = fs.lstatSync(doneFile);
@@ -855,6 +737,7 @@ function run(config) {
     }
   }
 
+  // mkdir-based mutex with stale-lock reaping (10 min). Returns true if acquired.
   // `retries` bounds the synchronous wait (100ms each). The default (50 → ~5s)
   // suits foreground hooks; PreCompact's tail drain passes a larger budget so it
   // can outlast a detached PostToolUse observe worker holding the lock, ensuring
@@ -915,11 +798,6 @@ function run(config) {
     const codingContext = resolveCodingContext(cwd);
     log(`session=${sessionId} project=${projectName} coding-context=${codingContext ? "yes" : ""}`);
 
-    // Claude Code reuse the id across resume. Restore the observation
-    // checkpoint stored in the done tombstone into the cursor, then clear
-    // the tombstone so queued and future workers observe the new tail
-    // instead of exiting early. Without this, a resumed session would never
-    // observe again.
     if (sessionId && !/[^A-Za-z0-9._-]/.test(sessionId)) {
       const st = resolveState(sessionId, log);
       if (st && sessionDone(st.doneFile)) {
@@ -939,6 +817,8 @@ function run(config) {
       for (const bin of ["remnic", "engram"]) {
         if (!onPath(bin)) continue;
         try {
+          // Windows: `remnic`/`engram` are `.cmd` shims, which Node can only
+          // launch via a shell (#1443 review). Args are fixed literals — safe.
           const child = spawn(bin, ["daemon", "start"], {
             detached: true,
             stdio: "ignore",
@@ -982,7 +862,6 @@ function run(config) {
       `Starting a new coding session in project: ${projectName}. ` +
       "Recall relevant memories, preferences, decisions, patterns, and context about this project and the user.";
 
-    // is cleared when a session moves out of a repo.
     let res = await httpPost(
       "/engram/v1/recall",
       token,
@@ -1071,8 +950,6 @@ function run(config) {
     }
   }
 
-  // from the foreground hook so a slow observe never blocks the host past the
-  // PostToolUse timeout.
   async function observeWorker(input, token, log) {
     const sessionId = input.session_id || "";
     const transcriptPath = transcriptPathFor(input);
@@ -1092,8 +969,6 @@ function run(config) {
 
     if (!acquireLock(lockFile, log)) return;
     try {
-      // cursor must not treat the missing cursor as 0 and replay the whole
-      // transcript — the done tombstone marks completed sessions.
       if (sessionDone(state.doneFile)) {
         log(`session ${sessionId} already flushed; skipping queued observe`);
         return;
@@ -1138,11 +1013,6 @@ function run(config) {
   function handlePostToolObserve(input, token, log, rawInput) {
     emit({ continue: true });
     if (!token) return;
-    // original `( … ) & disown`). Pass the raw hook payload via the worker's
-    // STDIN, not the environment — Windows caps the environment block at
-    // ~32 KB, so large PostToolUse payloads (big file edits, command output)
-    // would fail with E2BIG/ENAMETOOLONG and the observation would silently
-    // drop (#1443 review). Stdin has no comparable limit.
     try {
       const child = spawn(process.execPath, [ENTRY_FILE, OBSERVE_WORKER], {
         detached: true,
@@ -1171,13 +1041,6 @@ function run(config) {
     let state = null;
     if (safe) state = resolveState(sessionId, log);
 
-    // still-running detached observe worker cannot race the cursor read,
-    // duplicate the tail observation, or have its lock removed mid-flight.
-    // The foreground hook waits ~5s; on contention it hands the drain to a
-    // detached worker with a much longer budget so messages that land after
-    // the in-flight worker's snapshot are still observed before the session
-    // state is cleaned up. If even that worker gives up, cursor and lock stay
-    // for the stale-lock reaper — a forced cleanup could drop queued work.
     let lockAcquired = false;
     if (state) {
       lockAcquired = acquireLock(
@@ -1209,13 +1072,6 @@ function run(config) {
       }
     }
 
-    // empty — the done tombstone (which stores the observed-message
-    // checkpoint) is written solely then. The cursor is removed only after
-    // the marker lands; if marker creation fails the checkpointed cursor
-    // stays, so a queued worker reads the observed count instead of
-    // replaying from 0. When the drain cannot run at all (no token, no
-    // transcript, unsafe cursor, parse or observe failure) neither the
-    // marker nor the cursor changes, leaving state intact for a retry.
     let finalized = false;
     let checkpoint = 0;
 
@@ -1262,7 +1118,6 @@ function run(config) {
         log(`final flush skipped for ${sessionId}: drain unavailable; cursor retained`);
       }
 
-      // in `finally`.
       if (state) {
         const { cursorFile, doneFile, legacyCursor, legacyLock } = state;
         if (finalized && markSessionDone(doneFile, checkpoint, log)) {
@@ -1291,28 +1146,9 @@ function run(config) {
     if (config.enableMaterialize) runMaterialize(log);
   }
 
-  // session's cursor/lock, advancing the cursor only on a successful observe.
-  // Shared mid-session drain used by handlePreCompact (the session-end path in
-  // handleSessionEnd has its own cursor-removal cleanup and is intentionally
-  // not refactored onto this helper to avoid perturbing its retention
-  // semantics).
   //
-  // Why this exists separately from the LCM flush: /engram/v1/lcm/compaction/flush
-  // can only drain work ALREADY queued by prior /observe calls. If a turn
-  // landed after the last PostToolUse (e.g. a long user prompt that triggers
-  // auto compaction without a Bash tool call in between), that tail is still
-  // only in the transcript and would be lost when the host summarizes/replaces
-  // context. So PreCompact must observe the delta FIRST, then ask LCM to
-  // flush.
   //
-  // Returns "busy" when the session lock could not be acquired within the
-  // caller's budget (a detached PostToolUse observe worker is still holding
-  // it), so handlePreCompact can SKIP the flush instead of letting it drain
-  // nothing and race the worker; true when the tail was observed (or nothing
-  // pending); false on parse/observe failure (cursor retained) so the caller
-  // can still flush already-queued work. Always fail-open.
   //
-  // `lockRetries` (100ms each) bounds how long to wait for a busy worker.
   async function drainTranscriptTail(sessionId, transcriptPath, token, log, lockRetries = 50) {
     const safe = sessionId !== "" && !/[^A-Za-z0-9._-]/.test(sessionId);
     if (!safe || !token || !transcriptPath || !fs.existsSync(transcriptPath)) {
@@ -1321,13 +1157,6 @@ function run(config) {
     const state = resolveState(sessionId, log);
     if (!state) return false;
     const { cursorFile, lockFile } = state;
-    // this drain. Wait up to the caller's budget for the worker to finish its
-    // /observe and release the lock — once it does, either the worker already
-    // advanced the cursor (nothing left to drain) or we observe the remaining
-    // delta, and in both cases the subsequent flush sees all queued work.
-    // Only if the worker outlasts our budget do we return "busy" so
-    // handlePreCompact SKIPS the flush rather than racing ahead of the
-    // worker's in-flight /observe.
     if (!acquireLock(lockFile, log, lockRetries)) {
       log(`transcript tail drain skipped for ${sessionId}: lock busy (worker still running)`);
       return "busy";
@@ -1356,8 +1185,6 @@ function run(config) {
         30000,
       );
       if (res.ok) {
-        // compaction, so the post-compact transcript must not re-observe this
-        // tail.
         writeCursor(cursorFile, lastCount + newMessages.length, log);
         return true;
       }
@@ -1368,32 +1195,15 @@ function run(config) {
     }
   }
 
-  // compacts the conversation. Mirrors @remnic/plugin-pi's
-  // session_before_compact handler, with one host-specific addition: because
-  // the host observes asynchronously (PostToolUse on Bash + Stop), an
-  // unobserved transcript tail can exist when compaction fires mid-session.
-  // So we drain that tail to /engram/v1/observe FIRST, then POST
-  // /engram/v1/lcm/compaction/flush so the daemon flushes the now-complete
-  // observe buffer into long-term memory before the transcript is summarized.
-  // ALWAYS returns continue:true — a hook failure must never block the
-  // host's compaction (the upstream contract notes continue:false stops the
-  // compact entirely), so this handler is fail-open end to end.
   async function handlePreCompact(input, token, log) {
     const sessionId = input.session_id || "";
     const transcriptPath = transcriptPathFor(input);
     const trigger = input.trigger || "auto";
-    // to proceed — the drain + flush are best-effort coordination, not a gate.
     emit({ continue: true });
     if (!token) {
       log(`skipping pre-compact drain+flush: no token (session=${sessionId} trigger=${trigger})`);
       return;
     }
-    //    Wait up to PRECOMPACT_LOCK_RETRIES for a concurrent observe worker to
-    //    release the session lock, so the flush below sees the worker's queued
-    //    messages. If the worker outlasts us, drain returns "busy" and we SKIP
-    //    the flush entirely — flushing now would drain nothing and the worker's
-    //    in-flight observe would miss this compaction, so we defer to the next
-    //    PreCompact/Stop rather than race.
     const drainResult = await drainTranscriptTail(
       sessionId,
       transcriptPath,
@@ -1414,6 +1224,7 @@ function run(config) {
     if (res.ok) {
       log(`LCM compaction flush OK (session=${sessionId} trigger=${trigger})`);
     } else {
+      // Fail-open: log and move on. Compaction proceeds regardless.
       log(`LCM compaction flush failed (http=${res.status}) — compaction proceeds`);
     }
   }
@@ -1516,6 +1327,8 @@ function run(config) {
     };
     if (config.enablePreCompact) {
       handlers["pre-compact"] = handlePreCompact;
+      // Devin CLI emits PostCompaction (after the fact) rather than a
+      // pre-compact event; the drain+flush is equally correct there.
       handlers["post-compaction"] = handlePreCompact;
     }
 
@@ -1537,7 +1350,6 @@ function run(config) {
   }
 
   main().catch((err) => {
-    // its internal try/catch (rule: a hook error must never block the host).
     try {
       process.stderr.write(`${PROG_NAME}: unhandled error: ${err && err.message}\n`);
     } catch {

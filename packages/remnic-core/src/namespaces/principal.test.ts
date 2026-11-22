@@ -1,3 +1,13 @@
+/**
+ * Regression tests for PR #396 round-8 HIGH finding: namespace ACL bypass for
+ * unauthenticated callers.
+ *
+ * Tests cover the three-branch logic in `resolveReadableNamespace` (access-service.ts)
+ * using the underlying `canReadNamespace` helper directly, and also verify the
+ * expected behaviour of the exported helper itself.
+ *
+ * All fixtures are synthetic — no real user data.
+ */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -6,8 +16,13 @@ import type { PluginConfig } from "../types.js";
 import { canReadNamespace, canWriteNamespace, isNamespacePolicyCovered, resolvePrincipal } from "./principal.js";
 
 // ──────────────────────────────────────────────────────────────────────────
+// Helpers
 // ──────────────────────────────────────────────────────────────────────────
 
+/**
+ * Build a minimal PluginConfig with namespace settings.
+ * Only the fields consulted by canReadNamespace are populated.
+ */
 function makeConfig(
   namespacesEnabled: boolean,
   policies: Array<{ name: string; readPrincipals: string[]; writePrincipals: string[] }> = [],
@@ -18,6 +33,7 @@ function makeConfig(
     defaultNamespace: "default",
     sharedNamespace: "shared",
     namespacePolicies: policies,
+    // Remaining required fields — set to sensible no-op values.
     memoryDir: "/synthetic/mem",
     defaultRecallNamespaces: ["self", "shared"],
     principalFromSessionKeyMode: "disabled",
@@ -43,12 +59,14 @@ function makeConfig(
 test("canReadNamespace: namespacesEnabled=false always returns true regardless of principal", () => {
   const config = makeConfig(false);
 
+  // Authenticated principal
   assert.equal(
     canReadNamespace("alice", "default", config),
     true,
     "authenticated principal must be allowed when namespaces are disabled",
   );
 
+  // Unauthenticated — simulated by passing "default" as the principal
   // (resolvePrincipal returns "default" for missing sessionKey when disabled).
   assert.equal(
     canReadNamespace("default", "restricted-ns", config),
@@ -58,6 +76,7 @@ test("canReadNamespace: namespacesEnabled=false always returns true regardless o
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// resolveReadableNamespace — namespacesEnabled = true + principal absent
 // (the ACL bypass that was introduced by the over-broad `if (principal && ...)` guard)
 //
 // We test the *intended* behaviour: code that calls resolveReadableNamespace
@@ -65,6 +84,10 @@ test("canReadNamespace: namespacesEnabled=false always returns true regardless o
 // We simulate this via the 3-branch logic directly.
 // ──────────────────────────────────────────────────────────────────────────
 
+/**
+ * Simulate the corrected resolveReadableNamespace 3-branch logic.
+ * Returns the namespace or throws EngramAccessInputError-like messages.
+ */
 function simulateResolveReadableNamespace(
   namespace: string,
   principal: string | undefined,
@@ -97,6 +120,7 @@ test("resolveReadableNamespace (simulated): namespacesEnabled=false + no princip
 
 test("resolveReadableNamespace (simulated): namespacesEnabled=true + no principal → DENIED", () => {
   const config = makeConfig(true, []);
+  // The HIGH finding: this must throw, not silently allow.
   assert.throws(
     () => simulateResolveReadableNamespace("default", undefined, config),
     (err: Error) => {
@@ -138,6 +162,7 @@ test("resolveReadableNamespace (simulated): namespacesEnabled=true + wildcard pr
   const config = makeConfig(true, [
     { name: "public-ns", readPrincipals: ["*"], writePrincipals: [] },
   ]);
+  // Any authenticated principal can read a namespace whose readPrincipals includes "*".
   assert.doesNotThrow(() => {
     const ns = simulateResolveReadableNamespace("public-ns", "anyone", config);
     assert.equal(ns, "public-ns");
@@ -145,6 +170,7 @@ test("resolveReadableNamespace (simulated): namespacesEnabled=true + wildcard pr
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// canReadNamespace — namespacesEnabled = true, specific policies
 // ──────────────────────────────────────────────────────────────────────────
 
 test("canReadNamespace: namespacesEnabled=true + principal in readPrincipals → true", () => {
@@ -164,6 +190,7 @@ test("canReadNamespace: namespacesEnabled=true + principal NOT in readPrincipals
 
 test("canReadNamespace: namespacesEnabled=true + no policy for namespace → allow default/shared, deny others", () => {
   const config = makeConfig(true, []);
+  // Namespaces without an explicit policy: only defaultNamespace and sharedNamespace are open.
   assert.equal(canReadNamespace("alice", "default", config), true, "default namespace is implicitly readable");
   assert.equal(canReadNamespace("alice", "shared", config), true, "shared namespace is implicitly readable");
   assert.equal(canReadNamespace("alice", "unknown-ns", config), false, "unknown namespace without policy is denied");
@@ -229,20 +256,25 @@ test("isNamespacePolicyCovered mirrors canWriteNamespace: default + policy-with-
     { name: "readonly-ns", readPrincipals: ["*"], writePrincipals: [] },
     { name: "blank-writer-ns", readPrincipals: ["*"], writePrincipals: [""] },
   ]);
+  // Covered: the default namespace, and a policy that grants at least one writer.
   assert.equal(isNamespacePolicyCovered("default", config), true);
   assert.equal(isNamespacePolicyCovered("team-a", config), true);
+  // NOT covered: shared is not implicitly writable (matches canWriteNamespace),
   // a policy with no writePrincipals grants nobody, and an unlisted namespace is
   // the jw14m2-class misconfiguration #1888 targets (writes rejected + parked).
   assert.equal(isNamespacePolicyCovered("shared", config), false);
   assert.equal(isNamespacePolicyCovered("readonly-ns", config), false);
+  // Blank writer entries never match a real principal, so they grant no one.
   assert.equal(isNamespacePolicyCovered("blank-writer-ns", config), false);
   assert.equal(isNamespacePolicyCovered("team-b", config), false);
+  // Namespaces disabled: every write is allowed, so nothing is flagged.
   const disabled = makeConfig(false);
   assert.equal(isNamespacePolicyCovered("anything", disabled), true);
   assert.equal(isNamespacePolicyCovered("team-b", disabled), true);
 });
 
 test("isNamespacePolicyCovered: an explicit default-namespace policy overrides the default fallback", () => {
+  // canWriteNamespace looks up a policy BEFORE falling back to defaultNamespace,
   // so a policy naming the default with no (or blank-only) writers makes the
   // default unwritable. The lint must mirror that precedence, not short-circuit
   // on `namespace === defaultNamespace`.

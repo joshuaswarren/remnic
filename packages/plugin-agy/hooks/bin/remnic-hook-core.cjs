@@ -88,6 +88,7 @@ function run(config) {
 
   const _pcRaw = process.env.REMNIC_PRECOMPACT_LOCK_RETRIES;
   const _pcParsed = _pcRaw != null && _pcRaw !== "" ? Number.parseInt(_pcRaw, 10) : 150;
+  // 0 is honored (immediate busy-skip); NaN/negative falls back to the 150 default.
   const PRECOMPACT_LOCK_RETRIES = Number.isFinite(_pcParsed) && _pcParsed >= 0 ? _pcParsed : 150;
 
   function makeLogger(event) {
@@ -125,8 +126,6 @@ function run(config) {
   // Antigravity CLI documents camelCase payload fields (conversationId,
   // transcriptPath, lastUserInput). Apply them only when the snake_case key
   // is absent so existing host payloads are unchanged.
-  // JSON.parse only yields plain objects, arrays, and primitives, so
-  // Object.prototype.toString is the exact string test here.
   function isHookString(v) {
     return Object.prototype.toString.call(v) === "[object String]";
   }
@@ -259,6 +258,8 @@ function run(config) {
 
   function httpPost(urlPath, token, bodyObj, timeoutMs) {
     if (DAEMON_URL === null) {
+      // Explicit-but-invalid REMNIC_DAEMON_URL — disabled, fail open (see
+      // resolveDaemonUrl). Callers treat this like a dead daemon.
       return Promise.resolve({ ok: false, status: 0, body: "" });
     }
     const transport = DAEMON_URL.protocol === "https:" ? https : http;
@@ -423,6 +424,7 @@ function run(config) {
     }
   }
 
+  // ── transcript parsing ─────────────────────────────────────────────────────
   // JSONL hosts (Claude Code, Codex): one JSON object per line with
   // {type:"user"|"assistant", message:{role, content}}.
   function parseJsonlTranscript(transcriptPath) {
@@ -462,8 +464,6 @@ function run(config) {
   const ATIF_MESSAGE_CAP = 8000;
   const ATIF_TOOL_CALL_ARG_CAP = 500;
   const ATIF_TOOL_RESULT_CAP = 2000;
-  // JSON.parse only yields plain objects, arrays, and primitives, so
-  // `instanceof Object && !Array.isArray` is an exact plain-object test.
   function isJsonObject(v) {
     return v instanceof Object && !Array.isArray(v);
   }
@@ -577,8 +577,6 @@ function run(config) {
     return "";
   }
 
-  // env var (Devin: DEVIN_PROJECT_DIR; Claude Code compat: CLAUDE_PROJECT_DIR;
-  // Antigravity: AGY_PROJECT_DIR).
   function cwdFor(input) {
     const cwd = input.cwd || "";
     if (isString(cwd) && cwd) return cwd;
@@ -739,6 +737,15 @@ function run(config) {
     }
   }
 
+  // mkdir-based mutex with stale-lock reaping (10 min). Returns true if acquired.
+  // `retries` bounds the synchronous wait (100ms each). The default (50 → ~5s)
+  // suits foreground hooks; PreCompact's tail drain passes a larger budget so it
+  // can outlast a detached PostToolUse observe worker holding the lock, ensuring
+  // the subsequent flush sees the worker's queued messages instead of racing.
+  // 0 means "try once, don't wait/retry" — a free lock is still taken; only a
+  // busy lock is skipped immediately (used by the 0-retry test/fleet path). This
+  // avoids the degenerate "0 retries skips acquisition entirely" case (#1571
+  // review) where a free lock would be wastefully bypassed.
   function acquireLock(lockFile, log, retries = 50) {
     const attempts = Math.max(1, retries);
     for (let i = 0; i < attempts; i++) {
@@ -1141,12 +1148,6 @@ function run(config) {
 
   //
   //
-  // Returns "busy" when the session lock could not be acquired within the
-  // caller's budget (a detached PostToolUse observe worker is still holding
-  // it), so handlePreCompact can SKIP the flush instead of letting it drain
-  // nothing and race the worker; true when the tail was observed (or nothing
-  // pending); false on parse/observe failure (cursor retained) so the caller
-  // can still flush already-queued work. Always fail-open.
   //
   async function drainTranscriptTail(sessionId, transcriptPath, token, log, lockRetries = 50) {
     const safe = sessionId !== "" && !/[^A-Za-z0-9._-]/.test(sessionId);
@@ -1223,6 +1224,7 @@ function run(config) {
     if (res.ok) {
       log(`LCM compaction flush OK (session=${sessionId} trigger=${trigger})`);
     } else {
+      // Fail-open: log and move on. Compaction proceeds regardless.
       log(`LCM compaction flush failed (http=${res.status}) — compaction proceeds`);
     }
   }

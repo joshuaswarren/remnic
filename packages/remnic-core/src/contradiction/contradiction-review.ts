@@ -1,10 +1,29 @@
+/**
+ * Contradiction Review Queue — storage for detected contradiction pairs (issue #520).
+ *
+ * Stores candidate pairs as JSON files under `memoryDir/.review/contradictions/`.
+ * Pair IDs are deterministic (sha256 of sorted memory IDs plus namespace when scoped) so reruns are idempotent.
+ *
+ * Lifecycle:
+ *   - `contradicts` → awaiting user review
+ *   - `duplicates` → auto-flagged for dedup (still needs user approval)
+ *   - `independent` / `both-valid` → dormant with cooldown
+ */
 
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { ContradictionVerdict } from "./contradiction-judge.js";
 
+// ── Types ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Resolution verbs. The first five are contradiction-pair verbs; the last
+ * three resolve a `kind: "preference-drift"` item (issue #2371). Verb validity
+ * is per-kind — `executeResolution` rejects a cross-kind verb — but the stored
+ * union is shared so one review queue, one `review_resolve` surface, and one
+ * resolution record serve both item kinds.
+ */
 export type ResolutionVerb =
   | "keep-a"
   | "keep-b"
@@ -18,8 +37,10 @@ export type ResolutionVerb =
 /** Review-item kind. Absent on every pair written before issue #2371. */
 export type ReviewItemKind = "contradiction" | "preference-drift";
 
+/** Verbs valid for a `kind: "preference-drift"` item. */
 export const PREFERENCE_DRIFT_VERBS: readonly ResolutionVerb[] = ["keep", "supersede", "archive"];
 
+/** Verbs valid for a contradiction pair. */
 export const CONTRADICTION_VERBS: readonly ResolutionVerb[] = [
   "keep-a",
   "keep-b",
@@ -34,6 +55,7 @@ const VALID_RESOLUTION_VERBS: readonly ResolutionVerb[] = [
 ];
 
 export interface ContradictionPair {
+  /** Deterministic pair ID: sha256(sorted(memoryIdA, memoryIdB) plus namespace when scoped). */
   pairId: string;
   /** Memory IDs (sorted). */
   memoryIds: [string, string];
@@ -44,7 +66,9 @@ export interface ContradictionPair {
    * recent evidence that pointed away from it (second id).
    */
   kind?: ReviewItemKind;
+  /** Judge verdict. */
   verdict: ContradictionVerdict;
+  /** Judge rationale. */
   rationale: string;
   /** Judge confidence in [0, 1]. */
   confidence: number;
@@ -52,11 +76,13 @@ export interface ContradictionPair {
   detectedAt: string;
   /** ISO timestamp when last reviewed by user. */
   lastReviewedAt?: string;
+  /** Resolution verb applied by user. */
   resolution?: ResolutionVerb;
   /** ISO timestamp until which a non-terminal deferral remains hidden from review. */
   deferredUntil?: string;
   /** Content hashes captured for each referenced memory when this pair was judged. */
   memoryContentHashes?: Record<string, string>;
+  /** Namespace scope. */
   namespace?: string;
 }
 
@@ -75,6 +101,7 @@ const NEEDS_MORE_CONTEXT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const UNSCOPED_MIGRATION_MARKER_PREFIX = ".unscoped-migrated-";
 const UNSCOPED_MIGRATION_MARKER_SUFFIX = ".done";
 
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
 export function computePairId(memoryIdA: string, memoryIdB: string, namespace?: string): string {
   const sorted = [memoryIdA, memoryIdB].sort();
@@ -96,6 +123,9 @@ const TERMINAL_RESOLUTIONS: Partial<Record<ResolutionVerb, true>> = {
   "keep-a": true,
   "keep-b": true,
   merge: true,
+  // Every preference-drift verb is terminal: the user has answered the "is
+  // this preference still true?" question, so the item must leave the
+  // unresolved queue and never be re-proposed by a later scan (issue #2371).
   keep: true,
   supersede: true,
   archive: true,
@@ -292,6 +322,7 @@ function suppliedMemoryHashesChanged(
   });
 }
 
+// ── Write ──────────────────────────────────────────────────────────────────────
 
 /**
  * Write a contradiction pair to the review queue.
@@ -310,6 +341,7 @@ export function writePair(
   const pairId = computePairId(pair.memoryIds[0], pair.memoryIds[1], pair.namespace);
   const existing = readPair(memoryDir, pairId);
 
+  // Preserve terminal user resolutions if already reviewed.
   if (isTerminalResolution(existing?.resolution)) {
     return existing!;
   }
@@ -318,6 +350,7 @@ export function writePair(
     return existing;
   }
 
+  // Preserve active deferrals, but allow expired deferrals to be refreshed.
   const existingDeferralExpired = Boolean(existing && isDeferred(existing) && !isDeferralActive(existing));
   if (existing && isDeferralActive(existing) && !contentChanged) {
     return existing;
@@ -392,6 +425,7 @@ export function writePairs(
   return results;
 }
 
+// ── Read ───────────────────────────────────────────────────────────────────────
 
 /**
  * Read a single pair by ID. Returns null if not found.
@@ -445,8 +479,10 @@ export function listPairs(
       if (typeof pair !== "object" || pair === null) continue;
       if (!Array.isArray(pair.memoryIds)) continue;
 
+      // Namespace filter
       if (namespace && pair.namespace !== namespace && !(includeUnscopedForNamespace && pair.namespace === undefined)) continue;
 
+      // Verdict filter
       if (filter === "unresolved") {
         if (isTerminalResolution(pair.resolution)) continue;
         if (isDeferralActive(pair)) continue;
@@ -535,6 +571,7 @@ export function migrateUnscopedPairsToNamespace(memoryDir: string, namespace: st
   return migrated;
 }
 
+// ── Cooldown ───────────────────────────────────────────────────────────────────
 
 /**
  * Check if a pair is within its cooldown window.

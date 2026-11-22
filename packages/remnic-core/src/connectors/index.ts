@@ -1,3 +1,9 @@
+/**
+ * @remnic/core — Connector Manager
+ *
+ * Metadata-driven registry for host adapters (Codex CLI, Claude Code, Cursor, etc.).
+ * Manages connector lifecycle: install, remove, configure, health.
+ */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -76,19 +82,30 @@ export {
   type MarketplaceLogger,
 } from "./codex-marketplace.js";
 
+// ── Types ────────────────────────────────────────────────────────────────────
 
 export interface ConnectorManifest {
   /** Unique connector ID (e.g. "claude-code", "codex-cli") */
   id: string;
+  /** Human-readable name */
   name: string;
+  /** Version */
   version: string;
+  /** Description */
   description: string;
+  /** Capabilities */
   capabilities: ConnectorCapability;
+  /** Required config fields */
   configSchema?: Record<string, string>;
+  /** Whether currently installed */
   installed?: boolean;
+  /** Homepage URL */
   homepage?: string;
+  /** Author */
   author?: string;
+  /** Repository URL */
   repository?: string;
+  /** Tags */
   tags?: string[];
   /**
    * Whether this connector requires a bearer token for daemon authentication.
@@ -102,36 +119,54 @@ export interface ConnectorManifest {
 }
 
 export interface ConnectorCapability {
+  /** Can observe conversations */
   observe: boolean;
+  /** Can recall/query memories */
   recall: boolean;
+  /** Can store memories */
   store: boolean;
+  /** Can search */
   search: boolean;
+  /** Can manage entities */
   entities: boolean;
+  /** Supports real-time sync */
   realtimeSync: boolean;
+  /** Supports batch operations */
   batch: boolean;
   /** Max memory budget in chars */
   maxBudgetChars?: number;
+  /** Connection type */
   connectionType: "mcp" | "http" | "cli" | "sdk" | "embedded";
 }
 
 export interface ConnectorInstance {
+  /** Connector ID */
   connectorId: string;
+  /** Resolved config */
   config: Record<string, unknown>;
+  /** Status */
   status: "installed" | "running" | "error" | "disabled";
+  /** Installed at timestamp */
   installedAt?: string;
   /** Error message if erro */
   error?: string;
 }
 
 export interface ConnectorRegistry {
+  /** Known connectors */
   connectors: ConnectorManifest[];
+  /** Registry file path */
   registryPath: string;
 }
 
 export interface InstallOptions {
+  /** Connector ID to install */
   connectorId: string;
+  /** Config values */
   config?: Record<string, unknown>;
+  /** Memory directory */
   memoryDir?: string;
+  /** Whether to force reinstall */
   force?: boolean;
 }
 
@@ -140,13 +175,16 @@ export interface InstallResult {
   connectorId: string;
   /** Status */
   status: "installed" | "already_installed" | "config_required" | "error";
+  /** Config path */
   configPath?: string;
+  /** Message */
   message: string;
 }
 
 export interface RemoveResult {
   /** Connector ID */
   connectorId: string;
+  /** Removed config path */
   configPath: string;
   /** Message */
   message: string;
@@ -159,22 +197,29 @@ export interface RemoveResult {
 export interface DoctorResult {
   /** Connector ID */
   connectorId: string;
+  /** Checks */
   checks: DoctorCheck[];
+  /** All healthy */
   healthy: boolean;
 }
 
 export interface DoctorCheck {
+  /** Check name */
   name: string;
+  /** Passed */
   ok: boolean;
+  /** Detail */
   detail: string;
 }
 
+// ── Helpers (Finding 4) ───────────────────────────────────────────────────
 
 // Re-export coerceInstallExtension so existing import sites
 // (`import { coerceInstallExtension } from "./index.js"`) keep working without
 // change. The binding comes from the top-level import above.
 export { coerceInstallExtension };
 
+// ── Built-in connector definitions ─────────────────────────────────────────
 
 export const BUILTIN_CONNECTORS: ConnectorManifest[] = [
   {
@@ -534,6 +579,7 @@ export const BUILTIN_CONNECTORS: ConnectorManifest[] = [
   DROID_CONNECTOR_MANIFEST,
 ];
 
+// ── Registry management ───────────────────────────────────────────────────
 
 export const CONNECTOR_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -574,6 +620,9 @@ export function loadRegistry(): ConnectorRegistry {
     ) {
       throw new Error("invalid registry schema");
     }
+    // Built-ins always take precedence over persisted entries with the same ID.
+    // This ensures that upgraded manifests (e.g. newly-added requiresToken: true)
+    // are never shadowed by stale registry.json entries from an older version.
     // Only connectors whose IDs are NOT in BUILTIN_CONNECTORS are preserved from
     // the persisted file — those are genuine user-added custom connectors.
     const builtinIds = new Set(BUILTIN_CONNECTORS.map((b) => b.id));
@@ -599,6 +648,7 @@ export function saveRegistry(registry: ConnectorRegistry): void {
   fs.writeFileSync(regPath, JSON.stringify({ connectors: registry.connectors }, null, 2));
 }
 
+// ── List connectors ────────────────────────────────────────────────────────
 
 export function listConnectors(): {
   installed: ConnectorInstance[];
@@ -608,6 +658,7 @@ export function listConnectors(): {
   const connectorsDir = getConnectorsDir();
   const installedIds = new Set<string>();
 
+  // Find installed connectors
   if (fs.existsSync(connectorsDir)) {
     for (const entry of fs.readdirSync(connectorsDir)) {
       if (entry.endsWith(".json")) {
@@ -625,16 +676,23 @@ export function listConnectors(): {
     }
   }
 
+  // Mark installed vs available
   const available: ConnectorManifest[] = registry.connectors.map((manifest) => ({
     ...manifest,
     installed: installedIds.has(manifest.id),
   }));
 
+  // Build installed list
   const installed: ConnectorInstance[] = [];
   for (const id of installedIds) {
     const configPath = path.join(connectorsDir, `${id}.json`);
     try {
       const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+      // Codex P1 (PRRT_kwDORJXyws56U9U0): strip any legacy `token` field from
+      // the returned config so that `remnic connectors list --json` never prints
+      // a bearer token — tokens live only in tokens.json. This handles existing
+      // on-disk connector.json files written by older Remnic versions without
+      // rewriting user files.
       const { token: _redacted, ...config } = raw;
       installed.push({
         connectorId: id,
@@ -650,6 +708,10 @@ export function listConnectors(): {
   return { installed, available };
 }
 
+// ── Get connector token ────────────────────────────────────────────────────
+// Codex P1 (PRRT_kwDORJXyws56U9U0): tokens are stored exclusively in
+// tokens.json. This helper is the canonical way to retrieve the bearer token
+// for a connector — connector.json never contains it.
 
 export function getConnectorToken(connectorId: string): string | undefined {
   if (!isValidConnectorId(connectorId)) {
@@ -725,11 +787,18 @@ export function installConnector(options: InstallOptions): InstallResult {
     };
   }
 
+  // Check if already installed
   const existing = listConnectors().installed.find(
     (c) => c.connectorId === options.connectorId,
   );
 
   if (existing && !options.force) {
+    // Hermes backfill (Issue #1929): connectors installed before shim
+    // materialization shipped are exactly the installs missing the discovery
+    // shim, and rerunning `install` without --force lands here. Reconcile the
+    // shim (idempotent, marker-gated, cleans a prior-HERMES_HOME shim) and
+    // persist the surviving path so `remove` can clean it later. Best-effort:
+    // failures never change the status.
     let backfillNote = "";
     if (options.connectorId === "hermes") {
       try {
@@ -737,6 +806,11 @@ export function installConnector(options: InstallOptions): InstallResult {
         let parsed: Record<string, unknown> | null = null;
         try {
           const parsedRaw: unknown = JSON.parse(fs.readFileSync(hermesJsonPath, "utf8"));
+          // Same shape guard as removeConnector (Bugbot on PR #1938, round
+          // 14): a non-object payload ([], null, scalar) is not a connector
+          // record — writes onto it would not survive JSON.stringify, so the
+          // shim must not be moved on its authority. Reconcile without a
+          // prior path and skip persistence.
           if (parsedRaw !== null && typeof parsedRaw === "object" && !Array.isArray(parsedRaw)) {
             parsed = parsedRaw as Record<string, unknown>;
           }
@@ -745,6 +819,12 @@ export function installConnector(options: InstallOptions): InstallResult {
         }
         const priorRaw = parsed?.pluginShimPath;
         const priorPersisted = typeof priorRaw === "string" && priorRaw.length > 0 ? priorRaw : null;
+        // Gate the whole backfill on the ACTIVE home carrying a remnic:
+        // config (Codex P2 on PR #1938, round 19): moving/creating the
+        // discovery shim under a home whose config.yaml has no remnic: block
+        // would make Hermes discover a provider with no host/token — this
+        // path never writes configs or tokens, so only --force can migrate
+        // config, token, and shim together.
         const profileRaw = parsed?.profile;
         let currentConfigPath: string | null = null;
         let activeConfigHasBlock = false;
@@ -757,6 +837,9 @@ export function installConnector(options: InstallOptions): InstallResult {
             fs.existsSync(currentConfigPath) &&
             /^remnic:/m.test(fs.readFileSync(currentConfigPath, "utf8"));
         } catch (resolveErr) {
+          // Surface the REAL failure (symlinked/invalid HERMES_HOME, bad
+          // profile) instead of masking it as a missing remnic: block
+          // (Bugbot on PR #1938, round 23).
           configResolutionError = resolveErr instanceof Error ? resolveErr.message : String(resolveErr);
           activeConfigHasBlock = false;
         }
@@ -784,9 +867,14 @@ export function installConnector(options: InstallOptions): InstallResult {
           currentConfigPath !== null &&
           (typeof parsed.hermesConfigPath !== "string" || parsed.hermesConfigPath.length === 0)
         ) {
+          // Backfill config.yaml provenance too (round 7): the active config
+          // carries a remnic: block (gate above), so record where it lives.
           parsed.hermesConfigPath = currentConfigPath;
           configProvenanceAdded = true;
         }
+        // Prior-shim provenance parity (round 18): keep tracking any prior
+        // marker shim that survives (e.g. its cleanup failed), and clean
+        // inherited priors on a confirmed replacement.
         let shimPriorsChanged = false;
         const cleanedInheritedBackfillShims: string[] = [];
         if (parsed !== null) {
@@ -838,6 +926,11 @@ export function installConnector(options: InstallOptions): InstallResult {
           try {
             writeSecretFileSync(hermesJsonPath, JSON.stringify(parsed, null, 2));
           } catch (persistErr) {
+            // Mirror the install-path rollback (Codex P2 on PR #1938, round 5):
+            // without the persisted path, the registry cannot clean the shims
+            // this reconcile just changed — undo the filesystem effects so the
+            // JSON on disk still matches reality. Shim content is
+            // deterministic, so a cleaned prior shim regenerates exactly.
             const rollbackFailures: string[] = [];
             if (
               outcome.materializedAt !== null &&
@@ -857,6 +950,8 @@ export function installConnector(options: InstallOptions): InstallResult {
                 rollbackFailures.push(`restore the shim at ${outcome.priorCleanedAt} manually`);
               }
             }
+            // Regenerate inherited priors this backfill pass cleaned — parity
+            // with the main install rollback (Bugbot on PR #1938, round 19).
             for (const cleanedPath of cleanedInheritedBackfillShims) {
               if (outcome.priorCleanedAt !== null && sameShimTarget(cleanedPath, outcome.priorCleanedAt)) {
                 continue;
@@ -885,16 +980,28 @@ export function installConnector(options: InstallOptions): InstallResult {
     };
   }
 
+  // Write config
   const configDir = getConnectorsDir();
   fs.mkdirSync(configDir, { recursive: true });
 
   const configPath = path.join(configDir, `${options.connectorId}.json`);
   const savedConnectorConfig = existing ? readSavedConnectorConfig(configPath) : {};
 
+  // For the hermes connector, resolve profile/host/port with the following
+  // precedence: saved-connector-JSON → explicit options.config → defaults.
+  // Reading happens BEFORE we overwrite the connector JSON so that a
+  // force-reinstall without re-supplied --config options preserves the
+  // previously configured values and writes the new token to the correct
+  // Hermes profile rather than resetting to "default"/127.0.0.1/4318.
+  //
+  // Issue C fix: sanitizer calls during options resolution are wrapped in
+  // try-catch so that invalid user-supplied values (e.g. --config port=abc)
+  // return a clean failed InstallResult instead of throwing.
   let hermesSavedProfile: string | undefined;
   let hermesSavedHost: string | undefined;
   let hermesSavedPort: number | undefined;
   let hermesSavedAllowInsecureHttp: boolean | undefined;
+  // Resolved values (used both in resolvedConfig and in the YAML update below)
   let hermesResolvedProfile: string | undefined;
   let hermesResolvedHost: string | undefined;
   let hermesResolvedPort: number | undefined;
@@ -903,6 +1010,10 @@ export function installConnector(options: InstallOptions): InstallResult {
     if (fs.existsSync(configPath)) {
       try {
         const prev = JSON.parse(fs.readFileSync(configPath, "utf8"));
+        // Fix 2: coerce saved values through sanitizers so that CLI-written
+        // string ports ("5555") are accepted just like number ports (5555).
+        // Pass each through its sanitizer and fall back to undefined on error
+        // so a corrupt saved value doesn't prevent install from defaulting.
         if (prev?.profile != null) {
           try {
             hermesSavedProfile = sanitizeHermesProfile(String(prev.profile));
@@ -932,10 +1043,14 @@ export function installConnector(options: InstallOptions): InstallResult {
         // Could not read existing config — fall through to defaults
       }
     }
+    // Use saved/default values here; user-supplied profile/host are validated
+    // and applied in the sanitization block below (single point of validation).
     hermesResolvedProfile = hermesSavedProfile ?? "default";
     hermesResolvedHost = hermesSavedHost ?? "127.0.0.1";
     hermesResolvedAllowInsecureHttp = hermesSavedAllowInsecureHttp ?? false;
 
+    // Issue C: wrap sanitizeHermesPort (and profile/host) in try-catch so
+    // that invalid user-supplied values return a clean error result.
     if (options.config?.port !== undefined) {
       try {
         hermesResolvedPort = sanitizeHermesPort(Number(String(options.config.port)));
@@ -951,6 +1066,7 @@ export function installConnector(options: InstallOptions): InstallResult {
       hermesResolvedPort = hermesSavedPort ?? 4318;
     }
 
+    // Also validate user-supplied profile and host up-front (Issue C coverage).
     if (options.config?.profile !== undefined) {
       try {
         hermesResolvedProfile = sanitizeHermesProfile(String(options.config.profile));
@@ -986,27 +1102,61 @@ export function installConnector(options: InstallOptions): InstallResult {
     }
   }
 
+  // Generate a per-connector auth token so the daemon can authenticate
+  // requests from this connector.
   //
+  // Security gate (PRRT_kwDORJXyws56U9U0 round 6): tokens are ONLY generated
+  // and persisted to tokens.json for connectors that actually require bearer-token
+  // auth (manifest.requiresToken === true). MCP, CLI, embedded, and SDK connectors
+  // never need a token entry on disk — generating one unconditionally materialized
+  // credentials for connectors that have no auth requirement, a security regression.
   //
+  // For hermes (Issue B fix): use buildTokenEntry() to generate a candidate
+  // token WITHOUT immediately persisting it to tokens.json. We commit the
+  // candidate to the store only AFTER upsertHermesConfig succeeds, so that
+  // a failed or skipped config.yaml write never leaves the daemon with a
+  // revoked token and no valid replacement written.
   //
+  // For other connectors that requiresToken: generateToken() is idempotent —
+  // it filters the old entry and writes a fresh one atomically, so force-reinstall
+  // produces a new token automatically.
   //
+  // Token write errors (e.g. read-only HOME with writable XDG_CONFIG_HOME)
+  // are non-fatal: we degrade gracefully and proceed with the connector
+  // config write rather than aborting the whole install.
   //
+  // For non-Hermes connectors that requiresToken: snapshot the FULL token store
+  // BEFORE generateToken() so that if the connector JSON write later fails, we
+  // can restore the store to its pre-install state (UXJG fix — non-Hermes atomic
+  // rollback). Using a full-store snapshot (not a single-entry snapshot) ensures
+  // that a partial write of tokens.json during generateToken can be unwound
+  // atomically, covering both fresh-install and force-reinstall cases uniformly.
   const nonHermesPriorTokenStore = (options.connectorId !== "hermes" && manifest.requiresToken)
     ? loadTokenStore()
     : null;
 
   let tokenEntry: ReturnType<typeof generateToken> | null = null;
   if (options.connectorId === "hermes") {
+    // Build a candidate token; do NOT save yet (Issue B).
     try {
       tokenEntry = buildTokenEntry(options.connectorId);
     } catch {
       // Non-fatal: fall through with tokenEntry === null.
     }
   } else if (manifest.requiresToken) {
+    // Only generate and persist a token entry for connectors that need token auth.
     try {
       tokenEntry = generateToken(options.connectorId);
     } catch {
+      // Non-fatal: token store unavailable. Connector config will still be
+      // written; user can run `remnic token generate <id>` to create the token.
       //
+      // Roll back the snapshot so that a partial write of tokens.json during
+      // generateToken (e.g. ENOSPC/EIO mid-write) does not leave other
+      // connectors' auth state corrupted. Best-effort: if the restore itself
+      // fails there is nothing more we can do here, but the error is swallowed
+      // so install continues in the same degraded (tokenEntry === null) path
+      // as before (PRRT_kwDORJXyws56UleN fix).
       if (nonHermesPriorTokenStore !== null) {
         try {
           saveTokenStore(nonHermesPriorTokenStore);
@@ -1016,7 +1166,12 @@ export function installConnector(options: InstallOptions): InstallResult {
       }
     }
   }
+  // else: connector does not require token auth — tokenEntry stays null and
+  // tokens.json is never touched for this connector.
 
+  // Thread 2 (PRRT_kwDORJXyws56VYwM): if the connector requires token auth but
+  // generateToken threw (tokenEntry is still null), abort now instead of
+  // continuing with a broken install that returns "success" without a valid token.
   if (options.connectorId !== "hermes" && manifest.requiresToken && tokenEntry === null) {
     return {
       connectorId: options.connectorId,
@@ -1027,8 +1182,19 @@ export function installConnector(options: InstallOptions): InstallResult {
     };
   }
 
+  // Build config from saved values + user overrides.
+  // Codex P1 (PRRT_kwDORJXyws56U9U0): tokens MUST NOT be written into
+  // connector.json. The authoritative store is tokens.json (0o600). Writing the
+  // token here created a second, unredacted copy that `remnic connectors list
+  // --json` printed verbatim, leaking live bearer tokens into shell history, CI
+  // logs, and telemetry. Callers needing the token for a specific connector
+  // must use loadTokenStore() and find the entry by connectorId directly.
   //
+  // For hermes, include the resolved profile/host/port so that future
+  // force-reinstalls can read them back even if options.config is not supplied.
   //
+  // Strip any stray `token` key the caller may have supplied via options.config
+  // so it cannot be persisted to disk even on legacy call paths.
   const { token: _callerToken, ...rawUserConfig } = (options.config ?? {}) as Record<string, unknown>;
   const savedConnectorConfigForMerge = removeClearedSavedConnectorConfig(savedConnectorConfig, rawUserConfig);
   const safeUserConfig = compactConnectorConfigOverrides(rawUserConfig);
@@ -1037,6 +1203,10 @@ export function installConnector(options: InstallOptions): InstallResult {
     ...safeUserConfig,
     connectorId: options.connectorId,
     installedAt: new Date().toISOString(),
+    // For hermes, always overlay the sanitized/coerced resolved values so that
+    // the connector JSON always has a numeric port and validated profile/host.
+    // This also ensures options.config string values (from --config=port=5555)
+    // are replaced with their sanitized numeric equivalents (Fix 2 root cause).
     ...(hermesResolvedProfile !== undefined ? {
       profile: hermesResolvedProfile,
       host: hermesResolvedHost,
@@ -1045,6 +1215,7 @@ export function installConnector(options: InstallOptions): InstallResult {
     } : {}),
   };
 
+  // ── Hermes atomic install flow ─────────────────────────────────────────────
   // The Hermes install sequence must be atomic: connector.json must only be
   // written if and only if both the YAML write AND the token-store commit
   // succeed. Partial failures must leave the prior state intact so the daemon
@@ -1058,13 +1229,19 @@ export function installConnector(options: InstallOptions): InstallResult {
   //   d. Commit new token to tokens.json — if this throws, rollback the YAML
   //      write (restore prior content or delete new file) and abort.
   //   e. Write connector.json only after both (c) and (d) succeed.
+  //   f. Health check — gated on committed === true && tokenEntry != null.
   //
+  // Non-Hermes connectors: connector.json is written immediately (no YAML
+  // dependency) and the health check is not performed.
 
   if (options.connectorId === "hermes") {
+    // hermesResolvedProfile/Host/Port were computed above using the correct
+    // precedence (saved JSON → explicit options.config → defaults).
     const rawProfile = hermesResolvedProfile!;
     const hermesHost = hermesResolvedHost!;
     const hermesPort = hermesResolvedPort!;
 
+    // (b) Validate profile name — fail-fast before touching any files.
     let hermesProfile: string;
     try {
       hermesProfile = sanitizeHermesProfile(rawProfile);
@@ -1076,6 +1253,7 @@ export function installConnector(options: InstallOptions): InstallResult {
       };
     }
 
+    // Token generation is required for an atomic Hermes install.
     if (!tokenEntry) {
       return {
         connectorId: options.connectorId,
@@ -1086,6 +1264,12 @@ export function installConnector(options: InstallOptions): InstallResult {
       };
     }
 
+    // When HERMES_HOME is explicitly set to a not-yet-created directory, the
+    // user has stated where Hermes lives — create it so the config write does
+    // not abort while the shim step (recursive mkdir) would have created the
+    // same tree anyway (Bugbot on PR #1938, round 11). Without HERMES_HOME the
+    // missing-profile-dir skip below stays load-bearing: it is the signal
+    // that Hermes is not installed at all.
     {
       const envHermesHome = readEnvVar("HERMES_HOME");
       if (typeof envHermesHome === "string" && envHermesHome.trim().length > 0) {
@@ -1097,6 +1281,8 @@ export function installConnector(options: InstallOptions): InstallResult {
       }
     }
 
+    // (c) Write config.yaml. If the profile dir does not exist (skipped) or
+    // the write throws, abort WITHOUT committing the token or writing connector.json.
     let yamlResult: HermesConfigResult;
     try {
       yamlResult = upsertHermesConfig({
@@ -1107,6 +1293,7 @@ export function installConnector(options: InstallOptions): InstallResult {
         allowInsecureHttp: hermesResolvedAllowInsecureHttp,
       });
     } catch (err) {
+      // upsertHermesConfig threw — old token preserved, connector.json unchanged.
       return {
         connectorId: options.connectorId,
         status: "error",
@@ -1115,6 +1302,9 @@ export function installConnector(options: InstallOptions): InstallResult {
     }
 
     if (!yamlResult.updated) {
+      // Skipped (profile dir missing) — abort so connector.json is NOT written
+      // with a token the daemon won't recognize (the profile doesn't exist).
+      // Preserves any prior Hermes profile/connector.json untouched.
       return {
         connectorId: options.connectorId,
         status: "error",
@@ -1123,13 +1313,26 @@ export function installConnector(options: InstallOptions): InstallResult {
       };
     }
 
+    // (d) Commit token to tokens.json. If this fails, roll back the YAML write
+    // and abort — the old token must remain valid and connector.json must stay
+    // unchanged so the daemon keeps working.
     //
+    // IMPORTANT (UXJI/UXJT): Snapshot the FULL token store BEFORE calling
+    // commitTokenEntry(). A single-entry approach (capturing the return value
+    // of commitTokenEntry) is insufficient: if commitTokenEntry throws mid-write
+    // (e.g. ENOSPC truncating tokens.json), the assignment never completes and
+    // the rollback becomes a no-op, leaving tokens.json potentially corrupt.
+    // The full-store snapshot, captured before the write attempt, is guaranteed
+    // clean and can be written back atomically by saveTokenStore.
     const priorTokenStore = loadTokenStore();
     let committed = false;
     try {
       commitTokenEntry(tokenEntry);
       committed = true;
     } catch (commitErr) {
+      // Roll back the token store: restore the full snapshot so a partial write
+      // (e.g. ENOSPC truncating tokens.json mid-write) cannot leave the store
+      // corrupt or missing the prior hermes entry.
       let tokensRolledBack = true;
       let tokensRollbackErrMsg = "";
       try {
@@ -1138,18 +1341,22 @@ export function installConnector(options: InstallOptions): InstallResult {
         tokensRolledBack = false;
         tokensRollbackErrMsg = tokenRestoreErr instanceof Error ? tokenRestoreErr.message : String(tokenRestoreErr);
       }
+      // Roll back the YAML write: restore prior content (or delete newly-created file).
       let yamlRolledBack = true;
       let yamlRollbackErrMsg = "";
       try {
         if (yamlResult.priorContent === null) {
+          // File was created new — remove it entirely.
           fs.unlinkSync(yamlResult.configPath);
         } else if (typeof yamlResult.priorContent === "string") {
+          // File existed before — restore original content.
           writeSecretFileSync(yamlResult.configPath, yamlResult.priorContent);
         }
       } catch (yamlRestoreErr) {
         yamlRolledBack = false;
         yamlRollbackErrMsg = yamlRestoreErr instanceof Error ? yamlRestoreErr.message : String(yamlRestoreErr);
       }
+      // Build an error message that accurately reflects which rollbacks succeeded.
       const commitErrMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
       let message: string;
       if (tokensRolledBack && yamlRolledBack) {
@@ -1191,6 +1398,13 @@ export function installConnector(options: InstallOptions): InstallResult {
       };
     }
 
+    // (d2) Reconcile the on-disk shim BEFORE connector.json is written so the
+    // persisted pluginShimPath always references the shim that actually
+    // survives on disk. Invariant (PR #1938 review, third round): a
+    // Remnic-generated shim on disk is either removed or referenced by the
+    // connector JSON — the registry never silently discards the path of a
+    // shim that is still present (e.g. when materialization at the NEW
+    // HERMES_HOME fails during a force-reinstall).
     const priorShimPathRaw = savedConnectorConfig.pluginShimPath;
     const shimOutcome = reconcileHermesShim(
       typeof priorShimPathRaw === "string" && priorShimPathRaw.length > 0 ? priorShimPathRaw : null,
@@ -1198,6 +1412,12 @@ export function installConnector(options: InstallOptions): InstallResult {
     if (shimOutcome.persistPath !== null) {
       resolvedConfig.pluginShimPath = shimOutcome.persistPath;
     }
+    // Prior-shim provenance (Codex P2 on PR #1938, round 18): mirror the
+    // config handling — a prior marker shim whose cleanup failed or was
+    // skipped must stay tracked, or a later remove cannot discover it. On a
+    // confirmed replacement, inherited prior shims are actively cleaned
+    // (marker-gated); whatever still carries the marker afterwards persists
+    // as priorPluginShimPaths in the SAME registry write as everything else.
     const cleanedInheritedShims: string[] = [];
     {
       const shimPriorCandidates: string[] = [];
@@ -1234,16 +1454,32 @@ export function installConnector(options: InstallOptions): InstallResult {
     }
 
     // Persist the config.yaml location used at install time (it honors the
+    // active HERMES_HOME) so remove can clean the exact file even if
+    // HERMES_HOME is unset or changed by then — same provenance rule as
+    // pluginShimPath (Codex P2 on PR #1938, round 6).
     resolvedConfig.hermesConfigPath = yamlResult.configPath;
 
+    // Prior-config handling (rounds 9-15) runs BEFORE the primary
+    // connector.json write so priorHermesConfigPaths lands atomically in the
+    // SAME write as the rest of the record — a best-effort follow-up write
+    // could fail and leave surviving remnic: blocks untracked (Bugbot on
+    // PR #1938, round 15). Notes are collected here and surfaced after the
+    // write succeeds.
     const hermesPriorNotes: string[] = [];
     const priorConfigPathRaw = savedConnectorConfig.hermesConfigPath;
     const priorConfigPath =
       typeof priorConfigPathRaw === "string" && priorConfigPathRaw.length > 0 ? priorConfigPathRaw : null;
     const priorConfigDiffers =
       priorConfigPath !== null && !sameHermesConfigTarget(priorConfigPath, yamlResult.configPath);
+    // Every prior-config mutation performed before the registry write records
+    // the file's pre-mutation content here, so the connector.json-write
+    // failure path can restore it (Bugbot + Codex P2 on PR #1938, round 16).
     const hermesPriorConfigMutations: Array<{ mutatedPath: string; priorContent: string }> = [];
     if (priorConfigDiffers && priorConfigPath !== null && shimOutcome.materializedAt === null) {
+      // Unconfirmed shim move: the prior installation stays the working
+      // fallback. Refresh its config with the ACTIVE token — the install just
+      // rotated the token store, so leaving the old inline token would make
+      // the fallback fail daemon auth (round 13). The upsert preserves the
       // file's other remnic: sub-keys.
       let fallbackDetail = "";
       if (isPlausibleHermesConfigPath(priorConfigPath)) {
@@ -1275,6 +1511,11 @@ export function installConnector(options: InstallOptions): InstallResult {
           `collision/failure above and re-run with --force to complete the migration.`,
       );
     }
+    // Reconcile prior-config provenance (rounds 12-14): on a CONFIRMED
+    // replacement, actively clean every displaced/inherited prior config; on
+    // an unconfirmed move, preserve them. Every candidate whose remnic: block
+    // still survives afterwards is persisted in priorHermesConfigPaths so a
+    // later `remove` cleans them all; stale entries are dropped.
     {
       const candidates: string[] = [];
       if (priorConfigDiffers && priorConfigPath !== null) {
@@ -1342,9 +1583,16 @@ export function installConnector(options: InstallOptions): InstallResult {
       delete resolvedConfig.priorHermesConfigPath;
     }
 
+    // (e) Both YAML write and token commit succeeded — now attempt to write connector.json.
+    // If this write fails (e.g. connectors dir is not writable), roll back Phase D (token
+    // commit) and Phase C (YAML upsert) so no partial-install state is left behind.
+    // We restore the full token store snapshot captured before Phase D so that
+    // tokens.json is guaranteed consistent with the rolled-back config.yaml.
     try {
       writeSecretFileSync(configPath, JSON.stringify(resolvedConfig, null, 2));
     } catch (writeErr) {
+      // Roll back Phase D: restore the full token store snapshot so tokens.json
+      // is consistent with the rolled-back config.yaml.
       let tokenRollbackFailed = false;
       let tokenRollbackMsg = "token store restored to pre-install snapshot";
       try {
@@ -1353,9 +1601,13 @@ export function installConnector(options: InstallOptions): InstallResult {
         tokenRollbackFailed = true;
         tokenRollbackMsg = `token rollback failed: ${tokenRestoreErr instanceof Error ? tokenRestoreErr.message : String(tokenRestoreErr)}`;
       }
+      // Roll back Phase C: restore config.yaml to its prior content.
       let yamlRollbackMsg = "config.yaml restored";
       try {
         if (yamlResult.priorContent === null) {
+          // File was created new — delete it.  Track whether the unlink actually
+          // succeeded so we report honestly rather than claiming removal when it
+          // silently failed inside the inner catch.
           let unlinkSucceeded = false;
           let unlinkErr: unknown;
           try {
@@ -1377,6 +1629,10 @@ export function installConnector(options: InstallOptions): InstallResult {
       } catch (yamlRollbackErr) {
         yamlRollbackMsg = `config.yaml rollback failed: ${yamlRollbackErr instanceof Error ? yamlRollbackErr.message : String(yamlRollbackErr)}`;
       }
+      // Roll back the (d2) shim reconciliation: without a persisted
+      // pluginShimPath the registry cannot clean these effects later
+      // (Bugbot + Codex P2 on PR #1938, round 4). The shim content is
+      // deterministic, so a cleaned prior shim can be regenerated exactly.
       let shimRollbackMsg = "no shim changes to roll back";
       const shimRollbackFailures: string[] = [];
       const priorPersisted =
@@ -1386,6 +1642,11 @@ export function installConnector(options: InstallOptions): InstallResult {
         shimOutcome.createdNew &&
         (priorPersisted === null || !sameShimTarget(shimOutcome.materializedAt, priorPersisted))
       ) {
+        // Newly created at a location the registry never tracked — delete it
+        // (marker-gated). A shim that pre-existed this install (createdNew ===
+        // false) is left in place: it was functional before and our overwrite
+        // is byte-identical deterministic content (Codex P2, round 7). Path
+        // comparison is by resolved file identity, not string equality.
         try {
           removeHermesShim([shimOutcome.materializedAt]);
         } catch (err) {
@@ -1403,6 +1664,8 @@ export function installConnector(options: InstallOptions): InstallResult {
           );
         }
       }
+      // Regenerate inherited prior shims the (d2) provenance pass cleaned —
+      // content is deterministic, so restoration is exact (round 18).
       for (const cleanedPath of cleanedInheritedShims) {
         if (shimOutcome.priorCleanedAt !== null && sameShimTarget(cleanedPath, shimOutcome.priorCleanedAt)) {
           continue;
@@ -1425,6 +1688,11 @@ export function installConnector(options: InstallOptions): InstallResult {
             ? "plugin shim changes rolled back"
             : `plugin shim rollback incomplete: ${shimRollbackFailures.join("; ")}`;
       }
+      // Roll back the (d2) prior-config mutations from their recorded
+      // pre-mutation content: a stripped old-home remnic: block or a
+      // token-refreshed fallback must revert alongside tokens.json, or the
+      // previously working install is left broken (Bugbot + Codex P2 on
+      // PR #1938, round 16). Restore in reverse mutation order.
       let priorConfigRollbackMsg = "no prior-config changes to roll back";
       if (hermesPriorConfigMutations.length > 0) {
         const priorConfigRollbackFailures: string[] = [];
@@ -1459,12 +1727,20 @@ export function installConnector(options: InstallOptions): InstallResult {
     const notes: string[] = [];
     notes.push(`Updated Hermes config: ${yamlResult.configPath}`);
 
+    // (g) Report the shim reconciliation performed in (d2) — materialization
+    // itself already ran before connector.json was written (Issue #1929).
     notes.push(...shimOutcome.notes);
+    // Prior-config handling ran in (d2) before the connector.json write so its
+    // provenance landed atomically in the primary record; surface its notes.
     notes.push(...hermesPriorNotes);
+    // Provider activation is a manual, non-destructive step: we never edit the
+    // exclusive `memory.provider` slot in the user's Hermes config.yaml.
     notes.push(
       "Next step: set `memory.provider: remnic` (and `memory_enabled: true`) in your Hermes config.yaml to activate the provider.",
     );
 
+    // If a migrated default-profile install now writes to Hermes' root config,
+    // remove stale Remnic credentials from the legacy default profile file too.
     if (hermesProfile === "default") {
       const legacyDefaultConfigPath = hermesDefaultProfileConfigPath();
       if (!sameHermesConfigTarget(yamlResult.configPath, legacyDefaultConfigPath)) {
@@ -1479,12 +1755,18 @@ export function installConnector(options: InstallOptions): InstallResult {
       }
     }
 
+    // Clean up the old profile's remnic: block if the profile changed.
+    // Compare resolved config paths (not raw strings) so that case-insensitive
+    // filesystems (macOS default) don't treat "Research" and "research" as
+    // different profiles — resolving both would yield the same config.yaml,
+    // and removing it would strip the block we just wrote (PRRT_kwDORJXyws56VQ76).
     let oldProfileResolvesToDifferentFile = false;
     if (hermesSavedProfile !== undefined) {
       try {
         oldProfileResolvesToDifferentFile =
           !sameHermesConfigTarget(hermesConfigPath(hermesSavedProfile), hermesConfigPath(hermesProfile));
       } catch {
+        // If either profile fails sanitization the comparison is moot; skip cleanup.
         oldProfileResolvesToDifferentFile = false;
       }
     }
@@ -1495,10 +1777,16 @@ export function installConnector(options: InstallOptions): InstallResult {
           notes.push(`Cleaned stale remnic: block from previous profile: ${oldCleanResult.configPath}`);
         }
       } catch {
+        // Non-fatal: if we can't clean the old profile, log a note but don't fail.
         notes.push(`Note: could not clean stale remnic: block from previous profile "${hermesSavedProfile}"`);
       }
     }
 
+    // (f) Health check — only when the token was actually committed to the store.
+    // Without commitment, the daemon won't recognise the token → 401 → 6s sleep
+    // → false-negative "Daemon not reachable". committed is always true here
+    // (we returned early on failure above) but the explicit guard is kept for
+    // clarity and future robustness.
     if (committed && tokenEntry) {
       const daemonOk = checkDaemonHealth(
         hermesHost,
@@ -1524,19 +1812,40 @@ export function installConnector(options: InstallOptions): InstallResult {
     };
   }
 
+  // ── Non-Hermes connectors: write connector.json ───────────────────────────
+  // Write with owner-only permissions because the JSON may embed the
+  // connector bearer token. Matches the 0o600 hardening on
+  // ~/.remnic/tokens.json so the token is never world-readable via this
+  // secondary location.
 
+  // Codex CLI: also drop the phase-2 memory extension unless the caller
+  // explicitly opted out via `config.installExtension: false`.
   let extensionMessage = "";
+  // Explicit structured flag for the config-write rollback gate. This MUST
+  // stay decoupled from `extensionMessage` because that string embeds the
+  // install path — substring-matching on "skipped" would misfire whenever
+  // the codex home happens to contain the word "skipped".
   let extensionInstalled = false;
   // Holds the commit/rollback handle returned by installCodexMemoryExtension().
   // The backup of any prior extension is kept alive until commit() is called.
   let extensionHandle: { commit(): void; rollback(): void } | null = null;
   if (options.connectorId === "codex-cli") {
+    // Finding 1: coerce string "false"/"true" from CLI config parsing to a real
+    // boolean before the gate check, then persist the coerced value so it is
+    // stored as a boolean in the config file.
     const coerced = coerceInstallExtension(resolvedConfig.installExtension);
     if (coerced !== undefined) {
       resolvedConfig.installExtension = coerced;
     }
     const shouldInstall = resolvedConfig.installExtension !== false;
+    // Persist the effective installExtension boolean explicitly so that
+    // removeConnector's provenance check (Finding 3) can match. When the caller
+    // did not pass the key, the default is true — write it so later removal
+    // knows Remnic owned the install.
     resolvedConfig.installExtension = shouldInstall;
+    // Resolve the Codex home path NOW so we can persist the absolute path
+    // into the saved config. This guarantees removeConnector can target the
+    // exact same directory later even if $CODEX_HOME is unset or changed.
     const codexHomeOverride =
       typeof resolvedConfig.codexHome === "string" && resolvedConfig.codexHome.length > 0
         ? (resolvedConfig.codexHome as string)
@@ -1560,10 +1869,13 @@ export function installConnector(options: InstallOptions): InstallResult {
         extensionHandle = extResult;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : "unknown error";
+        // Codex P2 (PRRT_kwDORJXyws56Ur_G): generateToken already rotated
         // tokens.json before reaching this point. The extension threw, so no
         // connector.json was written — roll back the token store to the
         // pre-install snapshot so tokens.json and the absent connector.json
+        // stay consistent (no orphaned/active token without a matching config).
         //
+        // Initialize to false: only set true once saveTokenStore() succeeds.
         // For connectors without requiresToken the rollback block is skipped
         // entirely, so the suffix must remain absent — not "Token has been
         // rolled back." (which would be factually incorrect).
@@ -1579,6 +1891,10 @@ export function installConnector(options: InstallOptions): InstallResult {
               tokenRestoreErr instanceof Error ? tokenRestoreErr.message : String(tokenRestoreErr);
           }
         }
+        // Only include a token-rollback suffix for connectors that have a token
+        // to roll back. Non-token connectors (requiresToken !== true) never
+        // generated a token entry, so no rollback occurred and the message must
+        // not claim otherwise.
         const tokenRollbackSuffix = manifest.requiresToken
           ? extensionErrTokenRolledBack
             ? " Token has been rolled back."
@@ -1596,11 +1912,30 @@ export function installConnector(options: InstallOptions): InstallResult {
     }
   }
 
+  // ── WeClone: write proxy config to ~/.remnic/connectors/weclone.json ─────
   //
+  // The standalone `remnic-weclone-proxy` CLI (see packages/connector-weclone)
+  // reads its config from ~/.remnic/connectors/weclone.json by default so the
+  // proxy can start without depending on Remnic's XDG-scoped registry layout.
+  // Compose and write that file here, BEFORE the registry connector.json is
+  // written, so that a failure in either file's write path rolls back cleanly.
   //
+  // Precedence for each field: user-supplied via --config → saved prior proxy
+  // config (on --force) → manifest defaults. The generated bearer token (if
+  // any) is persisted into remnicAuthToken so the proxy can authenticate with
+  // the daemon without a second token lookup at runtime.
   let weCloneProxyHandleRollback: (() => void) | null = null;
   if (options.connectorId === "weclone") {
     try {
+      // Force-reinstall (and any reinstall path) must keep using the exact
+      // proxy config path that was persisted on the previous install. If we
+      // re-derive from the current env each time, a user whose REMNIC_HOME /
+      // ENGRAM_HOME changed between installs would end up with two proxy
+      // config files — the old one stays with stale settings + a revoked
+      // token, the new one gets the live token, and any running proxy still
+      // reading the old file starts failing auth. Read the saved
+      // `proxyConfigPath` from the existing registry config first, and only
+      // fall back to env-derivation for genuine first-time installs.
       let proxyConfigPath: string | null = null;
       if (existing && fs.existsSync(configPath)) {
         try {
@@ -1625,11 +1960,16 @@ export function installConnector(options: InstallOptions): InstallResult {
         authToken: tokenEntry?.token,
       });
       fs.mkdirSync(path.dirname(proxyConfigPath), { recursive: true });
+      // Install the rollback closure BEFORE the write starts. `writeSecretFileSync`
+      // opens the file in truncate mode, so a mid-write failure (ENOSPC, EPERM)
+      // could leave `weclone.json` empty. Creating the rollback now guarantees
       // we can always restore prior content (or delete a newly-created file)
       // even if the write itself throws.
       weCloneProxyHandleRollback = () => {
         try {
           if (prior === null) {
+            // File was created (or would have been created) by this install —
+            // delete whatever is left behind, if anything.
             if (fs.existsSync(proxyConfigPath)) {
               fs.unlinkSync(proxyConfigPath);
             }
@@ -1646,6 +1986,9 @@ export function installConnector(options: InstallOptions): InstallResult {
           JSON.stringify(proxyConfig, null, 2),
         );
       } catch (writeErr) {
+        // Truncate-and-write failed partway through — restore the file (or
+        // remove the empty partial) and re-throw so the outer catch drives
+        // the structured error response + token rollback.
         try {
           weCloneProxyHandleRollback();
         } catch {
@@ -1654,12 +1997,20 @@ export function installConnector(options: InstallOptions): InstallResult {
         weCloneProxyHandleRollback = null;
         throw writeErr;
       }
+      // Record the proxy-side config path on the registry JSON so operators
+      // and `remnic connectors doctor weclone` can locate it later. Persist the
+      // effective proxy port so `remnic connectors list` reflects the resolved
+      // value rather than whatever (possibly missing) the user supplied.
       resolvedConfig.proxyConfigPath = proxyConfigPath;
       resolvedConfig.proxyPort = proxyConfig.proxyPort;
       resolvedConfig.wecloneApiUrl = proxyConfig.wecloneApiUrl;
       resolvedConfig.remnicDaemonUrl = proxyConfig.remnicDaemonUrl;
       resolvedConfig.sessionStrategy = proxyConfig.sessionStrategy;
     } catch (weCloneErr) {
+      // Track token rollback success/failure explicitly so the error message
+      // can truthfully report whether tokens.json was restored or is in a
+      // potentially-inconsistent state. Mirrors the care taken in the
+      // registry-config-write failure handler below.
       let tokenRolledBack = false;
       let tokenRollbackMsg = "";
       if (tokenEntry !== null && nonHermesPriorTokenStore !== null) {
@@ -1689,6 +2040,7 @@ export function installConnector(options: InstallOptions): InstallResult {
     }
   }
 
+  // ── Droid: write remnic MCP server entry to ~/.factory/mcp.json ──────────
   let droidMcpRollback: (() => void) | null = null;
   if (options.connectorId === "droid") {
     const stepResult = droidInstallStep(
@@ -1706,6 +2058,10 @@ export function installConnector(options: InstallOptions): InstallResult {
     resolvedConfig.factoryMcpPath = stepResult.mcpPath;
   }
 
+  // Finding 5: strip internal/test-only keys that must never be persisted to
+  // the config file. These keys are used at install time only (e.g. to inject
+  // a synthetic extension source dir in tests) and have no meaning on disk.
+  // Denylist — add any future test-only keys here with a comment.
   const INTERNAL_KEYS_DENYLIST = [
     "extensionSourceDir", // test-only override for the plugin-codex source path
   ];
@@ -1713,12 +2069,27 @@ export function installConnector(options: InstallOptions): InstallResult {
     delete resolvedConfig[key];
   }
 
+  // Atomic rollback (UXJG / Codex P1): if the JSON write fails (e.g., permission
+  // denied on XDG_CONFIG_HOME), generateToken() above already rotated the token in
+  // tokens.json. Roll back via the full-store snapshot captured before generateToken
+  // so tokens.json and the absent connector.json stay consistent — no stale token
+  // lingers without a matching config file. Full-store restore (vs. single-entry
+  // restore/revoke) handles partial writes atomically for both fresh-install and
+  // force-reinstall paths uniformly.
   //
+  // Also roll back any codex-cli memory extension if the config write fails so
+  // that no dangling memories_extensions/remnic directory is left with no config
+  // provenance for removeConnector to find and clean up later.
   try {
     writeSecretFileSync(configPath, JSON.stringify(resolvedConfig, null, 2));
   } catch (writeErr) {
+    // Roll back non-hermes token store if needed. Track success so we can
+    // report accurately — unconditionally claiming rollback succeeded when it
+    // silently failed would leave operators unable to diagnose inconsistent state.
     //
     // Initialize to false: only set true once saveTokenStore() succeeds.
+    // Non-token connectors skip this block entirely, so we must not emit a
+    // "Token has been rolled back." suffix for them.
     let configWriteTokenRolledBack = false;
     let configWriteTokenRollbackMsg = "";
     if (tokenEntry !== null && nonHermesPriorTokenStore !== null) {
@@ -1731,16 +2102,22 @@ export function installConnector(options: InstallOptions): InstallResult {
           tokenRestoreErr instanceof Error ? tokenRestoreErr.message : String(tokenRestoreErr);
       }
     }
+    // Roll back the codex-cli extension if it was installed.
+    // Use extensionHandle.rollback() so that a pre-existing (possibly
+    // customised) extension is restored from the backup kept by
+    // installCodexMemoryExtension(), rather than unconditionally deleted.
     if (extensionInstalled && extensionHandle !== null) {
       try {
         extensionHandle.rollback();
       } catch {
+        // Best-effort rollback: log but don't mask the original write error.
         console.warn(
           "[remnic/connectors] installConnector: config write failed and extension rollback also failed — " +
             "manual cleanup of memories_extensions/remnic may be required.",
         );
       }
     }
+    // Roll back the WeClone proxy config if it was written.
     if (weCloneProxyHandleRollback !== null) {
       try {
         weCloneProxyHandleRollback();
@@ -1748,6 +2125,7 @@ export function installConnector(options: InstallOptions): InstallResult {
         // Best-effort rollback.
       }
     }
+    // Roll back the Droid ~/.factory/mcp.json if it was written.
     if (droidMcpRollback !== null) {
       try {
         droidMcpRollback();
@@ -1755,6 +2133,12 @@ export function installConnector(options: InstallOptions): InstallResult {
         // Best-effort rollback.
       }
     }
+    // Only include a token-rollback suffix for connectors that actually had a
+    // token to roll back. Non-token connectors (requiresToken !== true) never
+    // generated a token entry. For requiresToken connectors where generateToken
+    // threw (tokenEntry === null), no token was written to tokens.json so no
+    // rollback occurred — avoid a misleading "Token rollback FAILED" message
+    // (Thread 1, PRRT_kwDORJXyws56VVnB).
     const configWriteTokenSuffix = manifest.requiresToken && tokenEntry !== null
       ? configWriteTokenRolledBack
         ? " Token has been rolled back."
@@ -1771,6 +2155,7 @@ export function installConnector(options: InstallOptions): InstallResult {
     };
   }
 
+  // Config write succeeded — permanently drop the backup of the prior extension.
   if (extensionInstalled && extensionHandle !== null) {
     extensionHandle.commit();
   }
@@ -1783,6 +2168,7 @@ export function installConnector(options: InstallOptions): InstallResult {
   };
 }
 
+// ── Remove connector ───────────────────────────────────────────────────────
 
 export function removeConnector(connectorId: string): RemoveResult {
   const configDir = getConnectorsDir();
@@ -1799,8 +2185,13 @@ export function removeConnector(connectorId: string): RemoveResult {
   }
   const configPath = path.join(configDir, `${connectorId}.json`);
 
+  // For codex-cli, read the saved config BEFORE touching anything so we have
+  // both the persisted codexHome and the installExtension flag available for
+  // later use in extension removal (Findings 1, 3, 4, 5).
   let codexHomeOverride: string | null = null;
   let savedInstallExtension: boolean | undefined = undefined;
+  // Finding 1: track whether config parsing succeeded. If parsing throws, we
+  // cannot trust any metadata and must fail closed (skip extension removal).
   let configParsed = false;
   if (connectorId === "codex-cli" && fs.existsSync(configPath)) {
     try {
@@ -1809,17 +2200,24 @@ export function removeConnector(connectorId: string): RemoveResult {
       if (typeof parsed.codexHome === "string" && parsed.codexHome.length > 0) {
         codexHomeOverride = parsed.codexHome;
       }
+      // Finding 4: coerce saved installExtension so string "false" still works.
       const coerced = coerceInstallExtension(parsed.installExtension);
       if (coerced !== undefined) {
         savedInstallExtension = coerced;
       }
     } catch {
+      // Finding 1: config is malformed — log debug and fail closed.
+      // codexHomeOverride and savedInstallExtension remain unset; configParsed
+      // stays false so extension removal is skipped below.
       console.debug(
         "[remnic/connectors] removeConnector: codex-cli.json parse failed — skipping extension removal to avoid touching unverified paths",
       );
     }
   }
 
+  // For hermes, read the shim and config.yaml paths persisted at install time
+  // BEFORE the connector JSON is deleted, so removal targets the files written
+  // under the HERMES_HOME that was active during install (Codex P2 on PR #1938).
   let savedHermesShimPath: string | null = null;
   let savedHermesConfigPath: string | null = null;
   const savedPriorHermesConfigPaths: string[] = [];
@@ -1827,6 +2225,11 @@ export function removeConnector(connectorId: string): RemoveResult {
   if (connectorId === "hermes" && fs.existsSync(configPath)) {
     try {
       const parsedRaw: unknown = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      // A syntactically valid but non-object payload ([], null, "x", 5) is as
+      // untrustworthy as unparseable JSON — fail closed like the catch below
+      // (Codex P2 on PR #1938, round 10). A plain object that merely LACKS
+      // provenance fields is a legitimate pre-#1929 install and must still be
+      // removable (cleanup then uses the environment-resolved paths).
       if (parsedRaw === null || typeof parsedRaw !== "object" || Array.isArray(parsedRaw)) {
         throw new Error("hermes.json is not a JSON object");
       }
@@ -1834,6 +2237,8 @@ export function removeConnector(connectorId: string): RemoveResult {
       if (typeof parsed.pluginShimPath === "string" && parsed.pluginShimPath.length > 0) {
         savedHermesShimPath = parsed.pluginShimPath;
       }
+      // Prior-shim provenance (round 18): shims whose cleanup failed on an
+      // earlier install move remain tracked here.
       if (Array.isArray(parsed.priorPluginShimPaths)) {
         for (const entry of parsed.priorPluginShimPaths) {
           if (typeof entry === "string" && entry.length > 0) {
@@ -1858,6 +2263,10 @@ export function removeConnector(connectorId: string): RemoveResult {
       }
     } catch {
       // Fail closed, mirroring the codex-cli provenance guard: a malformed
+      // hermes.json is the only record of the install-time shim location.
+      // Proceeding would delete the registry entry while a Remnic-generated
+      // shim under a since-changed HERMES_HOME stays discoverable forever
+      // (Codex P2 on PR #1938).
       return {
         connectorId,
         configPath,
@@ -1872,8 +2281,14 @@ export function removeConnector(connectorId: string): RemoveResult {
   }
 
   if (!fs.existsSync(configPath)) {
+    // Best-effort: revoke any orphan token that may have survived a prior partial
     // cleanup (e.g. connector JSON deleted manually or XDG_CONFIG_HOME change).
+    // This prevents a stale bearer token from remaining valid in tokens.json while
     // the connector appears "not installed" to the caller.
+    // Config file is missing — we have no evidence that this installation ever
+    // managed the extension directory, so it is unsafe to remove it (the user
+    // may have self-managed it or installed with installExtension=false).
+    // Skip removeCodexMemoryExtension entirely in this recovery path.
     let staleTokenRevoked = false;
     try {
       staleTokenRevoked = revokeToken(connectorId);
@@ -1892,6 +2307,7 @@ export function removeConnector(connectorId: string): RemoveResult {
     };
   }
 
+  // Read connector config before deleting it (needed for hermes profile lookup)
   let storedProfile = "default";
   if (connectorId === "hermes") {
     try {
@@ -1902,7 +2318,20 @@ export function removeConnector(connectorId: string): RemoveResult {
     }
   }
 
+  // For weclone, read the persisted proxy config path from the saved registry
+  // config BEFORE deleting it. Using the persisted absolute path (rather than
+  // recomputing from current REMNIC_HOME / ENGRAM_HOME / $HOME) guarantees
+  // that a remove still targets the original file even if the environment
+  // has changed between install and remove.
   //
+  // Parse failure handling: if the registry config exists but is malformed,
+  // we MUST abort the whole removal (mirror of the codex-cli provenance
+  // gate). Silently falling back to an env-derived path would delete the
+  // registry entry first and then miss the real proxy config if the
+  // environment had since changed, orphaning the file (which may still hold
+  // a live bearer token). Only install-time WRITES persist the path; if we
+  // lost it on read, the only safe action is to stop and let the operator
+  // fix the config or clean up manually.
   let weCloneProxyConfigPath: string | null = null;
   let weCloneRegistryParseFailed = false;
   if (connectorId === "weclone") {
@@ -1914,6 +2343,9 @@ export function removeConnector(connectorId: string): RemoveResult {
     } catch {
       weCloneRegistryParseFailed = true;
     }
+    // No persisted path AND parse succeeded means this is a legacy install
+    // pre-dating proxyConfigPath provenance. Fall back to env resolution
+    // only in that specific case so we still make a best-effort cleanup.
     if (weCloneProxyConfigPath === null && !weCloneRegistryParseFailed) {
       try {
         weCloneProxyConfigPath = resolveWeCloneProxyConfigPath();
@@ -1923,6 +2355,7 @@ export function removeConnector(connectorId: string): RemoveResult {
     }
   }
 
+  // For droid, read the persisted factoryMcpPath before deleting the config.
   let droidMcpConfigPath: string | null = null;
   let droidRegistryParseFailed = false;
   if (connectorId === "droid") {
@@ -1953,6 +2386,11 @@ export function removeConnector(connectorId: string): RemoveResult {
     };
   }
 
+  // Finding 4: if the codex-cli config exists but failed to parse, abort the
+  // entire removal. Leave both the config file AND the extension directory
+  // untouched so the operator can inspect/fix the config file and retry.
+  // Unlinking the config here would destroy the only provenance record and make
+  // deterministic retry impossible.
   if (connectorId === "codex-cli" && fs.existsSync(configPath) && !configParsed) {
     console.warn(
       "[remnic/connectors] removeConnector: codex-cli.json is malformed — " +
@@ -1969,8 +2407,13 @@ export function removeConnector(connectorId: string): RemoveResult {
     };
   }
 
+  // Finding 5: remove extension BEFORE deleting the config file. If extension
+  // removal throws (e.g. EPERM/EBUSY), we re-throw WITHOUT deleting the config
+  // so the user can retry — the config still has the persisted codexHome needed
+  // to locate the extension directory.
   let extensionMessage = "";
   if (connectorId === "codex-cli") {
+    // Finding 4: skip extension deletion when installExtension was explicitly disabled.
     if (savedInstallExtension === false) {
       extensionMessage = " (memory extension: skipped — installExtension=false)";
     // Finding 3: require EXPLICIT provenance (installExtension===true AND a saved
@@ -1987,6 +2430,13 @@ export function removeConnector(connectorId: string): RemoveResult {
     }
   }
 
+  // Hermes-specific preflight (Codex P2 on PR #1938, round 15): verify every
+  // remnic:-bearing config target is writable BEFORE any destructive step.
+  // The registry unlink and token revocation must precede the actual yaml
+  // cleanup (the unlink-failure contract keeps the install fully functional),
+  // but once the registry is gone a cleanup failure would strand the old
+  // home's block with no provenance for a retry — so refuse up front while
+  // the registry, provenance, and token are all still intact.
   if (connectorId === "hermes") {
     const preflightCandidates: string[] = [];
     try {
@@ -1994,10 +2444,17 @@ export function removeConnector(connectorId: string): RemoveResult {
     } catch {
       /* current-environment resolution failed — persisted paths still checked */
     }
+    // Persisted provenance is filtered through the SAME guard cleanup uses
+    // (Bugbot on PR #1938, round 17): a tampered/implausible path that
+    // removeHermesConfig would never touch must not be able to block removal.
     if (savedHermesConfigPath !== null && isPlausibleHermesConfigPath(savedHermesConfigPath)) {
       preflightCandidates.push(savedHermesConfigPath);
     }
     preflightCandidates.push(...savedPriorHermesConfigPaths.filter(isPlausibleHermesConfigPath));
+    // De-duplicate by resolved file identity first (matching cleanup): in the
+    // legacy alias layout profiles/default/config.yaml symlinks to the root
+    // config — the alias collapses onto its non-symlinked representative and
+    // must not trip the component guard below.
     const uniqueCandidates: string[] = [];
     for (const candidate of preflightCandidates) {
       if (!uniqueCandidates.some((kept) => sameHermesConfigTarget(kept, candidate))) {
@@ -2015,6 +2472,10 @@ export function removeConnector(connectorId: string): RemoveResult {
       if (!needsCleanup) {
         continue;
       }
+      // Cleanup refuses symlinked components (round 19); a target that would
+      // be skipped that way must abort HERE, while registry/provenance/token
+      // are intact, instead of surfacing as a post-unlink note that strands
+      // the block without provenance (Codex P2 on PR #1938, round 22).
       try {
         assertConfigComponentsNotSymlinked(candidate);
       } catch {
@@ -2022,6 +2483,8 @@ export function removeConnector(connectorId: string): RemoveResult {
         continue;
       }
       try {
+        // writeSecretFileSync rewrites via temp file + rename, so BOTH the
+        // file and its directory must be writable.
         fs.accessSync(candidate, fs.constants.W_OK);
         fs.accessSync(path.dirname(candidate), fs.constants.W_OK);
       } catch {
@@ -2041,6 +2504,11 @@ export function removeConnector(connectorId: string): RemoveResult {
     }
   }
 
+  // Delete the connector config file AFTER extension removal (Finding 5): if
+  // extension removal throws, we do not reach here and the config is preserved.
+  // Token revocation and YAML cleanup only happen after the file is gone so
+  // that a failed unlink (e.g., read-only directory) does not leave a
+  // token-less orphan install on disk.
   try {
     fs.unlinkSync(configPath);
   } catch (unlinkErr) {
@@ -2055,16 +2523,36 @@ export function removeConnector(connectorId: string): RemoveResult {
     };
   }
 
+  // File removed — now safe to revoke the auth token.
+  // Non-fatal: if the token store is read-only or missing, connector removal
+  // should still succeed. Stale tokens will be rejected by the daemon when the
+  // token file is later accessible.
   const notes: string[] = [];
+  // Track revocation success so downstream error branches (e.g. weclone
+  // proxy-delete failure) can accurately report whether the token was
+  // cleaned up rather than hardcoding "Token has been rolled back".
   let tokenRevoked = true;
   try {
     revokeToken(connectorId);
   } catch (revokeErr) {
+    // Surface the failure so callers know the token was not cleaned up.
+    // The connector config has already been removed at this point.
     tokenRevoked = false;
     const revokeMsg = revokeErr instanceof Error ? revokeErr.message : String(revokeErr);
     notes.push(`Warning: token revocation failed — ${revokeMsg}. The token for ${connectorId} may still be present in tokens.json.`);
   }
 
+  // WeClone-specific: remove the proxy config file at the path persisted in
+  // the registry config (read above before the registry file was deleted).
+  // Using the persisted absolute path — not a re-derivation from the current
+  // environment — is load-bearing: if REMNIC_HOME / ENGRAM_HOME changes (or
+  // is unset) between install and remove, recomputing here would leave the
+  // original proxy config (with a live bearer token) on disk while reporting
+  // success. If the file is present but unlink fails (e.g. EPERM), we MUST
+  // surface an error status rather than pretending success — a later retry
+  // via `remnic connectors remove weclone` would go down the `not_found`
+  // path because the registry config was already unlinked, leaving the
+  // proxy config orphaned (potentially with a still-valid token).
   let weCloneProxyDeleteFailed: string | null = null;
   if (connectorId === "weclone") {
     if (weCloneProxyConfigPath === null) {
@@ -2073,6 +2561,17 @@ export function removeConnector(connectorId: string): RemoveResult {
           "(likely a legacy install predating proxyConfigPath provenance).",
       );
     } else {
+      // Safety gate: validate the persisted path before unlinking. Because
+      // `weCloneProxyConfigPath` is loaded from user-controlled JSON, a
+      // malformed or tampered weclone.json could make `removeConnector` delete
+      // an arbitrary file. Restrict deletion to paths that are:
+      //   1. Absolute (relative paths are CWD-dependent and were never written
+      //      by the installer).
+      //   2. End with the known suffix "connectors/weclone.json" — the only
+      //      filename the installer ever writes, regardless of base directory.
+      // If either check fails, skip the unlink and surface an error so the
+      // operator can clean up manually. Failing closed is safer than silently
+      // deleting an unexpected path.
       const expectedSuffix = path.join("connectors", "weclone.json");
       const isSafePath =
         path.isAbsolute(weCloneProxyConfigPath) &&
@@ -2089,12 +2588,18 @@ export function removeConnector(connectorId: string): RemoveResult {
             notes.push(`Removed WeClone proxy config: ${weCloneProxyConfigPath}`);
           }
         } catch (err) {
+          // Hard failure: leaving the file behind with a live token is a
+          // security issue. Capture the error so we return status:"error".
           weCloneProxyDeleteFailed = err instanceof Error ? err.message : String(err);
         }
       }
     }
   }
   if (weCloneProxyDeleteFailed !== null && weCloneProxyConfigPath !== null) {
+    // Report the token-revocation status truthfully. If revocation already
+    // failed above, claiming the token was "cleaned up" here would mislead
+    // the operator into thinking the only action left is deleting the
+    // orphan file — when in reality the bearer token is also still live.
     const tokenStatus = tokenRevoked
       ? "the registry config was deleted and the token was revoked"
       : "the registry config was deleted but TOKEN REVOCATION ALSO FAILED — " +
@@ -2111,6 +2616,7 @@ export function removeConnector(connectorId: string): RemoveResult {
     };
   }
 
+  // Droid-specific: remove the "remnic" entry from ~/.factory/mcp.json.
   let droidMcpDeleteFailed: string | null = null;
   if (connectorId === "droid") {
     if (droidMcpConfigPath === null) {
@@ -2125,7 +2631,22 @@ export function removeConnector(connectorId: string): RemoveResult {
     return { connectorId, configPath, status: "error", message: `Droid remove partially succeeded: registry config deleted, ${ts}, but the MCP config at ${droidMcpConfigPath} could not be updated (${droidMcpDeleteFailed}). Manually remove the "remnic" entry.` };
   }
 
+  // Hermes-specific: strip the remnic: block from config.yaml (the writability
+  // preflight above already verified every remnic:-bearing target, so a
+  // partial failure here is a rare TOCTOU race — the error branch below stays
+  // as the backstop).
   if (connectorId === "hermes") {
+    // Remove the Hermes plugin-directory shim (Issue #1929) FIRST — it is
+    // independent of config.yaml cleanup, and the yaml partial-failure branch
+    // below returns early. Running the shim cleanup after that return would
+    // leave a Remnic-generated shim discoverable while the registry entry and
+    // token are already gone (Bugbot on PR #1938, round 5). removeHermesShim
+    // deletes candidates ONLY when they carry our generated marker, then
+    // rmdir's the now-empty plugins/remnic/ dir. Never rm -rf; never touch a
+    // user-authored __init__.py. Candidates: the path persisted at install
+    // time plus the path resolved from the current environment, so a
+    // HERMES_HOME change between install and remove cannot orphan the shim.
+    // Best-effort: a failure here never aborts remove.
     try {
       const shimCandidates: string[] = [];
       if (savedHermesShimPath !== null) {
@@ -2192,6 +2713,7 @@ export function removeConnector(connectorId: string): RemoveResult {
   };
 }
 
+// ── Hermes config.yaml helpers ─────────────────────────────────────────────────
 
 interface HermesConfigResult {
   updated: boolean;
@@ -2224,6 +2746,9 @@ function sanitizeHermesProfile(profile: string): string {
   if (typeof profile !== "string" || profile.length === 0) {
     throw new Error("Hermes profile name must be a non-empty string");
   }
+  // Disallow anything that isn't a plain profile identifier. We accept
+  // letters, digits, hyphen, underscore, and dot — but reject leading dots
+  // (hidden dirs) and any path separator or parent-dir reference.
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {
     throw new Error(
       `Invalid Hermes profile name: ${JSON.stringify(profile)} — must match [A-Za-z0-9][A-Za-z0-9._-]*`,
@@ -2237,6 +2762,11 @@ function sanitizeHermesProfile(profile: string): string {
 
 function hermesConfigPath(profile: string): string {
   const safeProfile = sanitizeHermesProfile(profile);
+  // Root at the SAME Hermes home the shim uses (honors HERMES_HOME, and the
+  // platform-native default). Upstream get_hermes_home() reads HERMES_HOME and
+  // the config loader resolves config.yaml relative to it, so writing the
+  // remnic: block under ~/.hermes while HERMES_HOME points elsewhere would be
+  // silently ignored by Hermes (Codex P2 on PR #1938, round 5).
   const hermesRoot = resolveHermesRoot();
   const rootConfigPath = path.join(hermesRoot, "config.yaml");
   const profilesRoot = path.join(hermesRoot, "profiles");
@@ -2247,6 +2777,7 @@ function hermesConfigPath(profile: string): string {
     }
   }
   const cfgPath = path.resolve(profilesRoot, safeProfile, "config.yaml");
+  // Defense in depth: ensure the resolved path is still under profilesRoot.
   const rel = path.relative(profilesRoot, cfgPath);
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
     throw new Error(
@@ -2330,6 +2861,8 @@ function sanitizeHermesHost(host: string): string {
     throw new Error(`Hermes host too long (max 253 chars): ${JSON.stringify(host.slice(0, 32))}…`);
   }
 
+  // Bracketed IPv6 literal: must start with "[", end with "]", and contain
+  // only hex digits and colons inside the brackets.
   if (host.startsWith("[")) {
     if (!host.endsWith("]")) {
       throw new Error(
@@ -2345,12 +2878,16 @@ function sanitizeHermesHost(host: string): string {
     return host;
   }
 
+  // Unbracketed value: colons are not allowed (would indicate an embedded port
+  // or an unbracketed IPv6 address, both of which must be rejected here).
   if (host.includes(":")) {
     throw new Error(
       `Invalid Hermes host: ${JSON.stringify(host)} — host must not include a port; supply the port separately with --config port=<n>`,
     );
   }
 
+  // Plain IPv4 or DNS hostname: allow letters, digits, dots, and hyphens only.
+  // No whitespace, quotes, or control characters.
   if (!/^[A-Za-z0-9._\-]+$/.test(host)) {
     throw new Error(
       `Invalid Hermes host: ${JSON.stringify(host)} — must be a plain hostname or IP literal`,
@@ -2368,6 +2905,7 @@ function sanitizeHermesHost(host: string): string {
  */
 function sanitizeHermesPort(port: number | string): number {
   const numeric = Number(port);
+  // Reject NaN, Infinity, -Infinity, and any non-integer (e.g. 4318.9)
   if (!Number.isInteger(numeric)) {
     throw new Error(
       `Invalid Hermes port "${port}": must be a positive integer`,
@@ -2452,12 +2990,20 @@ function upsertHermesConfigAt(
   cfgPath: string,
   opts: { host: string; port: number; token: string; allowInsecureHttp?: boolean },
 ): HermesConfigResult {
+  // Symlinked components below the Hermes root must not redirect the
+  // token-bearing write (Codex P1 on PR #1938, round 19).
   assertConfigComponentsNotSymlinked(cfgPath);
   const profileDir = path.dirname(cfgPath);
 
+  // YAML-injection guard: validate scalar values before interpolating them
+  // into the `remnic:` block. sanitizeHermesHost/Port throw on anything
+  // that could break out of the scalar context.
   const safeHost = sanitizeHermesHost(opts.host);
   const safePort = sanitizeHermesPort(opts.port);
   const allowInsecureHttp = opts.allowInsecureHttp ?? false;
+  // Token is generated by randomBytes + a fixed alphabetic prefix, so it's
+  // already safe for YAML scalar interpolation. We still guard against an
+  // unexpectedly malformed token reaching this function.
   if (!/^[A-Za-z0-9_]+$/.test(opts.token)) {
     throw new Error("Invalid Hermes token: contains non-alphanumeric characters");
   }
@@ -2480,6 +3026,8 @@ function upsertHermesConfigAt(
   ].join("\n");
 
   if (!fs.existsSync(cfgPath)) {
+    // Create with just the remnic block. 0o600 because the file now holds
+    // a bearer token — matching the permissions on ~/.remnic/tokens.json.
     writeSecretFileSync(cfgPath, block + "\n");
     // priorContent: null signals "file was created new" — rollback means delete.
     return { updated: true, skipped: false, configPath: cfgPath, priorContent: null };
@@ -2487,17 +3035,30 @@ function upsertHermesConfigAt(
 
   const raw = fs.readFileSync(cfgPath, "utf8");
 
+  // Check whether there's an existing remnic: block
   const hasRemnicBlock = /^remnic:/m.test(raw);
 
   if (!hasRemnicBlock) {
+    // Append the block (preserve existing content)
     const separator = raw.endsWith("\n") ? "\n" : "\n\n";
     writeSecretFileSync(cfgPath, raw + separator + block + "\n");
     // priorContent: raw preserves the original file so it can be restored on rollback.
     return { updated: true, skipped: false, configPath: cfgPath, priorContent: raw };
   }
 
+  // Update the existing block. Strategy: replace the content of the remnic:
+  // section by matching from `^remnic:` to the next top-level key or end-of-file.
+  // We rewrite only the host/port/token sub-keys inside the block; other keys
+  // under remnic: (e.g. session_key, timeout) are preserved.
   //
+  // Trailing-newline handling: split("\n") on a file that ends with "\n" produces
+  // a final empty-string element. If that element is still inside the remnic block
+  // when we hit it, it gets pushed to newLines via the else branch — placing a
+  // blank line between existing sub-keys and any newly-appended missing sub-keys.
+  // We strip the trailing empty element before the loop and re-add a single "\n"
+  // at write time, normalising the file to always end with exactly one newline.
   const splitLines = raw.split("\n");
+  // Remove trailing empty element produced by a file that ends with "\n"
   if (splitLines.length > 0 && splitLines[splitLines.length - 1] === "") {
     splitLines.pop();
   }
@@ -2506,6 +3067,7 @@ function upsertHermesConfigAt(
   let inRemnicBlock = false;
   let blockWritten = false;
 
+  // Track which sub-keys we've emitted
   const written = { host: false, port: false, token: false, allowInsecureHttp: false };
 
   for (let i = 0; i < lines.length; i++) {
@@ -2518,7 +3080,11 @@ function upsertHermesConfigAt(
     }
 
     if (inRemnicBlock) {
+      // A line that starts with a non-space character and is not empty signals
+      // the start of the next top-level YAML key — we've left the remnic block.
       if (line.length > 0 && !/^\s/.test(line)) {
+        // Emit any un-written keys before closing the block. Uses the
+        // already-validated safeHost/safePort values.
         if (!written.host) newLines.push(`  host: "${safeHost}"`);
         if (!written.port) newLines.push(`  port: ${safePort}`);
         if (!written.token) newLines.push(`  token: "${opts.token}"`);
@@ -2529,6 +3095,7 @@ function upsertHermesConfigAt(
         continue;
       }
 
+      // Replace managed transport fields and preserve other sub-keys.
       if (/^\s+host:/.test(line)) {
         newLines.push(`  host: "${safeHost}"`);
         written.host = true;
@@ -2551,12 +3118,14 @@ function upsertHermesConfigAt(
   }
 
   if (inRemnicBlock && !blockWritten) {
+    // File ended while still inside the remnic block
     if (!written.host) newLines.push(`  host: "${safeHost}"`);
     if (!written.port) newLines.push(`  port: ${safePort}`);
     if (!written.token) newLines.push(`  token: "${opts.token}"`);
     if (!written.allowInsecureHttp) newLines.push(`  allow_insecure_http: ${allowInsecureHttp}`);
   }
 
+  // Always write exactly one trailing newline, matching the create and append paths.
   writeSecretFileSync(cfgPath, newLines.join("\n") + "\n");
   // priorContent: raw is the original file content for rollback if needed.
   return { updated: true, skipped: false, configPath: cfgPath, priorContent: raw };
@@ -2576,6 +3145,10 @@ export function removeHermesConfig(opts: {
   profile: string;
   extraConfigPaths?: readonly string[];
 }): HermesConfigResult {
+  // Environment-resolved candidates can fail (e.g. HERMES_HOME points at a
+  // regular file at remove time). That must not abort cleanup of the VALID
+  // persisted install-time path — seed from whatever resolves and continue
+  // (Codex P2 on PR #1938, round 8).
   let envCfgPaths: string[];
   let envResolutionError: string | null = null;
   try {
@@ -2584,6 +3157,11 @@ export function removeHermesConfig(opts: {
     envCfgPaths = [];
     envResolutionError = err instanceof Error ? err.message : String(err);
   }
+  // De-duplicate ALL candidates by resolved file identity, not string
+  // equality: in the legacy layout profiles/default/config.yaml is commonly a
+  // SYMLINK to the root config.yaml — cleaning the real file and then hitting
+  // the symlinked alias would trip the component guard and report a phantom
+  // partial failure (Bugbot on PR #1938, round 21).
   const cfgPaths: string[] = [];
   for (const candidate of envCfgPaths) {
     if (!cfgPaths.some((existing) => sameHermesConfigTarget(existing, candidate))) {
@@ -2660,6 +3238,12 @@ export function removeHermesConfig(opts: {
 }
 
 function removeHermesConfigFile(cfgPath: string): HermesConfigResult {
+  // Symlinked components below the Hermes root must not redirect the cleanup
+  // rewrite (Codex P1 on PR #1938, round 19). A symlinked candidate is either
+  // an alias of another candidate (already de-duplicated by file identity) or
+  // a redirect we refuse to follow — report it as SKIPPED, not as a cleanup
+  // failure, so it cannot manufacture a phantom partial-failure abort
+  // (Bugbot on PR #1938, round 21).
   try {
     assertConfigComponentsNotSymlinked(cfgPath);
   } catch (err) {
@@ -2689,6 +3273,7 @@ function removeHermesConfigFile(cfgPath: string): HermesConfigResult {
     };
   }
 
+  // Strip the remnic: block and its indented children
   const lines = raw.split("\n");
   const newLines: string[] = [];
   let inRemnicBlock = false;
@@ -2703,19 +3288,26 @@ function removeHermesConfigFile(cfgPath: string): HermesConfigResult {
         inRemnicBlock = false;
         newLines.push(line);
       }
+      // else: still in the block — skip the line
       continue;
     }
     newLines.push(line);
   }
 
+  // Trim trailing blank lines left behind after the block removal
   while (newLines.length > 0 && newLines[newLines.length - 1]?.trim() === "") {
     newLines.pop();
   }
 
+  // Use writeSecretFileSync to keep the file at 0o600 even after the token
+  // has been removed. The file previously held a bearer token (so it was
+  // written with 0o600 originally); preserving that mode prevents a window
+  // where a rewrite with default umask temporarily widens permissions.
   writeSecretFileSync(cfgPath, newLines.length > 0 ? newLines.join("\n") + "\n" : "");
   return { updated: true, skipped: false, configPath: cfgPath };
 }
 
+// ── Doctor ────────────────────────────────────────────────────────────────────
 
 export async function doctorConnector(connectorId: string): Promise<DoctorResult> {
   const installed = listConnectors().installed;
@@ -2732,12 +3324,14 @@ export async function doctorConnector(connectorId: string): Promise<DoctorResult
   const configPath = path.join(getConnectorsDir(), `${connectorId}.json`);
   const checks: DoctorCheck[] = [];
 
+  // Check config exists
   checks.push({
     name: "Config file",
     ok: fs.existsSync(configPath),
     detail: configPath,
   });
 
+  // Check config is valid JSON
   try {
     const raw = fs.readFileSync(configPath, "utf8");
     JSON.parse(raw);
@@ -2746,6 +3340,7 @@ export async function doctorConnector(connectorId: string): Promise<DoctorResult
     checks.push({ name: "Config valid", ok: false, detail: String(e) });
   }
 
+  // Check MCP server reachable (if applicable)
   const mcpUrl = instance.config.mcpServerUrl as string | undefined;
   if (mcpUrl) {
     try {
@@ -2763,6 +3358,7 @@ export async function doctorConnector(connectorId: string): Promise<DoctorResult
     }
   }
 
+  // Check memory dir (if applicable)
   const memoryDir = instance.config.memoryDir as string | undefined;
   if (memoryDir) {
     if (fs.existsSync(memoryDir)) {
@@ -2772,6 +3368,7 @@ export async function doctorConnector(connectorId: string): Promise<DoctorResult
     }
   }
 
+  // Droid-specific: check ~/.factory/mcp.json has the remnic entry
   if (connectorId === "droid") {
     checks.push(droidMcpDoctorCheckImpl(instance.config.factoryMcpPath as string | undefined));
   }
@@ -2780,6 +3377,7 @@ export async function doctorConnector(connectorId: string): Promise<DoctorResult
   return { connectorId, checks, healthy };
 }
 
+// ── Codex memory extension install ────────────────────────────────────────
 
 /**
  * Name of the Codex memories folder. Matches Codex's
@@ -2882,6 +3480,7 @@ export function resolveCodexMemoryExtensionPaths(
 ): CodexMemoryExtensionPaths {
   const codexHome = resolveCodexHome(codexHomeOverride);
   const memoriesDir = path.join(codexHome, CODEX_MEMORIES_SUBDIR);
+  // Sibling computation: with_file_name(EXTENSIONS_SUBDIR)
   const extensionsRoot = path.join(path.dirname(memoriesDir), CODEX_EXTENSIONS_SUBDIR);
   const remnicExtensionDir = path.join(extensionsRoot, REMNIC_EXTENSION_DIR_NAME);
   return { codexHome, memoriesDir, extensionsRoot, remnicExtensionDir };
@@ -2930,13 +3529,16 @@ export function locatePluginCodexExtensionSource(override?: string | null): stri
   try {
     const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+    // Candidate 1: adjacent codex/ (tsx/ts-node from src/connectors/)
     const bundledCandidate = path.join(moduleDir, "codex");
     searched.push(bundledCandidate);
     if (fs.existsSync(bundledCandidate) && fs.statSync(bundledCandidate).isDirectory()) {
       return bundledCandidate;
     }
 
+    // Candidate 2: dist/connectors/codex/ — the tsup output path.
     // When this module is bundled into dist/index.js or dist/chunk-*.js,
+    // moduleDir is dist/ and tsup copies the payload to dist/connectors/codex/.
     const distConnectorsCandidate = path.join(moduleDir, "connectors", "codex");
     searched.push(distConnectorsCandidate);
     if (
@@ -2949,6 +3551,9 @@ export function locatePluginCodexExtensionSource(override?: string | null): stri
     // import.meta.url unavailable — not running as ESM, skip bundled path.
   }
 
+  // Finding 2 — path 1: resolve via `@remnic/plugin-codex` package.json.
+  // This covers global `npm install -g @remnic/remnic-core` or pnpm global installs
+  // where the package lives under the global node_modules tree.
   try {
     const requireFromHere = createRequire(import.meta.url);
     const pluginPkgJsonPath = requireFromHere.resolve("@remnic/plugin-codex/package.json");
@@ -2962,6 +3567,10 @@ export function locatePluginCodexExtensionSource(override?: string | null): stri
     // @remnic/plugin-codex not installed — fall through to next strategy.
   }
 
+  // Finding 2 — path 2: sibling node_modules under the module's own directory.
+  // Handles cases like:
+  //   .../node_modules/@remnic/remnic-core/src/connectors/index.js
+  //   .../node_modules/@remnic/plugin-codex/memories_extensions/remnic
   try {
     const moduleDir = path.dirname(fileURLToPath(import.meta.url));
     let dir = moduleDir;
@@ -2985,6 +3594,8 @@ export function locatePluginCodexExtensionSource(override?: string | null): stri
     // import.meta.url unavailable — not running as ESM.
   }
 
+  // Finding 2 — path 3 & 4: walk upward from this file's location and from
+  // process.cwd() looking for the monorepo layout (`packages/plugin-codex/…`).
   const anchors: string[] = [];
   try {
     anchors.push(path.dirname(fileURLToPath(import.meta.url)));
@@ -3015,6 +3626,7 @@ export function locatePluginCodexExtensionSource(override?: string | null): stri
   );
 }
 
+/** Recursive synchronous directory copy. */
 function copyDirRecursiveSync(src: string, dest: string): number {
   let count = 0;
   fs.mkdirSync(dest, { recursive: true });
@@ -3051,7 +3663,15 @@ export function installCodexMemoryExtension(
 
   fs.mkdirSync(paths.extensionsRoot, { recursive: true });
 
+  // Clean any stale tmp from a previous crashed run by scanning the
+  // extensions root for any `.remnic.tmp-*` prefixed entry. We must do this
+  // BEFORE creating the new tmp directory. Per-entry errors are swallowed so
+  // one bad entry doesn't abort cleanup of the rest.
   //
+  // Finding 2: only remove tmp dirs that are provably stale (older than
+  // STALE_TMP_THRESHOLD_MS). Dirs younger than the threshold belong to a
+  // concurrent install that is still in progress; deleting them would corrupt
+  // the other process's atomic rename.
   const tmpPrefix = `.${REMNIC_EXTENSION_DIR_NAME}.tmp-`;
   const STALE_TMP_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
   const now = Date.now();
@@ -3064,6 +3684,7 @@ export function installCodexMemoryExtension(
         const stat = fs.statSync(stalePath);
         const ageMs = now - stat.mtimeMs;
         if (ageMs < STALE_TMP_THRESHOLD_MS) {
+          // Too recent — leave it alone; another install is likely still running.
           continue;
         }
         fs.rmSync(stalePath, { recursive: true, force: true });
@@ -3084,6 +3705,9 @@ export function installCodexMemoryExtension(
   try {
     filesCopied = copyDirRecursiveSync(sourceDir, tmpDir);
 
+    // Atomic replace: rename old remnic/ to a timestamped backup, then rename
+    // the tmp dir into place.  If the second rename fails, restore from backup
+    // so the old extension is never permanently lost.
     const backupDir = `${paths.remnicExtensionDir}.bak-${Date.now()}`;
     const hadExisting = fs.existsSync(paths.remnicExtensionDir);
     if (hadExisting) {
@@ -3092,6 +3716,7 @@ export function installCodexMemoryExtension(
     try {
       fs.renameSync(tmpDir, paths.remnicExtensionDir);
     } catch (renameErr) {
+      // New rename failed — restore backup so the old extension survives.
       if (hadExisting) {
         try {
           fs.renameSync(backupDir, paths.remnicExtensionDir);
@@ -3101,6 +3726,9 @@ export function installCodexMemoryExtension(
       }
       throw renameErr;
     }
+    // The new extension is in place. We intentionally keep the backup alive
+    // until the caller calls commit(). This gives the caller a chance to roll
+    // back to the prior state if a subsequent operation (e.g. config write) fails.
     //
     // commit() — remove the backup (called on success)
     // rollback() — restore the prior extension from backup, or remove the newly
@@ -3116,7 +3744,9 @@ export function installCodexMemoryExtension(
     };
     rollbackFn = (): void => {
       if (hadExisting) {
+        // Restore the prior extension from backup.
         try {
+          // Remove the newly-installed dir first so rename can succeed.
           if (fs.existsSync(paths.remnicExtensionDir)) {
             fs.rmSync(paths.remnicExtensionDir, { recursive: true, force: true });
           }
@@ -3125,6 +3755,7 @@ export function installCodexMemoryExtension(
           // swallow — best-effort restore; backup remains on disk
         }
       } else {
+        // Fresh install — just remove the directory we created.
         try {
           if (fs.existsSync(paths.remnicExtensionDir)) {
             fs.rmSync(paths.remnicExtensionDir, { recursive: true, force: true });
@@ -3135,6 +3766,7 @@ export function installCodexMemoryExtension(
       }
     };
   } catch (err) {
+    // Best-effort cleanup so we never leave .tmp garbage behind.
     if (fs.existsSync(tmpDir)) {
       try {
         fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -3172,9 +3804,17 @@ export function removeCodexMemoryExtension(
   return { ...paths, removed };
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+// ── WeClone proxy config helpers ───────────────────────────────────────────
 //
+// The standalone `remnic-weclone-proxy` CLI reads its config from
+// ~/.remnic/connectors/weclone.json by default. `remnic connectors install
+// weclone` composes and persists that file so the proxy can start without
+// additional setup. The file is also tracked by the connector registry (at
+// getConnectorsDir()/weclone.json) so `remnic connectors list/remove/doctor`
+// work uniformly across all connectors.
 
 const WECLONE_PROXY_CONFIG_DIRNAME = ".remnic";
 const WECLONE_PROXY_CONFIG_FILENAME = "weclone.json";
@@ -3374,9 +4014,14 @@ export function buildWeCloneProxyConfig(args: {
   const sessionStrategy = resolveSessionStrategy(userConfig, priorConfig);
 
   // Memory injection: always start from defaults, then shallow-merge any
+  // prior values, then user overrides. Individual field validation happens in
+  // the proxy's parseConfig() at proxy startup — here we only assemble a
+  // best-effort shape. A malformed user override would be rejected later with
+  // a clean error message.
   //
   // `typeof [] === "object"` so a bare `typeof ... === "object" && ... !==
   // null` guard would let an array spread numeric-indexed properties into
+  // the merged object, silently corrupting it. Explicitly reject arrays.
   const memoryInjection = {
     ...WECLONE_DEFAULTS.memoryInjection,
     ...(priorConfig &&
@@ -3401,6 +4046,9 @@ export function buildWeCloneProxyConfig(args: {
     memoryInjection,
   };
 
+  // Token precedence: freshly minted token → user-supplied → prior saved.
+  // Never write a token if none is available — the proxy tolerates missing
+  // tokens (it just won't send Authorization headers to the daemon).
   if (authToken && authToken.length > 0) {
     config.remnicAuthToken = authToken;
   } else if (typeof userConfig.remnicAuthToken === "string" && userConfig.remnicAuthToken.length > 0) {
