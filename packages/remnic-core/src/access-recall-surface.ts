@@ -1100,10 +1100,8 @@ export class AccessRecallSurface {
         },
       );
       recallStartedAt = capturedRecallStartedAt;
-      // Cancellation covers queueing + recall/capture AND post-capture
-      // shaping: a check sits at each mid-I/O boundary below so a cancel
-      // that lands between steps stops the pipeline rather than running
-      // shaping to completion (issue #3547).
+      // Cancellation covers queueing, capture, and post-capture shaping:
+      // a check sits at each mid-I/O boundary below (issue #3547).
       throwIfAborted(request.abortSignal, "recall X-ray aborted before postprocessing");
       // Re-check namespace after capture: the recall may have served
       // from a different namespace than the caller requested.  Drop
