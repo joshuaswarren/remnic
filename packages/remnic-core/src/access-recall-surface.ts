@@ -1276,10 +1276,10 @@ export class AccessRecallSurface {
               }
             }),
           );
+          throwIfAborted(request.abortSignal, "recall X-ray aborted during result reads");
           const firstReadableIndex = memoryByIndex.findIndex((m) => m !== null);
           const baseDir =
             (await this.deps.orchestrator.getStorage(namespace)).dir;
-          throwIfAborted(request.abortSignal, "recall X-ray aborted during result decoration");
           const decorated = snapshot.results.map((result, index) => {
             const memory = memoryByIndex[index];
             if (!memory) {
@@ -1384,28 +1384,27 @@ export class AccessRecallSurface {
             )
           : undefined;
       throwIfAborted(request.abortSignal, "recall X-ray aborted before recall response build");
-      return {
-        ...xrayResponse,
-        recall: await this.deps.buildRecallResponseFromXraySnapshot({
-          query,
-          sessionKey: recallSessionKey,
-          snapshot: xrayResponse.snapshot,
-          disclosure,
-          startedAt: recallStartedAt,
-          requestedMode: request.mode,
-          normalizedMode: mode,
-          storageCorpusVersionsAtRecallStart,
-          ...(xrayRawExcerptNamespace
-            ? { rawExcerptNamespace: xrayRawExcerptNamespace }
-            : {}),
-          ...(xrayRawExcerptSessionIds !== undefined
-            ? { rawExcerptSessionIds: xrayRawExcerptSessionIds }
-            : {}),
-          ...(xrayRawExcerptsSuppressed
-            ? { rawExcerptsSuppressed: xrayRawExcerptsSuppressed }
-            : {}),
-        }),
-      };
+      const recallResponse = await this.deps.buildRecallResponseFromXraySnapshot({
+        query,
+        sessionKey: recallSessionKey,
+        snapshot: xrayResponse.snapshot,
+        disclosure,
+        startedAt: recallStartedAt,
+        requestedMode: request.mode,
+        normalizedMode: mode,
+        storageCorpusVersionsAtRecallStart,
+        ...(xrayRawExcerptNamespace
+          ? { rawExcerptNamespace: xrayRawExcerptNamespace }
+          : {}),
+        ...(xrayRawExcerptSessionIds !== undefined
+          ? { rawExcerptSessionIds: xrayRawExcerptSessionIds }
+          : {}),
+        ...(xrayRawExcerptsSuppressed
+          ? { rawExcerptsSuppressed: xrayRawExcerptsSuppressed }
+          : {}),
+      });
+      throwIfAborted(request.abortSignal, "recall X-ray aborted after recall response build");
+      return { ...xrayResponse, recall: recallResponse };
     }
     return xrayResponse;
   }
