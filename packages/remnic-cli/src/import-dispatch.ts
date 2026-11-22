@@ -347,12 +347,32 @@ async function readChatGPTExportZip(file: string, io: ImportDispatchIO): Promise
     } catch (err) {
       throw new Error(`'${name}' in '${file}' is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
     }
-    bundle[key] = value;
+    mergeChatGPTZipSection(bundle, key, value);
   }
   if (Object.keys(bundle).length === 0) {
     throw new Error(`'${file}' holds none of ${[...CHATGPT_ZIP_KEYS.keys()].join(", ")}; is it a ChatGPT data export?`);
   }
   return bundle;
+}
+
+/**
+ * An export file can hold its section directly (memory.json as an array) or
+ * wrapped in an object with the same keys the parser reads ({"memory": [...]}).
+ * Wrapped sections merge in; a bare value lands under the file's own key.
+ */
+function mergeChatGPTZipSection(bundle: ChatGPTZipBundle, key: ChatGPTZipKey, value: ExportJson): void {
+  if (key === "user" || !(value instanceof Object) || Array.isArray(value)) {
+    bundle[key] = value;
+    return;
+  }
+  let merged = false;
+  for (const section of CHATGPT_ZIP_KEYS.values()) {
+    if (section in value) {
+      bundle[section] = value[section];
+      merged = true;
+    }
+  }
+  if (!merged) bundle[key] = value;
 }
 
 function isZipFilePath(filePath: string): boolean {

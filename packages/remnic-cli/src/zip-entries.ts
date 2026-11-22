@@ -13,7 +13,7 @@ export function readZipEntries(bytes: Uint8Array, want: (name: string) => boolea
   const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let end = -1;
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 0xffff); i--) {
-    if (buf.readUInt32LE(i) === EOCD) {
+    if (buf.readUInt32LE(i) === EOCD && i + 22 + buf.readUInt16LE(i + 20) === buf.length) {
       end = i;
       break;
     }
@@ -50,7 +50,16 @@ export function readZipEntries(bytes: Uint8Array, want: (name: string) => boolea
     const body = buf.subarray(start, start + packed);
     let data: Buffer;
     if (method === 0) data = Buffer.from(body);
-    else if (method === 8) data = inflateRawSync(body);
+    else if (method === 8) {
+      try {
+        data = inflateRawSync(body, { maxOutputLength: Math.max(size, 1) });
+      } catch (err) {
+        if (err instanceof Error && "code" in err && err.code === "ERR_BUFFER_TOO_LARGE") {
+          throw new Error(`ZIP entry '${name}' inflates past its declared size`);
+        }
+        throw err;
+      }
+    }
     else throw new Error(`ZIP entry '${name}' uses compression method ${method}; only stored and deflate are supported`);
     if (data.length !== size || (crc32(data) >>> 0) !== crc) throw new Error(`ZIP entry '${name}' failed its CRC check`);
     out.set(name, data);
