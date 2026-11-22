@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 // #1541: capability probe for the SOTA verifier test — pin published
 // provenance, skip locally with reason when the working tree is dirty.
 import { skipUnlessCleanWorkingTree } from "./helpers/capability-probe.mjs";
+import { fixtureGitEnv } from "./helpers/fixture-git.mjs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawnSync } from "node:child_process";
@@ -3036,6 +3037,7 @@ async function initCleanGitRepo(repoDir: string): Promise<void> {
 function runGit(repoDir: string, args: string[]): void {
   const result = spawnSync("git", ["-C", repoDir, ...args], {
     encoding: "utf8",
+    env: fixtureGitEnv(),
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
 }
@@ -3043,6 +3045,7 @@ function runGit(repoDir: string, args: string[]): void {
 function gitOutput(repoDir: string, args: string[]): string {
   const result = spawnSync("git", ["-C", repoDir, ...args], {
     encoding: "utf8",
+    env: fixtureGitEnv(),
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return result.stdout.trim();

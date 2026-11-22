@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { byteLineStarts, parseHunkAddedLines, parseOxlintJson, spanLines } from "./check-anti-slop.mjs";
+import { fixtureGitEnv } from "../tests/helpers/fixture-git.mjs";
 
 const WORKTREE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const RUNNER = fileURLToPath(new URL("./check-anti-slop.mjs", import.meta.url));
@@ -14,9 +15,9 @@ const RUNNER = fileURLToPath(new URL("./check-anti-slop.mjs", import.meta.url));
 // Fixture commits inherit the repository's configured identity; invented
 // synthetic identities are rejected by the host guard.
 function repoGitIdentity(key, format) {
-  let result = spawnSync("git", ["-C", WORKTREE_ROOT, "config", key], { encoding: "utf8" });
+  let result = spawnSync("git", ["-C", WORKTREE_ROOT, "config", key], { encoding: "utf8", env: fixtureGitEnv() });
   if (result.status !== 0 || !result.stdout.trim()) {
-    result = spawnSync("git", ["-C", WORKTREE_ROOT, "log", "-1", `--format=${format}`], { encoding: "utf8" });
+    result = spawnSync("git", ["-C", WORKTREE_ROOT, "log", "-1", `--format=${format}`], { encoding: "utf8", env: fixtureGitEnv() });
   }
   assert.equal(result.status, 0, `could not resolve fixture identity: ${key}`);
   return result.stdout.trim();
@@ -30,7 +31,7 @@ const MULTI_LINE_VIOLATION = "export type Wide =\n  | string\n  | unknown;\n";
 const CLEAN_SOURCE = "export const ready = true;\n";
 
 function git(root, args) {
-  const result = spawnSync("git", ["-C", root, ...GIT_IDENTITY, ...args], { encoding: "utf8" });
+  const result = spawnSync("git", ["-C", root, ...GIT_IDENTITY, ...args], { encoding: "utf8", env: fixtureGitEnv() });
   assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
   return result.stdout;
 }

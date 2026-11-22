@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { parseArgs } from "./bump-changed-packages.mjs";
+import { fixtureGitEnv } from "../tests/helpers/fixture-git.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const scriptPath = path.join(here, "bump-changed-packages.mjs");
@@ -15,6 +16,7 @@ function run(cwd, command, args) {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: fixtureGitEnv(),
   }).trim();
 }
 

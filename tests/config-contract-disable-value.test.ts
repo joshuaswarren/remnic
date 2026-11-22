@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { fixtureGitEnv } from "./helpers/fixture-git.mjs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -425,7 +426,7 @@ test("runDisableValueCheck fails closed when the shrink-only baseline cannot be 
   // open (never silently skip the ban), matching the v2 contract checker.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-disable-value-failclosed-"));
   try {
-    const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args], { stdio: ["ignore", "pipe", "ignore"] });
+    const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args], { stdio: ["ignore", "pipe", "ignore"], env: fixtureGitEnv() });
     git("init", "-q");
     git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "init");
     const grandfatherPath = path.join(dir, "gf.json");
