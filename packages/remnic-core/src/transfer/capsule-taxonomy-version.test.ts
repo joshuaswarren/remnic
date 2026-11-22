@@ -60,7 +60,7 @@ test("export refuses an unknown schemaVersion override", async () => {
       outDir,
       pluginVersion: "0.0.0-test",
       now: 1_700_000_000_000,
-      capsule: { schemaVersion: "taxonomy-v9" },
+      capsule: { schemaVersion: "taxonomy-v9" as "taxonomy-v1" },
     }),
     /taxonomy-v1/,
   );
