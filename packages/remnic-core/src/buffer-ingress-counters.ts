@@ -244,22 +244,14 @@ export class BufferIngressCounters {
   private memoFor(entry: BufferEntryState): EntryDigestMemo {
     const retained = entry.retainedTurns;
     const memo = this.memos.get(entry);
-    // --- Fix 3: bound the rebuild to the digest cap. A restored entry can
-    // hold more unique turns than DUPLICATE_DIGEST_CAP; inserting all of them
-    // would leave the set permanently above the cap (later appends evict one
-    // each). Keep the most recent turns, matching the FIFO order of the
-    // steady-state path, so recognition degrades to "not a duplicate".
-    // Distinguish "built with no retained array" (retainedRef undefined) from
-    // "built with one that was since collected" (deref undefined but the entry
-    // still has none... no: if the entry has none NOW and the memo was built
-    // with one, the entry changed shape -> rebuild). Reuse only when both sides
-    // agree on presence AND identity.
+    // Rebuild bound to the digest cap: a restored entry can hold more unique
+    // turns than DUPLICATE_DIGEST_CAP, so keep the most recent turns (FIFO
+    // order, matching the steady-state path) — inserting all of them would
+    // leave the set permanently above the cap.
     // Reuse only when both sides agree on presence AND identity: a memo built
-    // with a retained array that the buffer later deleted (entry.retainedTurns
-    // now undefined) must rebuild, and a collected WeakRef must never read as
-    // "absent" (that would reuse a memo whose digests still include removed
-    // content). Any memo built with a retained array therefore requires a
-    // live identical array now; a memo built without one requires none now.
+    // with a retained array requires a live identical array now (a collected
+    // WeakRef must never read as "absent"); a memo built without one requires
+    // none now.
     const retainedMatch =
       memo?.retainedRef === undefined
         ? memo !== undefined && retained === undefined
