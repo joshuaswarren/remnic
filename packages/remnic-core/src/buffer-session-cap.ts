@@ -8,7 +8,8 @@ import type { BufferEntryState, BufferTurn } from "./types.js";
 // captures in one outage) pushed live lanes past the cap within hours of the
 // wedge starting; every later capture was refused and queued client-side.
 // The cap is a memory backstop, not a policy: hosts tune it with
-// bufferMaxTurnsPerSession.
+// bufferMaxTurnsPerSession. Refusals queue in the client's durable outbox,
+// which spills to disk rather than evicting.
 export const FALLBACK_MAX_TURNS_PER_SESSION = 2000;
 
 export function resolveMaxTurnsPerSession(configured: number | undefined): number {

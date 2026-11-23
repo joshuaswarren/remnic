@@ -113,9 +113,10 @@ export const DEFAULT_CONFIG: RemnicPiConfig = {
   observeMaxBytes: 102400,
   observeMaxRetries: 2,
   // Durable outbox capacity: the daemon refuses captures while its extraction
-  // buffer is full, and every refusal queues here. 200 was small enough that
-  // a slow or restarting daemon lost a lane's oldest captures (issue: fleet
-  // capture loss, 2026-11-22).
+  // buffer is full, and every refusal queues here. The outbox never evicts:
+  // entries beyond the bound spill to disk segments, and the only loss path
+  // is an enqueue throw when a spill write fails. 200 spilled too early
+  // during the 2026-11-22 fleet outage; 5000 keeps the hot file small.
   observeOutboxMaxEntries: 5000,
   // Base cooldown for the circuit breaker; doubles on consecutive failures (#1626).
   daemonCooldownMs: 5000,
