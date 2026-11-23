@@ -64,6 +64,13 @@ export interface RemnicPiConfig {
    */
   observeOutboxPath?: string;
   /**
+   * The durable observe outbox's in-memory spill threshold: entries beyond
+   * this bound spill to disk segments, so raising it delays the spill rather
+   * than increasing total retention. Size it for memory and disk alike; the
+   * default 5000 rides out a long daemon outage without spilling early.
+   */
+  observeOutboxMaxEntries?: number;
+  /**
    * Cooldown base for the daemon-reachability circuit breaker. When observe/
    * recall fails on a timeout or connection error, subsequent turns skip fast
    * for an exponentially growing window starting at this value (issue #1626).
@@ -105,6 +112,12 @@ export const DEFAULT_CONFIG: RemnicPiConfig = {
   // Default 100 KiB leaves headroom under the daemon's 128 KiB default (#1600).
   observeMaxBytes: 102400,
   observeMaxRetries: 2,
+  // Durable outbox capacity: the daemon refuses captures while its extraction
+  // buffer is full, and every refusal queues here. The outbox never evicts:
+  // entries beyond the bound spill to disk segments, and the only loss path
+  // is an enqueue throw when a spill write fails. 200 spilled too early
+  // during the 2026-11-22 fleet outage; 5000 keeps the hot file small.
+  observeOutboxMaxEntries: 5000,
   // Base cooldown for the circuit breaker; doubles on consecutive failures (#1626).
   daemonCooldownMs: 5000,
   // Recall-timeout circuit breaker: 7 timeouts in the last 10 recall calls pause recall for a 5 minute cooldown.
@@ -389,6 +402,12 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     ),
     observeMaxRetries: coerceNonNegativeInt(fileConfig.observeMaxRetries, DEFAULT_CONFIG.observeMaxRetries, 5, "observeMaxRetries"),
     observeOutboxPath: coerceOptionalString(fileConfig.observeOutboxPath, "observeOutboxPath"),
+    observeOutboxMaxEntries: coercePositiveInt(
+      fileConfig.observeOutboxMaxEntries,
+      DEFAULT_CONFIG.observeOutboxMaxEntries ?? 5000,
+      100_000,
+      "observeOutboxMaxEntries",
+    ),
     daemonCooldownMs: coercePositiveInt(fileConfig.daemonCooldownMs, DEFAULT_CONFIG.daemonCooldownMs, 60_000, "daemonCooldownMs"),
     recallTimeoutThreshold,
     recallTimeoutWindow,
