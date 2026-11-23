@@ -64,11 +64,10 @@ export interface RemnicPiConfig {
    */
   observeOutboxPath?: string;
   /**
-   * Maximum number of captures the durable observe outbox holds before it
-   * evicts the oldest. The daemon can refuse captures while its extraction
-   * buffer is at capacity, so this bound is the last line of defence against
-   * losing a lane's turns. Raise it when the daemon is slow or restarting;
-   * the default stays low enough to catch a wedged outbox.
+   * The durable observe outbox's in-memory spill threshold: entries beyond
+   * this bound spill to disk segments, so raising it delays the spill rather
+   * than increasing total retention. Size it for memory and disk alike; the
+   * default 5000 rides out a long daemon outage without spilling early.
    */
   observeOutboxMaxEntries?: number;
   /**
