@@ -114,7 +114,7 @@ export function buildCodingGraphInstallHint(): string {
     "  npm install @remnic/coding-graph\n" +
     "\n" +
     "Or add it to a project (pnpm / yarn):\n" +
-    "  pnpm add @remnic/coding-graph\n" +
+    "  pnpm add @remnic/coding-graph@alpha\n" +
     "  yarn add @remnic/coding-graph\n"
   );
 }

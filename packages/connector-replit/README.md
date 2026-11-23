@@ -7,7 +7,7 @@ Replit Agent has no plugin system, so it can't install a Remnic hook like Claude
 ## Install
 
 ```bash
-pnpm add @remnic/replit
+pnpm add @remnic/replit@alpha
 # or: npm i @remnic/replit
 ```
 

@@ -70,7 +70,7 @@ export async function loadImportLosslessClawModule(): Promise<ImportLosslessClaw
         "  npm install -g @remnic/import-lossless-claw\n" +
         "\n" +
         "Or add it to a project:\n" +
-        "  pnpm add @remnic/import-lossless-claw\n",
+        "  pnpm add @remnic/import-lossless-claw@alpha\n",
     );
   }
   return cached;

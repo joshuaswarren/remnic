@@ -17,7 +17,7 @@ If you use Remnic from a project instead of globally, add both packages to the
 same project:
 
 ```bash
-pnpm add @remnic/cli @remnic/import-supermemory
+pnpm add @remnic/cli@alpha @remnic/import-supermemory@alpha
 ```
 
 ## Export From Supermemory

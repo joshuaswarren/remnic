@@ -11,7 +11,7 @@ Benchmark suite and CI regression gates for [Remnic](https://github.com/joshuasw
 npm install -g @remnic/cli@alpha @remnic/bench@alpha
 
 # Or in a project that drives benchmarks programmatically:
-pnpm add @remnic/bench
+pnpm add @remnic/bench@alpha
 ```
 
 The CLI loads `@remnic/bench` via a computed-specifier dynamic import. If it's not installed, `remnic bench *` prints a clear install hint; the rest of the CLI keeps working.

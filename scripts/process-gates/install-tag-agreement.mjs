@@ -11,15 +11,15 @@
  *
  * Two modes:
  *   default (static) — every `@remnic/<pkg>` argument of an `npm install`
- *     command in the scanned docs must carry an explicit `@<tag>` or
- *     `@<version>`. Runs offline; wired into check-pre-push.
+ *     or `pnpm add` command in the scanned docs must carry an explicit
+ *     `@<tag>` or `@<version>`. Runs offline; wired into check-pre-push.
  *   --resolve        — additionally resolves each documented channel tag on
  *     npm (`npm view <pkg>@<tag>`) and fails when it does not match the
  *     major of that package's workspace version — i.e. the install docs
  *     would hand the user a different line than the one just published.
  *     Wired into release-and-publish.yml after publish.
  *
- * Scanning only counts real commands: `npm install`/`npm i` inside fenced
+ * Scanning only counts real commands: `npm install`/`npm i`/`pnpm add` inside fenced
  * code blocks or inline-code spans. Prose that merely mentions a bare
  * install (channel docs, checklists, templates) is not scanned — see
  * EXEMPT_FILES.
@@ -82,11 +82,11 @@ function* installCommands(markdown) {
     }
     if (inFence) {
       const cmd = line.replace(/^\s*(?:[$#>]\s*)?/, "");
-      if (/^npm\s+i(?:nstall)?\s/.test(cmd)) yield cmd;
+      if (/^(?:npm\s+i(?:nstall)?|pnpm\s+add)\s/.test(cmd)) yield cmd;
       continue;
     }
     for (const m of line.matchAll(/`([^`\n]+)`/g)) {
-      if (/^npm\s+i(?:nstall)?\s/.test(m[1])) yield m[1];
+      if (/^(?:npm\s+i(?:nstall)?|pnpm\s+add)\s/.test(m[1])) yield m[1];
     }
   }
 }
@@ -130,7 +130,7 @@ const specs = [...documentedSpecs(files)];
 
 const bare = specs.filter((s) => s.tag === null);
 if (bare.length > 0) {
-  console.error("[install-tag-agreement] FAIL — bare `npm install @remnic/<pkg>` resolves npm `latest`, which promotion can leave behind the published line. Name an explicit tag (`@alpha` while latest trails the line) or version:");
+  console.error("[install-tag-agreement] FAIL — bare `npm install`/`pnpm add` of `@remnic/<pkg>` resolves npm `latest`, which promotion can leave behind the published line. Name an explicit tag (`@alpha` while latest trails the line) or version:");
   for (const s of bare) console.error(`  ${s.file}: ${s.token}`);
   process.exit(1);
 }

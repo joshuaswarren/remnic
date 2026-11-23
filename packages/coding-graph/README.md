@@ -11,7 +11,7 @@ neutral `FileIR` intermediate representation that the graph store consumes.
 ```bash
 npm install @remnic/coding-graph@alpha
 # or
-pnpm add @remnic/coding-graph
+pnpm add @remnic/coding-graph@alpha
 ```
 
 ## What it provides

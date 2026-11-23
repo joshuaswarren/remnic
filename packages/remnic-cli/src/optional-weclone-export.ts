@@ -39,7 +39,7 @@ export async function loadWecloneExportModule(): Promise<WecloneExportModule> {
         "  npm install -g @remnic/export-weclone\n" +
         "\n" +
         "Or add it to a project:\n" +
-        "  pnpm add @remnic/export-weclone\n",
+        "  pnpm add @remnic/export-weclone@alpha\n",
     );
   }
   return cached;

@@ -141,7 +141,7 @@ export async function loadBenchModule(): Promise<BenchModule> {
         "  npm install -g @remnic/bench\n" +
         "\n" +
         "Or add it to a project:\n" +
-      "  pnpm add @remnic/bench\n",
+      "  pnpm add @remnic/bench@alpha\n",
     );
   }
   if (!cachedFromLocalWorkspaceBenchSource) {

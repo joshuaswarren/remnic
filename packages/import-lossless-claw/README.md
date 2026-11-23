@@ -18,7 +18,7 @@ see [`docs/lcm-to-remnic-migration.md`](../../docs/lcm-to-remnic-migration.md).
 ```bash
 npm install -g @remnic/import-lossless-claw@alpha
 # or
-pnpm add @remnic/import-lossless-claw
+pnpm add @remnic/import-lossless-claw@alpha
 ```
 
 The CLI command lives in `@remnic/cli`; this package is loaded lazily on
