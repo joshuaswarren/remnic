@@ -682,7 +682,7 @@
       },
       "bufferMaxTurnsPerSession": {
         "type": "number",
-        "default": 200,
+        "default": 2000,
         "description": "Retained turns admitted per session before live backpressure (#3415 bound)"
       },
       "extractionQueueConcurrency": {

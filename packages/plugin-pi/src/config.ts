@@ -402,7 +402,12 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     ),
     observeMaxRetries: coerceNonNegativeInt(fileConfig.observeMaxRetries, DEFAULT_CONFIG.observeMaxRetries, 5, "observeMaxRetries"),
     observeOutboxPath: coerceOptionalString(fileConfig.observeOutboxPath, "observeOutboxPath"),
-    observeOutboxMaxEntries: coercePositiveInt(fileConfig.observeOutboxMaxEntries, DEFAULT_CONFIG.observeOutboxMaxEntries, 100_000, "observeOutboxMaxEntries"),
+    observeOutboxMaxEntries: coercePositiveInt(
+      fileConfig.observeOutboxMaxEntries,
+      DEFAULT_CONFIG.observeOutboxMaxEntries ?? 5000,
+      100_000,
+      "observeOutboxMaxEntries",
+    ),
     daemonCooldownMs: coercePositiveInt(fileConfig.daemonCooldownMs, DEFAULT_CONFIG.daemonCooldownMs, 60_000, "daemonCooldownMs"),
     recallTimeoutThreshold,
     recallTimeoutWindow,
