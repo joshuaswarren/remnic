@@ -13,6 +13,7 @@ import {
   type RequestOptions,
 } from "./client.js";
 import { resolvePiAgentHome } from "./paths.js";
+import { newObserveOutbox } from "./observe-outbox-factory.js";
 import {
   boundedReplayMessages,
   hashObservedMessage,
@@ -155,10 +156,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
   // started by any session's successful contact replays every session's
   // queued captures in queue order.
   const observeOutbox = config.observeEnabled
-    ? new ObserveOutbox(
-      config.observeOutboxPath?.trim() || path.join(resolvePiAgentHome(process.env), "remnic", "observe-outbox.jsonl"),
-      { maxEntries: config.observeOutboxMaxEntries },
-    )
+    ? newObserveOutbox(config)
     : null;
   const sessionStates = new Map<string, PiSessionState>();
   const breakerKey = recallTimeoutBreakerCacheKey(config);

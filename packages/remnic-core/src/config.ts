@@ -1597,11 +1597,7 @@ export function parseConfig(
     // Per-session retained-turn cap (#3415 bound). Far above the extraction
     // trigger, so healthy sessions never touch it; a full session refuses live
     // capture (retryable) instead of growing without bound during an outage.
-    // The default is a memory backstop for a wedged extraction, not a policy
-    // knob: raise it per host with bufferMaxTurnsPerSession.
-    bufferMaxTurnsPerSession:
-      parsePositiveInteger(cfg.bufferMaxTurnsPerSession, "bufferMaxTurnsPerSession")
-      ?? FALLBACK_MAX_TURNS_PER_SESSION,
+    bufferMaxTurnsPerSession: parsePositiveInteger(cfg.bufferMaxTurnsPerSession, "bufferMaxTurnsPerSession") ?? FALLBACK_MAX_TURNS_PER_SESSION,
     extractionQueueConcurrency:
       parsePositiveInteger(cfg.extractionQueueConcurrency, "extractionQueueConcurrency") ?? 2,
     bufferMaxMinutes:
