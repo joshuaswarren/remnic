@@ -327,6 +327,33 @@ test("appendInteractionLog serializes concurrent appends to one peer — #3564",
   assert.ok(lines[1].includes("SMALL-END"));
 });
 
+test("appendInteractionLog keeps call order when concurrent callers reach the queue at different speeds — #3644", async () => {
+  // The queue slot must be taken before the directory awaits: a caller that
+  // finds the peer directory already created reaches the queue first, so a
+  // later caller could otherwise be written ahead of an earlier one.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const dir = await makeTempDir();
+    const peerId = "agent.codex";
+    const big = `BIG-${"x".repeat(4 << 20)}-BIG-END`;
+    const first = appendInteractionLog(dir, peerId, {
+      timestamp: "2026-04-25T00:00:01.000Z",
+      kind: "message",
+      summary: big,
+    });
+    const second = appendInteractionLog(dir, peerId, {
+      timestamp: "2026-04-25T00:00:02.000Z",
+      kind: "message",
+      summary: "SMALL-END",
+    });
+    await Promise.all([first, second]);
+    const raw = await readInteractionLogRaw(dir, peerId);
+    const lines = raw.trim().split("\n");
+    assert.equal(lines.length, 2, `attempt ${attempt}: expected 2 intact lines, got ${lines.length}`);
+    assert.ok(lines[0].includes("BIG-END"), `attempt ${attempt}: the earlier call's entry must be written first`);
+    assert.ok(lines[1].includes("SMALL-END"), `attempt ${attempt}: the later call's entry must be written second`);
+  }
+});
+
 test("appendInteractionLog escapes embedded newlines so each entry stays one line", async () => {
   const dir = await makeTempDir();
   const peerId = "human.alex";
