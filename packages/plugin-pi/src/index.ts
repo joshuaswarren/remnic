@@ -157,6 +157,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
   const observeOutbox = config.observeEnabled
     ? new ObserveOutbox(
       config.observeOutboxPath?.trim() || path.join(resolvePiAgentHome(process.env), "remnic", "observe-outbox.jsonl"),
+      { maxEntries: config.observeOutboxMaxEntries },
     )
     : null;
   const sessionStates = new Map<string, PiSessionState>();

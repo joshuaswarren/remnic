@@ -64,6 +64,14 @@ export interface RemnicPiConfig {
    */
   observeOutboxPath?: string;
   /**
+   * Maximum number of captures the durable observe outbox holds before it
+   * evicts the oldest. The daemon can refuse captures while its extraction
+   * buffer is at capacity, so this bound is the last line of defence against
+   * losing a lane's turns. Raise it when the daemon is slow or restarting;
+   * the default stays low enough to catch a wedged outbox.
+   */
+  observeOutboxMaxEntries?: number;
+  /**
    * Cooldown base for the daemon-reachability circuit breaker. When observe/
    * recall fails on a timeout or connection error, subsequent turns skip fast
    * for an exponentially growing window starting at this value (issue #1626).
@@ -105,6 +113,11 @@ export const DEFAULT_CONFIG: RemnicPiConfig = {
   // Default 100 KiB leaves headroom under the daemon's 128 KiB default (#1600).
   observeMaxBytes: 102400,
   observeMaxRetries: 2,
+  // Durable outbox capacity: the daemon refuses captures while its extraction
+  // buffer is full, and every refusal queues here. 200 was small enough that
+  // a slow or restarting daemon lost a lane's oldest captures (issue: fleet
+  // capture loss, 2026-11-22).
+  observeOutboxMaxEntries: 5000,
   // Base cooldown for the circuit breaker; doubles on consecutive failures (#1626).
   daemonCooldownMs: 5000,
   // Recall-timeout circuit breaker: 7 timeouts in the last 10 recall calls pause recall for a 5 minute cooldown.
@@ -389,6 +402,7 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     ),
     observeMaxRetries: coerceNonNegativeInt(fileConfig.observeMaxRetries, DEFAULT_CONFIG.observeMaxRetries, 5, "observeMaxRetries"),
     observeOutboxPath: coerceOptionalString(fileConfig.observeOutboxPath, "observeOutboxPath"),
+    observeOutboxMaxEntries: coercePositiveInt(fileConfig.observeOutboxMaxEntries, DEFAULT_CONFIG.observeOutboxMaxEntries, 100_000, "observeOutboxMaxEntries"),
     daemonCooldownMs: coercePositiveInt(fileConfig.daemonCooldownMs, DEFAULT_CONFIG.daemonCooldownMs, 60_000, "daemonCooldownMs"),
     recallTimeoutThreshold,
     recallTimeoutWindow,

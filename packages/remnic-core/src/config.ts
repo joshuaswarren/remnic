@@ -35,6 +35,7 @@ import { parseConvergeConfig } from "./converge-config.js";
 import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
 import { log } from "./logger.js";
 import { cloneDefaultSessionObserverBands } from "./session-observer-bands.js";
+import { FALLBACK_MAX_TURNS_PER_SESSION } from "./buffer-session-cap.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import { normalizeEntitySchemas } from "./entity-schema.js";
 import { expandTildePath } from "./utils/path.js";
@@ -1596,7 +1597,11 @@ export function parseConfig(
     // Per-session retained-turn cap (#3415 bound). Far above the extraction
     // trigger, so healthy sessions never touch it; a full session refuses live
     // capture (retryable) instead of growing without bound during an outage.
-    bufferMaxTurnsPerSession: parsePositiveInteger(cfg.bufferMaxTurnsPerSession, "bufferMaxTurnsPerSession") ?? 200,
+    // The default is a memory backstop for a wedged extraction, not a policy
+    // knob: raise it per host with bufferMaxTurnsPerSession.
+    bufferMaxTurnsPerSession:
+      parsePositiveInteger(cfg.bufferMaxTurnsPerSession, "bufferMaxTurnsPerSession")
+      ?? FALLBACK_MAX_TURNS_PER_SESSION,
     extractionQueueConcurrency:
       parsePositiveInteger(cfg.extractionQueueConcurrency, "extractionQueueConcurrency") ?? 2,
     bufferMaxMinutes:
