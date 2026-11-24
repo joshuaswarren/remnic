@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   BUFFER_ADMISSION_IDEMPOTENCY_CAP,
+  hasBufferedAdmissionIdempotencyKey,
   recordBufferedAdmissionIdempotencyKey,
   scopeObserveBufferAdmissionIdempotencyKey,
 } from "./buffer-admission-idempotency.js";
@@ -294,4 +295,19 @@ test("#3368 admission idempotency is not persisted while a session write is defe
   assert.equal(storage.writes.get("big"), 1, "large session rewrite deferred");
   assert.equal(storage.admissionPersistSaves, 0, "idempotency must not land ahead of deferred turns");
   assert.equal(persistence.hasPending(), true);
+});
+
+test("observe idempotency ring retains keys past the old 512-entry bound", () => {
+  const state: BufferState = {
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  };
+  // 512 was the pre-widening cap; a session busier than that must still
+  // dedupe its earliest captures after a long client outbox replay.
+  for (let i = 0; i < 600; i++) {
+    recordBufferedAdmissionIdempotencyKey(state, `k${i}`, 1);
+  }
+  assert.ok(hasBufferedAdmissionIdempotencyKey(state, "k0"), "oldest of 600 keys still deduped");
+  assert.equal(state.admissionIdempotencyOrder!.length, 600);
 });
