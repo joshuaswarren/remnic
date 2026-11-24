@@ -372,11 +372,11 @@ test("replaying an entry older than the server idempotency window warns that a d
   const notifications: Array<{ message: string; level: string }> = [];
   const outbox = new ObserveOutbox(file);
   await outbox.drain(async () => undefined, {
-    now: () => queuedAtMs + 16 * 60_000,
+    now: () => queuedAtMs + 121 * 60_000,
     notify: (message, level) => notifications.push({ message, level }),
   });
   assert.equal(notifications.length, 1, "one warning for the one stale replay");
-  assert.match(notifications[0].message, /most recent 512/);
+  assert.match(notifications[0].message, /bounded window of recent observe idempotency keys/);
   assert.match(notifications[0].message, /duplicate/);
   assert.equal(notifications[0].level, "warning");
 
