@@ -6,10 +6,12 @@ export interface BufferAdmissionIdempotencyState {
 
 /**
  * FIFO bound on recorded observe-buffer admission keys per session buffer.
- * 4096 covers roughly two hours at typical capture load and comfortably
- * outlasts one full 5000-entry client outbox replay; the previous 512-entry
- * ring only covered about fifteen minutes, so any drain outage longer than
- * that made duplicate captures likely once replay caught up.
+ * 4096 retains the most recent keys per session — roughly two
+ * hours at typical capture load. A replay of more than 4096 keys for one
+ * session still evicts its oldest keys, so a complete 5000-entry outbox
+ * replay for a single hot session is not guaranteed; the previous
+ * 512-entry ring only covered about fifteen minutes, so any drain outage
+ * longer than that made duplicate captures likely once replay caught up.
  */
 export const BUFFER_ADMISSION_IDEMPOTENCY_CAP = 4096;
 
