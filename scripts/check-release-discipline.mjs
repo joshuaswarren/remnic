@@ -139,6 +139,33 @@ export function mentionsIdentifier(source, name) {
 }
 
 /**
+ * Package names in a changeset's YAML frontmatter (lines like
+ * `"@remnic/core": patch` between the leading and trailing `---`).
+ */
+export function parseChangesetPackages(text) {
+  if (typeof text !== "string") {
+    throw new TypeError("parseChangesetPackages: text must be a string");
+  }
+  const lines = text.split("\n");
+  const open = lines.findIndex((line) => line.trim() === "---");
+  if (open === -1) return [];
+  let close = -1;
+  for (let index = open + 1; index < lines.length; index += 1) {
+    if (lines[index].trim() === "---") {
+      close = index;
+      break;
+    }
+  }
+  if (close === -1) return [];
+  const found = [];
+  for (let index = open + 1; index < close; index += 1) {
+    const match = lines[index].match(/^\s*["']?([^"':\s]+)["']?\s*:\s*(patch|minor|major)\s*$/);
+    if (match) found.push(match[1]);
+  }
+  return found;
+}
+
+/**
  * `Stability:` declarations in one changeset body.
  *
  * Detection is loose (any line whose first token is `Stability:`, case
@@ -272,6 +299,22 @@ export function evaluateReleaseDiscipline(input) {
       );
     }
     for (const level of declared.levels) levels.add(level);
+  }
+
+  // (f) out-of-workspace changeset (issue #3670): a changeset naming a
+  // package that is not in the workspace would be silently ignored by the
+  // release pipeline.
+  const workspaceNames = new Set(packages.map((pkg) => pkg.name));
+  for (const changeset of changesets) {
+    for (const csPackage of parseChangesetPackages(changeset.text)) {
+      if (!workspaceNames.has(csPackage)) {
+        violations.push(
+          `${changeset.path}: names package "${csPackage}" which is not a workspace package. ` +
+            `Fix the package name to a workspace package (for example "@remnic/core") ` +
+            `or move the changeset to the correct workspace.`,
+        );
+      }
+    }
   }
 
   if (touched.length > 0 && levels.size === 0) {
