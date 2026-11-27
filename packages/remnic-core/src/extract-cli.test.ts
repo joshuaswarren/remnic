@@ -29,7 +29,7 @@ function turn(sessionKey: string, text: string): BufferTurn {
     role: "user",
     content: text,
     timestamp: "2026-11-22T02:30:00Z",
-  } as unknown as BufferTurn;
+  };
 }
 
 interface StubState {
