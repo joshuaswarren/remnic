@@ -1883,6 +1883,7 @@ export interface PluginConfig
   cmcBehaviorMinFrequency: number;
   cmcBehaviorMinSessions: number;
   cmcBehaviorConfidenceThreshold: number;
+  /** @deprecated No effect: lifecycle scoring has no causal impact signal (#3667). Parsed so existing configs load. */
   cmcLifecycleCausalImpactWeight: number;
 
   // PEDC (Prediction-Error-Driven Calibration) — model-user alignment

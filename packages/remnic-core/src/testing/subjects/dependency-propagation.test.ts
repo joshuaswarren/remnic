@@ -123,10 +123,11 @@ function namespaceMemories(namespace: NamespaceName): MemoryFile[] {
 
 function serializeFixture(memory: MemoryFile): string {
   const links = (memory.frontmatter.links ?? [])
-    .map(
-      (link) =>
-        `  - targetId: ${link.targetId} linkType: ${link.linkType} strength: ${link.strength ?? 0.9}`,
-    )
+    .flatMap((link) => [
+      `  - targetId: ${link.targetId}`,
+      `    linkType: ${link.linkType}`,
+      `    strength: ${link.strength ?? 0.9}`,
+    ])
     .join("\n");
   return [
     "---",

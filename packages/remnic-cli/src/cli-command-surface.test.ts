@@ -432,6 +432,12 @@ test("extensions list against an empty workspace reports none found", async () =
   assert.match(result.stdout, /No memory extensions|extensions/i);
 });
 
+test("extensions has no reload no-op: it prints the usage without reload (#3544)", async () => {
+  const result = await runCli(["extensions", "reload"]);
+  assert.doesNotMatch(result.stdout, /reloaded/i);
+  assert.match(result.stdout, /Usage: remnic extensions <list\|show\|validate>/);
+});
+
 test("init creates remnic.config.json in the cwd and reports the path", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-init-"));
   try {

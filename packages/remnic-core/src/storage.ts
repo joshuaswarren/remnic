@@ -29,6 +29,7 @@ import { MemoryReadStore, readWindowedMemories, type WindowedMemoryReadOptions, 
 import { runCommittedInvalidation } from "./storage/committed-invalidation.js";
 import { renderProfileWithLastUpdated, stripOkfProfileFrontmatter, withOkfProfileFrontmatter } from "./storage/profile-header.js";
 import { appendToProfileSerialized, commitConsolidatedProfileSerialized, type ProfileMutationPorts } from "./storage/profile-mutation.js";
+import { parseFrontmatterLinks } from "./storage/links-frontmatter.js";
 import { parseQuestionFile as parseQuestionFileText } from "./storage/questions-file.js";
 import { assertNotOkfReservedBasename, OKF_QUESTION_TYPE, okfTypeForEntityKind, okfTypeForMemory } from "./okf/type-mapping.js";
 import { appendContextTransformRecords, readContextTransformRecords } from "./storage/context-transform-ledger.js";
@@ -954,24 +955,9 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
     content,
   };
 
-  // Parse links (YAML array format)
-  // Note: Simple parsing - for full YAML we'd need a library.
-  if (fmBlock.includes("links:")) {
-    const links: MemoryLink[] = [];
-    const linkMatches = fmBlock.matchAll(
-      /- targetId: (\S+)\s+linkType: (\S+)\s+strength: ([\d.]+)(?:\s+reason: "((?:\\.|[^"\\])*)")?/g
-    );
-    for (const match of linkMatches) {
-      links.push({
-        targetId: match[1],
-        linkType: match[2] as MemoryLink["linkType"],
-        strength: parseFloat(match[3]),
-        reason: match[4] ? parseLinkReasonValue(match[4]) : undefined,
-      });
-    }
-    if (links.length > 0) {
-      result.frontmatter.links = links;
-    }
+  const links = parseFrontmatterLinks(fmBlock, parseLinkReasonValue);
+  if (links) {
+    result.frontmatter.links = links;
   }
 
   return result;

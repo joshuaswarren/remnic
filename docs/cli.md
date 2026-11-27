@@ -149,7 +149,7 @@ remnic import --adapter chatgpt --file ./conversations.json --dry-run
 |---------|--------------|
 | `remnic bench <action> [benchmark...]` | Run and manage benchmarks (alias: `remnic benchmark`) |
 | `remnic binary <scan\|status\|run\|clean>` | Binary-file lifecycle: `scan`, `status`, `run [--dry-run]`, `clean --force` |
-| `remnic extensions <list\|show\|validate\|reload>` | Manage memory extensions |
+| `remnic extensions <list\|show\|validate>` | Manage memory extensions |
 
 Common `bench` actions include `list`, `run`, `datasets` (`download`/`status`), `runs`
 (`list`/`show`/`delete`), `compare`, `results`, `baseline` (`save`/`list`), `export`,
@@ -162,7 +162,7 @@ remnic bench list
 remnic bench run --quick
 ```
 
-`remnic extensions reload` is a reserved no-op (extension caching is not yet implemented); the other actions are live. See the [benchmarking guide](benchmarks.md) for the full `bench` workflow.
+See the [benchmarking guide](benchmarks.md) for the full `bench` workflow.
 
 ## OpenClaw-hosted commands
 

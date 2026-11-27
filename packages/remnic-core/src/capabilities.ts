@@ -900,8 +900,8 @@ export interface ConsolidationCapabilitySet {
   readonly compoundingSemantic: boolean;
   /** `abstractionAnchorsEnabled` — abstraction-anchor extraction. */
   readonly abstractionAnchors: boolean;
-  /** `compoundingEnabled` master switch; `compoundingWeeklyCronEnabled` daemon weekly run. */
-  readonly compounding: boolean; readonly compoundingWeeklyCron: boolean;
+  /** `compoundingEnabled` master switch; `compoundingWeeklyCronEnabled` daemon weekly run; `ircEnabled` IRC preferences. */
+  readonly compounding: boolean; readonly compoundingWeeklyCron: boolean; readonly irc: boolean;
   /** `calibrationEnabled` — memory calibration pass. */
   readonly calibration: boolean;
   /** `semanticConsolidationEnabled` — semantic consolidation pass. */
@@ -921,7 +921,7 @@ export type ConsolidationConfigProjection = Pick<
   PluginConfig,
   "compoundingSemanticEnabled" |
   "abstractionAnchorsEnabled" |
-  "compoundingEnabled" | "compoundingWeeklyCronEnabled" |
+  "compoundingEnabled" | "compoundingWeeklyCronEnabled" | "ircEnabled" |
   "calibrationEnabled" |
   "semanticConsolidationEnabled" |
   "patternReinforcementEnabled" |
@@ -937,7 +937,7 @@ export function resolveConsolidationCapabilities(config: ConsolidationConfigProj
     compoundingSemantic: config.compoundingSemanticEnabled,
     abstractionAnchors: config.abstractionAnchorsEnabled,
     compounding: config.compoundingEnabled, compoundingWeeklyCron: config.compoundingWeeklyCronEnabled,
-    calibration: config.calibrationEnabled,
+    irc: config.ircEnabled, calibration: config.calibrationEnabled,
     semanticConsolidation: config.semanticConsolidationEnabled,
     patternReinforcement: config.patternReinforcementEnabled,
     continuityAudit: config.continuityAuditEnabled,
@@ -1247,7 +1247,7 @@ export interface ConversationContextCapabilitySet {
   readonly sharedCrossSignalSemantic: boolean;
   readonly operatorAwareConsolidation: boolean;
   readonly peerProfileReasoner: boolean;
-  readonly cmcConsolidation: boolean;
+  readonly cmcConsolidation: boolean; readonly cmcBehaviorLearning: boolean;
   readonly maintenanceNamespaceFanout: boolean;
   readonly citations: boolean;
   readonly semanticRulePromotion: boolean;
@@ -1265,7 +1265,7 @@ export type ConversationContextConfigProjection = Pick<
   | "sharedCrossSignalSemanticEnabled"
   | "operatorAwareConsolidationEnabled"
   | "peerProfileReasonerEnabled"
-  | "cmcConsolidationEnabled"
+  | "cmcConsolidationEnabled" | "cmcBehaviorLearningEnabled"
   | "maintenanceNamespaceFanoutEnabled"
   | "citationsEnabled"
   | "semanticRulePromotionEnabled"
@@ -1284,7 +1284,7 @@ export function resolveConversationContextCapabilities(config: ConversationConte
     operatorAwareConsolidation: config.operatorAwareConsolidationEnabled,
     peerProfileReasoner: config.peerProfileReasonerEnabled,
     cmcConsolidation: config.cmcConsolidationEnabled,
-    maintenanceNamespaceFanout: config.maintenanceNamespaceFanoutEnabled,
+    cmcBehaviorLearning: config.cmcBehaviorLearningEnabled, maintenanceNamespaceFanout: config.maintenanceNamespaceFanoutEnabled,
     citations: config.citationsEnabled,
     semanticRulePromotion: config.semanticRulePromotionEnabled,
     codexMarketplace: config.codexMarketplaceEnabled,

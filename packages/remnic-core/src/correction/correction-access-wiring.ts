@@ -947,7 +947,10 @@ function toExecutorMemory(m: MemoryFile): ExecutorMemory {
  * can never drift out of sync (review thread: correction-gate-config-mismatch):
  *   - nested: `config.correction.enabled`
  *   - flat:   the `correctionEnabled` legacy key (ratchet-safe shape)
- * Nested wins when present; both default to `true` (plan is read-only, safe on).
+ * Nested wins when present; both default to `true`. Default-on predates the
+ * chat wiring: the executor's plan/apply tools are mutation-capable but sit
+ * behind the engine's interactive preview-confirm protocol, so enabled-by-
+ * default is intended for human-attended surfaces.
  */
 export function isCorrectionFeatureEnabled(config: PluginConfig): boolean {
   // parseConfig now resolves this into `resolveRecallAuxiliaryCapabilities(config).correction` (review

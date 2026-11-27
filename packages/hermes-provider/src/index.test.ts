@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createRequire } from "node:module";
+
 import { HermesClient, HermesError } from "./index.js";
 
 test("recall retries transient server errors according to client policy", async () => {
@@ -338,5 +340,43 @@ test("non-JSON client errors preserve HTTP status and are not retried", async ()
     assert.equal(calls, 1);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+// Issue #3534: request() cleared its abort timer as soon as response headers
+// arrived, so a front that sends headers then stalls or trickles the body
+// holds response.json() with no deadline. One deadline covers connect,
+// headers and body.
+test("request bounds the whole call: a trickling body cannot outlive the timeout", async () => {
+  const require2 = createRequire(import.meta.url);
+  const helpers: {
+    startTricklingDaemon: () => Promise<{ url: string; close: () => void }>;
+  } = require2("../../../tests/helpers/stalled-daemon.cjs");
+  const { startTricklingDaemon } = helpers;
+  const trickle = await startTricklingDaemon();
+  try {
+    const client = new HermesClient({
+      baseUrl: trickle.url,
+      authToken: "test-token",
+      timeoutMs: 1500,
+      maxRetries: 0,
+    });
+    const outcome = await Promise.race([
+      (async () => {
+        try {
+          await client.recall("what matters?");
+          return "resolved" as const;
+        } catch (err) {
+          return err instanceof Error ? (`err:${err.message}` as const) : "err";
+        }
+      })(),
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 4_000)),
+    ]);
+    assert.notEqual(outcome, "hung", "recall must not wait on a body that never ends");
+    if (outcome !== "resolved" && outcome.startsWith("err:")) {
+      assert.match(outcome, /timed out/);
+    }
+  } finally {
+    trickle.close();
   }
 });

@@ -4,7 +4,16 @@ export interface BufferAdmissionIdempotencyState {
   admissionIdempotencyOrder?: string[];
 }
 
-export const BUFFER_ADMISSION_IDEMPOTENCY_CAP = 512;
+/**
+ * FIFO bound on recorded observe-buffer admission keys per session buffer.
+ * 4096 retains the most recent keys per session — roughly two
+ * hours at typical capture load. A replay of more than 4096 keys for one
+ * session still evicts its oldest keys, so a complete 5000-entry outbox
+ * replay for a single hot session is not guaranteed; the previous
+ * 512-entry ring only covered about fifteen minutes, so any drain outage
+ * longer than that made duplicate captures likely once replay caught up.
+ */
+export const BUFFER_ADMISSION_IDEMPOTENCY_CAP = 4096;
 
 /** Client observe idempotency keys are namespaced by durable capture scope. */
 export function scopeObserveBufferAdmissionIdempotencyKey(input: {

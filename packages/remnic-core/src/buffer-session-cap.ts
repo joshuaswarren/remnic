@@ -4,7 +4,13 @@ import type { BufferEntryState, BufferTurn } from "./types.js";
 
 // Far above the extraction trigger (bufferMaxTurns, default 5), so healthy
 // sessions never touch it. Covers direct constructions predating the knob.
-export const FALLBACK_MAX_TURNS_PER_SESSION = 200;
+// 200 was low enough that a wedged extraction (the daemon refusing 270,885
+// captures in one outage) pushed live lanes past the cap within hours of the
+// wedge starting; every later capture was refused and queued client-side.
+// The cap is a memory backstop, not a policy: hosts tune it with
+// bufferMaxTurnsPerSession. Refusals queue in the client's durable outbox,
+// which spills to disk rather than evicting.
+export const FALLBACK_MAX_TURNS_PER_SESSION = 2000;
 
 export function resolveMaxTurnsPerSession(configured: number | undefined): number {
   return configured ?? FALLBACK_MAX_TURNS_PER_SESSION;
@@ -31,19 +37,19 @@ export function refuseOverCapSingle(entry: BufferEntryState | null, maxTurns: nu
   return true;
 }
 
-/** Batch path: sums incoming turns per key across all batches, new keys included. */
+/** Batch path: sums incoming turns per key across all batches, new keys included. Returns the first over-cap key. */
 export function refuseOverCapBatch(
   peekEntry: (key: string) => BufferEntryState | null,
   batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
   maxTurns: number,
-): boolean {
+): string | null {
   const incomingByKey = new Map<string, number>();
   for (const batch of batches) incomingByKey.set(batch.bufferKey, (incomingByKey.get(batch.bufferKey) ?? 0) + batch.turns.length);
   for (const [bufferKey, incoming] of incomingByKey) {
     if (heldTurnCount(peekEntry(bufferKey)) + incoming > maxTurns) {
       warnTurnCapRefused(bufferKey, maxTurns);
-      return true;
+      return bufferKey;
     }
   }
-  return false;
+  return null;
 }

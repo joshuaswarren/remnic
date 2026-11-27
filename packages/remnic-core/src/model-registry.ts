@@ -323,17 +323,6 @@ export class ModelRegistry {
   }
 
   /**
-   * Fetch capabilities from Hugging Face (if available)
-   * Returns true if successful
-   */
-  async fetchFromHuggingFace(modelId: string): Promise<boolean> {
-    // This would be implemented to fetch from HF Hub API
-    // For now, we rely on the known models and manual updates
-    log.info(`ModelRegistry: fetchFromHuggingFace not yet implemented for ${modelId}`);
-    return false;
-  }
-
-  /**
    * List all cached models
    */
   listCached(): string[] {

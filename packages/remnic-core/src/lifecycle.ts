@@ -24,12 +24,6 @@ export interface LifecycleSignals {
    * This is intentionally low-impact to avoid circular amplification.
    */
   actionPriorScore?: number;
-  /**
-   * Optional causal impact score from CMC chain analysis in [0, 0.3].
-   * Computed as 0.1 * incomingEdges + 0.15 * outgoingEdges, clamped.
-   * Weight in heat/decay is intentionally low (0.05) to avoid circular amplification.
-   */
-  causalImpactScore?: number;
 }
 
 export interface LifecycleDecision {
@@ -141,13 +135,11 @@ export function computeHeat(
   if (frontmatter.status === "archived") return 0;
 
   const inputs = computeLifecycleValueInputs(memory, now, signals);
-  const causalBoost = clamp01(signals?.causalImpactScore ?? 0) * 0.05;
   const score = (inputs.confidence * 0.25)
     + (inputs.access * 0.3)
     + (inputs.recency * 0.2)
     + (inputs.importance * 0.15)
     + (inputs.feedback * 0.1)
-    + causalBoost
     - inputs.disputedPenalty;
   return clamp01(score);
 }

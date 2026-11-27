@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { QmdClient, parseQmdStatusOutput } from "./qmd.js";
+import { QmdClient, parseQmdStatusOutput, resolveQmdCapabilities } from "./qmd.js";
 import type { QmdSearchResult } from "./types.js";
 
 type DaemonCheckInternals = {
@@ -402,8 +402,15 @@ test("parseQmdStatusOutput returns nulls for unparseable output", () => {
   assert.equal(report.oldestPendingAgeMs, null);
 });
 
+test("an omitted count does not make malformed or unrecognized status healthy", () => {
+  const summary = "Total: 1 files indexed\nVectors: 8 embedded";
+  assert.equal(parseQmdStatusOutput(summary).pendingEmbeddings, null);
+  assert.equal(parseQmdStatusOutput("QMD Status\nTotal: 1 files indexed").pendingEmbeddings, null);
+  assert.equal(parseQmdStatusOutput(`QMD Status\n${summary}\nPending: unavailable`).pendingEmbeddings, null);
+});
+
 test("QmdClient.status() returns parsed report on success", async () => {
-  const client = new QmdClient("test-col", 3);
+  const client = new QmdClient("test-col", 3, { qmdSupportedVersion: "2.8.3" });
   const internals = client as unknown as {
     available: boolean;
     qmdCapabilities: { safeStatusDeviceProbe: boolean };
@@ -411,6 +418,7 @@ test("QmdClient.status() returns parsed report on success", async () => {
   };
   internals.available = true;
   internals.qmdCapabilities = { safeStatusDeviceProbe: true };
+  Object.assign(client, { cliVersion: "2.8.3" });
   let capturedArgs: string[] = [];
   internals.runQmdCommand = async (args: string[]) => {
     capturedArgs = args;
@@ -422,14 +430,37 @@ test("QmdClient.status() returns parsed report on success", async () => {
   assert.equal(report.oldestPendingAgeMs, 300_000);
 });
 
-test("QmdClient.status() returns null fields when unavailable", async () => {
+test("QmdClient.status() explains unavailable counts without resetting flags", async () => {
   const client = new QmdClient("test-col", 3);
   const internals = client as unknown as { available: boolean };
   internals.available = false;
   const report = await client.status();
   assert.equal(report.pendingEmbeddings, null);
   assert.equal(report.oldestPendingAgeMs, null);
+  assert.equal(report.error, "qmd unavailable");
+  assert.equal(internals.available, false);
 });
+
+for (const [version, expectedError] of [
+  ["2.4.0", "qmd status device probe is unsafe for this version"],
+  ["2.5.0", "qmd version is unsupported"],
+  [null, "qmd status device probe is unsafe for this version"],
+] as const) {
+  test(`QmdClient.status() refuses unsafe or unsupported version ${version}`, async () => {
+    const client = new QmdClient("test-col", 3, { qmdSupportedVersion: "2.8.3" });
+    const capabilities = resolveQmdCapabilities(version);
+    Object.assign(client, {
+      available: true, daemonAvailable: true, cliVersion: version, qmdCapabilities: capabilities,
+      runQmdCommand: async () => { assert.fail("Refused status must not run a command"); },
+    });
+    const report = await client.status();
+    assert.equal(report.error, expectedError);
+    assert.equal(report.pendingEmbeddings, null);
+    assert.equal(client.isAvailable(), true);
+    assert.equal(client.isDaemonMode(), true);
+    assert.equal(client.getVersionStatus().capabilities, capabilities);
+  });
+}
 
 test("QmdClient.embedFiles() runs update then embed", async () => {
   const client = new QmdClient("test-col", 3);

@@ -634,15 +634,16 @@ export class WorkspaceOpsCoordinator {
           configuredMaxContext &&
           configuredMaxContext > modelInfo.contextWindow
         ) {
+          // Warn — never rewrite the shared config behind consumers'
+          // backs (#3562). The user owns the persisted value; an
+          // oversized localLlmMaxContext stays in effect until they
+          // lower it, and prompts may exceed the model's window.
           log.warn(
             `Local LLM context mismatch: engram configured for ${configuredMaxContext.toLocaleString()} tokens, ` +
               `but ${modelInfo.id} only supports ${modelInfo.contextWindow.toLocaleString()}. ` +
-              `Reducing to ${modelInfo.contextWindow.toLocaleString()} to avoid errors.`,
+              `Set localLlmMaxContext to ${modelInfo.contextWindow.toLocaleString()} or lower in your ` +
+              `persisted config to avoid context-length errors.`,
           );
-          // Update the config in-memory to match actual capability
-          // (This is a temporary fix - user should update their config)
-          (this.deps.config as { localLlmMaxContext?: number }).localLlmMaxContext =
-            modelInfo.contextWindow;
         }
       } else {
         log.debug(

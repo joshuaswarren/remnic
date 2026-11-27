@@ -27,6 +27,7 @@
 
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
+import { resolveMaxTurnsPerSession } from "../buffer-session-cap.js";
 import { log } from "../logger.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { BufferDrainClaims, DrainLease } from "../storage/buffer-drain-claims.js";
@@ -61,6 +62,10 @@ export interface BacklogSchedulerDeps {
   breakerSnapshot?(): ProviderBreakerSnapshot;
   /** Test seam: monotonic-ish clock for backoff windows. */
   now?(): number;
+  /** The buffer's per-session turn cap. A live key holding this many turns
+   *  refuses new captures, so discovery lists it before the claim page.
+   *  Optional: without it, discovery keeps plain claim-page-first order. */
+  maxTurnsPerSession?(): number;
 }
 
 export interface BacklogSchedulerOptions {
@@ -285,6 +290,7 @@ export class BacklogScheduler {
 
   /** Bounded discovery: ONE page of existing claims with pending turns */
   private async discoverCandidates(): Promise<{ key: string; needsClaim: boolean }[]> {
+    const capped: { key: string; needsClaim: boolean }[] = [];
     const out: { key: string; needsClaim: boolean }[] = [];
     const seen = new Set<string>();
     const pageLimit = Math.max(this.submissionLimit() * 4, 16);
@@ -294,13 +300,15 @@ export class BacklogScheduler {
       out.push({ key: listed.key, needsClaim: false });
     }
     this.claimCursor = page.nextCursor;
+    const turnCap = this.deps.maxTurnsPerSession?.() ?? Number.POSITIVE_INFINITY;
     for (const [key, counts] of await this.deps.liveBufferCounts()) {
-      if (counts.turns + counts.retainedTurns <= 0) continue;
+      const held = counts.turns + counts.retainedTurns;
+      if (held <= 0) continue;
       if (seen.has(key) || this.deps.claims.isClaimed(key)) continue;
       seen.add(key);
-      out.push({ key, needsClaim: true });
+      (held >= turnCap ? capped : out).push({ key, needsClaim: true });
     }
-    return out;
+    return [...capped, ...out];
   }
 
   /** Submission bound: the queue's own concurrency limit, read with the
@@ -529,6 +537,7 @@ export function wireBacklogScheduler(
       // The orchestrator's one shared provider breaker (foreground and every
       // claim-backed drain accumulate toward the same threshold).
       breakerSnapshot: () => orchestrator.getExtractionResilienceStatus().breaker,
+      maxTurnsPerSession: () => resolveMaxTurnsPerSession(orchestrator.config.bufferMaxTurnsPerSession),
     },
     options
   );

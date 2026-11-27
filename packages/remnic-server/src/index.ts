@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, isOAuthConnector, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner } from "@remnic/core";
 import type { BacklogScheduler } from "@remnic/core/orchestration/backlog-scheduler.js";
 import { startEventLoopLagMonitor } from "./event-loop-lag.js";
 import { logShutdownPhase, shutdownBacklogDrain, startBacklogScheduler } from "./backlog-drain-lifecycle.js";
@@ -834,12 +834,13 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     port: parsedServerConfig.port,
     authToken: authToken || undefined,
     // Entry-based getter: validation + connector identity from ONE cached
-    // snapshot (see tokens.ts). The path policy pins ChatGPT-minted OAuth
-    // tokens (connector "chatgpt") to the MCP endpoint only — they never
+    // snapshot (see tokens.ts). The path policy pins OAuth-minted tokens
+    // (chatgpt, claude-ai, oauth-app-<host>; see isOAuthConnector) to
+    // the MCP endpoint only — they never
     // authorize REST/admin routes. All other connector tokens keep full
     // access, matching pre-OAuth behavior.
     authTokenEntriesGetter: () => getAllValidTokenEntriesCached(),
-    tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
+    tokenPathPolicy: (connector, pathname) => !isOAuthConnector(connector) || pathname === "/mcp",
     readiness: () => readiness,
     principal: parsedServerConfig.principal,
     trustPrincipalHeader: parsedServerConfig.trustPrincipalHeader,
@@ -1034,7 +1035,7 @@ function resolveHealthcheckToken(configuredToken: string | undefined): string | 
   const configured = usableHealthcheckToken(configuredToken);
   if (configured) return configured;
   const entry = loadTokenStore().tokens.find(
-    ({ connector, token }) => connector !== "chatgpt" && usableHealthcheckToken(token) !== undefined,
+    ({ connector, token }) => !isOAuthConnector(connector) && usableHealthcheckToken(token) !== undefined,
   );
   return usableHealthcheckToken(entry?.token);
 }

@@ -279,7 +279,7 @@ test("access-cli browse uses OPENCLAW_CONFIG_PATH before legacy config path", as
       },
     );
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 });
 
@@ -317,7 +317,7 @@ test("access-cli rejects OpenClaw configs without a Remnic plugin entry", async 
       },
     );
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 });
 
@@ -363,7 +363,7 @@ test("access-cli rejects foreign OpenClaw memory slots even when Remnic is insta
       },
     );
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 });
 
@@ -392,7 +392,7 @@ test("access-cli expands tilde in OPENCLAW_CONFIG_PATH", async () => {
       },
     );
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 });
 
@@ -419,7 +419,7 @@ test("access-cli browse accepts an explicit principal for namespace reads", asyn
       },
     );
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 });
 
@@ -463,7 +463,7 @@ test("access-cli store expands tilde in content-file path", async () => {
     assert.match(output, /"dryRun": true/);
   } finally {
     process.stdout.write = originalStdoutWrite;
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 });
 
@@ -508,7 +508,7 @@ test("access-cli accepts inline string values that begin with dashes", async () 
       },
     );
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 });
 
@@ -563,7 +563,7 @@ test("access-cli extraction-flush drains the requested session through the bound
     assert.match(output, /"effectiveNamespace": "default"/);
   } finally {
     process.stdout.write = originalStdoutWrite;
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 });
 
@@ -612,7 +612,7 @@ test("access-cli extraction-flush expands tilde in cwd before resolving project 
     assert.match(output, /"effectiveNamespace": "default-project-/);
   } finally {
     process.stdout.write = originalStdoutWrite;
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 });
 

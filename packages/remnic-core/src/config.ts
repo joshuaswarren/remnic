@@ -28,12 +28,14 @@ import type {
 } from "./types.js";
 import { parseBackgroundGeneration } from "./background-generation-config.js";
 import { parseSearchBackend } from "./config-search-backend.js";
+import { warnDeprecatedCausalImpactWeight } from "./config-deprecations.js";
 import { parseLocalLlmConfig } from "./local-llm-config.js";
 import { parseCorrectionConfig } from "./correction/correction-config.js";
 import { parseConvergeConfig } from "./converge-config.js";
 import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
 import { log } from "./logger.js";
 import { cloneDefaultSessionObserverBands } from "./session-observer-bands.js";
+import { FALLBACK_MAX_TURNS_PER_SESSION } from "./buffer-session-cap.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import { normalizeEntitySchemas } from "./entity-schema.js";
 import { expandTildePath } from "./utils/path.js";
@@ -1596,7 +1598,7 @@ export function parseConfig(
     // Per-session retained-turn cap (#3415 bound). Far above the extraction
     // trigger, so healthy sessions never touch it; a full session refuses live
     // capture (retryable) instead of growing without bound during an outage.
-    bufferMaxTurnsPerSession: parsePositiveInteger(cfg.bufferMaxTurnsPerSession, "bufferMaxTurnsPerSession") ?? 200,
+    bufferMaxTurnsPerSession: parsePositiveInteger(cfg.bufferMaxTurnsPerSession, "bufferMaxTurnsPerSession") ?? FALLBACK_MAX_TURNS_PER_SESSION,
     extractionQueueConcurrency:
       parsePositiveInteger(cfg.extractionQueueConcurrency, "extractionQueueConcurrency") ?? 2,
     bufferMaxMinutes:
@@ -3044,7 +3046,7 @@ export function parseConfig(
     cmcBehaviorMinFrequency: typeof cfg.cmcBehaviorMinFrequency === "number" ? cfg.cmcBehaviorMinFrequency : 3,
     cmcBehaviorMinSessions: typeof cfg.cmcBehaviorMinSessions === "number" ? cfg.cmcBehaviorMinSessions : 2,
     cmcBehaviorConfidenceThreshold: typeof cfg.cmcBehaviorConfidenceThreshold === "number" ? cfg.cmcBehaviorConfidenceThreshold : 0.6,
-    cmcLifecycleCausalImpactWeight: typeof cfg.cmcLifecycleCausalImpactWeight === "number" ? cfg.cmcLifecycleCausalImpactWeight : 0.05,
+    cmcLifecycleCausalImpactWeight: warnDeprecatedCausalImpactWeight(coerceNumber(cfg.cmcLifecycleCausalImpactWeight)),
 
     // PEDC (Prediction-Error-Driven Calibration) — model-user alignment
     calibrationEnabled: cfg.calibrationEnabled === true,
