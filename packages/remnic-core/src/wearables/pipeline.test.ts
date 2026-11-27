@@ -482,6 +482,61 @@ test("a native-memory import failure warns and lets the sync complete", async ()
   }
 });
 
+test("a single failed native-memory write keeps the rest of the page", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const native = [
+      { id: "nat-1", content: "User volunteers at the food bank monthly." },
+      { id: "nat-2", content: "User prefers the window seat on evening flights." },
+      { id: "nat-3", content: "User rotates the car tires every spring." },
+    ];
+    const { deps, memoryWrites } = makeDeps(memoryDir);
+    assert.ok(deps.memoryGen);
+    const healthyWrite = deps.memoryGen.writer.writeSealedMemory;
+    deps.memoryGen.writer.writeSealedMemory = async (envelope, extras) => {
+      const { content } = sealedWriteToLegacyArgs(envelope, extras as Record<string, unknown>);
+      if (String(content).includes("window seat")) throw new Error("storage exploded mid-page");
+      return healthyWrite(envelope, extras);
+    };
+    const connector = fakeConnector({}, native);
+    const first = await syncWearableSource(
+      connector,
+      settings({ importNativeMemories: "review" }),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.equal(first.nativeMemoriesImported, 2, "items around the failure still count");
+    assert.ok(
+      first.warnings.some((warning) => warning.includes("nat-2 failed to import")),
+      `expected per-item warning, got: ${first.warnings.join(" | ")}`,
+    );
+    assert.equal(memoryWrites.length, 2);
+    const state = await loadSyncState(memoryDir);
+    const importedIds = state.sources.testsource.importedNativeMemoryIds ?? [];
+    assert.ok(importedIds.includes("nat-1") && importedIds.includes("nat-3"));
+    assert.ok(!importedIds.includes("nat-2"), "failed item retries on the next sync");
+
+    // Next sync: healthy writer, nat-2 imports, nothing duplicates.
+    deps.memoryGen.writer.writeSealedMemory = healthyWrite;
+    const second = await syncWearableSource(
+      connector,
+      settings({ importNativeMemories: "review" }),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.equal(second.nativeMemoriesImported, 1, "only the failed item re-imports");
+    assert.equal(memoryWrites.length, 3);
+    const state2 = await loadSyncState(memoryDir);
+    const ids2 = state2.sources.testsource.importedNativeMemoryIds ?? [];
+    assert.ok(ids2.includes("nat-2"));
+    assert.equal(new Set(ids2).size, ids2.length, "no duplicate ids");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("a failed memory pass retries on the next sync even when the day is unchanged", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {
