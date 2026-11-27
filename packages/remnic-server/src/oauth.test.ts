@@ -417,23 +417,44 @@ test("oauthConnectorIdForRedirect maps hosts to per-app connector ids", () => {
   assert.equal(oauthConnectorIdForRedirect("https://chatgpt.com/connector/oauth/abc"), "chatgpt");
   assert.equal(oauthConnectorIdForRedirect("https://claude.ai/api/mcp/auth_callback"), "claude-ai");
   assert.equal(oauthConnectorIdForRedirect("https://claude.com/api/mcp/auth_callback"), "claude-ai");
-  assert.equal(oauthConnectorIdForRedirect("https://evilclaude.ai/cb"), "oauth-app-evilclaude.ai");
-  assert.equal(oauthConnectorIdForRedirect("https://example.com/cb"), "oauth-app-example.com");
-  assert.equal(oauthConnectorIdForRedirect("https://other.example.org/cb"), "oauth-app-other.example.org");
+  assert.equal(oauthConnectorIdForRedirect("https://evilclaude.ai/cb"), "oauth-app-https%3A%2F%2Fevilclaude.ai");
+  assert.equal(oauthConnectorIdForRedirect("https://example.com/cb"), "oauth-app-https%3A%2F%2Fexample.com");
+  assert.equal(oauthConnectorIdForRedirect("https://other.example.org/cb"), "oauth-app-https%3A%2F%2Fother.example.org");
   assert.equal(oauthConnectorIdForRedirect("not a url"), "oauth-app-unknown");
-  for (const id of ["chatgpt", "claude-ai", "oauth-app-example.com"]) assert.equal(isOAuthConnector(id), true);
+  for (const id of ["chatgpt", "claude-ai", "oauth-app-https%3A%2F%2Fexample.com"]) {
+    assert.equal(isOAuthConnector(id), true);
+  }
   assert.equal(isOAuthConnector("codex"), false);
 });
 
 test("oauthConnectorIdForRedirect keeps distinct fallback origins distinct", () => {
+  // Scheme is part of the key: http and https on the same loopback
+  // host and port are two connectors (the SDK admits http loopback and
+  // custom schemes for public clients).
+  assert.equal(
+    oauthConnectorIdForRedirect("http://127.0.0.1:8765/cb"),
+    "oauth-app-http%3A%2F%2F127.0.0.1%3A8765",
+  );
+  assert.notEqual(
+    oauthConnectorIdForRedirect("http://127.0.0.1:8765/cb"),
+    oauthConnectorIdForRedirect("https://127.0.0.1:8765/cb"),
+  );
+  // Custom native-app schemes get their own ids too.
+  assert.equal(oauthConnectorIdForRedirect("myapp://callback"), "oauth-app-myapp%3A%2F%2Fcallback");
   // Port is part of the key: same host on two ports is two connectors.
-  assert.equal(oauthConnectorIdForRedirect("https://app.example.com:8443/cb"), "oauth-app-app.example.com%3A8443");
+  assert.equal(
+    oauthConnectorIdForRedirect("https://app.example.com:8443/cb"),
+    "oauth-app-https%3A%2F%2Fapp.example.com%3A8443",
+  );
   assert.notEqual(
     oauthConnectorIdForRedirect("https://app.example.com:8443/cb"),
     oauthConnectorIdForRedirect("https://app.example.com/cb"),
   );
   // Encoding keeps lookalike hosts injective (underscore vs hyphen).
-  assert.equal(oauthConnectorIdForRedirect("https://my_app.example.com/cb"), "oauth-app-my_app.example.com");
+  assert.equal(
+    oauthConnectorIdForRedirect("https://my_app.example.com/cb"),
+    "oauth-app-https%3A%2F%2Fmy_app.example.com",
+  );
   assert.notEqual(
     oauthConnectorIdForRedirect("https://my_app.example.com/cb"),
     oauthConnectorIdForRedirect("https://my-app.example.com/cb"),
@@ -441,12 +462,18 @@ test("oauthConnectorIdForRedirect keeps distinct fallback origins distinct", () 
   // Loopback native apps (RFC 8252) get per-origin ids too, so two native
   // clients never rotate each other; a client that relinks on a new port
   // leaves its prior token valid until revoked or expired.
-  assert.equal(oauthConnectorIdForRedirect("https://127.0.0.1:8765/cb"), "oauth-app-127.0.0.1%3A8765");
+  assert.equal(
+    oauthConnectorIdForRedirect("https://127.0.0.1:8765/cb"),
+    "oauth-app-https%3A%2F%2F127.0.0.1%3A8765",
+  );
   assert.notEqual(
     oauthConnectorIdForRedirect("https://127.0.0.1:8765/cb"),
     oauthConnectorIdForRedirect("https://127.0.0.1:9000/cb"),
   );
-  assert.equal(oauthConnectorIdForRedirect("https://localhost:3000/cb"), "oauth-app-localhost%3A3000");
+  assert.equal(
+    oauthConnectorIdForRedirect("https://localhost:3000/cb"),
+    "oauth-app-https%3A%2F%2Flocalhost%3A3000",
+  );
 });
 
 test("authorize rejections: bad client, unregistered redirect, missing PKCE, setup mode", async () => {

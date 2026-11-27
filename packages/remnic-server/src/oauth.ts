@@ -115,11 +115,11 @@ export function oauthConnectorIdForRedirect(redirectUri: string): string {
   const isHost = (domain: string) => host === domain || host.endsWith(`.${domain}`);
   if (isHost("chatgpt.com") || isHost("openai.com")) return "chatgpt";
   if (isHost("claude.ai") || isHost("claude.com")) return "claude-ai";
-  // Any other app gets its own id keyed by its full redirect origin.
-  // Percent-encoding keeps host, port and separators injective, so two
-  // distinct origins can never collide into one connector id (and never
-  // rotate each other's tokens).
-  const key = `${host}${url.port ? `:${url.port}` : ""}`;
+  // Any other app gets its own id keyed by its full redirect origin,
+  // scheme included. Percent-encoding keeps every origin component
+  // injective, so two distinct origins can never collide into one
+  // connector id (and never rotate each other's tokens).
+  const key = `${url.protocol}//${host}${url.port ? `:${url.port}` : ""}`;
   const slug = encodeURIComponent(key) || "unknown";
   return `${OAUTH_APP_CONNECTOR_PREFIX}${slug}`;
 }
