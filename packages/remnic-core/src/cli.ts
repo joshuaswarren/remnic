@@ -4,6 +4,7 @@ import { access, lstat, readFile, readdir, realpath, unlink } from "node:fs/prom
 import { createHash } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import type { Orchestrator } from "./orchestrator.js";
+import { forceExtractBufferedTurns } from "./extract-cli.js";
 import type { ConversationIndexCoordinator } from "./orchestration/conversation-index-coordinator.js";
 import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
@@ -7670,19 +7671,25 @@ export function registerCli(
         .command("extract")
         .description("Force extraction of buffered turns")
         .action(async () => {
-          await orchestrator.buffer.load();
-          const turns = orchestrator.buffer.getTurns();
-          if (turns.length === 0) {
+          const outcome = await forceExtractBufferedTurns(orchestrator);
+          if (outcome.kind === "empty") {
             console.log("Buffer is empty. Nothing to extract.");
             return;
           }
-          console.log(`Extracting ${turns.length} buffered turns...`);
-          // Trigger extraction by processing a dummy turn that forces extraction
-          // Actually we need to call the internal extraction method
-          // For now, inform the user
           console.log(
-            "Use the memory system in conversation to trigger extraction, or wait for the buffer threshold.",
+            `Extracting ${outcome.turns} buffered turn(s) across ${outcome.entries.length} session(s)...`,
           );
+          console.log(
+            `Extraction finished: drained=${outcome.drained}/${outcome.entries.length} sessions, persisted=${outcome.persistedCount}`,
+          );
+          for (const entry of outcome.failed) {
+            console.log(
+              `  failed: ${entry.key}: ${entry.error ?? `status=${entry.status}${entry.reason ? `, reason=${entry.reason}` : ""}`}`,
+            );
+          }
+          if (outcome.failed.length > 0) {
+            process.exitCode = 1;
+          }
         });
 
       cmd
