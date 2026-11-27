@@ -494,7 +494,7 @@ test("a single failed native-memory write keeps the rest of the page", async () 
     assert.ok(deps.memoryGen);
     const healthyWrite = deps.memoryGen.writer.writeSealedMemory;
     deps.memoryGen.writer.writeSealedMemory = async (envelope, extras) => {
-      const { content } = sealedWriteToLegacyArgs(envelope, extras as Record<string, unknown>);
+      const { content } = sealedWriteToLegacyArgs(envelope, extras);
       if (String(content).includes("window seat")) throw new Error("storage exploded mid-page");
       return healthyWrite(envelope, extras);
     };
