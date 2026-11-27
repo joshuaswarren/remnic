@@ -8,8 +8,8 @@
  * pure scorer.
  *
  * The filter is feature-flagged (`recallMemoryWorthFilterEnabled` on
- * PluginConfig, default `false` in this PR) so operators can A/B it safely
- * before PR 5 flips the default.
+ * PluginConfig, default `true` since the #560 PR 5 bench) so operators can
+ * still A/B it safely with `recallMemoryWorthFilterEnabled=false`.
  *
  * Intentional properties:
  *   - Pure function. No side effects, no I/O. Tested directly.
@@ -35,7 +35,6 @@
  * Out of scope:
  *   - Reading counters from storage (caller does that once per recall).
  *   - Orchestrator wiring / config plumbing (separate commit in this PR).
- *   - Default flip to `true` (PR 5 once benchmark confirms a win).
  */
 
 import { computeMemoryWorth, type MemoryWorthResult } from "./memory-worth.js";
