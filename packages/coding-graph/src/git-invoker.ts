@@ -1,33 +1,8 @@
-/**
- * Coding-graph git invocation discipline.
- *
- * Mirrors the argv-array + bounded-timeout + never-throws pattern from
- * `packages/remnic-core/src/coding/git-context.ts` (rule 10: every git call
- * is argv + env, never string interpolation; rule 34: tagged failure codes).
- *
- * The coding-graph package owns its own invoker rather than importing
- * core's GitContextResolver because:
- *   - The resolver's public surface (resolveGitContext) is project-level
- *     detection, not diff/name-status/log plumbing.
- *   - The reindex pipeline needs `git diff --name-status`, `git rev-parse`,
- *     `git log --name-only`, and `git diff` (hunk headers) — none of which
- *     the resolver exposes.
- *   - Keeping the invoker local lets the package stay self-contained for
- *     its git needs while still consuming the shared `launchProcessSync`
- *     from `@remnic/core/runtime/child-process` (rule 23/38 — do not invent
- *     a new process-spawning pattern).
- *
- * Never throws. Every failure is a tagged `GitFailure` so callers can
- * surface `git_unavailable` / `unreachable_head` distinctly (rule 34 +
- * issue #1553 pitfall 34).
- */
 import { launchProcessSync } from "@remnic/core/runtime/child-process";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Public types
 // ──────────────────────────────────────────────────────────────────────────
 
-/** A line from `git diff --name-status <range>`. */
 export interface NameStatusEntry {
   /**
    * `git diff --name-status` status code: `A` (added), `M` (modified),
@@ -42,7 +17,6 @@ export interface NameStatusEntry {
   readonly oldPath?: string;
 }
 
-/** A hunk header from `git diff --unified=0` (`@@ -a,b +c,d @@`). */
 export interface DiffHunk {
   /** File path (repo-relative, forward slashes). */
   readonly path: string;
@@ -54,7 +28,6 @@ export interface DiffHunk {
   readonly newRange: { readonly startLine: number; readonly endLine: number };
 }
 
-/** A co-change commit entry from `git log --name-only`. */
 export interface LogFilesEntry {
   /** Full commit SHA (40 hex chars). */
   readonly sha: string;
@@ -73,7 +46,6 @@ export interface GitFailure {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Invoker
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -175,10 +147,6 @@ function runGit(
   };
 }
 
-/**
- * Construct the default git invoker that spawns real `git` via
- * `launchProcessSync`. Tests inject a mock instead.
- */
 export function defaultCodingGitInvoker(): CodingGitInvoker {
   return {
     revParseHead(cwd: string) {
@@ -196,10 +164,8 @@ export function defaultCodingGitInvoker(): CodingGitInvoker {
       // repository HEAD lookups').
       const wt = runGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
       if (wt.ok && wt.exitCode === 0 && wt.stdout.trim() === "true") {
-        // Inside a worktree but HEAD has no commits → unborn, head null.
         return { ok: true, head: null };
       }
-      // Not a git worktree (or git failed to answer) → degrade visibly.
       return { ok: false, code: "git_error" };
     },
 
@@ -297,12 +263,10 @@ export function parseNameStatus(stdout: string): NameStatusEntry[] {
   const lines = stdout.split("\n");
   for (const line of lines) {
     if (line.length === 0) continue;
-    // Split on the first tab; the path may contain spaces but not tabs.
     const tabIdx = line.indexOf("\t");
     if (tabIdx < 0) continue;
     const status = line.slice(0, tabIdx);
     const rest = line.slice(tabIdx + 1);
-    // Rename/copy: `R100\told\tnew` — second tab splits old from new.
     const secondTab = rest.indexOf("\t");
     if (
       (status.startsWith("R") || status.startsWith("C")) &&
@@ -347,12 +311,10 @@ export function parseHunks(stdout: string): DiffHunk[] {
         currentPath = null;
         continue;
       }
-      // Strip the leading `+++ b/` (or `+++ ` for non-`b/` forms).
       const raw = line.slice(4);
       currentPath = raw.startsWith("b/") ? raw.slice(2) : raw;
       continue;
     }
-    // `@@ -a,b +c,d @@` — hunk header.
     if (line.startsWith("@@ ")) {
       const match = line.match(/\+(\d+)(?:,(\d+))?/);
       if (!match) continue;
@@ -382,18 +344,6 @@ export function parseHunks(stdout: string): DiffHunk[] {
   return out;
 }
 
-/**
- * Parse `git log --format=%H --name-only` output into one entry per
- * commit. Real git emits a blank line AFTER each SHA (before the file
- * names) AND between commits, so a naive `\n\n` block split puts the
- * SHA alone in one block and the file names in the next — the SHA-only
- * block yields a commit with zero files and the file-name block fails
- * SHA validation and is dropped. Walk line-by-line instead: a 40-hex
- * line starts a new commit; subsequent non-empty lines are its files
- * until the next SHA (chatgpt-codex-connector: 'Parse real git log
- * records before mining co-changes'). Robust to both the synthetic
- * (no blank-after-SHA) and real (blank-after-SHA) layouts.
- */
 export function parseLogFiles(stdout: string): LogFilesEntry[] {
   const out: LogFilesEntry[] = [];
   let currentSha: string | null = null;

@@ -32,7 +32,6 @@ interface WriteCall {
   extras: { status?: string; memoryKind?: string };
 }
 
-/** In-memory writer modelling the sealed write path + source-scoped dedup. */
 class FakeWriter implements MeetingMemoryWriter {
   writes: WriteCall[] = [];
   retired: string[] = [];
@@ -95,7 +94,6 @@ test("episode content is deterministic and includes span, attendees, sources, ap
   assert.match(content, /Meeting mtg-2026-03-10-abcdef01 — 2026-03-10 14:00–14:30 UTC \(Zoom\)/);
   assert.match(content, /Attendees: Jane, Sam\./);
   assert.match(content, /Transcript sources: desktop, pendant\./);
-  // Same input → identical content (idempotency anchor).
   assert.equal(composeMeetingEpisodeContent(record()), content);
 });
 
@@ -112,13 +110,10 @@ test("writeMeetingEpisodeMemory writes an active episode with meeting provenance
   assert.equal(envelope.validAt, "2026-03-10T14:00:00.000Z");
   assert.ok(envelope.tags.includes("meeting"));
   assert.ok(envelope.tags.includes(meetingDayTag(DATE)));
-  // Byte-preserved camelCase provenance (composer canonicalizes structuredAttributes
-  // keys to lowercase; rawStructuredAttributes keeps the original casing).
   assert.equal(envelope.rawStructuredAttributes?.meetingId, "mtg-2026-03-10-abcdef01");
   assert.equal(envelope.rawStructuredAttributes?.meetingDate, DATE);
   assert.equal(envelope.rawStructuredAttributes?.meetingApp, "Zoom");
   assert.equal(envelope.rawStructuredAttributes?.transcriptSources, "desktop,pendant");
-  // Canonical (lowercased) form is what fingerprints/consumers query.
   assert.equal(envelope.structuredAttributes?.meetingid, "mtg-2026-03-10-abcdef01");
 });
 
@@ -130,9 +125,6 @@ test("episode write is idempotent — an identical episode is skipped", async ()
 });
 
 test("an episode whose provider title is a personal claim is held for review (#2294)", async () => {
-  // The episode is a recall anchor written active, but its title comes from the
-  // provider's read of the same ambient audio — so a title lifted from a
-  // television scene must not enter recall on the anchor.
   const writer = new FakeWriter();
   await writeMeetingEpisodeMemory(record({ title: "Dana's cancer diagnosis" }), writer);
   assert.equal(writer.writes[0]!.extras.status, "pending_review");
@@ -143,9 +135,6 @@ test("an episode whose provider title is a personal claim is held for review (#2
 });
 
 test("an audio-only episode is held for review — detection alone is not corroboration (#2294)", async () => {
-  // `audio` detection is a heuristic over speech with no app span behind it, so
-  // fifteen minutes of television with two voices yields an episode asserting a
-  // meeting happened with the show's speakers as attendees.
   const writer = new FakeWriter();
   await writeMeetingEpisodeMemory(record({ app: undefined, detectionSource: "audio" }), writer);
   assert.equal(writer.writes[0]!.extras.status, "pending_review");
@@ -221,7 +210,6 @@ test("summaryMode smart routes a high-trust decision to active with meeting prov
   ]);
   const res = await generateMeetingSummaryFacts(TRANSCRIPT_RECORD(), meetingConfig({ summaryMode: "smart" }), { extractor, writer });
   assert.equal(res.llmInvoked, true);
-  // 0.9 * 0.85 = 0.765 >= autoApprove 0.7 -> both active; plus the summary fact.
   assert.equal(res.active, 2);
   assert.equal(res.dropped, 0);
   assert.equal(res.summaryWritten, true);
@@ -233,10 +221,6 @@ test("summaryMode smart routes a high-trust decision to active with meeting prov
 });
 
 test("a high-impact personal claim never goes active, however the trust adds up (#2294)", async () => {
-  // A meeting transcript is the same always-on capture audio a wearable
-  // records, so a fabricated medical line can arrive in it. At the extractor's
-  // fixed 0.9 confidence, 0.9 * 0.85 = 0.765 clears the 0.7 auto-approve line;
-  // the ambient cap must hold it in the review queue anyway.
   const writer = new FakeWriter();
   const extractor = spyExtractor("Meeting summary.", [
     { content: "Dana was diagnosed with cancer last month", category: "decision", confidence: 0.9 },
@@ -258,7 +242,6 @@ test("a high-impact personal claim never goes active, however the trust adds up 
 });
 
 test("summaryMode smart drops a low-trust candidate but corroboration promotes it to review", async () => {
-  // conf 0.5 * sourceTrust 0.85 = 0.425 < reviewTrust 0.45 -> drop.
   const lowConf: MeetingFactCandidate[] = [{ content: "maybe we will refactor later", category: "fact", confidence: 0.5 }];
   const w1 = new FakeWriter();
   const r1 = await generateMeetingSummaryFacts(
@@ -268,7 +251,6 @@ test("summaryMode smart drops a low-trust candidate but corroboration promotes i
   );
   assert.equal(r1.dropped, 1);
   assert.equal(r1.active + r1.review, 0);
-  // With corroboration (+0.15 -> 0.575) it clears reviewTrust but not autoApprove -> review.
   const w2 = new FakeWriter();
   const r2 = await generateMeetingSummaryFacts(
     record({}, { transcript: [segment("x")], corroboratedBy: ["pendant"] }),
@@ -311,9 +293,6 @@ test("no transcript (no audio) short-circuits without invoking the extractor", a
 
 test("finding 3 — smart-mode summary is trust-gated, not force-active for a low-trust meeting", async () => {
   const writer = new FakeWriter();
-  // sourceTrust 0.5 → summary trust 0.8 * 0.5 = 0.4 < reviewTrust 0.45 → drop.
-  // The judge also rejects the only candidate. Before the fix the summary text
-  // was written ACTIVE whenever not already hashed, bypassing the gate.
   const extractor = spyExtractor("Everyone agreed to ship on Friday.", [
     { content: "we will ship on friday", category: "decision", confidence: 0.9 },
   ]);
@@ -335,8 +314,6 @@ test("finding 1 — episode idempotency holds against a real StorageManager (sou
     const writer = createMeetingMemoryWriter(storage);
     const rec = record();
     assert.equal(await writeMeetingEpisodeMemory(rec, writer), true, "first write lands the episode");
-    // The episode is a `moment`, absent from the fact-only hash index, so a
-    // rebuild must recognize it via the source+content probe and skip.
     assert.equal(await writeMeetingEpisodeMemory(rec, writer), false, "unchanged rebuild skips");
     const memories = await storage.readAllMemories();
     const episodes = memories.filter((m) => m.frontmatter.source === meetingSourceLabel(rec.id));
@@ -363,8 +340,6 @@ test("finding 2 — smart-mode facts are idempotent on rebuild against a real St
     const afterFirst = (await storage.readAllMemories()).filter(
       (m) => m.frontmatter.source === meetingSourceLabel(rec.id),
     ).length;
-    // Rebuild/retry with identical extraction: every claim already persisted for
-    // this meeting → all skipped, nothing duplicated.
     const second = await generateMeetingSummaryFacts(rec, cfg, { extractor, writer });
     assert.equal(second.active, 0, "no new active facts on the second pass");
     assert.ok(second.skipped >= 2, "duplicate candidates are skipped, not re-written");
@@ -385,10 +360,6 @@ test("finding 1 — two production builds of an unchanged day write the episode 
     const cfg = meetingConfig({ summaryMode: "off" });
     const generator = createMeetingMemoryGenerator(writer, cfg);
     const rec = record();
-    // Both builds hand the record as BUILT (not unchanged) so the writer-level
-    // source+content dedup is what must hold end to end — proving the episode is
-    // idempotent through createMeetingMemoryGenerator + createMeetingMemoryWriter
-    // even if the seam's unchanged-skip did not fire.
     const first = await generator.onRecordsBuilt({ built: [rec], removedIds: [], unchangedIds: [], updatedIds: [] });
     assert.deepEqual(first.episodes, { written: 1, skipped: 0 });
     const second = await generator.onRecordsBuilt({ built: [rec], removedIds: [], unchangedIds: [], updatedIds: [] });
@@ -408,13 +379,10 @@ test("finding 2 — the generator skips an unchanged id WHOSE memories exist: ze
   const cfg = meetingConfig({ summaryMode: "smart" });
   const generator = createMeetingMemoryGenerator(writer, cfg, { extractor });
   const rec = TRANSCRIPT_RECORD();
-  // Seed: a prior build generated this record's episode + facts.
   await generator.onRecordsBuilt({ built: [rec], removedIds: [], unchangedIds: [], updatedIds: [] });
   const extractorCallsAfterSeed = extractor.calls;
   const writesAfterSeed = writer.writes.length;
   assert.ok(writesAfterSeed > 0, "the seed build wrote memories");
-  // Rebuild: the id is unchanged AND its memories already exist → the generator
-  // must skip it: no episode re-write, and crucially no LLM extractor call.
   const outcome = await generator.onRecordsBuilt({
     built: [rec],
     removedIds: [],
@@ -434,15 +402,9 @@ test("finding 2b — an unchanged id whose memories are MISSING is regenerated (
   const cfg = meetingConfig({ summaryMode: "smart" });
   const generator = createMeetingMemoryGenerator(writer, cfg, { extractor });
   const rec = TRANSCRIPT_RECORD();
-  // Build A persisted the record but its generation threw AFTER the record save,
-  // so NO episode/summary memory exists for meeting:<id>. Model that state as a
-  // writer that holds nothing for the source.
   assert.equal(writer.writes.length, 0, "no memories exist yet (generation threw before writing)");
   const source = meetingSourceLabel(rec.id);
   assert.equal(await writer.hasMemoryFromSource(source, composeMeetingEpisodeContent(rec)), false);
-  // Build B: the store reports the record UNCHANGED (contentHash identical). A plain
-  // skip would strand the meeting with zero memories forever; the generator must
-  // instead regenerate because the expected episode is absent.
   const outcome = await generator.onRecordsBuilt({
     built: [rec],
     removedIds: [],
@@ -452,7 +414,6 @@ test("finding 2b — an unchanged id whose memories are MISSING is regenerated (
   assert.deepEqual(outcome.episodes, { written: 1, skipped: 0 }, "the missing episode is regenerated on the retry build");
   assert.equal(extractor.calls, 1, "the summary/facts layer runs on the retry too");
   assert.equal(await writer.hasMemoryFromSource(source, composeMeetingEpisodeContent(rec)), true, "the episode now resolves");
-  // Build C: memories now present → unchanged rebuild skips (idempotent, no LLM).
   const again = await generator.onRecordsBuilt({
     built: [rec],
     removedIds: [],
@@ -474,8 +435,6 @@ test("finding 3 — the generator refreshes an updated id: retract then regenera
   assert.ok(writesAfterFirst > 0, "the first build wrote memories");
   const source = meetingSourceLabel(rec.id);
 
-  // Same id, changed content: the record is signalled as updated. The generator
-  // must retract the prior memories for the source, then regenerate.
   const changed = record({ app: "Meet" }, { transcript: [segment("we shipped it")], corroboratedBy: [] });
   const outcome = await generator.onRecordsBuilt({
     built: [changed],
@@ -486,7 +445,6 @@ test("finding 3 — the generator refreshes an updated id: retract then regenera
   assert.equal(writer.retired.filter((s) => s === source).length, 1, "the updated meeting's prior memories were retracted once");
   assert.equal(extractor.calls, 2, "the updated record is re-extracted");
   assert.deepEqual(outcome.episodes, { written: 1, skipped: 0 }, "a fresh episode is regenerated after the retract");
-  // After retract, only the refreshed copy resolves for the source — no stale duplicate.
   const stale = composeMeetingEpisodeContent(rec);
   const fresh = composeMeetingEpisodeContent(changed);
   assert.notEqual(stale, fresh, "the changed record renders a different episode");
@@ -504,9 +462,6 @@ test("finding 4 — a throwing durability judge degrades gracefully, queueing ca
       throw new Error("judge provider timed out");
     },
   };
-  // review mode routes every survivor to the review queue via the bands — with a
-  // throwing judge the pass must still COMPLETE (no exception) and queue the
-  // candidate rather than aborting the whole day build.
   const cfg = meetingConfig({ summaryMode: "review" });
   const rec = TRANSCRIPT_RECORD();
   const result = await generateMeetingSummaryFacts(rec, cfg, { extractor, judge, writer });
@@ -522,8 +477,6 @@ test("finding 5 — a tombstone-blocked fact write is counted as blocked, not ac
   const extractor = spyExtractor("We shipped v2.", [
     { content: "Team decided to ship v2 on Friday", category: "fact", confidence: 0.95 },
   ]);
-  // Writer whose sealed writes always report the #1579 tombstone block (the
-  // chokepoint downgraded the fact to pending_review — no active copy).
   const blocked = new Set<string>();
   const writer: MeetingMemoryWriter = {
     async writeSealedMemory(envelope, extras) {

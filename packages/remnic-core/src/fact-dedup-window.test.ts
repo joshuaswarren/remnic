@@ -18,7 +18,6 @@ const SKY_OPTS = {
 } as const;
 const CONTENDED_LOCK_OPTIONS = { maxWaitMs: 40, pollMs: 10, retryMaxAttempts: 2, retryBaseMs: 10 };
 
-/** Hold a fresh fact-hash index lock the way a peer mid-publish does; returns the release. */
 async function holdIndexLock(root: string): Promise<() => Promise<void>> {
   const lockPath = path.join(root, "state", "fact-hashes.txt.lock");
   await mkdir(path.dirname(lockPath), { recursive: true });
@@ -37,7 +36,6 @@ test("confirmActiveFactDuplicate sees a fact another session committed into the 
     const recheck = () => confirmActiveFactDuplicate(storage, SKY_OPTS);
     assert.equal(await recheck(), false, "clean namespace must not report a duplicate");
 
-    // A concurrent session (separate manager, same dir) commits the fact.
     const peer = new StorageManager(storage["baseDir"]);
     await peer.writeMemory("fact", "The sky is BLUE!");
 
@@ -58,12 +56,10 @@ test("persistUnderFactDedupWindow suppresses on recheck hit and writes on a miss
     };
     const recheck = () => confirmActiveFactDuplicate(storage, SKY_OPTS);
 
-    // First session: recheck misses, write proceeds.
     const first = await persistUnderFactDedupWindow(storage["baseDir"], recheck, write);
     assert.deepEqual(first, { suppressed: false, result: "written" });
     assert.equal(writes, 1);
 
-    // Second session racing the same content: recheck hits, write suppressed.
     const second = await persistUnderFactDedupWindow(storage["baseDir"], recheck, write);
     assert.deepEqual(second, { suppressed: true });
     assert.equal(writes, 1, "the raced duplicate must not be written");

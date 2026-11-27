@@ -64,7 +64,6 @@ export class RelevanceStore {
     const fb = this.state[memoryId];
     if (!fb) return 0;
 
-    // Cap effect to avoid runaway ranking distortion.
     const up = Math.min(3, fb.up);
     const down = Math.min(3, fb.down);
 

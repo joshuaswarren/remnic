@@ -60,13 +60,7 @@ export interface DirectAnswerSources {
    * the memory has no trust-zone record (treated as not trusted).
    */
   trustZoneFor(memoryId: string): Promise<TrustZoneName | null>;
-  /**
-   * Resolve a calibrated importance score in [0, 1] for a memory.
-   */
   importanceFor(memory: MemoryFile): number;
-  /**
-   * Taxonomy used to classify memories into direct-answer buckets.
-   */
   taxonomy: Taxonomy;
 }
 
@@ -111,7 +105,6 @@ export async function tryDirectAnswer(
     eligibleTaxonomyBuckets: config.recallDirectAnswerEligibleTaxonomyBuckets,
   };
 
-  // Short-circuit disabled case before touching any I/O.
   if (!eligibilityConfig.enabled) {
     return isDirectAnswerEligible({
       query,
@@ -122,11 +115,6 @@ export async function tryDirectAnswer(
   }
 
   // Short-circuit empty-query case before any I/O.  isDirectAnswerEligible
-  // deterministically returns reason "empty-query" when the query
-  // normalizes to zero searchable tokens; there's no point materializing
-  // candidates just to reach the same verdict, and doing so would
-  // surface avoidable upstream errors for requests that should exit
-  // immediately.
   if (normalizeRecallTokens(query).length === 0) {
     return isDirectAnswerEligible({
       query,

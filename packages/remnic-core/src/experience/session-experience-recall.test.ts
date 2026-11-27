@@ -1,11 +1,3 @@
-/**
- * Session-end experience recall injection (issue #2979 layer 2).
- *
- * Promoted experience memories compete in the existing procedure-recall
- * slot and share `recallMaxProcedures`. pending_review never injects.
- * Gate off: extraction still makes zero storage calls; recall does not
- * inspect experience attributes (no Experience preview prefix).
- */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

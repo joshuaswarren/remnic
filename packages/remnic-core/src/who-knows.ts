@@ -1,24 +1,3 @@
-/**
- * `who_knows` — rank entities by demonstrated expertise for a topic
- * (issue #2057).
- *
- * Deterministic scoring over existing entity + fact data. No LLM, no QMD:
- * a single pass over the namespace-scoped corpus (`readAllMemories`) plus
- * entity files. Signals:
- *
- * 1. Entity mentions co-occurring with topic tokens (entityRef + name/alias
- *    mention in matching memory content).
- * 2. Speaker/authorship attribution ("Alice said/explained/…") when present —
- *    small multiplicative bonus.
- * 3. Recency as a tie-break only (per the issue): newer evidence ranks higher
- *    when scores tie; entity id is the final stable key (total order).
- * 4. Existing importance + confidence frontmatter weight each evidence item.
- *
- * Pure functions live here so tests can exercise scoring without booting an
- * orchestrator; the access service supplies namespace-scoped data. MCP tool
- * definitions are exported for access-mcp.ts to spread into `tools/list`
- * (same pattern as `meetings/mcp-tools.ts`).
- */
 
 import { EngramAccessInputError } from "./access-errors.js";
 import type { McpTool } from "./access-mcp.js";
@@ -139,11 +118,6 @@ interface ScoredCandidate {
   lastSeen: string | null;
 }
 
-/**
- * Deterministic ranking. Pure: same inputs → same output, total order via
- * (score desc, lastSeen desc, entityId asc) so ties never depend on scan
- * order (sort-stability rule).
- */
 export function computeWhoKnows(input: {
   topic: string;
   limit: number;
@@ -153,7 +127,6 @@ export function computeWhoKnows(input: {
   const topicTokens = tokenizeTopic(input.topic);
   const byId = new Map(input.entities.map((entity) => [entity.id, entity]));
 
-  // Multi-word names/aliases must match as phrases; single words as tokens.
   const mentionMatchers: Array<{ entityId: string; matcher: RegExp }> = [];
   const authorshipMatchers: Array<{ entityId: string; matcher: RegExp }> = [];
   for (const entity of input.entities) {
@@ -221,7 +194,6 @@ export function computeWhoKnows(input: {
     }
     if (attributed.size === 0) continue;
 
-    // Attribution is per entity: "Alice explained X with Bob" credits only
     // Alice with authorship — Bob is a co-mention, not the speaker.
     const attributedAuthors = new Set<string>();
     for (const { entityId, matcher } of authorshipMatchers) {
@@ -258,15 +230,11 @@ export function computeWhoKnows(input: {
   return { topic: input.topic, results };
 }
 
-// ---------------------------------------------------------------------------
 // MCP tool definition (spread into access-mcp.ts tools/list — see
 // MEETINGS_MCP_TOOLS precedent; the type-only import keeps this cycle-free).
-// ---------------------------------------------------------------------------
 
 export const WHO_KNOWS_MCP_TOOLS: McpTool[] = [
   {
-    // Registered as `engram.who_knows`; `withToolAliases` emits the canonical
-    // `remnic.who_knows` alias automatically (dual-naming invariant).
     name: "engram.who_knows",
     description:
       "Rank people/entities by demonstrated expertise for a topic (issue #2057). Deterministic scoring over entity mentions, attribution, importance, and recency; each hit carries evidence refs (ids/paths/timestamps). Empty topic is a validation error; a topic with no evidence returns an empty list.",
@@ -339,7 +307,6 @@ export async function handleWhoKnowsHttpQuery(deps: {
     limit = parsed;
   }
   const namespaceParam = deps.getParam("namespace");
-  // Always resolve (and allow-list check) the effective namespace, even when
   // the param is omitted — the implicit default namespace is still a
   // namespace every other GET route gates the same way.
   const namespace = deps.resolveNamespace(namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined);
@@ -354,7 +321,6 @@ export async function handleWhoKnowsHttpQuery(deps: {
       }),
     };
   } catch (err) {
-    // Input validation (including namespace ACL) is a 400; backend faults
     // bubble to the global handler so they return 500 and get logged.
     if (err instanceof EngramAccessInputError) {
       return { status: 400, body: { error: "invalid_request", code: "invalid_request", message: err.message } };

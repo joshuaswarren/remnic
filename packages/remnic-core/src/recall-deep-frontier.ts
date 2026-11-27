@@ -1,10 +1,3 @@
-/**
- * Deep-recall frontier ranker (issue #2332).
- *
- * Pure. After every working-set change the frontier is capped at
- * DEEP_RECALL_FRONTIER_CAP items ordered by shared-anchor count
- * descending, then nodeId ascending — a total comparator.
- */
 
 export const DEEP_RECALL_FRONTIER_CAP = 20;
 

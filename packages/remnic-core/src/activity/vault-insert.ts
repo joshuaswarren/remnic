@@ -30,8 +30,6 @@ export function insertMarkersUnderHeading(
   const startMarker = `<!-- remnic:${opts.name}:start -->`;
   const endMarker = `<!-- remnic:${opts.name}:end -->`;
   const rows = fileLines(fileText);
-  // A fenced example pair is sample text, not a live region (issue #1985):
-  // only markers outside a code block count as "already present".
   const present =
     rows.some((row) => !row.fenced && row.line.includes(startMarker)) &&
     rows.some((row) => !row.fenced && row.line.includes(endMarker));

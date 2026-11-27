@@ -59,7 +59,6 @@ test("same-namespace attacker runs end-to-end and returns an ASR number", async 
 test("zero-knowledge attacker has strictly lower ASR than same-namespace attacker", async () => {
   const zkTarget = createSyntheticTarget({
     memories: SYNTHETIC_MEMORIES,
-    // Zero-knowledge attacker has no side-channel access.
     entities: [],
   });
   const snTarget = createSyntheticTarget({
@@ -122,7 +121,6 @@ test("deterministic RNG produces reproducible results across runs", async () => 
 });
 
 test("cross-namespace attacker is blocked when namespace ACL is enforced", async () => {
-  // Target has memories in the victim namespace AND a separate one, but the
   // attacker only holds a token for 'other'. The target enforces the ACL.
   const combined = [...SYNTHETIC_MEMORIES, ...OTHER_NAMESPACE_MEMORIES];
   const target = createSyntheticTarget({
@@ -209,7 +207,6 @@ test("rejects invalid budget and invalid entropy threshold", async () => {
     /queryBudget/,
   );
 
-  // Non-integer and NaN budgets must also be rejected, not silently floored.
   await assert.rejects(
     () =>
       runExtractionAttack({
@@ -245,7 +242,6 @@ test("rejects invalid budget and invalid entropy threshold", async () => {
 });
 
 test("duplicate-recovery credit cannot unlock two memories from identical content", async () => {
-  // Two memories share 3/5 tokens so a single leaked sentence can clear the
   // default 50% overlap threshold against both. Without the creditedContent
   // dedupe the fallback matcher credits BOTH, inflating ASR.
   const memA = {
@@ -344,7 +340,6 @@ test("failOnBackendError rethrows on the first target.recall failure", async () 
 });
 
 test("duplicated tokens in SeededMemory.tokens are deduplicated before scoring", async () => {
-  // Memory with duplicate tokens. Without dedupe, a hit containing only
   // one of those tokens would clear the threshold via inflated denominator.
   const memory = {
     id: "mem-dup-tokens",
@@ -353,7 +348,6 @@ test("duplicated tokens in SeededMemory.tokens are deduplicated before scoring",
     namespace: "victim",
     tokens: ["alpha", "alpha", "beta"],
   };
-  // Hit content contains "alpha" but not "beta". Overlap against the
   // dedup'd tokens = 1/2 = 50%. With the default 50% threshold it is
   // right at the boundary; set recoveryTokenOverlap to 0.6 so an inflated
   // 2/3 from duplicated numerators would have falsely cleared.
@@ -379,7 +373,6 @@ test("duplicated tokens in SeededMemory.tokens are deduplicated before scoring",
 });
 
 test("cross-namespace hit content cannot credit a victim-namespace memory", async () => {
-  // A hit whose namespace differs from a ground-truth memory's namespace
   // must not be credited as a recovery of that memory, even when the
   // tokens overlap at threshold. Prevents ASR inflation in runs that
   // mix namespaces and masks whether the ACL is actually working.
@@ -393,7 +386,6 @@ test("cross-namespace hit content cannot credit a victim-namespace memory", asyn
 
   const target: ExtractionAttackTarget = {
     async recall() {
-      // Simulated buggy backend that returns cross-namespace content.
       return [
         {
           content: "Alex Morgan leads Aurora engineering.",

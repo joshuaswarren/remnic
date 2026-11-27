@@ -31,10 +31,6 @@ import type {
 } from "./manifest.js";
 import type { BuiltInProvider, ProviderConfig } from "../types.js";
 
-/**
- * A manifest role paired with its resolved `ProviderConfig`. The PR2 test
- * list asserts temperature/seed on `providerConfig` directly.
- */
 export interface ResolvedLocalLabRole {
   readonly provider: LocalLabRoleConfig["provider"];
   readonly baseUrl: string;
@@ -47,14 +43,11 @@ export interface ResolvedLocalLabRole {
 }
 
 export interface ResolvedLocalLabProfile {
-  /** The parsed manifest this resolution was produced from. */
   readonly manifest: LocalLabManifest;
   readonly responder: ResolvedLocalLabRole;
   readonly judge: ResolvedLocalLabRole;
   readonly embedding?: ResolvedLocalLabRole;
-  /** Phase scheduling mode. PR2 ships `"sequential"` only. */
   readonly phases: "sequential";
-  /** Operator hand-off note (or undefined when not authored). */
   readonly notes?: LocalLabManifestNotes;
 }
 
@@ -118,11 +111,6 @@ function normalizeRoleBaseUrl(
   return trimmed;
 }
 
-/**
- * Resolve the full manifest into a `ResolvedLocalLabProfile`. Used by
- * `resolveBenchRuntimeProfile` for `runtimeProfile: "local-lab"`, and
- * directly by the unit test for the temperature/seed forwarding assertion.
- */
 export function resolveLocalLabProfile(
   manifest: LocalLabManifest,
 ): ResolvedLocalLabProfile {
@@ -138,12 +126,6 @@ export function resolveLocalLabProfile(
   };
 }
 
-/**
- * Map a manifest provider kind to the bench `BuiltInProvider` enum. Throws
- * on any value not in `LOCAL_LAB_PROVIDER_KINDS` — the parser already
- * enforces this, but the guard here keeps the function total and prevents a
- * future caller from bypassing the parser.
- */
 function manifestProviderKindToBuiltIn(
   kind: LocalLabRoleConfig["provider"],
 ): BuiltInProvider {

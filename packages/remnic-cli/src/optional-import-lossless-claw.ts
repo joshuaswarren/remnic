@@ -1,12 +1,3 @@
-// Lazy loader for the optional @remnic/import-lossless-claw package.
-//
-// CLAUDE.md à-la-carte invariant: optional packages MUST be loaded via
-// computed-specifier dynamic imports so bundlers cannot statically resolve
-// them. Mirrors optional-bench.ts / optional-weclone-export.ts.
-//
-// Type-shape declared manually (not via `typeof import(...)`) so the CLI
-// type-checks even when the optional package is not yet linked into
-// node_modules — same pattern as optional-importer.ts.
 
 import type { openLcmDatabase } from "@remnic/core";
 

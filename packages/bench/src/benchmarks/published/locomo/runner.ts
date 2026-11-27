@@ -1,11 +1,3 @@
-/**
- * LoCoMo runner migrated into @remnic/bench for phase 1.
- *
- * As of issue #566 PR 2/7, the per-item lifecycle (reset → ingest →
- * recall → answer → judge → score) lives in `../harness.ts`. This
- * module only knows about dataset loading, session extraction, and
- * how to translate a `LoCoMoConversation` into a `HarnessPlan`.
- */
 
 import type { Message } from "../../../adapters/types.js";
 import { hashString } from "../../../integrity/hash-verification.js";
@@ -78,7 +70,6 @@ type ExtractedLoCoMoSession = {
   dateTime?: string;
 };
 
-/** Extract sessions from the conversation dict as ordered (sessionId, turns) pairs. */
 function extractSessions(
   conversation: Record<string, unknown>,
 ): ExtractedLoCoMoSession[] {
@@ -1147,12 +1138,6 @@ type LoCoMoLinkedEvidenceHop = {
   lines: string[];
 };
 
-/**
- * Expand question-matching recall lines through lexical bridge entities that
- * occur in the already-recalled context. This never sees LoCoMo category,
- * evidence IDs, or expected answers; it only preserves and groups verbatim
- * recall lines for the responder.
- */
 function composeLoCoMoLinkedEvidence(args: {
   lines: string[];
   direct: LoCoMoScoredLine[];
@@ -1507,9 +1492,6 @@ export async function loadLoCoMoDataset(
   datasetDir: string | undefined,
   limit?: number,
 ): Promise<LoadedLoCoMoDataset> {
-  // Limit normalization happens inside `loadLoCoMo10`; do not re-validate
-  // here (the shared loader's `normalizeLimit` is the single source of
-  // truth).
   const loaded = await loadLoCoMo10({
     mode,
     datasetDir,

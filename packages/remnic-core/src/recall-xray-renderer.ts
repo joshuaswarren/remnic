@@ -1,20 +1,3 @@
-/**
- * Unified Recall X-ray renderer (issue #570, PR 2).
- *
- * Pure functions that format a `RecallXraySnapshot` for human text,
- * GitHub-flavored markdown, and machine JSON consumption.  CLI / HTTP
- * / MCP surfaces all call into this module — they do NOT format X-ray
- * output themselves, so rendering is tested in one place (CLAUDE.md
- * rule 22).
- *
- * Scope for PR 2 (this slice):
- *   - Pure rendering.  No IO, no transport, no capture.
- *   - `renderXray(snapshot, format)` with format ∈
- *     `{"json", "text", "markdown"}`.
- *   - `parseXrayFormat(value)` — input validator that rejects unknown
- *     formats with a listed-options error (CLAUDE.md rule 51).
- *   - Golden-file-style tests in `recall-xray-renderer.test.ts`.
- */
 
 import type {
   RecallFilterTrace,
@@ -66,7 +49,6 @@ export function renderXray(
   return renderXrayText(snapshot);
 }
 
-// ─── JSON ─────────────────────────────────────────────────────────────────
 
 /**
  * Deterministic JSON encoding of an X-ray snapshot.  Returns a stable
@@ -81,8 +63,6 @@ export function renderXrayJson(snapshot: RecallXraySnapshot | null): string {
       2,
     );
   }
-  // `snapshotFound` is injected *before* the rest so downstream JSON
-  // consumers see it near the top of the document.
   return JSON.stringify(
     { snapshotFound: true, ...snapshot },
     null,
@@ -90,7 +70,6 @@ export function renderXrayJson(snapshot: RecallXraySnapshot | null): string {
   );
 }
 
-// ─── Text ─────────────────────────────────────────────────────────────────
 
 export function renderXrayText(snapshot: RecallXraySnapshot | null): string {
   const lines: string[] = ["=== Recall X-ray ==="];
@@ -194,10 +173,6 @@ function renderResultTextLines(
   }
   if (result.graphPath && result.graphPath.length > 0) {
     lines.push(`    graph-path: ${result.graphPath.join(" -> ")}`);
-    // Issue #681 PR 3/3 — surface per-edge confidence inline so
-    // operators can attribute floor-pruning / PageRank ranking
-    // decisions to specific edges. Skipped when no confidences were
-    // recorded (legacy snapshot or single-node path).
     if (
       result.graphEdgeConfidences &&
       result.graphEdgeConfidences.length > 0
@@ -221,7 +196,6 @@ function renderResultTextLines(
   return lines;
 }
 
-// ─── Markdown ─────────────────────────────────────────────────────────────
 
 export function renderXrayMarkdown(
   snapshot: RecallXraySnapshot | null,
@@ -285,11 +259,6 @@ export function renderXrayMarkdown(
       }
     });
 
-    // Per-disclosure token-spend summary (issue #677 PR 3/4).  Only
-    // emitted when at least one result carries a disclosure level so
-    // we don't pollute the snapshot for callers who haven't wired the
-    // depth knob through.  Counts and tokens default to 0 for buckets
-    // with no contributions.
     const summary = summarizeDisclosureTokens(snapshot.results);
     const hasAnyDisclosure =
       summary.chunk.count + summary.section.count + summary.raw.count > 0;
@@ -420,9 +389,6 @@ function renderResultMarkdownLines(
         .map(mdInlineCode)
         .join(" → ")}`,
     );
-    // Issue #681 PR 3/3 — render per-edge confidences as a parallel
-    // markdown line so operators can correlate them with the path
-    // arrows above. Skipped when no confidences were recorded.
     if (
       result.graphEdgeConfidences &&
       result.graphEdgeConfidences.length > 0
@@ -454,14 +420,11 @@ function renderResultMarkdownLines(
         : "";
     lines.push(`- **Disclosure:** \`${result.disclosure}\`${tokenLine}`);
   } else if (typeof result.estimatedTokens === "number") {
-    // Disclosure unspecified but tokens recorded — still surface the
-    // budget so the operator can attribute spend.
     lines.push(`- **Estimated tokens:** ${result.estimatedTokens}`);
   }
   return lines;
 }
 
-// ─── Shared helpers ───────────────────────────────────────────────────────
 
 function servedByLabel(servedBy: RecallXrayServedBy): string {
   return `served-by=${servedBy}`;
@@ -488,19 +451,12 @@ function renderScoreDecomposition(result: RecallXrayResult): string {
 }
 
 function formatScore(value: number): string {
-  // Deterministic 4-decimal formatting keeps golden files stable
-  // without printing spurious trailing zeros via toString().
   if (!Number.isFinite(value)) return "0.0000";
   return value.toFixed(4);
 }
 
 function formatCapturedAt(ts: number): string {
   if (!Number.isFinite(ts) || ts < 0) return "(unknown)";
-  // `new Date(n).toISOString()` throws a RangeError for finite numbers
-  // outside the valid Date range (roughly |n| > 8.64e15).  That case
-  // can surface when snapshots are corrupted or captured with a
-  // custom clock, so coerce it to the same "(unknown)" fallback
-  // rather than crashing the renderer.
   try {
     return new Date(ts).toISOString();
   } catch {
@@ -509,8 +465,6 @@ function formatCapturedAt(ts: number): string {
 }
 
 function mdEscape(value: string): string {
-  // Pipe is the only character that breaks GFM table rendering; escape
-  // backslash first so we do not re-escape the escape character.
   return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 

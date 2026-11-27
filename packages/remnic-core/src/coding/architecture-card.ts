@@ -1,35 +1,7 @@
-/**
- * Architecture card — pure deterministic builder (issue #1548 Track A PR 3).
- *
- * Produces a compact, sorted, byte-stable markdown card describing a
- * repository: manifests, top-level directories, language histogram by
- * extension, and entry points derived from manifests. The deterministic
- * card is useful on its own; an optional LLM summary pass (gated behind
- * `architectureCardLlmSummary`) can later prepend a human-readable
- * overview using the existing extraction engine.
- *
- * Design rules honoured:
- *  - rule 38: every multi-value field is sorted before serialising so
- *    two runs over the same fixture produce byte-identical output.
- *  - rule 24/51: `repoRoot` must be an absolute, existing directory;
- *    invalid input is rejected with a descriptive error.
- *  - rule 34: scan failures produce a tagged outcome, never a crash.
- *  - rule 48: the LLM pass is opt-in (default off).
- *  - rule 13: on LLM failure the deterministic card ships unchanged.
- *  - Privacy + speed: file *contents* are never read except for manifest
- *    files (package.json, Cargo.toml, go.mod, pyproject.toml, pom.xml).
- *
- * This module is deliberately pure: no orchestrator references, no
- * config side-effects, no namespace wiring. Callers inject the repo
- * root and receive a string.
- */
 import { readFile, readdir, lstat } from "node:fs/promises";
 import path from "node:path";
 import { expandTildePath } from "../utils/path.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Public types
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Maximum byte size of the serialised card. When the deterministic card
@@ -38,21 +10,8 @@ import { expandTildePath } from "../utils/path.js";
  */
 export const ARCHITECTURE_CARD_MAX_BYTES = 4096;
 
-/**
- * Visible marker appended when the card is truncated. Exported so callers
- * that read stored card content can detect truncation from the content
- * itself, without depending on a frontmatter tag that may go stale on
- * content-only updates (cursor review: "stale truncated tag on update").
- */
 export const ARCHITECTURE_CARD_TRUNCATION_MARKER = "… card truncated to fit size cap …";
 
-/**
- * Maximum byte size of the LLM summary prefix. The summary is additive —
- * the deterministic card (manifests, languages, entry points) must ALWAYS
- * survive truncation. Clamping the summary before prepending prevents a
- * misbehaving or prompt-injected summariser from crowding out the
- * deterministic sections (codex review).
- */
 export const ARCHITECTURE_CARD_MAX_SUMMARY_BYTES = 1024;
 
 /**
@@ -74,11 +33,6 @@ export const KNOWN_MANIFEST_FILES = [
   "deno.json",
 ] as const;
 
-/**
- * Directories the scanner skips (would distort the histogram or are
- * universally non-source). Kept conservative — operators with unusual
- * layouts still get useful output.
- */
 export const SCAN_IGNORE_DIRS: ReadonlySet<string> = new Set([
   "node_modules",
   ".git",
@@ -102,17 +56,10 @@ export const SCAN_IGNORE_DIRS: ReadonlySet<string> = new Set([
   ".vscode",
 ]);
 
-/**
- * Result of a deterministic architecture-card build.
- */
 export interface ArchitectureCard {
-  /** The markdown card body (may be truncated to fit the byte cap). */
   readonly content: string;
-  /** ISO timestamp of the build. */
   readonly generatedAt: string;
-  /** Byte length of `content`. */
   readonly byteSize: number;
-  /** Whether the card was truncated to fit `maxBytes`. */
   readonly truncated: boolean;
 }
 
@@ -127,15 +74,6 @@ export type ArchitectureCardSummariser = (
   repoRoot: string,
 ) => Promise<string | null>;
 
-/**
- * Minimal chat-completion surface for the architecture-card summariser.
- * Structural — satisfied by both `FallbackLlmClient` (gateway model
- * chain) and `LocalLlmClient` (Ollama / OpenAI-compatible local
- * endpoints) without this pure module importing either (rule 48 — the
- * builder stays free of orchestrator/client references). The shape
- * mirrors `Orchestrator.fastLlmForRerank` so callers resolve the client
- * gateway-first, matching LCM routing precedence.
- */
 export interface ArchitectureCardLlmClient {
   chatCompletion(
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
@@ -189,11 +127,7 @@ export function createArchitectureCardSummariser(
   };
 }
 
-/**
- * Optional dependencies for `buildArchitectureCard`.
- */
 export interface BuildArchitectureCardOptions {
-  /** Injected clock — makes tests deterministic. */
   now?: Date;
   /** Override the byte cap (defaults to {@link ARCHITECTURE_CARD_MAX_BYTES}). */
   maxBytes?: number;
@@ -207,36 +141,16 @@ export interface BuildArchitectureCardOptions {
   summariser?: ArchitectureCardSummariser;
 }
 
-/**
- * Tagged failure from the build (rule 34).
- */
 export type ArchitectureCardBuildFailure =
   | { ok: false; code: "invalid_root" | "scan_failed"; detail: string };
 
-/**
- * Tagged result: success carries the card; failure carries a code.
- */
 export type ArchitectureCardBuildResult =
   | { ok: true; card: ArchitectureCard }
   | ArchitectureCardBuildFailure;
 
 // ──────────────────────────────────────────────────────────────────────────
-// Public entry — buildArchitectureCard
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * Deterministically build an architecture card for a repository.
- *
- * The scan:
- *  1. Reads top-level directory entries (sorted, rule 38).
- *  2. Parses any present manifest files for project name + entry points.
- *  3. Walks up to two levels deep to compute a language histogram by
- *     extension (capped to keep the scan fast on large repos).
- *  4. Renders a compact markdown card, sorted throughout.
- *
- * File *contents* are never read except for manifest files. The walker
- * only reads directory entries and file extensions (privacy + speed).
- */
 export async function buildArchitectureCard(
   repoRoot: string,
   options: BuildArchitectureCardOptions = {},
@@ -244,12 +158,8 @@ export async function buildArchitectureCard(
   if (typeof repoRoot !== "string" || repoRoot.length === 0) {
     return { ok: false, code: "invalid_root", detail: "repoRoot must be a non-empty string" };
   }
-  // Expand `~` per rule 17 — codingContext.rootPath often carries a tilde
-  // that Node's path.resolve does NOT expand (cursor review: tilde not expanded).
   const absoluteRoot = path.resolve(expandTildePath(repoRoot));
   try {
-    // Use lstat, not stat, so symlinked manifests/dirs are NOT followed
-    // (codex review: symlinks could read outside the repo root).
     const rootStat = await lstat(absoluteRoot);
     if (!rootStat.isDirectory()) {
       return { ok: false, code: "invalid_root", detail: `not a directory: ${absoluteRoot}` };
@@ -262,10 +172,6 @@ export async function buildArchitectureCard(
     };
   }
 
-  // Probe root readability BEFORE scanning. An unreadable root (EACCES,
-  // transient I/O) must surface as scan_failed, not a silent empty card —
-  // otherwise refresh could overwrite a valid card with a sparse scan (codex
-  // review). lstat can succeed while readdir is denied.
   try {
     await readdir(absoluteRoot);
   } catch (err) {
@@ -285,12 +191,6 @@ export async function buildArchitectureCard(
       try {
         const summary = await options.summariser(deterministic, absoluteRoot);
         if (typeof summary === "string" && summary.trim().length > 0) {
-          // Reserve the deterministic card's budget FIRST — it must ALWAYS
-          // survive (rule 34 + codex/kilo review). The final `capToBytes`
-          // truncates from the END, so the summary is prepended only into the
-          // space left after the deterministic card + separator, additionally
-          // clamped to the summary cap. A summary can never crowd out or
-          // truncate the deterministic sections when the card fits the cap.
           const separator = "\n\n---\n\n";
           const detBytes = Buffer.byteLength(deterministic, "utf-8");
           const sepBytes = Buffer.byteLength(separator, "utf-8");
@@ -308,9 +208,6 @@ export async function buildArchitectureCard(
           // alone rather than prepend a summary that would truncate it.
         }
       } catch (err) {
-        // rule 13: LLM failure → deterministic card ships unchanged.
-        // Intentionally swallowed — the summariser contract says "don't
-        // throw", but we defend against implementations that do.
         void err;
       }
     }
@@ -335,7 +232,6 @@ export async function buildArchitectureCard(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Scan — directory walk + manifest parse (deterministic)
 // ──────────────────────────────────────────────────────────────────────────
 
 interface RepoScan {
@@ -396,7 +292,6 @@ async function readSortedDirEntries(dir: string): Promise<DirEntry[]> {
   for (const name of sortStrings(names)) {
     try {
       const s = await lstat(path.join(dir, name));
-      // Skip symlinks — they could point outside the repo root (codex review).
       if (s.isSymbolicLink()) continue;
       entries.push({ name, isDirectory: s.isDirectory(), isFile: s.isFile() });
     } catch {
@@ -414,7 +309,6 @@ async function computeLanguageHistogram(
   const dirsToScan = topEntries
     .filter((e) => e.isDirectory && !SCAN_IGNORE_DIRS.has(e.name))
     .map((e) => path.join(root, e.name));
-  // Also count files in the root itself.
   const rootFiles = topEntries.filter((e) => e.isFile);
 
   const visitDir = async (dir: string, depth: number): Promise<void> => {
@@ -439,12 +333,10 @@ async function computeLanguageHistogram(
     }
   };
 
-  // Count root-level files first.
   for (const f of rootFiles) {
     const ext = path.extname(f.name).toLowerCase();
     if (ext.length > 0) counts.set(ext, (counts.get(ext) ?? 0) + 1);
   }
-  // Walk subdirectories (breadth-first-ish via sequential await).
   for (const dir of dirsToScan) {
     await visitDir(dir, 0);
   }
@@ -453,7 +345,6 @@ async function computeLanguageHistogram(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Manifest parse — narrow, known formats only
 // ──────────────────────────────────────────────────────────────────────────
 
 async function parseManifest(filePath: string): Promise<{ name: string | null; entryPoints: string[] }> {
@@ -471,7 +362,6 @@ async function parseManifest(filePath: string): Promise<{ name: string | null; e
       case "Cargo.toml":
         return parseCargoToml(raw);
       default:
-        // Other manifests: extract nothing; presence alone is useful.
         return { name: null, entryPoints: [] };
     }
   } catch {
@@ -497,10 +387,6 @@ function parsePackageJson(raw: string): { name: string | null; entryPoints: stri
     entryPoints.push(bin);
   } else if (typeof bin === "object" && bin !== null && !Array.isArray(bin)) {
     for (const [key, value] of Object.entries(bin)) {
-      // Record the target path when it is a string (e.g. {remnic:'dist/cli.js'}
-      // → 'dist/cli.js'); fall back to the bin-key form for non-string
-      // values. `bin` is already narrowed to a record by the typeof/!null/
-      // !isArray guard above, so no cast is needed (codex review P2).
       entryPoints.push(typeof value === "string" ? value : `bin/${key}`);
     }
   }
@@ -511,7 +397,6 @@ function parsePackageJson(raw: string): { name: string | null; entryPoints: stri
   const scripts = obj["scripts"];
   if (typeof scripts === "object" && scripts !== null && !Array.isArray(scripts)) {
     const scriptKeys = Object.keys(scripts as Record<string, unknown>);
-    // Only surface the most useful entry-point scripts.
     for (const key of ["start", "dev", "serve"]) {
       if (scriptKeys.includes(key)) entryPoints.push(`scripts.${key}`);
     }
@@ -520,15 +405,10 @@ function parsePackageJson(raw: string): { name: string | null; entryPoints: stri
 }
 
 function parsePythonProject(raw: string, _filename: string): { name: string | null; entryPoints: string[] } {
-  // pyproject.toml: extract [project] name; setup.py: extract name=.
   const entryPoints: string[] = [];
   let name: string | null = null;
   const nameMatch = raw.match(/^name\s*=\s*["']([^"']+)["']/m);
   if (nameMatch) name = nameMatch[1] ?? null;
-  // Anchor on the next `[section]` header OR end-of-string (`$`). Do NOT use
-  // `\Z` — JavaScript regex treats it as a literal `Z`, so a `[project.scripts]`
-  // table at EOF (the common layout) never matched and every console-script
-  // entry point was dropped from the card (codex P2 review).
   const scriptsMatch = raw.match(/\[project\.scripts\]([\s\S]*?)(?:\n\[|$)/);
   if (scriptsMatch && scriptsMatch[1]) {
     for (const line of scriptsMatch[1].split("\n")) {
@@ -555,7 +435,6 @@ function parseCargoToml(raw: string): { name: string | null; entryPoints: string
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Render — deterministic markdown
 // ──────────────────────────────────────────────────────────────────────────
 
 function renderCard(scan: RepoScan, now: Date): string {
@@ -565,14 +444,12 @@ function renderCard(scan: RepoScan, now: Date): string {
   lines.push(`_Generated ${now.toISOString()}_`);
   lines.push("");
 
-  // Project name from the first manifest that provides one.
   const namedManifest = scan.manifests.find((m) => m.name !== null);
   if (namedManifest && namedManifest.name) {
     lines.push(`**Project:** ${namedManifest.name}`);
     lines.push("");
   }
 
-  // Manifests
   if (scan.manifests.length > 0) {
     lines.push("## Manifests");
     for (const m of scan.manifests) {
@@ -582,10 +459,8 @@ function renderCard(scan: RepoScan, now: Date): string {
     lines.push("");
   }
 
-  // Top-level directories
   if (scan.topDirs.length > 0) {
     lines.push("## Top-level directories");
-    // Wrap into columns of 4 for compactness.
     const cols = 4;
     for (let i = 0; i < scan.topDirs.length; i += cols) {
       const row = scan.topDirs.slice(i, i + cols).join(" · ");
@@ -594,7 +469,6 @@ function renderCard(scan: RepoScan, now: Date): string {
     lines.push("");
   }
 
-  // Language histogram (top 10 by count, ties broken alphabetically)
   if (scan.languageHistogram.length > 0) {
     lines.push("## Languages (by file count)");
     const top = scan.languageHistogram.slice(0, 10);
@@ -604,7 +478,6 @@ function renderCard(scan: RepoScan, now: Date): string {
     lines.push("");
   }
 
-  // Entry points
   const allEntryPoints = sortStrings(scan.manifests.flatMap((m) => m.entryPoints));
   if (allEntryPoints.length > 0) {
     lines.push("## Entry points");
@@ -618,7 +491,6 @@ function renderCard(scan: RepoScan, now: Date): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Helpers — sort + cap
 // ──────────────────────────────────────────────────────────────────────────
 
 function sortStrings(values: string[]): string[] {
@@ -645,10 +517,8 @@ function capToBytes(text: string, maxBytes: number): { text: string; truncated: 
   const markerBytes = Buffer.byteLength(marker, "utf-8");
   const budget = maxBytes - markerBytes;
   if (budget <= 0) {
-    // Extremely tight cap — return just the marker.
     return { text: marker.trimStart(), truncated: true };
   }
-  // Walk the string to find a UTF-8-safe cut point.
   let cut = 0;
   let running = 0;
   const chars = [...text];

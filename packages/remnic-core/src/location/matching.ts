@@ -1,42 +1,11 @@
-/**
- * Core location matcher (issue #2046) — the ONE place that decides whether a
- * memory or wearable conversation gets provider location context.
- *
- * Pure and deterministic: no IO, no clocks, no randomness. Inputs are UTC
- * ISO-8601 instants and half-open [start, end) intervals everywhere.
- *
- * Rules (issue #2046 / umbrella #2043 decision D):
- * 1. A valid memory interval is required — derived ONLY from the memory's own
- *   bi-temporal frontmatter (`valid_at` / `observedAt` / `invalid_at`), never
- *   from wall-clock time or message order. Untimed memories stay untagged.
- * 2. Intervals longer than 24h describe long-lived facts, not events at a
- *   place; they stay untagged.
- * 3. A place is tagged only when it is DOMINANT (strictly the longest overlap
- *   among candidate places; ties are conflicts and leave the memory untagged)
- *   and meets `minimumOverlapSeconds` and `minimumConfidence`.
- * 4. Only resolved named places participate (`kind` home/work/poi): transit
- *   legs and unnamed visits never tag a memory.
- * 5. No address is ever inferred from text, coordinates, IP, or proximity —
- *   only provider-supplied place metadata is echoed, and coordinates only
- *   when `retainCoordinates` is enabled.
- *
- * Provider-owned metadata contract: the tag is `location:<stable-place-slug>`
- * and the opaque provider place id lives in structured attributes. Every
- * field the matcher writes is provider-owned; a memory that carries
- * location-ish metadata WITHOUT the `locationSource` marker is treated as
- * manual/user-authored and is never touched.
- */
 
 import { TAG_LIMITS, STRUCTURED_ATTRIBUTE_LIMITS } from "../write-envelope.js";
 import type { LocationPlace, LocationSegment } from "./types.js";
 
-/** Maximum memory span eligible for location tagging. */
 export const LOCATION_MATCH_MAX_MEMORY_SPAN_MS = 24 * 60 * 60 * 1000;
 
-/** Prefix of provider-owned location tags. */
 export const LOCATION_TAG_PREFIX = "location:";
 
-/** Structured-attribute keys owned by the tagging pipeline (never manual). */
 export const LOCATION_ATTRIBUTE_KEYS = [
   "locationSource",
   "locationPlaceId",
@@ -48,7 +17,6 @@ export const LOCATION_ATTRIBUTE_KEYS = [
   "locationLongitude",
 ] as const;
 
-/** Place kinds eligible for tagging: resolved, named places only. */
 const TAGGABLE_PLACE_KINDS: Record<string, true> = { home: true, work: true, poi: true };
 
 export interface LocationTagPolicy {
@@ -62,7 +30,6 @@ export type MemoryLocationWindow =
   | { kind: "interval"; startUtc: string; endUtc: string }
   | { kind: "instant"; atUtc: string };
 
-/** Why a window was rejected before matching. */
 export type WindowRejectReason = "untimed" | "span-too-long";
 
 export interface WindowResult {
@@ -180,7 +147,6 @@ export function matchDominantPlace(
         });
         continue;
       }
-      // Same place from another source (or a revisit): accumulate.
       existing.overlapMs += overlap;
       existing.visitMs += duration;
       existing.confidence =
@@ -242,7 +208,6 @@ export function locationTagSlug(placeId: string): string {
   return slug.slice(0, TAG_LIMITS.maxTagLength - LOCATION_TAG_PREFIX.length);
 }
 
-/** The provider-owned tag for a matched place. */
 export function locationTagForPlace(placeId: string): string {
   return `${LOCATION_TAG_PREFIX}${locationTagSlug(placeId)}`;
 }
@@ -251,7 +216,6 @@ function boundedAttributeValue(value: string): string {
   return value.slice(0, STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength);
 }
 
-/** Provider-owned structured attributes describing a match. */
 export function locationAttributesForMatch(
   match: LocationMatch,
   policy: LocationTagPolicy,
@@ -274,7 +238,6 @@ export function locationAttributesForMatch(
 export interface LocationUpdatePlan {
   /** Patch for `writeMemoryFrontmatter`; absent when nothing changes. */
   patch?: { tags: string[]; structuredAttributes: Record<string, string> };
-  /** Outcome for reporting. */
   outcome:
     | "tagged"
     | "updated"
@@ -334,7 +297,6 @@ export function planLocationUpdate(
   const desiredTag = locationTagForPlace(outcome.match.place.id);
   const desiredAttributes = locationAttributesForMatch(outcome.match, policy);
   if (tags.length >= TAG_LIMITS.maxTags && providerTagIndex < 0) {
-    // Full tag budget with no provider slot to reuse — leave the memory alone.
     return { outcome: "unchanged" };
   }
   const alreadyCurrent =

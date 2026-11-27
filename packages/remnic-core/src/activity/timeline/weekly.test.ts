@@ -215,10 +215,6 @@ test("equal durations sort by categoryId ascending", () => {
 });
 
 test("a card is attributed to exactly one daily total across an entirely skipped civil date", () => {
-  // Pacific/Apia skipped local 2011-12-30 at the date-line jump. The
-  // skipped date owns a zero-width window, so it appears as no day entry,
-  // and the 31st's card lands on exactly one daily total — never also on
-  // the skipped date, which pre-fix shared the 31st's interval.
   const summary = buildWeeklyActivitySummary(
     [
       // Dec 29 10:00-11:00 local (-10:00).

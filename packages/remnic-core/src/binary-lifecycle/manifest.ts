@@ -46,7 +46,6 @@ export async function readManifest(memoryDir: string): Promise<BinaryLifecycleMa
     throw new Error(`Invalid binary lifecycle manifest JSON at ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // CLAUDE.md #18: validate the parsed result is a non-null object.
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error(`Invalid binary lifecycle manifest shape at ${filePath}: expected object`);
   }
@@ -57,10 +56,6 @@ export async function readManifest(memoryDir: string): Promise<BinaryLifecycleMa
   return parsed as BinaryLifecycleManifest;
 }
 
-/**
- * Write the manifest atomically: write to a temp file, then rename.
- * CLAUDE.md #54: never delete before write. Write temp first, rename atomically.
- */
 export async function writeManifest(
   memoryDir: string,
   manifest: BinaryLifecycleManifest,
@@ -70,13 +65,11 @@ export async function writeManifest(
   const dest = manifestPath(memoryDir);
   const tmpSuffix = crypto.randomBytes(8).toString("hex");
   const tmpPath = `${dest}.${tmpSuffix}.tmp`;
-  // Sort keys for deterministic output (CLAUDE.md #38).
   const content = JSON.stringify(manifest, null, 2) + "\n";
   await fsp.writeFile(tmpPath, content, "utf-8");
   try {
     await fsp.rename(tmpPath, dest);
   } catch (renameErr) {
-    // Clean up temp on rename failure (cross-device edge case).
     try {
       await fsp.unlink(tmpPath);
     } catch {

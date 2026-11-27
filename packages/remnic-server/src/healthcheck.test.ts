@@ -225,7 +225,6 @@ test("healthcheck accepts only HTTP 200", async () => {
       await withHealthEnvironment({ HOME: fixtureDir }, async () => {
         assert.equal(await runServerHealthcheck({ configPath }), false);
       });
-      // Auth and readiness answers are final: the legacy path is never probed.
       assert.deepEqual(harness.requests, [{
         url: "/engram/v1/live",
         authorization: `Bearer ${CONFIG_TOKEN}`,

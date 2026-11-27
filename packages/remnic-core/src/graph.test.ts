@@ -354,13 +354,6 @@ async function writeGraphEdges(
 }
 
 
-// ---------------------------------------------------------------------------
-// Incremental edge cache (issue #1904). onMemoryWritten pushes single-writer
-// appends into the warm cache in place and reloads only on a peer append.
-// These use a delete-the-file-then-traverse probe instead of a readAllEdges
-// spy: it proves the same invariant more robustly (a reload would read the
-// now-missing file and return nothing, so surviving edges prove no reload).
-// ---------------------------------------------------------------------------
 
 const onWriteOpts = {
   entityRef: "Acme",
@@ -373,17 +366,12 @@ test("#1904: onMemoryWritten pushes appended edges into the warm cache in place 
   try {
     await writeGraphEdges(memoryDir, [makeEdge("seed", "old-sibling")]);
     const graph = new GraphIndex(memoryDir, makeGraphConfig());
-    // Warm the edge cache (records the file-size baseline).
     await graph.spreadingActivation(["seed"]);
-    // Single-writer append through the write path.
     await graph.onMemoryWritten({
       ...onWriteOpts,
       memoryPath: "facts/new.md",
       entitySiblings: ["facts/sibling.md"],
     });
-    // Delete the on-disk file: a full reload would now find nothing. The warm
-    // cache must still serve the just-appended edge, proving it was pushed in
-    // place rather than reconstructed from disk.
     await rm(graphFilePath(memoryDir, "entity"), { force: true });
     const activated = await graph.spreadingActivation(["facts/new.md"]);
     const paths = new Set(activated.map((candidate) => candidate.path));
@@ -402,19 +390,13 @@ test("#1904: onMemoryWritten reloads the edge cache when a peer appended (size m
     await writeGraphEdges(memoryDir, [makeEdge("seed", "old-sibling")]);
     const graph = new GraphIndex(memoryDir, makeGraphConfig());
     await graph.spreadingActivation(["seed"]); // warm + size baseline
-    // A peer process appends directly to the file, bypassing this GraphIndex so
-    // its size baseline does not account for the extra bytes.
     const peerEdge = makeEdge("facts/new.md", "facts/peer.md");
     await appendFile(graphFilePath(memoryDir, "entity"), `${JSON.stringify(peerEdge)}\n`, "utf8");
-    // Our own append: on-disk size now exceeds baseline + our bytes → mismatch.
     await graph.onMemoryWritten({
       ...onWriteOpts,
       memoryPath: "facts/new.md",
       entitySiblings: ["facts/sibling.md"],
     });
-    // The size mismatch must have nulled the cache; the next traversal reloads
-    // and sees BOTH the peer edge and our edge. A stale in-place push would have
-    // missed the peer edge entirely.
     const activated = await graph.spreadingActivation(["facts/new.md"]);
     const paths = new Set(activated.map((candidate) => candidate.path));
     assert.ok(paths.has("facts/peer.md"), "peer-appended edge must appear after the coherence reload");
@@ -435,9 +417,6 @@ test("#1904: graphEdgeCacheIncrementalEnabled=false nulls the edge cache on ever
       memoryPath: "facts/new.md",
       entitySiblings: ["facts/sibling.md"],
     });
-    // Legacy: the cache was nulled, so the next traversal reloads from disk.
-    // Remove the file first — a nulled cache reloads nothing, proving the write
-    // did not extend a warm cache in place.
     await rm(graphFilePath(memoryDir, "entity"), { force: true });
     const activated = await graph.spreadingActivation(["facts/new.md"]);
     const paths = new Set(activated.map((candidate) => candidate.path));
@@ -453,22 +432,14 @@ test("#1904: graphEdgeCacheIncrementalEnabled=false nulls the edge cache on ever
 test("#1904: onMemoryWritten reloads when an equal-length atomic rewrite changed the inode (Codex)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-rewrite-"));
   try {
-    // Initial edge: seed -> old-sibling. An atomic rewrite later swaps the
-    // target to "new-sibling" (also 11 chars), so the JSONL line length is
-    // unchanged — a size-only check could not detect this. The temp+rename
-    // the decay writer uses changes the inode, which the identity check MUST
-    // treat as a divergence and force a reload.
     await writeGraphEdges(memoryDir, [makeEdge("seed", "old-sibling")]);
     const graph = new GraphIndex(memoryDir, makeGraphConfig());
     await graph.spreadingActivation(["seed"]); // warm + identity baseline
-    // Peer (decay-style) equal-length atomic rewrite via temp + rename.
     const file = graphFilePath(memoryDir, "entity");
     const rewritten = `${JSON.stringify(makeEdge("seed", "new-sibling"))}\n`;
     const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tmp, rewritten, "utf8");
     await rename(tmp, file);
-    // Our own append: the inode changed (temp+rename), so the cache must null
-    // and the next traversal must reload — making the rewritten target visible.
     await graph.onMemoryWritten({
       ...onWriteOpts,
       memoryPath: "facts/new.md",

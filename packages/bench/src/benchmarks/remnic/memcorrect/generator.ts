@@ -1,19 +1,3 @@
-/**
- * MemCorrect seeded synthetic corpus generator (issue #1584 PR 1).
- *
- * Produces a deterministic scenario corpus given a seed. The corpus is
- * generated, never committed: CI runs this generator and asserts the corpus
- * hash, mirroring the existing full-mode dataset-guard pattern under
- * `benchmarks/published/`. No real-world PII is possible by construction —
- * every name, city, and entity is drawn from small synthetic token pools.
- *
- * Each scenario seeds a fact via a natural establishing transcript (so
- * systems ingest it through their normal observe path, not a backdoor),
- * then delivers a correction in one of four shapes, plus anti-events that
- * must not stick. Scoped scenarios also seed a same-text twin in a second
- * namespace so `scope_precision` can verify the correction does not leak
- * across scope boundaries.
- */
 
 import { createHash } from "node:crypto";
 import type {
@@ -43,11 +27,6 @@ const FACT_CATEGORIES: readonly FactCategory[] = [
   "relationship",
 ];
 
-/**
- * Mulberry32 PRNG — small, deterministic, fast. Identical contract to the
- * one used by `retention-aged-dataset/fixture.ts` so seeded determinism
- * behaves consistently across bench fixtures.
- */
 function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
   return function rng(): number {
@@ -63,22 +42,18 @@ function pick<T>(rng: () => number, pool: readonly T[]): T {
   return pool[Math.floor(rng() * pool.length) % pool.length];
 }
 
-/** Pick a pool element that is not `exclude` (falls back to the full pool if
- * every element equals `exclude`, which cannot happen for the pools used here). */
 function pickExcluding<T>(rng: () => number, pool: readonly T[], exclude: T): T {
   const choices = pool.filter((v) => v !== exclude);
   const source = choices.length > 0 ? choices : pool;
   return source[Math.floor(rng() * source.length) % source.length];
 }
 
-/** Pick a pool element not already in `used` (falls back to the full pool). */
 function pickExcludingSet<T>(rng: () => number, pool: readonly T[], used: ReadonlySet<T>): T {
   const choices = pool.filter((v) => !used.has(v));
   const source = choices.length > 0 ? choices : pool;
   return source[Math.floor(rng() * source.length) % source.length];
 }
 
-/** ISO timestamp strictly after `baseMs` by `addMs` (half-open windowing). */
 function isoAfter(baseMs: number, addMs: number): string {
   return new Date(baseMs + addMs).toISOString();
 }
@@ -96,8 +71,6 @@ function planFacts(
   ];
   for (let p = 0; p < options.personaCount; p += 1) {
     const persona = PERSONAS[p % PERSONAS.length];
-    // Each persona owns ≥2 namespaces (work + home) so scoped scenarios can
-    // seed a twin in the alternate namespace.
     const namespaces = [
       `${persona.toLowerCase()}-work`,
       `${persona.toLowerCase()}-home`,
@@ -121,9 +94,6 @@ function establishTurns(
   baseMs: number,
   startOffsetMs: number,
 ): { turns: EstablishingTurn[]; nextOffsetMs: number } {
-  // Two-turn establishing transcript: user states the fact, assistant
-  // acknowledges. Both turns carry the original value so systems that
-  // dedupe or summarize still capture it.
   const turns: EstablishingTurn[] = [
     {
       role: "user",
@@ -158,8 +128,6 @@ function buildCorrection(
       text = `For this project, ${plan.subject} is ${plan.newValue} now, not ${plan.oldValue}.`;
       break;
     case "re-assertion":
-      // The re-assertion scenario's "correction" sets a value that the user
-      // later walks back; the reassertion block carries the original.
       text = `Update: ${plan.subject} is ${plan.newValue} going forward instead of ${plan.oldValue}.`;
       break;
   }
@@ -178,19 +146,12 @@ function buildAntiEvents(
   baseMs: number,
   offsetMs: number,
 ): { events: AntiEvent[]; nextOffsetMs: number } {
-  // One anti-event per scenario, cycling through the three kinds so the
-  // false_apply metric exercises each.
   const kinds: AntiEvent["kind"][] = [
     "quoting-other",
     "hypothetical",
     "third-party-correction",
   ];
   const kind = kinds[Math.floor(rng() * kinds.length) % kinds.length];
-  // Distinct decoy: the anti-event names a value that is NEITHER the
-  // corrected value nor the retired value, so a system that correctly
-  // applies the correction (surfacing newValue) is never mistaken for a
-  // false apply. Drawn from VALUES_B excluding newValue; the retired value
-  // is from VALUES_A, so the pools are disjoint by construction.
   const decoy = pickExcluding(rng, VALUES_B, plan.newValue);
   let text: string;
   switch (kind) {
@@ -208,8 +169,6 @@ function buildAntiEvents(
     kind,
     turn: { role: "user", text, at: isoAfter(baseMs, offsetMs) },
     probeQuery: `what is my ${plan.subject} preference?`,
-    // The decoy must NOT stick from a third-party / hypothetical cue; if it
-    // surfaces in a later probe the system falsely applied the anti-event.
     shouldNotAppear: decoy,
   };
   return { events: [event], nextOffsetMs: offsetMs + 60_000 };
@@ -220,7 +179,6 @@ function buildScopedTwin(
   baseMs: number,
   offsetMs: number,
 ): { twin: ScopedTwin; nextOffsetMs: number } {
-  // Twin lives in the persona's *other* namespace and keeps the OLD value.
   const otherNamespace = plan.namespace.endsWith("-work")
     ? plan.namespace.replace(/-work$/, "-home")
     : plan.namespace.replace(/-home$/, "-work");
@@ -264,18 +222,10 @@ function buildUnrelatedProbes(
   baseMs: number,
   offsetMs: number,
 ): { probes: UnrelatedProbe[]; nextOffsetMs: number } {
-  // Two unrelated facts that the correction must not damage. They share
-  // the persona/namespace so collateral is measured in the same scope. Each
-  // carries an establishing transcript so the runner can seed the fact
-  // BEFORE the baseline probe — otherwise collateral_delta recalls facts
-  // that were never stored and stays pinned near zero.
   const PROBE_COUNT = 2;
   const probes: UnrelatedProbe[] = [];
   const usedSubjects = new Set<string>([plan.subject]);
   for (let i = 0; i < PROBE_COUNT; i += 1) {
-    // Distinct subject: never the scenario's main subject nor a prior
-    // probe's, so the collateral query cannot cross-contaminate the main
-    // fact's recall signal.
     const subject = pickExcludingSet(rng, SUBJECTS, usedSubjects);
     usedSubjects.add(subject);
     const value = pick(rng, VALUES_A);
@@ -352,23 +302,14 @@ export function generateMemCorrectCorpus(
 
   for (let i = 0; i < plans.length; i += 1) {
     const plan = plans[i];
-    // Stagger each scenario's base time so timestamps never collide and
-    // half-open windows are unambiguous.
     const scenarioBase = baseMs + i * 86_400_000;
     let offset = 0;
     const established = establishTurns(plan, scenarioBase, offset);
     offset = established.nextOffsetMs;
 
-    // Collateral facts are seeded BEFORE the baseline probe (and before the
-    // correction) so collateral_delta measures recall over facts that were
-    // actually stored, not queries over an empty store.
     const unrelated = buildUnrelatedProbes(rng, plan, scenarioBase, offset);
     offset += unrelated.nextOffsetMs;
 
-    // Scoped twin is seeded BEFORE the correction so scope_precision can
-    // catch a system that wrongly applies the correction across every
-    // namespace at correction time — the twin must already exist to be
-    // overwritten. Non-scoped scenarios skip this.
     let scopedTwin: ScopedTwin | undefined;
     if (plan.shape === "scoped") {
       const twin = buildScopedTwin(plan, scenarioBase, offset);

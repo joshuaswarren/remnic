@@ -202,9 +202,6 @@ import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 import { runProceduralBinaryCommand } from "./commands/procedural.js";
 import { runDriftBinaryCommand } from "./commands/drift.js";
 import { runRecallNavigateCommand } from "./commands/recall-navigate.js";
-// @remnic/export-weclone is an optional install surface (training:export
-// only uses it). Load lazily so the CLI works without it — see
-// optional-weclone-export.ts for the install-hint behaviour.
 import { loadWecloneExportModule } from "./optional-weclone-export.js";
 import { cmdConverge } from "./converge.js";
 import { resolveCredentialChannel } from "./credential-channel.js";
@@ -241,10 +238,6 @@ import type {
   TokenEntry,
 } from "@remnic/core";
 import { briefingLocationSection, locationTaggingEnabled } from "@remnic/core/location";
-// @remnic/bench is an optional install surface. Import types only at the
-// top level (erased at compile time); runtime access goes through
-// loadBenchModule() / tryLoadBenchModule() so the CLI stays functional for
-// users who never run `remnic bench *`.
 import {
   assertBenchModuleFreshForDevelopment,
   loadBenchModule,
@@ -352,10 +345,6 @@ import {
   resolveFlag,
 } from "./cli-args.js";
 import { parseConnectorConfig, stripConfigArgv } from "./parse-connector-config.js";
-// `remnic import` top-level command (issue #568 slice 1). The adapter packages
-// are optional à-la-carte installs loaded via computed-specifier dynamic
-// import; slice 1 ships only the dispatcher and surfaces a clean install hint
-// when an adapter package is absent.
 import { cmdImport, IMPORT_USAGE } from "./import-dispatch.js";
 import { cmdCapture } from "./capture-dispatch.js";
 import { cmdImportLosslessClaw } from "./import-lossless-claw-cmd.js";
@@ -423,9 +412,6 @@ async function loadPiPublisherModule(): Promise<PiPublisherModule> {
   return await import("@remnic/plugin-pi/publisher") as PiPublisherModule;
 }
 
-// ── Host-specific publisher registrations ───────────────────────────────────
-// Publisher classes live in @remnic/core, but wiring them into the registry
-// belongs in the host adapter layer (CLAUDE.md gotcha #31).
 registerPublisher("codex", () => new CodexMemoryExtensionPublisher());
 registerPublisher("claude-code", () => new ClaudeCodeMemoryExtensionPublisher());
 registerPublisher("hermes", () => new HermesMemoryExtensionPublisher());
@@ -494,7 +480,6 @@ export interface BenchCatalogEntry {
   summary: string;
 }
 
-// ── Constants ────────────────────────────────────────────────────────────────
 
 
 
@@ -507,8 +492,6 @@ const LEGACY_LOG_FILE = path.join(LEGACY_PID_DIR, "server.log");
 const CLI_MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLI_REPO_ROOT = path.resolve(CLI_MODULE_DIR, "../../..");
 const OPENCLAW_GATEWAY_LABEL = "ai.openclaw.gateway";
-// QMD teardown and cache reads can leave short-lived filesystem requests after
-// successful one-shot commands; give them enough time to drain before forcing.
 const CLI_SUCCESS_EXIT_GRACE_MS = 5_000;
 const CLI_OUTPUT_FLUSH_GRACE_MS = 250;
 
@@ -1201,10 +1184,6 @@ async function loadBenchDefinitionsFromPackage(): Promise<BenchmarkDefinition[] 
   return Array.isArray(result) ? result : undefined;
 }
 
-// Shared install hint for `bench run` paths that need @remnic/bench — the
-// only benchmark runtime since the legacy evals fallback was removed
-// (issue #2798). Used by both the per-benchmark run loop and the --all
-// expansion guard so every missing-runtime exit reads the same.
 const MISSING_BENCH_RUNTIME_HINT =
   "@remnic/bench. Build the workspace packages (or install @remnic/bench) and retry.";
 
@@ -1269,10 +1248,6 @@ async function launchBenchUi(resultsDir: string): Promise<void> {
   });
 }
 
-// The download script is shipped with the CLI package at
-// dist/assets/download-datasets.sh. When running from a monorepo
-// checkout the built copy may be absent, so we also accept the
-// in-repo source path as a fallback.
 function resolveDatasetDownloadScriptPath(): string {
   const bundled = path.join(CLI_MODULE_DIR, "assets", "download-datasets.sh");
   if (fs.existsSync(bundled)) {
@@ -1287,15 +1262,9 @@ function runDatasetDownloadScript(
   datasetRoot: string,
   jsonMode: boolean,
 ): void {
-  // In --json mode, redirect the script's stdout to parent stderr so
-  // progress logs don't corrupt the JSON payload we emit on stdout.
   const stdio: childProcess.StdioOptions = jsonMode
     ? ["inherit", process.stderr, "inherit"]
     : "inherit";
-  // Thread the resolved dataset root through DATASETS_DIR so the
-  // script writes to the same location `datasets status` reads from,
-  // regardless of where the script file itself lives (repo vs
-  // packaged node_modules install).
   const env = { ...process.env, DATASETS_DIR: datasetRoot };
   const options: childProcess.SpawnSyncOptions = {
     cwd: CLI_REPO_ROOT,
@@ -1304,10 +1273,6 @@ function runDatasetDownloadScript(
   };
   const args = ["--benchmark", benchmarkId];
 
-  // On Unix we rely on the script's shebang and executable bit — this
-  // avoids forcing bash in PATH. On Windows (which doesn't honor POSIX
-  // shebangs) we fall back to bash and surface a clear error when it's
-  // absent, since the script itself is bash-only.
   if (process.platform !== "win32") {
     childProcess.execFileSync(scriptPath, args, options);
     return;
@@ -1358,14 +1323,6 @@ function resolveBenchDatasetDir(
     return undefined;
   }
 
-  // Match the dataset discovery that `datasets download` and `datasets
-  // status` use so full benchmark runs can consume a dataset that was just
-  // downloaded through the packaged CLI without requiring an explicit
-  // `--dataset-dir` override. `discoverBenchDatasetDir` gates auto-selection
-  // on the same per-benchmark content markers as `datasets status` (so a
-  // partial/interrupted download doesn't silently feed an empty directory
-  // into the benchmark loader) and falls back to a read-only legacy
-  // evals/datasets copy when the canonical store is missing (#2867).
   return discoverBenchDatasetDir(benchmarkId)?.dir;
 }
 
@@ -1579,11 +1536,6 @@ async function showBenchPackageResults(parsed: ParsedBenchArgs): Promise<void> {
 }
 
 async function manageBenchBaselines(parsed: ParsedBenchArgs): Promise<void> {
-  // This handler already needs @remnic/bench for its core work, so we
-  // resolve the default baseline dir from the package too. Inlining the
-  // path helper here created a divergence risk with no payoff, since
-  // the loader runs on the very next line regardless. (cursor feedback
-  // on PR #545)
   const {
     defaultBenchmarkBaselineDir,
     listBenchmarkBaselines,
@@ -1730,9 +1682,6 @@ async function manageBenchDatasets(parsed: ParsedBenchArgs): Promise<void> {
     }
 
     const status = supported.map((benchmarkId) => {
-      // Read discovery shares the run path's single seam (#2867): a
-      // benchmark present only at the legacy evals/datasets location
-      // reports as downloaded there (read-only), not as missing.
       const discovered = discoverBenchDatasetDir(benchmarkId);
       return {
         benchmark: benchmarkId,
@@ -1914,10 +1863,6 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     );
     process.exit(1);
   }
-  // Package-aware validation (codex P2 review): use the same resolver the run
-  // command uses, so package-registered benchmarks (memoryagentbench, membench,
-  // personamem, ...) calibrate instead of being rejected as "unknown" by the
-  // static CLI catalog (`BENCHMARK_IDS`).
   const knownBenchmarkIds = await resolveKnownBenchmarkIds();
   if (!knownBenchmarkIds.has(benchmarkId)) {
     console.error(
@@ -1958,26 +1903,15 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   // benchmark. `actual` is the responder's predicted answer; `expected` is the
   // gold. Both judges re-score the same (question, predicted, expected) triple.
   const stored = await bench.listBenchmarkResults(resultsDir);
-  // Calibration needs a full run's cached answers — a quick run (mode "quick")
-  // is a 1-task sample whose agreement is meaningless (often kappa=1 on a
-  // single agreeing pair), so a stale quick result must never be selected as
-  // the calibration source (codex P2 review).
   const allForBenchmark = stored.filter((entry) => entry.benchmark === benchmarkId);
   const candidates = allForBenchmark
     .filter((entry) => entry.mode === "full")
     .sort((a, b) => {
-      // Descending by timestamp with a 3-way comparator (cursor review: the
-      // previous `< b ? 1 : -1` never returned 0, so tied timestamps produced
-      // an unstable order that could pick a non-latest run). The id breaks
-      // remaining ties deterministically.
       if (a.timestamp !== b.timestamp) {
         return a.timestamp < b.timestamp ? 1 : -1;
       }
       return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
     });
-  // Issue #1877: once a benchmark has a calibration source, keep using that
-  // exact stored result. Selecting "whatever is newest" made the same judge
-  // pair swing from kappa 0.769 to 0.444 as cached answers changed.
   const pinnedSourceId = parsed.sourceResultId;
   const latest = candidates.find((entry) => entry.id === pinnedSourceId);
   if (!latest) {
@@ -1986,12 +1920,6 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     );
     process.exit(1);
   }
-  // Prefer the latest COMPLETE full run — a partial full run (interrupted)
-  // would otherwise seed calibration from an incomplete slice even when an
-  // older complete full run exists (codex P2 review). `status` lives on the
-  // loaded result, not the summary, so load newest-first and keep the first
-  // complete one; if every candidate is partial we keep the newest (the only
-  // option available to the operator).
   let loaded = await bench.loadBenchmarkResult(latest.path);
   if (loaded.meta.status === "partial") {
     console.error(
@@ -1999,12 +1927,6 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     );
     process.exit(1);
   }
-  // Codex P2 review: a `--limit 1` (or `--trial-limit 1`) full run produces
-  // mode === "full" with a single task, yielding a degenerate one-sample κ
-  // (often 1.0). Require enough completed tasks for a meaningful calibration.
-  // Count UNIQUE task ids — runJudgeCalibration dedupes by questionId, so
-  // raw task count can overstate the sample (codex P2 review: a stored result
-  // with duplicate taskIds could pass the minimum while producing a smaller κ).
   const uniqueTaskIds = new Set(loaded.results.tasks.map((task) => task.taskId));
   const sourceTaskCount = uniqueTaskIds.size;
   if (sourceTaskCount < bench.MIN_CALIBRATION_SOURCE_TASKS) {
@@ -2030,14 +1952,7 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   }
   const sourceResultSha256 = createHash("sha256").update(fs.readFileSync(latest.path)).digest("hex");
 
-  // Resolve the two judges. The local judge comes from the manifest's judge
-  // role (Tier L); the frontier judge from the --judge-* flags (Tier F gold).
   const expandedManifestPath = expandTilde(manifestPath);
-  // Both judges resolve to a `ProviderFactoryConfig` — a discriminated union
-  // keyed on a literal `provider`. The local judge's config arrives already
-  // typed from the resolved local-lab profile; the frontier judge is assembled
-  // from CLI flags whose `provider` is the broad `BuiltInProvider` union, so
-  // it is narrowed through the same cast the local judge uses.
   type ProviderFactoryConfig = Parameters<typeof bench.createProviderBackedJudge>[0];
   if (!bench.resolveLocalLabJudgeProviderConfig) {
     console.error(
@@ -2081,9 +1996,6 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     },
   });
 
-  // Bind the persisted kappa to the calibrated judge pair (codex P2 review):
-  // without these identities, a later run that swaps the local-lab manifest
-  // or the frontier judge would inherit a stale kappa for a different pair.
   const calibrationIdentities = {
     localJudgeProvider: String(localJudgeConfig.provider),
     localJudgeModel: String(localJudgeConfig.model),
@@ -2096,11 +2008,6 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     calibrationIdentities,
     { sourceResultId: loaded.meta.id, orderedQuestionIdsHash, localJudgeConfigHash, frontierJudgeConfigHash },
   );
-  // Read the persisted state straight back. This exercises the load path the
-  // artifact builder will use (cursor review + codex P1: loadJudgeCalibration-
-  // State was previously dead code — only tests called it). A mismatch here
-  // would mean the persisted kappa is not what subsequent local artifacts
-  // would carry, which is an operator-visible failure.
   const persisted = await bench.loadJudgeCalibrationState(benchmarkId, calibrationDir);
   if (
     !persisted || persisted.kappa !== result.kappa || persisted.warning !== result.warning ||
@@ -2300,11 +2207,6 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
     const benchModule = loaded as unknown as PackageBenchModule;
     const benchmarkId = parsed.publishedName;
     const mode = parsed.quick ? "quick" : "full";
-    // Codex P2 review on PR #603: keep dry-run's effective limit in
-    // sync with the real run so preflight item counts match what will
-    // actually execute. Previously `limit: parsed.publishedLimit`
-    // alone meant `--quick` without `--limit` dry-ran the full smoke
-    // sample while the real run loaded only one item.
     const effectiveLimit =
       parsed.publishedLimit ?? (parsed.quick ? 1 : undefined);
     const benchmarkOptions = buildPublishedBenchmarkOptions(
@@ -2313,12 +2215,6 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
       taskSelector,
     );
     let itemCount: number | undefined;
-    // Codex P2 review on PR #603: when the loader returns
-    // `source: "missing"` (full mode and the dataset file is absent or
-    // unreadable), dry-run must fail loudly. Previously the script
-    // logged the line and exited 0, so CI/users could not trust
-    // `--dry-run` as a preflight gate — the real run would later crash
-    // with the same missing dataset.
     let loadResult:
       | {
           source: string;
@@ -2431,12 +2327,6 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
       runtimeProfile,
     })),
   ).map((item) => item.runtimeProfile);
-  // Collect artifact paths written by each runtime profile so the
-  // --out promotion step copies the exact file just produced rather
-  // than scanning the whole results directory (Cursor Medium + Codex
-  // P1 on PR #603: the previous newest-mtime scan could silently
-  // publish unrelated or older artifacts under the new canonical
-  // filename).
   const writtenPaths: string[] = [];
   const pairedAnswerReplayCache =
     benchmarkId === "locomo"
@@ -2445,8 +2335,6 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
       ? new Map<string, import("@remnic/bench").PairedAnswerReplayEntry>()
       : undefined;
   for (const runtimeProfile of runtimeProfiles) {
-    // Forward `--limit` + `--seed` through the existing package
-    // runner. `--out` is handled below in the artifact write step.
     const result = await runBenchViaPackage(
       parsed,
       benchmarkId,
@@ -2473,12 +2361,6 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
     resultPaths: writtenPaths,
   });
 
-  // When `--out` is supplied, copy the result artifact we just wrote
-  // into the directory under a canonical leaderboard filename. We
-  // keep the primary result file under `~/.remnic/bench/results/`
-  // (set by `resolveBenchOutputDir`) and only publish a flatter copy
-  // to the user-specified directory so the dev environment stays in
-  // sync.
   if (parsed.publishedOut) {
     const { promoteArtifactsToPublished } = await loadPublishedPromotionHelpers();
     await promoteArtifactsToPublished({
@@ -2731,11 +2613,6 @@ async function loadPublishedPromotionHelpers() {
       }
       for (const artifactPath of args.artifactPaths) {
         const raw = readFileSync(artifactPath, "utf8");
-        // Cursor Low on PR #603: `JSON.parse(null JSON literal)`
-        // returns `null`, which the old `as` cast hid. Validate the
-        // shape before dereferencing `.meta` to avoid a TypeError
-        // crashing the promotion step for a corrupted or empty
-        // artifact.
         const parsedUnknown: unknown = JSON.parse(raw);
         const parsedObj =
           parsedUnknown !== null &&
@@ -2749,11 +2626,6 @@ async function loadPublishedPromotionHelpers() {
         const gitShaShort = (parsedObj.meta?.gitSha ?? "unknown").slice(0, 7);
         const today = new Date().toISOString().slice(0, 10);
         const modelSlug = args.model.replace(/[^a-zA-Z0-9_.-]/g, "-");
-        // Codex P2 on PR #603: include the runtime profile in the
-        // published filename so multi-profile (e.g. --matrix) runs do
-        // not silently overwrite one another. The profile lives in
-        // `result.config.runtimeProfile` and is "baseline", "real",
-        // or "openclaw-chain" in practice.
         const rawProfile = parsedObj.config?.runtimeProfile;
         const profileSlug =
           typeof rawProfile === "string" && rawProfile.length > 0
@@ -2768,8 +2640,6 @@ async function loadPublishedPromotionHelpers() {
           `[bench published] Promoted ${path.basename(artifactPath)} → ${target}`,
         );
       }
-      // Reference the bench module so the import isn't tree-shaken if
-      // a future refactor wants to call into it from here.
       void benchModule;
     },
   };
@@ -2804,7 +2674,6 @@ async function preflightLocalLabEndpointsIfNeeded(
   const localLab = plan.runtime.localLab;
   const preflightRole = benchModule.preflightLocalLabRole;
 
-  // 1. Preflight responder.
   const responder = localLab.responder;
   const responderResult = await preflightRole({
     provider: responder.provider,
@@ -2818,14 +2687,6 @@ async function preflightLocalLabEndpointsIfNeeded(
     );
   }
 
-  // 2. Judge endpoint check. When both roles share an endpoint (the common
-  //    Ollama hot-swap case), preflight the judge model too and proceed.
-  //    When they are on different endpoints, the published harness cannot
-  //    yet run sequential phases (answer-all-then-judge-all) — it executes
-  //    recall→answer→judge per trial, which requires both models to be
-  //    co-resident. Fail fast with an actionable message instead of silently
-  //    failing mid-benchmark after the first trial (codex P1 review, #1573 PR2).
-  //    Full sequential phase execution is PR3 calibration scope.
   const judge = localLab.judge;
   const stripSlash = (url: string) => (url.endsWith("/") ? url.slice(0, -1) : url);
   const sameEndpoint =
@@ -2923,8 +2784,6 @@ async function runBenchViaPackage(
     parsed,
   );
 
-  // local-lab endpoint preflight gate (issue #1573 PR2, review rounds 5-11).
-  // Shared with runCustomBenchViaPackage via preflightLocalLabEndpointsIfNeeded.
   await preflightLocalLabEndpointsIfNeeded(benchModule, plan);
 
   const outputDir = parsed.resultsDir ?? resolveBenchOutputDir();
@@ -2951,15 +2810,8 @@ async function runBenchViaPackage(
     process.env[CODEX_CLI_BENCH_DIAGNOSTICS_MODE_ENV] = "metadata";
   }
 
-  // `publishedLimit` (from `bench published --limit N`) takes
-  // precedence over the implicit quick-mode limit of 1.
   const effectiveLimit =
     parsed.publishedLimit ?? (parsed.quick ? 1 : undefined);
-  // Forward `--seed` through to the runner so the determinism contract
-  // advertised by `bench published --seed N` is actually honored.
-  // Cursor + Codex review on PR #603: without this, `publishedSeed` was
-  // parsed but dropped, and the harness recorded `ctx.options.seed ?? 0`
-  // instead of the user-specified seed, breaking reproducibility.
   const effectiveSeed = parsed.publishedSeed;
   let benchmarkOptions = buildPublishedBenchmarkOptions(
     benchmarkId,
@@ -3005,7 +2857,6 @@ async function runBenchViaPackage(
       internalProvider: plan.runtime.internalProvider,
       remnicConfig: plan.runtime.effectiveRemnicConfig,
       drainTimeoutMs: plan.runtime.adapterOptions.drainTimeoutMs,
-      // Issue #1573 PR1: judge-result cache controls from the CLI flags.
       ...(parsed.noJudgeCache ? { noJudgeCache: true } : {}),
       ...(parsed.judgeCacheDir ? { judgeCacheDir: parsed.judgeCacheDir } : {}),
       ...(locomoPairedAnswerReplayCache ? { pairedAnswerReplayCache: locomoPairedAnswerReplayCache } : {}),
@@ -3044,11 +2895,6 @@ async function runBenchViaPackage(
     });
     result.config.remnicConfig = plan.runtime.remnicConfig;
     result.config.internalProvider = plan.runtime.internalProvider;
-    // Issue #1573 PR3 (cursor + codex High/P1 review): load the persisted
-    // judge-calibration state for this benchmark so the stored local artifact
-    // carries the kappa + warning after `remnic bench judge-calibrate`. Absent
-    // calibration (file missing) is the common case — the result is written
-    // unchanged, preserving backwards compatibility.
     attachPreparedJudgeCalibration(result, judgeCalibration);
     const writtenPath = await benchModule.writeBenchmarkResult(result, outputDir);
     if (parsed.json) {
@@ -3075,8 +2921,6 @@ async function runBenchViaPackage(
         err instanceof Error ? err.message : String(err),
         parsed.quick ? "quick" : "full",
       );
-      // Attach persisted calibration to partial results too — the kappa
-      // reflects judge reliability, independent of whether the run finished.
       attachPreparedJudgeCalibration(partialResult, judgeCalibration);
       try {
         const partialPath = await benchModule.writeBenchmarkResult(partialResult, outputDir);
@@ -3181,9 +3025,6 @@ export async function preparePersistedJudgeCalibrationAttachment(
     const matchesLocal =
       runJudgeProvider?.provider === state.localJudgeProvider &&
       runJudgeProvider.model === state.localJudgeModel;
-    // The persisted kappa measures the calibrated local judge's agreement
-    // with the frontier judge. Frontier and unrelated runs are not attachment
-    // candidates, so their normal execution must not require local-run pins.
     if (!matchesLocal) {
       if (hasAnyBindingPin) {
         throw new Error(
@@ -3209,10 +3050,6 @@ export async function preparePersistedJudgeCalibrationAttachment(
     !hasCompleteLocalIdentity &&
     resolvedRunJudgeConfigHash !== state.localJudgeConfigHash
   ) {
-    // Older state may have configuration hashes but no complete provider/model
-    // identity. In that case the resolved local-config hash is the only safe
-    // eligibility signal: unrelated unpinned runs ignore the state, while
-    // explicit pins must never be silently discarded.
     if (hasAnyBindingPin) {
       throw new Error(
         `Calibration binding pins for ${benchmarkId} do not match the resolved run judge configuration; refusing to ignore explicit pins.`,
@@ -3637,7 +3474,6 @@ async function writeBenchReproManifestForPackageRun(args: {
   }
 }
 
-// ── Config helpers ───────────────────────────────────────────────────────────
 
 function loadStandaloneConvergeCommandConfig(): PluginConfig {
   const configPath = resolveConfigPath();
@@ -3650,9 +3486,6 @@ function loadStandaloneConvergeCommandConfig(): PluginConfig {
 function parseConvergePluginConfig(value: unknown): PluginConfig | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
   if (Object.keys(value as Record<string, unknown>).length === 0) return undefined;
-  // Present and non-empty config is authoritative. Parse strictly — any invalid value
-  // (unknown key, bad policy, malformed/nested structure) MUST surface as an error,
-  // never silently default to newest-wins, which could auto-resolve conflicts.
   return parseConfig(resolveRemnicConfigRecord(value));
 }
 
@@ -3831,12 +3664,9 @@ function normalizeMemoryDirPath(memoryDir: string): string {
 }
 
 export function resolveMemoryDir(): string {
-  // Priority: env var > config file > auto-detect
   const configMemoryDir = (() => {
-    // Env var takes top priority (deployment override)
     const envMemoryDir = readCompatEnv("REMNIC_MEMORY_DIR", "ENGRAM_MEMORY_DIR");
     if (envMemoryDir) return normalizeMemoryDirPath(envMemoryDir);
-    // Then config file
     const configPath = resolveConfigPath();
     const raw = fs.existsSync(configPath)
       ? JSON.parse(fs.readFileSync(configPath, "utf8"))
@@ -3845,7 +3675,6 @@ export function resolveMemoryDir(): string {
     if (typeof remnicCfg.memoryDir === "string" && remnicCfg.memoryDir.length > 0) {
       return normalizeMemoryDirPath(remnicCfg.memoryDir);
     }
-    // Auto-detect: prefer standalone path if it exists, fall back to OpenClaw
     const home = resolveHomeDir();
     const standalonePath = path.join(home, ".remnic", "memory");
     const legacyStandalonePath = path.join(home, ".engram", "memory");
@@ -3855,7 +3684,6 @@ export function resolveMemoryDir(): string {
     return openclawPath;
   })();
 
-  // Check active space — only if manifest exists (don't bootstrap just to resolve)
   const manifestPath = getManifestPath();
   if (fs.existsSync(manifestPath)) {
     try {
@@ -3863,16 +3691,12 @@ export function resolveMemoryDir(): string {
       if (active?.memoryDir) {
         const activeMemoryDir = normalizeMemoryDirPath(active.memoryDir);
         if (!fs.existsSync(activeMemoryDir)) {
-          // Recreate missing directory instead of silently falling back
           fs.mkdirSync(activeMemoryDir, { recursive: true });
         }
         return activeMemoryDir;
       }
       // No active space with memoryDir — fall through to config
     } catch (err: unknown) {
-      // getActiveSpace() throws "Active space ... not found" when the activeSpaceId
-      // references a space that was deleted — this is recoverable, fall through.
-      // Any other error (corrupted JSON, permission denied) is fatal.
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes("not found")) {
         console.error(`Error: failed to resolve active space from ${manifestPath}: ${msg}`);
@@ -3932,8 +3756,6 @@ function resolveOpenclawStateDir(): string {
     : path.join(resolveHomeDir(), ".openclaw");
 }
 
-// Primary env var takes precedence; legacy env var is checked as fallback.
-// This matches the priority convention in readCompatEnv() (primary > legacy > default).
 const DEFAULT_OPENCLAW_CONFIG_PATHS_FOR_DOCTOR = [
   process.env.OPENCLAW_CONFIG_PATH,
   process.env.OPENCLAW_ENGRAM_CONFIG_PATH,
@@ -3946,12 +3768,10 @@ function resolveOpenclawConfigPath(cliPath?: string): string {
   // Env-var paths are always honoured regardless of whether the file exists yet
   // (a first-time install needs to create the file at the configured location).
   // Only fall through to existence-probing when no env var is set.
-  // Apply expandTilde so values like ~/openclaw.json work correctly.
   const envPath =
     process.env.OPENCLAW_CONFIG_PATH || process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
   if (envPath) return path.resolve(expandTilde(envPath));
 
-  // No env var: return the first existing default path, or the canonical default.
   for (const candidate of DEFAULT_OPENCLAW_CONFIG_PATHS_FOR_DOCTOR) {
     if (fs.existsSync(candidate)) return candidate;
   }
@@ -4132,7 +3952,6 @@ function restartOpenclawGateway(): void {
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
-// ── Commands ─────────────────────────────────────────────────────────────────
 
 function cmdInit(): void {
   const configPath = path.join(process.cwd(), "remnic.config.json");
@@ -4177,11 +3996,7 @@ function resolveStatusProbeToken(): string | undefined {
   const operatorToken = resolveOperatorToken(resolveConfigPath());
   if (operatorToken) return operatorToken;
   try {
-    // Connector tokens authorize health EXCEPT OAuth-minted ones (chatgpt,
-    // claude-ai, oauth-app-*; see isOAuthConnector), which the access
-    // server pins to /mcp only (tokenPathPolicy). Skip those so an OAuth
-    // entry at the head of the store doesn't produce a misleading 401
-    // when an ordinary connector token would authenticate health.
+
     const usable = listTokens().find(
       (t) => !isOAuthConnector(t.connector) && t.token.length > 0,
     );
@@ -4194,9 +4009,6 @@ function resolveStatusProbeToken(): string | undefined {
 export const __statusHealthTestHooks = { resolveStatusProbeToken };
 
 async function cmdStatus(json: boolean): Promise<void> {
-  // Remote mode (issue #2448): a configured REMNIC_DAEMON_URL / server.url
-  // origin is the target. No local service-manager probe, no PID file —
-  // "running" means the remote health endpoint answered.
   const remote = resolveRemoteDaemon(resolveConfigPath());
   if (remote) {
     if (json) {
@@ -4230,20 +4042,6 @@ async function cmdStatus(json: boolean): Promise<void> {
   await printHealthCheck(resolveDaemonBaseUrl(resolveConfigPath()), resolveStatusProbeToken());
 }
 // ── OAuth operator commands ─────────────────────────────────────────────────
-//
-// `remnic oauth <pending|approve|deny>` lets the operator manage pending
-// authorization requests served by `@remnic/server`'s OAuth 2.1 facade
-// (issue #1963 / ChatGPT developer-mode MCP). The daemon exposes three
-// bearer-protected endpoints (operator token is the same `server.authToken`
-// the rest of the access server accepts); this CLI is the only path the
-// human operator uses to approve or deny the requests those endpoints
-// represent.
-//
-// Reuses the same patterns as `cmdStatus` (host/port via
-// `resolveConfigPath` + the `server.port` default, bearer token from
-// `server.authToken` with the `REMNIC_AUTH_TOKEN` / `ENGRAM_AUTH_TOKEN`
-// env fallback already used by the offline token resolver) and the
-// `--format json|text` flag pattern from `cmdProcedural`.
 
 /** Shape of one entry in `GET /oauth/pending`. Mirrors the server response. */
 interface OAuthPendingEntry {
@@ -4730,8 +4528,6 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean, abor
     process.exit(1);
   }
 
-  // Remote mode (issue #2448): route the recall through the configured
-  // origin instead of booting a local orchestrator.
   const remote = resolveRemoteDaemon(resolveConfigPath());
   if (remote) {
     const started = Date.now();
@@ -4753,18 +4549,12 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean, abor
   const config = parseConfig(remnicCfg);
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
-  // Startup finished after the command deadline; stop here instead of recalling.
   abortSignal?.throwIfAborted();
   const service = new EngramAccessService(orchestrator);
   const recallRequest = buildQueryRecallRequest(queryText);
 
   try {
     if (explain) {
-      // `query --explain` is a core-install feature; if @remnic/bench is
-      // installed we use its full tier-breakdown explainer, otherwise we
-      // fall back to a minimal "run the recall and show timing" path so
-      // the flag keeps working without forcing users to install an
-      // optional package. (Codex feedback on PR #545)
       const bench = await tryLoadBenchModule();
       if (bench?.runExplain) {
         const result = await bench.runExplain(service, queryText);
@@ -4789,8 +4579,6 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean, abor
 
     printQueryResult(await service.recall(recallRequest), json);
   } finally {
-    // One-shot CLI calls should not wait for or orphan deferred QMD
-    // maintenance; the daemon/gateway process performs full warmup instead.
     orchestrator.abortDeferredInit();
     await orchestrator.destroy();
   }
@@ -4960,9 +4748,6 @@ export function extractXrayRawArgs(rest: string[]): {
           `${token} requires a value. Provide it as \`${token} <value>\`, not as a bare flag.`,
         );
       }
-      // Strip leading "--" from flag to produce the camelCase key
-      // parseXrayCliOptions expects (`format`, `budget`, `namespace`,
-      // `out`).
       const key = token.slice(2);
       options[key] = next;
       i++;
@@ -4998,8 +4783,6 @@ export async function runXrayCommand(
   },
 ): Promise<void> {
   const { rawQuery, options } = extractXrayRawArgs(rest);
-  // `parseXrayCliOptions` throws listed-options errors for empty query,
-  // unknown --format, malformed --budget (CLAUDE.md rules 14, 51).
   const parsed = parseXrayCliOptions(rawQuery, options);
   const response = await io.recallXray({
     query: parsed.query,
@@ -5032,17 +4815,9 @@ export async function runXrayCommand(
  * code paths that only one surface exercises).
  */
 async function cmdXray(rest: string[]): Promise<void> {
-  // Parse and validate flags FIRST — `parseXrayCliOptions` throws
-  // listed-options errors for bad input.  Keep this before any IO so
-  // a bad invocation surfaces the right error without touching disk.
-  // `runXrayCommand` re-runs the same validators below; re-parsing is
-  // cheap (pure + no IO) and avoids a second "validated flags" shape
-  // that would drift from the raw-argv contract tests already cover.
   const { rawQuery, options } = extractXrayRawArgs(rest);
   const parsed = parseXrayCliOptions(rawQuery, options);
 
-  // Remote mode (issue #2448): the X-ray endpoint lives on the remote
-  // daemon; no local orchestrator boot.
   const remote = resolveRemoteDaemon(resolveConfigPath());
   if (remote) {
     await runXrayCommand(rest, xrayCliIo((request) => remoteRecallXray(remote, request)));
@@ -5059,7 +4834,6 @@ async function cmdXray(rest: string[]): Promise<void> {
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
   await orchestrator.deferredReady;
-  // Freshness-dependent: join the shared post-ready startup sync so the
   // recall lands after the corpus update instead of reading a stale index
   // and aborting the update in flight (#3525).
   await joinStartupSyncOrWarn(orchestrator);
@@ -5147,7 +4921,6 @@ export async function runWhyCommand(
     ...(parsed.namespace !== undefined ? { namespace: parsed.namespace } : {}),
   });
   if (!response.reportFound || response.report === undefined) {
-    // A denied namespace is not an empty diagnosis: say which happened.
     throw new Error(
       "recall diagnosis unavailable: the requested namespace is not readable by this caller",
     );
@@ -5231,7 +5004,6 @@ async function withLocalService<T>(
   const orchestrator = new Orchestrator(parseConfig(resolveRemnicConfigRecord(raw)));
   await orchestrator.initialize();
   await orchestrator.deferredReady;
-  // No startup-sync join here: who-knows and promotion-candidates read memories
   // from storage, not the search index, so a join would only add latency (#3527).
   const service = new EngramAccessService(orchestrator);
   try {
@@ -5390,7 +5162,6 @@ Options:
 }
 
 // ---------------------------------------------------------------------------
-// enrich command (issue #365)
 // ---------------------------------------------------------------------------
 
 async function cmdEnrich(rest: string[]): Promise<void> {
@@ -5404,7 +5175,6 @@ async function cmdEnrich(rest: string[]): Promise<void> {
 
   const subcommand = rest[0];
 
-  // Sub-commands that don't need an entity name
   if (subcommand === "audit") {
     const memoryDir = expandTilde(config.memoryDir);
     const auditDir = path.join(memoryDir, "enrichment");
@@ -5429,12 +5199,10 @@ async function cmdEnrich(rest: string[]): Promise<void> {
     pipelineConfig.enabled = config.enrichmentEnabled;
     pipelineConfig.maxCandidatesPerEntity = config.enrichmentMaxCandidatesPerEntity;
     pipelineConfig.autoEnrichOnCreate = config.enrichmentAutoOnCreate;
-    // Populate the provider config list so listEnabled() can match registered providers
     pipelineConfig.providers = [
       { id: "web-search", enabled: true, costTier: "cheap" },
     ];
 
-    // Wire the real search backend so isAvailable() reflects actual state
     const orchestrator = new Orchestrator(config);
     await orchestrator.initialize();
     await orchestrator.deferredReady;
@@ -5484,7 +5252,6 @@ async function cmdEnrich(rest: string[]): Promise<void> {
   await orchestrator.deferredReady;
   const storage = await orchestrator.getStorage(config.defaultNamespace);
 
-  // Gather entities to enrich
   const entityFiles = await storage.readAllEntityFiles();
   let targets = entityFiles;
   if (!all && subcommand && !subcommand.startsWith("--")) {
@@ -5503,7 +5270,6 @@ async function cmdEnrich(rest: string[]): Promise<void> {
     return;
   }
 
-  // Build pipeline config and registry
   const pipelineConfig = defaultEnrichmentPipelineConfig();
   pipelineConfig.enabled = true;
   pipelineConfig.maxCandidatesPerEntity = config.enrichmentMaxCandidatesPerEntity;
@@ -5517,7 +5283,6 @@ async function cmdEnrich(rest: string[]): Promise<void> {
     low: [],
   };
 
-  // Wire the real search backend into the web-search provider (issue #425 P1)
   const searchBackend = orchestrator.qmd;
   const searchFn = searchBackend.isAvailable()
     ? async (query: string): Promise<string[]> => {
@@ -5529,7 +5294,6 @@ async function cmdEnrich(rest: string[]): Promise<void> {
   const registry = new EnrichmentProviderRegistry();
   registry.register(new WebSearchProvider({ searchFn }));
 
-  // Map entity files to enrichment inputs
   const inputs = targets.map((ef) => ({
     name: ef.name,
     type: ef.type,
@@ -5555,7 +5319,6 @@ async function cmdEnrich(rest: string[]): Promise<void> {
     return;
   }
 
-  // Persist accepted candidates to storage (issue #425 P1).
   // Gotcha #43: direct-write paths must trigger reindex.
   const memoryDir = expandTilde(config.memoryDir);
   const auditDir = path.join(memoryDir, "enrichment");
@@ -5567,7 +5330,6 @@ async function cmdEnrich(rest: string[]): Promise<void> {
       // warning instead of masking the successful persist (PR #425 review).
       let persisted = false;
       try {
-        // Sealed-envelope write (issue #1989 PR4) — see enrichment-persist.ts.
         await persistEnrichmentCandidate(storage, result.entityName, candidate);
         persisted = true;
         totalPersisted++;
@@ -5575,7 +5337,6 @@ async function cmdEnrich(rest: string[]): Promise<void> {
         console.error(
           `  Failed to persist candidate for ${result.entityName}: ${err instanceof Error ? err.message : String(err)}`,
         );
-        // Audit rejected-due-to-error candidate
         try {
           await appendAuditEntry(auditDir, {
             timestamp: new Date().toISOString(),
@@ -5612,7 +5373,6 @@ async function cmdEnrich(rest: string[]): Promise<void> {
     }
   }
 
-  // Trigger reindex after direct writes (gotcha #43)
   if (totalPersisted > 0 && searchBackend.isAvailable()) {
     try {
       await searchBackend.update();
@@ -5686,7 +5446,6 @@ async function cmdExtensions(action: string, rest: string[]): Promise<void> {
 
     case "validate": {
       const extensions = await discoverMemoryExtensions(root, warnLog);
-      // Re-scan to detect skipped entries
       let entries: string[] = [];
       try {
         entries = fs.readdirSync(root);
@@ -5727,8 +5486,6 @@ async function cmdExtensions(action: string, rest: string[]): Promise<void> {
 }
 
 async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<void> {
-  // Start the logger before parseConfig so its warnings reach stderr; JSON
-  // runs keep every level off stdout.
   const requestsJson = rest.includes("--json") || resolveFlag(rest, "--format") === "json";
   initCliLogger(requestsJson);
   const configPath = resolveConfigPath();
@@ -5759,9 +5516,6 @@ async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<vo
     process.exit(1);
   }
 
-  // Guard --focus the same way: if the flag is present but has no trailing
-  // value (or the next token is another flag like `--save`), reject it rather
-  // than silently consuming the next flag as the focus filter.
   if (hasFlag(rest, "--focus") && (focusFlag === undefined || focusFlag.startsWith("--"))) {
     console.error(
       "Missing value for --focus. Expected: project:<id>, topic:<name>, or person:<id>.",
@@ -5778,11 +5532,6 @@ async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<vo
     process.exit(1);
   }
 
-  // Validate --focus: only treat undefined / empty strings as "no filter".
-  // Anything else that parses to null (e.g. "project:", "topic:") is malformed
-  // and must be rejected so a templating miss never silently broadens the
-  // briefing from a targeted view to all memories. Mirrors the access-service
-  // rejection in packages/remnic-core/src/access-service.ts.
   const rawFocus = typeof focusFlag === "string" ? focusFlag.trim() : "";
   const focus = rawFocus.length > 0 ? parseBriefingFocus(rawFocus) : null;
   if (rawFocus.length > 0 && !focus) {
@@ -5791,8 +5540,6 @@ async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<vo
     );
     process.exit(1);
   }
-  // Honor the global --json flag: treat it as shorthand for --format json.
-  // If both --json and --format are supplied and they conflict, fail fast.
   const jsonFlag = rest.includes("--json");
   if (jsonFlag && formatFlag !== undefined && formatFlag !== "json") {
     console.error(
@@ -5808,7 +5555,6 @@ async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<vo
   }
   const format: "markdown" | "json" =
     effectiveFormatFlag === "json" ? "json" : effectiveFormatFlag === "markdown" ? "markdown" : config.briefing.defaultFormat;
-  // config.briefing.defaultFormat can also select json after parseConfig.
   if (format === "json" && !requestsJson) initCliLogger(true);
 
   const orchestrator = new Orchestrator(config);
@@ -5820,10 +5566,6 @@ async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<vo
     ? new FileCalendarSource(config.briefing.calendarSource)
     : undefined;
 
-  // Read before buildBriefing: it drains correction notifications at most
-  // once, so a deadline during this read must not lose them.
-  // Opt-in matched place names (issue #2925): same gate + section the
-  // access service appends, so CLI and server briefings stay identical.
   const locationSection =
     includeLocation && locationTaggingEnabled(config.location)
       ? await briefingLocationSection(storage.dir, window.from.toISOString(), config.location)
@@ -5841,9 +5583,6 @@ async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<vo
     openaiApiKey: config.openaiApiKey,
     openaiBaseUrl: config.openaiBaseUrl,
     model: config.model,
-    // Without a direct OpenAI key, route follow-ups through the configured
-    // LLM chain (gateway model source or local LLM) — mirrors the access
-    // service so CLI and server briefings behave identically.
     followupGenerator: config.openaiApiKey
       ? undefined
       : orchestrator.briefingChainFollowupGenerator,
@@ -5863,9 +5602,6 @@ async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<vo
     try {
       const saveDir = resolveBriefingSaveDir(config.briefing.saveDir);
       fs.mkdirSync(saveDir, { recursive: true });
-      // Use the window's end time (not wall-clock) so the filename is stable
-      // regardless of when the command runs — a briefing covering --since 3d
-      // gets the same name whether run just before or after UTC midnight.
       const filename = briefingFilename(new Date(result.window.to), format);
       const filePath = path.join(saveDir, filename);
       fs.writeFileSync(filePath, payload + (payload.endsWith("\n") ? "" : "\n"));
@@ -5911,7 +5647,6 @@ async function cmdDoctor(): Promise<void> {
   try {
     memoryDir = resolveMemoryDir();
   } catch {
-    // Doctor must keep running when the config it is diagnosing is malformed.
     memoryDir = parseConfig({}).memoryDir;
   }
   try {
@@ -5921,9 +5656,6 @@ async function cmdDoctor(): Promise<void> {
     checks.push({ name: "Memory directory", ok: false, detail: `cannot create ${memoryDir}` });
   }
 
-  // Dead-lettered writes rejected by the namespace ACL (issue #1888). A
-  // non-zero count means a client namespace is misconfigured and writes are
-  // being parked instead of stored — surface it so it doesn't go unnoticed.
   try {
     const quarantined = await new WriteQuarantineStore(memoryDir).count();
     checks.push({
@@ -5937,9 +5669,6 @@ async function cmdDoctor(): Promise<void> {
           : undefined,
     });
   } catch {
-    // Keep doctor non-failing, but surface that the quarantine store could not
-    // be read rather than dropping the check silently. Detail stays generic —
-    // the raw error can carry absolute paths/internal context meant for logs.
     checks.push({
       name: "Quarantined writes",
       ok: false,
@@ -5972,7 +5701,6 @@ async function cmdDoctor(): Promise<void> {
         openclawConfig = parsed as Record<string, unknown>;
         openclawConfigValid = true;
       } else {
-        // Valid JSON but not an object (e.g. null, array, string) — treat as invalid
         openclawConfigValid = false;
       }
     } catch {
@@ -6067,8 +5795,6 @@ async function cmdDoctor(): Promise<void> {
       const slotMissing = !slotValue;
       const slotMismatch = !slotMissing && !validEntryIds.includes(slotValue);
 
-      // Slot is healthy if it references any present entry id.
-      // Legacy REMNIC_OPENCLAW_LEGACY_PLUGIN_ID is functional; REMNIC_OPENCLAW_PLUGIN_ID is preferred.
       const slotMatchesEntry = !slotMissing && !slotMismatch;
       const slotIsLegacy = slotMatchesEntry && slotValue === REMNIC_OPENCLAW_LEGACY_PLUGIN_ID;
       const slotIsPreferred = slotMatchesEntry && slotValue === REMNIC_OPENCLAW_PLUGIN_ID;
@@ -6092,10 +5818,6 @@ async function cmdDoctor(): Promise<void> {
           : undefined,
       });
 
-      // Check memoryDir for the slot-selected (active) entry — the slot determines
-      // which plugin OpenClaw loads, so checking the wrong entry misdiagnoses the
-      // configuration. Fall back to the canonical id when the slot is unset or
-      // points to a non-OpenClaw entry.
       const activeSlotEntry = slotValue ? entries[slotValue] : undefined;
       const entryToCheck = (
         activeSlotEntry ??
@@ -6213,8 +5935,6 @@ async function cmdDoctor(): Promise<void> {
       : "not set (required for direct OpenAI-backed extraction)",
   });
 
-  // Remote mode (issue #2448): probe the configured origin instead of the
-  // local service manager. Nothing is spawned locally.
   const remoteDaemon = resolveRemoteDaemon(configPath);
   if (remoteDaemon) {
     const probe = await probeDaemonHealth(remoteDaemon.baseUrl, remoteDaemon.token);
@@ -6258,11 +5978,6 @@ async function cmdDoctor(): Promise<void> {
     });
   }
 
-  // ── Coding-agent context (issue #569) ──────────────────────────────────
-  // Acceptance criterion: `remnic doctor` inside a git repo prints the
-  // detected projectId, branch, and effective namespace. We invoke the
-  // pure GitContextResolver against process.cwd(); when the cwd is not a
-  // git repo the check is informational only (no failure).
   try {
     const core = (await import("@remnic/core")) as unknown as {
       resolveGitContext?: (cwd: string) => Promise<null | {
@@ -6290,12 +6005,6 @@ async function cmdDoctor(): Promise<void> {
           `root=${gitCtx.rootPath}`,
           `defaultBranch=${gitCtx.defaultBranch ?? "(unknown)"}`,
         ];
-        // Compute effective namespace using the same resolver the orchestrator
-        // uses, with the operator's ACTUAL configured codingMode values so
-        // that the reported effectiveNamespace matches what recall + writes
-        // will use at runtime. Falls back to the ship defaults
-        // (projectScope on, branchScope off) only when no codingMode is
-        // configured in openclaw.plugin.json.
         const pluginRemnic =
           typeof openclawConfig.remnic === "object" && openclawConfig.remnic !== null
             ? (openclawConfig.remnic as Record<string, unknown>)
@@ -6350,9 +6059,6 @@ async function cmdDoctor(): Promise<void> {
   }
 
   // ── Structural-context provider (issue #1548 Track A PR 5) ────────────────
-  // Renders the configured provider mode plus a live probe so operators see
-  // "configured / probed / last error code" — a degraded/absent provider is
-  // never silent (rule 34). Pure config read when no config file is present.
   try {
     const core = (await import("@remnic/core")) as unknown as {
       probeStructuralProviderForDoctor?: (config: unknown) => Promise<{
@@ -6371,8 +6077,6 @@ async function cmdDoctor(): Promise<void> {
       const fullLine = typeof core.renderStructuralProviderStatusLine === "function"
         ? core.renderStructuralProviderStatusLine(status)
         : `structural-context provider: ${status.mode}`;
-      // Strip the redundant "structural-context provider: " prefix — the check
-      // name already carries it.
       const detail = fullLine.replace(/^structural-context provider: /, "");
       const probeUnavailable = status.active === true &&
         status.probed !== undefined && status.probed.available === false;
@@ -6457,7 +6161,6 @@ async function cmdMigrate(json: boolean, rollback: boolean): Promise<void> {
   console.log(`  Rollback: ${result.rollbackCommand}`);
 }
 
-// ── M4 commands ──────────────────────────────────────────────────────────────
 
 function cmdOnboard(dirPath: string, json: boolean): void {
   const directory = path.resolve(dirPath || process.cwd());
@@ -6520,20 +6223,7 @@ async function cmdReview(action: string, rest: string[]): Promise<void> {
       process.exit(1);
     }
     const storage = new StorageManager(memoryDir);
-    // Issue #1579 review threads Oblq_ / ObnTy: the standalone CLI storage
-    // must mirror the orchestrator's tombstone config, otherwise
-    // revokeTombstone() returns null (enabled defaults to false) and the
-    // approved content is blocked again on the next write. Parse the same
-    // config the daemon uses and apply it before revoking.
     //
-    // Issue #1579 thread Ocial: parseConfig in an ISOLATED catch. parseConfig
-    // error strings can embed raw config values (including API keys — CodeQL
-    // js/clear-text-logging), so a failure must NOT propagate to the CLI
-    // top-level handler which prints err.message. Mirror the wearables
-    // command's constant-message pattern. With no usable config, tombstones
-    // stay at their safe default (enabled=false) and the approval still
-    // clears blockedBy on disk; only the revocation is skipped, which the
-    // doctor/rebuild path recovers.
     const configPath = resolveConfigPath();
     let tombstonesConfig: {
       enabled: boolean;
@@ -6563,19 +6253,9 @@ async function cmdReview(action: string, rest: string[]): Promise<void> {
     }
     const result = performReview(memoryDir, id, action as ReviewAction, {
       onApproveBlockedMemory: (tombstoneId) => {
-        // Fire-and-forget for long-running callers; the CLI also awaits
-        // result.clearedTombstoneId below so the revocation lands before exit.
         void storage.revokeTombstone(tombstoneId, "user_correction").catch(() => undefined);
       },
     });
-    // Issue #1579: await the revocation so it lands before the CLI exits.
-    // The fire-and-forget hook covers long-running callers; this await covers
-    // the short-lived CLI process (without it the revocation could be lost).
-    // Issue #1579: await the revocation so it lands before the CLI exits, and
-    // re-register the now-active fact's contentHash in the dedup index (thread
-    // ObnTy). writeMemory skipped registration while the fact was tombstone-
-    // blocked (rule 44); without this, the next extraction of the same content
-    // would create a second active fact.
     if (result.clearedTombstoneId) {
       try {
         await storage.revokeTombstone(result.clearedTombstoneId, "user_correction");
@@ -6596,7 +6276,6 @@ async function cmdReview(action: string, rest: string[]): Promise<void> {
 }
 
 export function resolveSyncSourceDir(rest: string[]): string {
-  // Extract --source before positional args so that rest args can override it
   const sourceIdx = rest.indexOf("--source");
   if (sourceIdx < 0) return ".";
   const value = rest[sourceIdx + 1];
@@ -6715,8 +6394,6 @@ function resolveOfflineToken(args: string[]): string | undefined {
     throw new Error(`offline: ${channel.error}`);
   }
   if (channel.tokenFromArgv) {
-    // Warn once per invocation — resolution runs exactly once per command —
-    // and never echo the value: the warning itself must not leak the token.
     process.stderr.write(
       "offline: note: --token is argv-visible; prefer --token-file or REMNIC_OFFLINE_TOKEN\n"
     );
@@ -7437,13 +7114,6 @@ export function shouldDirectHydrateOfflineFile(options: {
 }): boolean {
   if (options.incoming.bytes < OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES) return false;
   if (options.current?.sha256 === options.incoming.sha256) return false;
-  // Embedding generation members must flow through the atomic generation
-  // transaction, never through direct per-file hydration writes at their
-  // final paths (issue #3148, codex round 6: a crash between direct writes
-  // would expose a mixed generation). Excluded members are still fetched
-  // WITH content by hydrateOfflineSnapshotContent (they are runtime-
-  // authoritative in offlineSnapshotContentFilesForApply), so the
-  // transaction stages and publishes them atomically.
   if (embeddingGenerationMembership(options.incoming.path)) return false;
   if (shouldPreferIncomingOfflineRuntimeFile(options.incoming.path)) return true;
   if (options.current && options.base && options.current.sha256 === options.base.sha256) {
@@ -8079,11 +7749,6 @@ export function chunkOfflineChangesetApplyBatches(
   if (!Number.isInteger(maxRequestBytes) || maxRequestBytes < 1) {
     throw new Error("offline sync apply max request bytes must be a positive integer");
   }
-  // Generation-coherent batching (issue #3150): every change belonging to one
-  // embedding generation is ONE item that must never be split across
-  // requests — a receiver applying half a generation would serve a mixed
-  // index. Each request carries only the manifest entries for the
-  // generations it actually applies.
   const items: OfflineChangesetBatchItem[] = [];
   const itemIndexByDir = new Map<string, number>();
   for (const change of changeset.changes) {
@@ -8450,8 +8115,6 @@ async function runOfflineSyncOnceWithStorage(
     baseFiles: syncBaseFiles,
   })) {
     if (options.skipLargeFilePaths?.has(file.path)) {
-      // 3-strikes policy (#1786): the watch loop already logged a single
-      // warning when this path was retired; stay silent on later passes.
       continue;
     }
     let result: OfflineSyncApplyFileContentChunkResult & { namespace?: string };
@@ -8558,8 +8221,6 @@ async function runOfflineSyncOnceWithStorage(
       remoteId: options.remoteUrl,
       ...(resolvedNamespace ? { namespace: resolvedNamespace } : {}),
       includeTranscripts: options.includeTranscripts,
-      // Partial checkpoints do not recapture conflicted/deferred paths, so keep
-      // the original capture time for safe fast-base reuse on the next run.
       lastSyncedAt: priorState?.lastSyncedAt ?? new Date().toISOString(),
       baseFiles: nextBaseFiles,
     };
@@ -8612,10 +8273,6 @@ async function runOfflineSyncOnceWithStorage(
         sourceId: localSourceId,
         currentFiles: currentSnapshotForChangeset.files,
         baseFiles: syncBaseFiles,
-        // 3-strikes skipped large files must be excluded here too — the
-        // direct-push loop skips them, but without this line the changeset
-        // path would still try to upsert them inline (Cursor review, PR
-        // #1793, High severity).
         excludePaths: [
           ...directPushedPaths,
           ...directPushDeferredPaths,
@@ -8768,10 +8425,6 @@ async function runOfflineSyncOnceWithStorage(
     resolvedNamespace: resolvedOfflineSnapshotNamespace(remoteSnapshotMetadata, syncNamespace),
     remoteFileCount: remoteSnapshotMetadata.files.length,
   };
-  // Apply-side local view (#1793 review, High): must see node-local state
-  // (state/lcm.sqlite etc.) or incoming upserts misclassify as
-  // local_deleted_remote_modified. Never reuse the push-filtered snapshot
-  // for apply.
   const buildCurrentSnapshotForApply = async (): Promise<typeof currentSnapshot> => buildOfflineSyncSnapshotFromBase({
     root: options.memoryDir,
     sourceId: localSourceId,
@@ -8790,12 +8443,6 @@ async function runOfflineSyncOnceWithStorage(
     currentFiles: applyCurrentSnapshot.files,
   });
   const pullDeferredPaths = [...remoteDeferredPaths, ...generationDeferrals];
-  // Oversized generation members cannot ride the inline base64 content
-  // path: the base64 string of a near-512MiB legacy marker exceeds the V8
-  // string ceiling. Fetch them chunk-wise into a private, secure-store-bound
-  // staging root instead, and let the atomic generation transaction consume
-  // the staged bytes via core's readIncomingFile apply callback. Live
-  // marker/shard paths are only ever touched by the transaction.
   let stagedTransport: GenerationStagedTransport;
   try {
     stagedTransport = await stageGenerationMembersForApply({
@@ -8812,8 +8459,6 @@ async function runOfflineSyncOnceWithStorage(
       hydrateFileContent: hydrateOfflineFileContent,
     });
   } catch (error) {
-    // A staging failure after a successful push must still checkpoint the
-    // advanced base — the same contract as direct-hydration failures below.
     if (pushed || partialHydration.hydratedFiles.length > 0) {
       return writePartialPushState(error, partialHydrationWithContext);
     }
@@ -9137,9 +8782,6 @@ Environment fallbacks:
   const remoteUrl = needsRemote
     ? resolveOfflineRemoteUrl(rest)
     : resolveOptionalOfflineRemoteUrl(rest);
-  // All four offline subcommands validate credential sources through the
-  // shared channel (#2831) — status included. Unknown actions fall through
-  // to the usage banner below; they must not die on flag parsing first.
   const knownAction = needsRemote || action === "status";
   const token = knownAction ? resolveOfflineToken(rest) : undefined;
   const statePath = statePathExplicit
@@ -9151,11 +8793,6 @@ Environment fallbacks:
   if (action === "prepare") {
     if (!remoteUrl || !token || !statePath) throw new Error("offline prepare requires remote URL and token");
     fs.mkdirSync(memoryDir, { recursive: true });
-    // Metadata-only pull (#3148 P1): a near-512MiB legacy marker cannot ride
-    // the inline base64 snapshot content, so prepare fills content exactly
-    // like sync — small files via base64 batches, oversized generation
-    // members chunk-wise into a private staging root consumed by the atomic
-    // generation transaction.
     const remoteSnapshotMetadata = await fetchOfflineSnapshot({
       remoteUrl,
       token,
@@ -9310,12 +8947,6 @@ Environment fallbacks:
     const configuredStorage = await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite);
     const storageIo = await createOfflineStorageIo(memoryDir, configuredStorage);
     try {
-      // Fold durable pending impression/lifecycle spills before summarizing so
-      // `status` reports the same pending set a following `sync` would push
-      // (#2033). runOfflineSyncOnce drains these queues before every snapshot; a
-      // status that skipped them would undercount. A deferred/failed drain aborts
-      // here for the same reason sync aborts — an accurate count beats a silent
-      // undercount.
       await drainOfflineSyncImpressions(memoryDir, impressionRotation);
       await drainPendingLifecycleForOfflineSync(
         memoryDir,
@@ -9481,7 +9112,6 @@ async function cmdQuarantine(action: string, rest: string[], json: boolean): Pro
       return;
     }
     try {
-      // resolveMemoryDir() can throw on invalid config JSON, and list() surfaces an unreadable/symlink-invalid store: fail cleanly (exit 2, generic detail) rather than leak a raw stack.
       const store = new WriteQuarantineStore(resolveMemoryDir());
       console.log(renderQuarantineList(await store.list(), format));
     } catch {
@@ -9496,11 +9126,6 @@ async function cmdQuarantine(action: string, rest: string[], json: boolean): Pro
 async function cmdConnectors(action: string, rest: string[], json: boolean): Promise<void> {
   const rawNonFlagArgs = rest.filter((a) => !a.startsWith("--"));
   const resolveConfigStrippedNonFlagArgs = (): string[] => {
-    // Connector actions that resolve a connector id/name must strip split-form
-    // `--config key=value` values before filtering for positionals; otherwise
-    // `installExtension=false` can be mistaken for the connector name. Keep
-    // this out of the marketplace path because marketplace uses
-    // `--config <path>` with file-path semantics.
     let strippedRest: string[];
     try {
       strippedRest = stripConfigArgv(rest);
@@ -9555,8 +9180,6 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     if (result.status === "config_required") console.log("Set config with --config <key>=<value>");
     const effectiveConnectorConfig = readInstalledConnectorConfig(result.configPath, connectorConfig);
 
-    // Publish memory extension if the connector has a publisher and the
-    // install was successful (not error/already_installed/config_required).
     const shouldPublishExtension = coerceInstallExtension(effectiveConnectorConfig.installExtension) ?? true;
     if (result.status === "installed" && shouldPublishExtension) {
       const pub = publisherForConnector(connectorId);
@@ -9565,9 +9188,6 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
           const available = await pub.isHostAvailable();
           if (available) {
             const memoryDir = resolveMemoryDir();
-            // Finding 2 (PR #423): pass the connector's namespace into
-            // the publish context so publishers use the actual namespace
-            // instead of falling back to "default".
             const connectorNamespace =
               typeof effectiveConnectorConfig.namespace === "string" && effectiveConnectorConfig.namespace.length > 0
                 ? effectiveConnectorConfig.namespace
@@ -9587,8 +9207,6 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
             }
           }
         } catch (err) {
-          // Per CLAUDE.md #13: external service calls must not crash the
-          // primary install flow. Surface a user-facing note instead.
           const msg = err instanceof Error ? err.message : String(err);
           console.warn(`  Warning: memory extension publish failed: ${msg}`);
         }
@@ -9626,9 +9244,6 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
         }
       }
     } else if (result.status === "skipped" && result.reason === "config-parse-failed") {
-      // A malformed codex-cli.json means we could not verify or complete removal.
-      // This is not a benign no-op — the connector may still be partially installed.
-      // Exit non-zero so automation does not treat a failed removal as success.
       console.error(
         `Error: removal skipped because the connector config could not be parsed. ` +
           `Fix or delete the config file at ${result.configPath} manually and retry.`,
@@ -9639,15 +9254,10 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     const connectorId = resolveConnectorId("Usage: remnic connectors doctor <id>");
     const result = await doctorConnector(connectorId);
 
-    // Append memory extension publisher health only for the requested
-    // connector's host, not all registered publishers. This prevents
-    // unrelated hosts from polluting the health status.
     const publisherChecks: Array<{ name: string; ok: boolean; detail: string }> = [];
     const targetHostId = hostIdForConnector(connectorId);
     const factory = PUBLISHERS[targetHostId];
 
-    // Finding 1 (PR #423): skip the extension directory existence check when
-    // the user explicitly opted out via installExtension=false.
     const connectorInstance = listConnectors().installed.find(
       (c) => c.connectorId === connectorId,
     );
@@ -9705,12 +9315,6 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     }
   } else if (action === "marketplace") {
     const subAction = rawNonFlagArgs[0];
-    // Use the original `rest` (not strippedRest) because marketplace uses
-    // `--config <path>` for a file path, not `--config key=value` pairs.
-    // `stripConfigArgv` would silently remove that flag, breaking config
-    // overrides for marketplace subcommands.
-    // Strip only the subAction token so downstream positional parsing picks
-    // up the real argument (e.g. the install source or validate path).
     let subActionRemoved = false;
     const marketplaceRest = rest.filter((a) => {
       if (!subActionRemoved && a === subAction) {
@@ -9721,15 +9325,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     });
     await cmdConnectorsMarketplace(subAction, marketplaceRest, json);
   } else if (action === "status") {
-    // `remnic connectors status` — live-connector status (defaults to JSON).
-    // Reads persisted ConnectorState files from the memory dir rather than
-    // booting an orchestrator; no network calls needed.
     //
-    // Dynamic imports are used for the live-connector symbols so that the
-    // standalone `remnic` binary resolves them from the installed
-    // `@remnic/core` at runtime rather than requiring a static tsc path
-    // that traverses the workspace boundary (same pattern as cli.ts which
-    // uses `await import("./connectors/live/state-store.js")`).
     const {
       listConnectorStates: listLiveConnectorStates,
       GOOGLE_DRIVE_CONNECTOR_ID: GDRIVE_ID,
@@ -9761,22 +9357,14 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     const memoryDir = resolveMemoryDir();
     const states = await listLiveConnectorStates(memoryDir);
     const stateMap = new Map(states.map((s: { id: string }) => [s.id, s]));
-    // Reflect the parsed config's enabled flags (same source `connectors run`
-    // uses) instead of hardcoding true, so disabled connectors report
-    // enabled:false in status/list output (issue #2062).
     let connectorsCfg: PluginConfig["connectors"];
     const configPath = resolveConfigPath();
     try {
       const raw = fs.existsSync(configPath)
         ? JSON.parse(fs.readFileSync(configPath, "utf8"))
         : {};
-      // parseConfigQuietly (not parseConfig): this branch installs no logger,
-      // so parseConfig's coercion warnings would print raw config values
-      // (e.g. secrets) via console.warn (#2033).
       connectorsCfg = parseConfigQuietly(raw).connectors;
     } catch {
-      // Report the path, never the caught error message: parse/validation
-      // errors can echo raw config values (e.g. secrets) into CLI output.
       process.stderr.write(
         `connectors status: failed to read config at ${configPath}\n`,
       );
@@ -9799,12 +9387,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     ];
     console.log(renderLiveList(rows, parsed.format));
   } else if (action === "run") {
-    // `remnic connectors run <name>` — manually trigger one incremental sync
-    // pass for the named live connector.  Boots a lightweight orchestrator
-    // so the ingest pipeline is available for persisting fetched docs.
     //
-    // Dynamic imports are used for the live-connector and connectors-cli
-    // symbols (same reasoning as the `status` branch above).
     const {
       GOOGLE_DRIVE_CONNECTOR_ID: GDRIVE_ID,
       NOTION_CONNECTOR_ID: NOTION_ID,
@@ -9984,7 +9567,6 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
   }
 }
 
-// ── Marketplace subcommand (connectors marketplace) ────────��────────────────
 
 async function cmdConnectorsMarketplace(
   subAction: string | undefined,
@@ -10001,9 +9583,6 @@ async function cmdConnectorsMarketplace(
   const rawConfig = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
-  // Unwrap the plugin-scoped config block (remnic or engram wrapper) so
-  // parseConfig receives the correct inner object — same pattern used by
-  // other CLI entrypoints (resolveMemoryDir, cmdBriefing, etc.).
   const pluginConfig = resolveRemnicConfigRecord(rawConfig);
   const config = parseConfig(pluginConfig);
 
@@ -10064,8 +9643,6 @@ async function cmdConnectorsMarketplace(
       process.exit(1);
     }
 
-    // CLAUDE.md gotcha #14 & #51: reject --type without a value instead of
-    // silently defaulting to "github".
     const validTypes = new Set(["github", "git", "local", "url"]);
     let typeFlag: string;
     try {
@@ -10106,7 +9683,6 @@ async function cmdConnectorsMarketplace(
   }
 }
 
-// ── M6 space command ──────────────────────────────────────────────────────────
 
 async function cmdSpace(action: string, rest: string[], json: boolean): Promise<void> {
   const nonFlagArgs = rest.filter((a) => !a.startsWith("--"));
@@ -10131,10 +9707,8 @@ async function cmdSpace(action: string, rest: string[], json: boolean): Promise<
     const result = switchSpace(spaceId);
     console.log(result.message);
   } else if (action === "create") {
-    // Extract --parent <id> before computing positional args
     const parentIdx = rest.indexOf("--parent");
     const parentSpaceId = parentIdx >= 0 && rest[parentIdx + 1] ? rest[parentIdx + 1] : undefined;
-    // Build positional args excluding --parent and its value
     const positionals: string[] = [];
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === "--parent") { i++; continue; } // skip --parent and its value
@@ -10247,7 +9821,6 @@ async function cmdSpace(action: string, rest: string[], json: boolean): Promise<
   }
 }
 
-// ── Benchmark commands ─────────────────────────────────────────────────────────
 
 async function cmdLegacyBenchmark(action: string, rest: string[], json: boolean): Promise<void> {
   initCliLogger(json);
@@ -10364,7 +9937,6 @@ async function cmdBenchOutcomePrior(rest: string[]): Promise<void> {
 async function cmdBench(rest: string[]): Promise<void> {
   if (rest[0] === "coding") return cmdBenchCoding(rest.slice(1));
   if (rest[0] === "security") return cmdBenchSecurity(rest.slice(1));
-  // Procedural ablation (#567): ad-hoc harness, not a catalogue entry.
   if (rest[0] === "procedural-ablation") {
     await cmdBenchProceduralAblation(rest.slice(1));
     return;
@@ -10483,10 +10055,6 @@ async function cmdBench(rest: string[]): Promise<void> {
     return;
   }
 
-  // --all expands from the @remnic/bench registry; without the optional
-  // package there is nothing to expand. Fail here with the same
-  // actionable install hint a named benchmark gets, before the empty
-  // expansion can be misread as "no runnable benchmarks in this install".
   if (parsed.all && !(await tryLoadBenchModule())) {
     console.error(`ERROR: bench run --all requires ${MISSING_BENCH_RUNTIME_HINT}`);
     process.exit(1);
@@ -10508,8 +10076,6 @@ async function cmdBench(rest: string[]): Promise<void> {
   const runtimeProfiles = resolveBenchRunProfiles(parsed);
   let selectedWorkItems = createBenchWorkItems(selectedBenchmarks, runtimeProfiles);
 
-  // Validate benchmark IDs before resume/retry-failed filtering so unknown
-  // names are caught early instead of being silently dropped by the filter.
   const knownBenchmarkIds = await resolveKnownBenchmarkIds();
   const unknown = selectedBenchmarks.filter((benchmarkId) => !knownBenchmarkIds.has(benchmarkId));
   if (unknown.length > 0) {
@@ -10517,7 +10083,6 @@ async function cmdBench(rest: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // --resume / --retry-failed: filter against previous run status
   if (parsed.resume || parsed.retryFailed) {
     const resultsDir = parsed.resultsDir ?? resolveBenchOutputDir();
     const latestStatusPath = await findLatestBenchStatusFile(resultsDir);
@@ -10579,8 +10144,6 @@ async function cmdBench(rest: string[]): Promise<void> {
     parsed.resultsDir ?? resolveBenchOutputDir(),
     process.pid,
   );
-  // When running a matrix (multiple profiles), create profile-specific status
-  // entries so that a failed profile doesn't get overwritten by a later success.
   const statusEntryIds = [...new Set(
     selectedWorkItems.map(({ benchmarkId, runtimeProfile }) =>
       runtimeProfiles.length > 1 ? `${benchmarkId} [${runtimeProfile}]` : benchmarkId,
@@ -10618,8 +10181,6 @@ async function cmdBench(rest: string[]): Promise<void> {
             }
             try { await updateBenchmarkCompleted(benchStatusPath, statusId, handledByPackage.writtenPath ?? ""); } catch { /* non-fatal */ }
           } else {
-            // The legacy eval-runner fallback was removed (issue #2798);
-            // @remnic/bench is the only benchmark runtime.
             throw new Error(
               `Benchmark "${benchmarkId}" requires ${MISSING_BENCH_RUNTIME_HINT}`,
             );
@@ -10749,7 +10310,6 @@ Options:
   console.log(`wrote ${outPath}`);
 }
 
-// ── Daemon management ────────────────────────────────────────────────────────
 const LOGS_DIR = path.join(PID_DIR, "logs");
 const LAUNCHD_PLIST_PATHS = launchdPlistPaths(resolveHomeDir());
 const [LAUNCHD_PLIST_PATH] = LAUNCHD_PLIST_PATHS;
@@ -10881,7 +10441,6 @@ function daemonInstall(): void {
   const serverBinDetails = resolveServerBinDetails();
   const serverBin = serverBinDetails.path;
 
-  // Service templates use plain `node` — TypeScript source won't work
   if (!serverBinDetails.exists) {
     console.error("Error: @remnic/server could not be found.");
     console.error("  Install @remnic/server beside @remnic/cli, or build it from the workspace first.");
@@ -11004,12 +10563,10 @@ function daemonUninstall(): void {
     console.error(`Unsupported platform: ${process.platform}.`);
     process.exit(1);
   }
-  // Also stop any manually-started daemon
   daemonStop();
 }
 
 function isServiceRunning(): { running: boolean; pid?: number } {
-  // Check PID file first (manual `daemon start`)
   const pidFromFile = readPid();
   if (pidFromFile) {
     try {
@@ -11019,7 +10576,6 @@ function isServiceRunning(): { running: boolean; pid?: number } {
       // stale pid file
     }
   }
-  // Check service manager (launchd/systemd from `daemon install`)
   if (isMacOS()) {
     const status = firstSuccessfulResult(LAUNCHD_LABEL_CANDIDATES, (label) => {
       const out = childProcess.execSync(`launchctl list ${label} 2>/dev/null`, { encoding: "utf8" });
@@ -11054,9 +10610,6 @@ function isServiceRunning(): { running: boolean; pid?: number } {
 async function daemonStatus(): Promise<void> {
   const hostedOnly = resolveHostedOnlyDaemonRefusal(resolveConfigPath());
   if (hostedOnly) {
-    // Hosted-only mode (issue #2712): report the remote origin, not a
-    // leftover local PID on 4318. `daemon stop|uninstall` remain the
-    // cleanup path for such a leftover.
     const probe = await probeDaemonHealth(
       hostedOnly.remoteUrl,
       resolveOperatorToken(resolveConfigPath()),
@@ -11086,7 +10639,6 @@ async function daemonStatus(): Promise<void> {
   console.log(`  PID file:  ${fs.existsSync(PID_FILE) ? PID_FILE : LEGACY_PID_FILE}`);
   console.log(`  Log file:  ${fs.existsSync(LOG_FILE) ? LOG_FILE : LEGACY_LOG_FILE}`);
 
-  // Memory extensions status (#382)
   try {
     const configPath = resolveConfigPath();
     const raw = fs.existsSync(configPath)
@@ -11129,7 +10681,6 @@ function daemonStart(): void {
     return;
   }
 
-  // Try service manager first (for daemons installed via `remnic daemon install`)
   if (isMacOS() && anyFileExists(LAUNCHD_PLIST_PATHS)) {
     const label = firstSuccessfulCandidate(LAUNCHD_LABEL_CANDIDATES, (candidate) => {
       childProcess.execSync(`launchctl start ${candidate} 2>/dev/null`, { stdio: "pipe" });
@@ -11158,11 +10709,9 @@ function daemonStart(): void {
   let cmd: string;
   let args: string[];
   if (isSource) {
-    // Dev mode: use npx tsx
     cmd = "npx";
     args = ["tsx", serverBin];
   } else {
-    // Production: use node directly
     cmd = process.execPath;
     args = [serverBin];
   }
@@ -11183,7 +10732,6 @@ function daemonStart(): void {
 }
 
 function daemonStop(): void {
-  // Try service manager first (for daemons started via `remnic daemon install`)
   if (isMacOS() && anyFileExists(LAUNCHD_PLIST_PATHS)) {
     const label = firstSuccessfulCandidate(LAUNCHD_LABEL_CANDIDATES, (candidate) => {
       childProcess.execSync(`launchctl stop ${candidate} 2>/dev/null`, { stdio: "pipe" });
@@ -11202,7 +10750,6 @@ function daemonStop(): void {
     }
   }
 
-  // Fall back to PID file (for daemons started via `remnic daemon start`)
   const pid = readPid();
   if (!pid) {
     console.log("Not running");
@@ -11231,29 +10778,14 @@ function daemonRestart(): void {
   setTimeout(() => daemonStart(), 1000);
 }
 
-// ── Token management ────────────────────────────────────────────────────────
 
 function cmdTokenGenerate(rest: string[]): void {
-  // Parse scoped-capability flags (issue #1837) FIRST so their values are
-  // never mistaken for the connector positional. resolveFlagStrict rejects a
-  // bare flag or one whose value is another --flag, matching the repo's
-  // "value flags must have a real value" convention (rule 14).
   const opsRaw = resolveFlagStrict(rest, "--ops");
   const namespacesRaw = resolveFlagStrict(rest, "--namespaces");
 
-  // Connector id is the first positional that is NOT a value flag and NOT the
-  // value consumed by one. Parsing the flags first (above) means `token
-  // generate --ops recall monitor` resolves connector=monitor, not the --ops
-  // value "recall" — the prior `rest.find(a => !a.startsWith("-"))` grabbed
-  // the first non-flag token, which was the --ops value (issue #1850 finding
-  // 5). Skipping each value flag AND its following token leaves only real
-  // positionals; a bare flag (e.g. --json) starts with "-" so it is never
-  // picked as the connector either.
   let connector: string | undefined;
   for (let i = 0; i < rest.length; i++) {
     const tok = rest[i];
-    // --ops and --namespaces each consume the following token as their value;
-    // skip both so that value is never mistaken for the connector.
     if (tok === "--ops" || tok === "--namespaces") {
       i++;
       continue;
@@ -11320,7 +10852,6 @@ function cmdTokenList(json: boolean): void {
   }
   console.log("Connector tokens:");
   for (const t of tokens) {
-    // Show only first 20 chars of token for security
     const masked = t.token.slice(0, 20) + "…";
     console.log(`  ${t.connector.padEnd(16)} ${masked}  (created ${t.createdAt})`);
   }
@@ -11338,7 +10869,6 @@ function cmdTokenRevoke(connector: string): void {
   }
 }
 
-// ── OpenClaw install command ──────────────────────────────────────────────────
 
 interface OpenclawInstallOptions {
   yes: boolean;
@@ -11355,7 +10885,6 @@ interface OpenclawUpgradeOptions extends OpenclawInstallOptions {
 }
 
 async function promptYesNo(question: string, defaultYes = true): Promise<boolean> {
-  // In non-interactive environments, default to yes
   if (!process.stdin.isTTY) return defaultYes;
   process.stdout.write(question + " ");
   return new Promise((resolve) => {
@@ -11392,7 +10921,6 @@ async function promptYesNo(question: string, defaultYes = true): Promise<boolean
   });
 }
 
-// ── Binary lifecycle CLI ─────────────────────────────────────────────────────
 
 async function cmdBinary(rest: string[]): Promise<void> {
   initLogger();
@@ -11404,7 +10932,6 @@ async function cmdBinary(rest: string[]): Promise<void> {
   const config = parseConfig(remnicCfg);
   const memoryDir = resolveMemoryDir();
 
-  // Build the BinaryLifecycleConfig from PluginConfig values.
   const blConfig: BinaryLifecycleConfig = {
     enabled: config.binaryLifecycleEnabled,
     gracePeriodDays: config.binaryLifecycleGracePeriodDays,
@@ -11423,7 +10950,6 @@ async function cmdBinary(rest: string[]): Promise<void> {
   switch (action) {
     case "scan": {
       const manifest = await readManifest(memoryDir);
-      // Inline import to avoid pulling scanner into every CLI load
       const { scanForBinaries } = await import("@remnic/core");
       const found = await scanForBinaries(memoryDir, blConfig, manifest);
       if (found.length === 0) {
@@ -11554,11 +11080,6 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
     migrateLegacy = true;
   }
 
-  // Build the new config.
-  // When migrating (migrateLegacy=true): merge legacy config values so operators
-  // don't lose settings like custom models, then let the existing new-entry config
-  // and the explicit memoryDir take precedence.
-  // When NOT migrating: only carry forward the existing openclaw-remnic config (if any).
   const legacyEntry = entries[REMNIC_OPENCLAW_LEGACY_PLUGIN_ID] as Record<string, unknown> | undefined;
   const existingNewEntry = entries[REMNIC_OPENCLAW_PLUGIN_ID] as Record<string, unknown> | undefined;
 
@@ -11573,10 +11094,6 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
       : {};
   const defaultModelSource = !hasNew && !migrateLegacy ? "gateway" : "plugin";
 
-  // Determine the final memoryDir. Operator-provided --memory-dir always wins.
-  // On reinstall (no --memory-dir flag), preserve the currently configured value
-  // so running `remnic openclaw install` as a repair doesn't silently relocate
-  // the memory namespace. Fall back to the default only when no prior value exists.
   const memoryDir = resolveOpenclawInstallMemoryDir({
     requestedMemoryDir: opts.memoryDir,
     existingNewEntryConfig,
@@ -11587,21 +11104,12 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
 
   console.log(`Memory dir:      ${memoryDir}`);
 
-  // Preserve top-level entry fields (e.g. hooks, enabled) during both
-  // reinstalls and migration:
-  // - Spread legacy entry first so any legacy policy fields are carried over
-  //   when migrating (migrateLegacy=true), but exclude legacy's config since
-  //   that is merged separately with the explicit memoryDir taking precedence.
-  // - Spread the existing new entry on top so its policy takes precedence.
-  // - Finally, overwrite config with the merged result.
   const legacyNonConfigFields: Record<string, unknown> = {};
   if (migrateLegacy && legacyEntry && typeof legacyEntry === "object" && !Array.isArray(legacyEntry)) {
     for (const [k, v] of Object.entries(legacyEntry)) {
       if (k !== "config") legacyNonConfigFields[k] = v;
     }
   }
-  // Guard: only spread existingNewEntry if it's a plain object — a scalar/array
-  // value would cause character-index keys to be silently merged in.
   const existingNewEntryFields =
     existingNewEntry && typeof existingNewEntry === "object" && !Array.isArray(existingNewEntry)
       ? existingNewEntry
@@ -11622,19 +11130,9 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
   };
 
   const updatedEntries: Record<string, unknown> = { ...entries };
-  // Write the entry under the canonical plugin id. The slot below must match this id.
   updatedEntries[REMNIC_OPENCLAW_PLUGIN_ID] = newEntry;
 
-  // Keep legacy entry if migrating so rollback is possible — operator can remove
-  // the legacy entry after verifying that hooks fire under the new id.
 
-  // Update the memory slot to the canonical plugin id, UNLESS the operator
-  // declined migration AND the slot is already actively pointing at the legacy
-  // entry — in that case leave it alone so their working hooks keep firing
-  // while they evaluate the new entry.
-  // All other cases (unset, mismatched, already pointing at the new id, no
-  // legacy entry at all) should be updated so the install results in a
-  // working configuration rather than an incomplete one.
   const slotIsActiveLegacy =
     hasLegacy && !migrateLegacy && currentSlot === REMNIC_OPENCLAW_LEGACY_PLUGIN_ID;
   const updatedSlots = slotIsActiveLegacy
@@ -11650,7 +11148,6 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
     },
   };
 
-  // What will change
   const changes: string[] = [];
   if (!hasNew) changes.push(`+ Added plugins.entries["${REMNIC_OPENCLAW_PLUGIN_ID}"]`);
   else changes.push(`~ Updated plugins.entries["${REMNIC_OPENCLAW_PLUGIN_ID}"].config.memoryDir`);
@@ -11668,8 +11165,6 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
   if (opts.dryRun) {
     console.log("\n--- DRY RUN — no changes written ---");
     for (const c of changes) console.log("  " + c);
-    // Print a structural summary without dumping full config values —
-    // config objects can contain API keys and other credentials.
     const dryRunPlugins = updatedConfig.plugins as Record<string, unknown>;
     const dryRunEntries = dryRunPlugins.entries as Record<string, unknown> | undefined;
     const entrySummary = dryRunEntries
@@ -11685,7 +11180,6 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
     return;
   }
 
-  // Create memory dir — fail fast if the path exists but is a file
   if (fs.existsSync(memoryDir)) {
     const st = fs.statSync(memoryDir);
     if (!st.isDirectory()) {
@@ -11700,7 +11194,6 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
     console.log(`Created memory directory: ${memoryDir}`);
   }
 
-  // Write config
   const configDir = path.dirname(configPath);
   if (!fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true });
@@ -12014,7 +11507,6 @@ function createOpenclawUpgradeBackupDir(): string {
   return fs.mkdtempSync(path.join(backupsRoot, `remnic-openclaw-upgrade-${formatOpenclawUpgradeStamp()}-`));
 }
 
-// ── Taxonomy commands (#366) ─────────────────────────────────────────────────
 
 async function cmdTaxonomy(rest: string[]): Promise<void> {
   initCliLogger(rest.includes("--json"));
@@ -12136,7 +11628,6 @@ async function cmdTaxonomy(rest: string[]): Promise<void> {
         process.exit(1);
       }
 
-      // Prevent removing a default category that has memoryCategories mapped
       const target = taxonomy.categories[idx]!;
       const isDefault = DEFAULT_TAXONOMY.categories.some((c) => c.id === id);
       if (isDefault && target.memoryCategories.length > 0) {
@@ -12217,7 +11708,6 @@ Usage:
   }
 }
 
-// ── Training export ──────────────────────────────────────────────────────────
 
 /**
  * Allowed values for `--format`. Derived dynamically from the registry so
@@ -12295,7 +11785,6 @@ function resolveRequiredValueFlag(
 export function parseCapsuleForkArgs(
   args: string[],
 ): { sourceArchive: string; targetRoot: string; forkId: string } | { error: string } {
-  // Extract flag values first.
   const targetRoot = resolveRequiredValueFlag(args, "--target");
   const forkId = resolveRequiredValueFlag(args, "--fork-id");
 
@@ -12306,11 +11795,6 @@ export function parseCapsuleForkArgs(
     return { error: "capsule fork requires --fork-id <id>" };
   }
 
-  // Walk argv skipping value-taking flag pairs so their values are not
-  // included as positionals. Each known value-taking flag (`--target`,
-  // `--fork-id`) consumes the next token unless the value is inline
-  // (`--flag=value`). Unknown flags are treated as bare (no value
-  // consumption) — defensive against future flag additions.
   const VALUE_TAKING_FLAGS = new Set(["--target", "--fork-id"]);
   const positionals: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -12353,14 +11837,8 @@ export function parseTrainingExportArgs(
     );
   }
 
-  // Parse --dry-run first so we can relax the --output requirement when the
-  // user only wants statistics (Cursor review on PR #509: the help text and
-  // the earlier error message both documented --dry-run as the
-  // --output-optional escape hatch, but the old ordering unconditionally
-  // required --output and made that combination impossible).
   const dryRun = hasFlag(rest, "--dry-run");
 
-  // Accept --out as a short alias for --output (issue #459 spec uses both).
   const outputRaw =
     resolveRequiredValueFlag(rest, "--output") ??
     resolveRequiredValueFlag(rest, "--out");
@@ -12370,17 +11848,8 @@ export function parseTrainingExportArgs(
         "Use --dry-run to print statistics without writing a file.",
     );
   }
-  // In dry-run mode, `runTrainingExport` never touches the filesystem, so
-  // the output field is unused — we still populate it with a sentinel path
-  // so the parsed-args contract has no optional field and downstream code
-  // doesn't need to re-check dryRun before reading `output`.
   const output = outputRaw ? expandTilde(outputRaw) : "";
 
-  // Expand ~ in BOTH the --memory-dir flag AND the default resolved dir
-  // (CLAUDE.md #17: Node.js `fs` does not expand ~; apply it to every path
-  // input consistently, not just the explicit flag). `resolveMemoryDir`
-  // can surface a tilde-prefixed path from config or env — validating that
-  // without expansion would reject otherwise-valid memory stores.
   const memoryDirFlag = resolveRequiredValueFlag(rest, "--memory-dir");
   const memoryDir = expandTilde(memoryDirFlag ?? defaultMemoryDir);
 
@@ -12420,15 +11889,7 @@ export function parseTrainingExportArgs(
   }
 
   const includeEntities = hasFlag(rest, "--include-entities");
-  // `--synthesize` is off by default: it is a WeClone-specific enhancement that
-  // turns Remnic's flat records into conversational Q/A pairs. Users of other
-  // formats (or raw Alpaca) can opt out.
   const synthesize = hasFlag(rest, "--synthesize");
-  // `--privacy-sweep` is on by default for WeClone and any other adapter
-  // that will be shared as a training dataset. Off switch:
-  // `--no-privacy-sweep`. We also track whether the choice was explicit
-  // so runtime code can distinguish "user asked for this" (hard error
-  // on mismatch) from "default, we can fall back with a warning".
   const privacySweepOff = hasFlag(rest, "--no-privacy-sweep");
   const privacySweepOn = hasFlag(rest, "--privacy-sweep");
   const privacySweepExplicit = privacySweepOff || privacySweepOn;
@@ -12475,13 +11936,6 @@ export async function runTrainingExport(
     parseStrictCliDate, registerTrainingExportAdapter,
   } = await loadTrainingExportCoreRuntime();
 
-  // Resolve the adapter from the registry first. If the user picks a
-  // non-weclone format (registered elsewhere), we never touch the
-  // optional @remnic/export-weclone package. If the format isn't
-  // registered yet, we lazily load weclone to register its adapter and
-  // try again — that keeps weclone a true à-la-carte install while
-  // still supporting `--format weclone` out of the box.
-  // (Codex feedback on PR #545.)
   type WecloneExportModule = Awaited<ReturnType<typeof loadWecloneExportModule>>;
   type WecloneTrainingRecords = Parameters<WecloneExportModule["synthesizeTrainingPairs"]>[0];
   type WeclonePrivacyRecords = Parameters<WecloneExportModule["sweepPii"]>[0];
@@ -12495,11 +11949,6 @@ export async function runTrainingExport(
 
   let adapter = getTrainingExportAdapter(args.format);
   if (!adapter && args.format === "weclone") {
-    // The format is specifically weclone and the adapter hasn't been
-    // registered in this process yet. Only load the optional package
-    // in this case — a typo or genuinely unsupported format should
-    // surface the normal "unknown format" error below, not a weclone
-    // install hint. (Codex feedback on PR #545.)
     const mod = await ensureWeclone();
     mod.ensureWecloneExportAdapterRegistered({ getTrainingExportAdapter, registerTrainingExportAdapter });
     adapter = getTrainingExportAdapter(args.format);
@@ -12526,8 +11975,6 @@ export async function runTrainingExport(
     );
   }
 
-  // Parse date filters with the shared strict validator so behavior matches
-  // the core CLI (rejects Feb 31, non-ISO strings, etc.).
   let since: Date | undefined;
   if (args.since) since = parseStrictCliDate(args.since, "--since");
   let until: Date | undefined;
@@ -12545,14 +11992,6 @@ export async function runTrainingExport(
   let records: TrainingExportRecord[] = await convertMemoriesToRecords(convertOptions);
   const recordsRead = records.length;
 
-  // synthesize and privacy-sweep currently live in @remnic/export-weclone
-  // and produce weclone-shaped output. When the selected adapter isn't
-  // the weclone one, we cannot run them — but we must NOT silently
-  // skip privacy-sweep, because it's a security guard that defaults on
-  // and a quiet no-op would let PII leak through plugin/custom formats.
-  // Hard-fail with a clear remediation path instead, so users either
-  // pick --format weclone or explicitly opt out with --no-privacy-sweep.
-  // (Codex P2+P1 feedback on PR #545.)
   const adapterIsWeclone = adapter.name === "weclone";
   if (args.synthesize) {
     if (!adapterIsWeclone) {
@@ -12575,13 +12014,6 @@ export async function runTrainingExport(
       records = swept.cleanRecords as unknown as TrainingExportRecord[];
       redactedCount = swept.redactedCount;
     } else {
-      // privacy-sweep defaults ON because training-export data is
-      // shareable. The sweep itself is weclone-specific today, so on a
-      // non-weclone adapter we refuse to export rather than silently
-      // skip redaction (Codex P1 would have us fail; a warn-and-export
-      // pattern would still leak PII). The error message makes the
-      // opt-out path obvious so the "default breaks my plugin format"
-      // complaint (Cursor Medium) is a one-flag fix, not a mystery.
       const explicitness = args.privacySweepExplicit
         ? "was requested"
         : "defaults on for training exports";
@@ -12621,10 +12053,6 @@ export async function runTrainingExport(
     };
   }
 
-  // Defensive: the CLI parser requires --output when --dry-run is absent,
-  // but programmatic callers construct ParsedTrainingExportArgs directly.
-  // Fail loudly rather than write to an empty-string path that the shell
-  // might resolve to cwd in surprising ways.
   if (!args.output) {
     throw new Error(
       "runTrainingExport: `output` is required when dryRun is false. " +
@@ -12634,9 +12062,6 @@ export async function runTrainingExport(
 
   const formatted = adapter.formatRecords(records);
 
-  // Ensure parent directory exists before writing. Use atomic rename to
-  // avoid partial-write corruption (CLAUDE.md #54: never delete before
-  // successful write).
   const outDir = path.dirname(args.output);
   fs.mkdirSync(outDir, { recursive: true });
   const tmpPath = `${args.output}.tmp-${process.pid}-${Date.now()}`;
@@ -12657,7 +12082,6 @@ export async function runTrainingExport(
   };
 }
 
-// ── CLI entry ────────────────────────────────────────────────────────────────
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const [command, ...rest] = argv;
@@ -12824,7 +12248,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         console.log(`Output: ${outputDir}`);
         console.log("Press Ctrl+C to stop.\n");
 
-        // Initial generation
         const initial = await generateContextTree({
           memoryDir,
           outputDir,
@@ -12835,7 +12258,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         });
         console.log(`Initial: ${initial.nodesGenerated} nodes (${initial.durationMs}ms)`);
 
-        // Debounced watcher
         let debounceTimer: ReturnType<typeof setTimeout> | null = null;
         const rebuild = () => {
           if (debounceTimer) clearTimeout(debounceTimer);
@@ -12862,7 +12284,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           rebuild();
         });
 
-        // Keep process alive
         await new Promise(() => {});
       } else if (subAction === "validate") {
         const treeDir = outputDir;
@@ -12950,10 +12371,6 @@ Options:
     }
 
     case "oauth": {
-      // `remnic oauth <pending|approve|deny> [...]` — operator-side
-      // management of pending ChatGPT-MCP authorization requests. All
-      // network and rendering logic lives in cmdOAuth; the dispatcher
-      // just routes the slice.
       await cmdOAuth(rest);
       break;
     }
@@ -13083,9 +12500,6 @@ Other:
     }
 
     case "wearables": {
-      // Wearable transcript sources (Limitless / Bee / Omi). All parsing,
-      // validation, and rendering live in @remnic/core's shared runner —
-      // commands/wearables.ts boots the one-shot orchestrator.
       await runWearablesBinaryCommand(rest);
       break;
     }
@@ -13143,11 +12557,6 @@ Other:
         break;
       }
 
-      // Lazy orchestrator factory: only invoked when the run actually needs
-      // to write memories. `--dry-run`, `--help`, and install-hint failures
-      // all short-circuit BEFORE touching the memory store, keeping
-      // responsiveness high for the common "preview what would be imported"
-      // path (Cursor review on PR #583).
       let orchestratorSingleton: Orchestrator | undefined;
       const targetFactory = async () => {
         if (!orchestratorSingleton) {
@@ -13182,10 +12591,6 @@ Other:
     }
 
     case "import-lossless-claw": {
-      // SQLite→SQLite migration of a lossless-claw LCM database into
-      // Remnic's LCM mode. Distinct from `remnic import` because the data
-      // model is structurally different (turns + summary DAG, not facts)
-      // and the destination is the LCM SQLite store, not the orchestrator.
       const exitCode = await cmdImportLosslessClaw(rest, {
         resolveMemoryDir,
         stdout: (line) => console.log(line),
@@ -13196,9 +12601,6 @@ Other:
     }
 
     case "capture": {
-      // `remnic capture audio <sub>` forwards to the optional
-      // @remnic/capture-audio CLI (loaded via computed-specifier dynamic
-      // import; clean install hint when absent — issue #1897).
       const exitCode = await cmdCapture(rest, {
         stdout: (line) => console.log(line),
         stderr: (line) => console.error(line),
@@ -13208,7 +12610,6 @@ Other:
     }
 
     case "buffer": {
-      // `remnic buffer drain` — drain the extraction buffer out of process.
       const subAction = rest[0] ?? "help";
       if (subAction !== "drain") {
         console.error(subAction === "help" ? BUFFER_DRAIN_USAGE : `remnic buffer: unknown subcommand: ${subAction}`);
@@ -13227,9 +12628,6 @@ Other:
     }
 
     case "capsule": {
-      // `remnic capsule fork <source-archive> --target <root> --fork-id <id>`
-      // Issue #676 PR 4/6: formalise fork semantics — lineage breadcrumb +
-      // parent-capsule linkage.
       const subAction = rest[0] ?? "help";
       const capsuleArgs = rest.slice(1);
 
@@ -13251,8 +12649,6 @@ Options:
           break;
         }
 
-        // Delegate to the exported parser so the positional/flag separation
-        // logic is independently testable (Codex P2 #751).
         const forkParsed = parseCapsuleForkArgs(capsuleArgs);
         if ("error" in forkParsed) {
           console.error(`ERROR: ${forkParsed.error}`);
@@ -13279,8 +12675,6 @@ Options:
           process.exit(1);
         }
       } else if (subAction === "lineage") {
-        // `remnic capsule lineage --root <dir> --fork-id <id>`
-        // Read and print the lineage breadcrumb for a fork.
         const forkId = resolveRequiredValueFlag(capsuleArgs, "--fork-id");
         const root = resolveRequiredValueFlag(capsuleArgs, "--memory-dir") ??
           resolveRequiredValueFlag(capsuleArgs, "--root");
@@ -13549,8 +12943,6 @@ async function armCliSuccessExitWatchdog(): Promise<void> {
   watchdog.unref?.();
 }
 
-// Auto-run when executed directly (covers: remnic and legacy engram entrypoints,
-// or invoked via wrappers that set REMNIC_CLI_BIN / ENGRAM_CLI_BIN)
 const argv1 = process.argv[1] ?? "";
 const argv1Base = argv1.replace(/\\/g, "/");
 if (

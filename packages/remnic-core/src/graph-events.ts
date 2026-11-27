@@ -1,27 +1,6 @@
-/**
- * In-process EventEmitter for graph mutation events (issue #691 PR 5/5).
- *
- * The singleton is keyed by memoryDir so multiple orchestrator instances in
- * the same process get distinct event buses (CLAUDE.md rule 11: scope globals
- * per service).  The SSE handler in access-http.ts subscribes to the bus for
- * the resolved namespace and fans out to connected clients.
- *
- * Event types mirror the five mutations the graph layer can produce:
- *   node-added    — a memory file was referenced for the first time
- *   node-updated  — a memory file's metadata changed
- *   edge-added    — a new edge was appended
- *   edge-updated  — an existing edge's confidence/weight was modified
- *   edge-removed  — an edge was pruned (e.g. by decay maintenance)
- *
- * The `GraphEventBus` interface is intentionally narrow so nothing outside
- * this module needs to import Node.js EventEmitter directly.
- */
 
 import { EventEmitter } from "node:events";
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
 
 export type GraphEventType =
   | "node-added"
@@ -78,23 +57,14 @@ export interface EdgeRemovedPayload {
 }
 
 // ---------------------------------------------------------------------------
-// Per-memoryDir singleton bus
 // ---------------------------------------------------------------------------
 
 const buses = new Map<string, EventEmitter>();
 
-/**
- * Return (or lazily create) the event bus for the given memoryDir.
- * The same bus is shared by the write side (graph.ts → appendEdge hooks) and
- * the read side (EngramAccessHttpServer SSE handler).
- */
 export function getGraphEventBus(memoryDir: string): EventEmitter {
   let bus = buses.get(memoryDir);
   if (!bus) {
     bus = new EventEmitter();
-    // Remove the default listener-count warning — SSE clients may hold many
-    // concurrent connections. Each SSE client registers one "graph-event"
-    // listener; warn only when an unreasonably high count suggests a leak.
     bus.setMaxListeners(200);
     buses.set(memoryDir, bus);
   }

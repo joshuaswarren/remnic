@@ -1,8 +1,3 @@
-/**
- * Scheduled replication loop for `remnic converge watch` — the cadence half
- * of the #2150 convergence story. Kept in a sibling module so converge.ts
- * stays under the #1995 new-file LOC ratchet.
- */
 
 import type { ConvergeNamespaceExclusion } from "./converge-namespace-exclusions.js";
 import type { ConvergeApplyOptions, ConvergeApplyResult } from "./converge.js";
@@ -14,12 +9,6 @@ export interface ConvergeWatchOptions extends ConvergeApplyOptions {
   maxCycles?: number;
   /** Abort signal (SIGINT/SIGTERM) — stops after the current cycle completes. */
   signal?: AbortSignal;
-  /**
-   * The applier invoked each cycle. Required — the CLI passes
-   * `executeConvergeApply`; tests inject a fake. Passing it (rather than
-   * importing it here) keeps this module free of an import cycle with
-   * converge.ts.
-   */
   apply: (options: ConvergeApplyOptions) => Promise<ConvergeApplyResult>;
   /** Per-cycle observer (structured logging / metrics). */
   onCycle?: (cycle: number, outcome: { result?: ConvergeApplyResult; error?: unknown }) => void;
@@ -61,15 +50,6 @@ function sleepAborted(ms: number, signal: AbortSignal): Promise<boolean> {
   });
 }
 
-/**
- * Run bidirectional convergence on an interval so an active/backup pair
- * converges continuously instead of only when an operator remembers to run
- * `converge apply`. A failed cycle (peer down, transient network error)
- * reports and does NOT stop the watch — a peer being unreachable is exactly
- * when the surviving side most needs to keep the schedule. `lastStatus`
- * stays "aborted" only when no cycle ever ran; otherwise it holds the most
- * recent real outcome.
- */
 export async function convergeWatch(options: ConvergeWatchOptions): Promise<ConvergeWatchOutcome> {
   const intervalMs = Math.min(
     CONVERGE_WATCH_MAX_INTERVAL_MS,

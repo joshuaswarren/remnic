@@ -1,11 +1,3 @@
-/**
- * PII privacy sweep for training export records.
- *
- * Belt-and-suspenders check that runs after Remnic's own
- * privacy controls.  Scans instruction, input, and output
- * fields for common PII patterns and replaces matches with
- * [REDACTED].
- */
 
 import type { TrainingExportRecord } from "@remnic/core";
 
@@ -56,35 +48,21 @@ const CREDIT_CARD_PATTERNS: PiiPattern[] = [19, 18, 17, 16, 15, 14, 13].map(
   }),
 );
 
-/**
- * Ordered list of PII patterns.
- *
- * Order matters: more specific patterns (SSN, credit card)
- * come before broader ones (phone) to avoid partial matches.
- */
 const PII_PATTERNS: PiiPattern[] = [
   {
-    // Email: user@domain.tld
     name: "email",
     regex: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
   },
   {
-    // SSN: 123-45-6789 (exactly 3-2-4 digit groups)
     name: "ssn",
     regex: /\b\d{3}-\d{2}-\d{4}\b/g,
   },
-  // Credit card: 13-19 digits, optionally separated by dashes or spaces.
-  // Try longest candidates first so valid 19-digit cards are preserved while
-  // shorter cards next to numeric metadata can still be reconsidered.
   ...CREDIT_CARD_PATTERNS,
   {
-    // IP address: four octets 0-255
     name: "ip_address",
     regex: /\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g,
   },
   {
-    // Phone: optional +1- prefix, then 3-3-4 with dashes, dots, or spaces
-    // Also matches (555) 123-4567 format
     name: "phone",
     regex: /(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b/g,
   },

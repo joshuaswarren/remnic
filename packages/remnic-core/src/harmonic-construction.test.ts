@@ -1227,7 +1227,6 @@ test("persistExtraction enqueues a merged target for harmonic construction (merg
     };
     const storage = await orchestrator.getStorage("default");
     await storage.ensureDirectories();
-    // Seed a merge target with past timestamps and high importance so the
     // incoming fact never bypasses as unpreservable metadata.
     const created = new Date(Date.now() - 3600_000).toISOString();
     const seededDir = path.join(memoryDir, "facts", created.slice(0, 10));
@@ -1253,7 +1252,6 @@ test("persistExtraction enqueues a merged target for harmonic construction (merg
       ].join("\n"),
       "utf8",
     );
-    // Band neighbor for the incoming fact only ([minSimilarity, threshold)).
     orchestrator.embeddingFallback = {
       isAvailable: async () => true,
       search: async (query: string) =>
@@ -1261,7 +1259,6 @@ test("persistExtraction enqueues a merged target for harmonic construction (merg
       indexFile: async () => {},
       removeFromIndex: async () => {},
     };
-    // Deterministic judge: merge into the top candidate's current body.
     orchestrator.localLlm = {
       chatCompletion: async (messages) => {
         if (
@@ -1307,7 +1304,6 @@ test("persistExtraction enqueues a merged target for harmonic construction (merg
     const { persistedIds } = await orchestrator.persistExtraction(result, storage, null, {
       sessionKey: "session:harmonic-merge",
     });
-    // Contract preserved: persistedIds stays new-fragment only — the merged
     // target is updated in place, never reported as a new fragment.
     assert.deepEqual(persistedIds, []);
 
@@ -1377,7 +1373,6 @@ test("persistExtraction keeps a merged target in the thread episode set across e
       semanticMerge: { enabled: true },
     });
     const orchestratorUntyped: unknown = newHarmonicOrchestrator(config);
-    // SAFETY: the harness consumes only the private DI surface named below;
     // the test asserts every field it reads off it.
     const orchestrator = orchestratorUntyped as PersistenceHarness & {
       embeddingFallback: {
@@ -1402,7 +1397,6 @@ test("persistExtraction keeps a merged target in the thread episode set across e
     };
     const storage = await orchestrator.getStorage("default");
     await storage.ensureDirectories();
-    // Seed a merge target the way the sibling merge-only test does: past
     // timestamps, high importance, active — preservable metadata only.
     const created = new Date(Date.now() - 3600_000).toISOString();
     const seededDir = path.join(memoryDir, "facts", created.slice(0, 10));
@@ -1428,7 +1422,6 @@ test("persistExtraction keeps a merged target in the thread episode set across e
       ].join("\n"),
       "utf8",
     );
-    // Band neighbor for the incoming fact only; the later fact finds none.
     orchestrator.embeddingFallback = {
       isAvailable: async () => true,
       search: async (query: string) =>
@@ -1436,7 +1429,6 @@ test("persistExtraction keeps a merged target in the thread episode set across e
       indexFile: async () => {},
       removeFromIndex: async () => {},
     };
-    // Deterministic judge: merge into the top candidate's current body.
     orchestrator.localLlm = {
       chatCompletion: async (messages) => {
         if (
@@ -1463,7 +1455,6 @@ test("persistExtraction keeps a merged target in the thread episode set across e
         };
       },
     };
-    // Establish the thread the way runExtraction's processTurn step does,
     // so appendEpisodeIds has a thread file to write into.
     const threadId = await orchestrator.threading.processTurn(
       {
@@ -1483,15 +1474,12 @@ test("persistExtraction keeps a merged target in the thread episode set across e
       questions: [],
       relationships: [],
     };
-    // --- Flush 1: merge-only. persistedIds stays new-fragment only. ---
     const flush1 = await orchestrator.persistExtraction(mergeResult, storage, threadId, {
       sessionKey: SESSION_KEY,
     });
     assert.deepEqual(flush1.persistedIds, [], "a merge-only batch reports no new fragments");
-    // runExtraction's append step, exactly as production runs it.
     await orchestrator.appendPersistedThreadEpisodes(threadId, flush1.persistedIds, flush1.pendingReviewIds);
 
-    // --- Flush 2: a NEW fact in the same thread + the append step. ---
     const laterResult: ExtractionResult = {
       facts: [{ category: "fact", content: LATER, confidence: 0.9, tags: [] }],
       entities: [],

@@ -44,12 +44,6 @@ export function chunkExtractionWindow<T extends { content: string }>(
 
 export type DrainVerdict = "drained" | "deferred" | "failed";
 
-/**
- * Run results that deliberately RETAIN the buffer (provider breaker open,
- * per-fingerprint backoff, a scope policy refusal) are deferrals, not chunk
- * failures — counting them would eventually drop good content that never got
- * its attempt.
- */
 const DRAIN_DEFERRAL_REASONS = {
   provider_circuit_open: true,
   extraction_backoff: true,
@@ -59,8 +53,6 @@ const DRAIN_DEFERRAL_REASONS = {
 export function classifyDrainResult(result: ExtractionRunResult): DrainVerdict {
   if (result.status !== "skipped") return "drained";
   if (result.reason !== undefined && result.reason in DRAIN_DEFERRAL_REASONS) return "deferred";
-  // A run that kept its window for retry did NOT consume the content: it is a
-  // chunk failure, never a drain — even when the window was retained.
   if (result.retainedBuffer === true) return "failed";
   return "drained";
 }
@@ -88,7 +80,6 @@ export function mergeDrainResults(
   return merged;
 }
 
-/** The slice of ModelRegistry the drain budget needs. */
 export interface WindowBudgetRegistry {
   calculateContextSizes(modelId: string, maxContextOverride?: number): { maxInputChars: number };
 }
@@ -104,7 +95,6 @@ export function extractionWindowBudgetChars(input: {
   localExtractionActive: boolean;
   model: string;
   maxContext: number | undefined;
-  /** Configured per-call payload cap (`extractionCallMaxChars`). */
   callMaxChars?: number;
 }): number {
   const callMax = input.callMaxChars ?? Number.POSITIVE_INFINITY;

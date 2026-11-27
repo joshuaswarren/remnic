@@ -230,7 +230,6 @@ export function loadSealKeyFromEnv(envName: string): Buffer | null {
       `${envName} must be a base64 (or base64url) encoding of exactly 32 bytes.`,
     );
   }
-  // Normalize base64url to standard base64 so Buffer.from decodes cleanly.
   const normalized = raw.replace(/-/g, "+").replace(/_/g, "/");
   const decoded = Buffer.from(normalized, "base64");
   if (decoded.length !== AES_KEY_LENGTH) {

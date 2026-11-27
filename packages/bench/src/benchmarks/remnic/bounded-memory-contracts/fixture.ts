@@ -1,25 +1,3 @@
-/**
- * Deterministic synthetic fixture for bounded-memory-contracts (issue #1708).
- *
- * Fully synthetic — NO real user/client data, NO external LLM. Every task is
- * hand-authored so the four conditions (C0–C3) produce the differentiated
- * quality/governance/cost tradeoffs the issue's hypotheses predict, under the
- * pure deterministic agent in `agent.ts`.
- *
- * Design rules that keep the raw-transcript baseline (C1) FAIR (issue risk:
- * "do not make raw transcript stuffing intentionally bad"):
- *
- *  - C1 ranks candidates by (keyword-overlap desc, tokens desc). Tokens-as-
- *    tiebreak is a defensible raw-transcript heuristic (a longer / more
- *    repeated memory is more salient). C1 WINS pure-recall tasks.
- *  - C2/C3 filter by scope + status + supersession before ranking, so they win
- *    governance traps (stale / wrong-scope) — the actual thesis.
- *  - Stale decoys carry more tokens than the one-line correction (realistic:
- *    superseded facts accumulate repetition), so C1's token-tiebreak surfaces
- *    them while C2 excludes them.
- *  - Wrong-scope decoys carry more tokens than the in-scope fact for the same
- *    reason: without scope metadata C1 cannot tell them apart.
- */
 
 import { createHash } from "node:crypto";
 import type { BoundedMemoryTask, FixtureMemoryItem, FixtureSkill } from "./types.js";
@@ -28,9 +6,6 @@ const SCOPE_ACME = "project:acme";
 const SCOPE_BETA = "project:beta";
 const SCOPE_ALICE = "user:alice";
 
-// ---------------------------------------------------------------------------
-// Shared skills (procedural memories) used by skill-positive / skill-negative
-// ---------------------------------------------------------------------------
 
 const DEPLOY_GATEWAY_SKILL: FixtureSkill = {
   id: "skill:deploy-gateway",
@@ -67,7 +42,6 @@ const ROTATE_KEYS_SKILL: FixtureSkill = {
 };
 
 // ---------------------------------------------------------------------------
-// Helpers to build memory items concisely
 // ---------------------------------------------------------------------------
 
 function fact(
@@ -95,13 +69,8 @@ function fact(
 }
 
 // ---------------------------------------------------------------------------
-// Tasks
 // ---------------------------------------------------------------------------
 
-/**
- * RECALL-NEEED (3): the answer lives in an active, in-scope fact. C1 should
- * recall it (fair baseline); C0 cannot.
- */
 const recallNeededTasks: BoundedMemoryTask[] = [
   {
     id: "recall-framework-choice",
@@ -180,11 +149,6 @@ const recallNeededTasks: BoundedMemoryTask[] = [
   },
 ];
 
-/**
- * STALE-MEMORY-TRAP (2): a superseded fact (long, repeated) plus a newer
- * correction. C1's token-tiebreak surfaces the stale fact → wrong answer and a
- * governance hazard. C2/C3 exclude the superseded item.
- */
 const staleTrapTasks: BoundedMemoryTask[] = [
   {
     id: "stale-ci-provider",
@@ -262,11 +226,6 @@ const staleTrapTasks: BoundedMemoryTask[] = [
   },
 ];
 
-/**
- * WRONG-SCOPE-TRAP (2): an in-scope fact plus a same-subject fact from a
- * different project. C1 cannot see scope → surfaces the wrong-project answer.
- * C2/C3 filter by scope.
- */
 const wrongScopeTasks: BoundedMemoryTask[] = [
   {
     id: "scope-acme-vs-beta-db",
@@ -334,10 +293,6 @@ const wrongScopeTasks: BoundedMemoryTask[] = [
   },
 ];
 
-/**
- * SKILL-POSITIVE (2): the correct answer is only derivable from the triggered
- * procedure. C0/C1/C2 lack skill injection → wrong/generic; C3 triggers → right.
- */
 const skillPositiveTasks: BoundedMemoryTask[] = [
   {
     id: "skill-deploy-gateway",
@@ -385,12 +340,6 @@ const skillPositiveTasks: BoundedMemoryTask[] = [
   },
 ];
 
-/**
- * SKILL-NEGATIVE (2): the task mentions the skill subject but a
- * doesNotApplyWhen clause blocks the trigger. C3's rule-based classifier
- * correctly declines to inject (precision). The answer comes from normal
- * typed recall.
- */
 const skillNegativeTasks: BoundedMemoryTask[] = [
   {
     id: "skill-deploy-gateway-question",
@@ -439,11 +388,6 @@ const skillNegativeTasks: BoundedMemoryTask[] = [
   },
 ];
 
-/**
- * ASK-NEEDED (2): the task lacks target/scope clarity. Correct behavior is to
- * ASK. Typed conditions surface a structured boundary note → ask. C0/C1 bury
- * the boundary in transcript prose or lack it → act (boundary violation).
- */
 const askNeededTasks: BoundedMemoryTask[] = [
   {
     id: "ask-which-project-deploy",
@@ -493,11 +437,6 @@ const askNeededTasks: BoundedMemoryTask[] = [
   },
 ];
 
-/**
- * ACT-WHEN-ENOUGH (3): the task has enough context. Correct behavior is to ACT
- * (no unnecessary clarification). Mix of self-contained (C0-correct) and
- * recall-based answers.
- */
 const actWhenEnoughTasks: BoundedMemoryTask[] = [
   {
     id: "act-self-contained-greeting",
@@ -548,7 +487,6 @@ const actWhenEnoughTasks: BoundedMemoryTask[] = [
   },
 ];
 
-/** Full fixture: all 16 tasks across the 7 families. */
 export const BOUNDED_MEMORY_FIXTURE: BoundedMemoryTask[] = [
   ...recallNeededTasks,
   ...staleTrapTasks,
@@ -559,10 +497,6 @@ export const BOUNDED_MEMORY_FIXTURE: BoundedMemoryTask[] = [
   ...actWhenEnoughTasks,
 ];
 
-/**
- * Quick-mode smoke subset: at least one task per family (10 tasks) so CI
- * exercises every code path without running the full 16.
- */
 export const BOUNDED_MEMORY_SMOKE_FIXTURE: BoundedMemoryTask[] = [
   BOUNDED_MEMORY_FIXTURE.find((t) => t.id === "recall-framework-choice")!,
   BOUNDED_MEMORY_FIXTURE.find((t) => t.id === "stale-ci-provider")!,
@@ -571,8 +505,6 @@ export const BOUNDED_MEMORY_SMOKE_FIXTURE: BoundedMemoryTask[] = [
   BOUNDED_MEMORY_FIXTURE.find((t) => t.id === "skill-deploy-gateway-question")!,
   BOUNDED_MEMORY_FIXTURE.find((t) => t.id === "ask-which-project-deploy")!,
   BOUNDED_MEMORY_FIXTURE.find((t) => t.id === "act-self-contained-greeting")!,
-  // Extra coverage: a second recall + an act-recall so quick mode sees both
-  // self-contained and recall-driven act-when-enough paths.
   BOUNDED_MEMORY_FIXTURE.find((t) => t.id === "recall-meeting-day")!,
   BOUNDED_MEMORY_FIXTURE.find((t) => t.id === "act-recall-based-status")!,
   BOUNDED_MEMORY_FIXTURE.find((t) => t.id === "stale-feature-flag")!,
@@ -586,9 +518,6 @@ export const BOUNDED_MEMORY_SMOKE_FIXTURE: BoundedMemoryTask[] = [
  * the datasets apart. Defaults to the full fixture when no slice is passed.
  */
 export function fixtureHash(tasks?: readonly BoundedMemoryTask[]): string {
-  // Hash the FULL served payload — prompt text, memory content, answer tokens,
-  // keywords, token costs, skill steps — so any edit that changes what the
-  // benchmark actually serves invalidates the digest. (review thread 8t09)
   const source = tasks ?? BOUNDED_MEMORY_FIXTURE;
   const payload = JSON.stringify(source);
   return createHash("sha256").update(payload, "utf8").digest("hex");

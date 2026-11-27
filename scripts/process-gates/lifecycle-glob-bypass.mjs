@@ -1,18 +1,4 @@
 #!/usr/bin/env node
-/**
- * Pre-push gate: a coverage entry whose glob contains `**` is a directory-wide
- * bypass. The lifecycle-matrix check treats `covered` as outranking
- * `grandfathered`, so a glob key like `packages/remnic-core/src/lifecycle/**`
- * will silently claim coverage for every file matched by that glob, including
- * any grandfathered paths under it (e.g. `lifecycle/tombstones.ts`). A bypass
- * that hides behind a registered subject is worse than no gate.
- *
- * This gate fails pre-push whenever a coverage entry with `**` covers a path
- * that the HEAD manifest already lists in `grandfathered`. The fix is the
- * convention every other entry follows: exact-path entries in both
- * `lifecycleManifest` and `coverage` pointing at a subject that genuinely
- * runs the code.
- */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -29,8 +15,6 @@ function failures(manifest) {
   const out = [];
   for (const [glob, subject] of Object.entries(manifest.coverage ?? {})) {
     if (!glob.includes("**")) continue;
-    // Every currently-grandfathered path that this glob covers is silently
-    // promoted from "warn-only" to "covered" by this glob. That is the bypass.
     for (const grand of manifest.grandfathered ?? []) {
       if (isIgnoredPath(grand, [glob])) {
         out.push(

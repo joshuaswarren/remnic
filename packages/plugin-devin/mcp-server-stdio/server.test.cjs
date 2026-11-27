@@ -85,7 +85,6 @@ test("loopback http starts without warning or refusal", async () => {
   assert.doesNotMatch(stderr, /cleartext|refuse/);
 });
 
-// A daemon front that accepts and then never finishes the response must not
 // hold an MCP tool call past REQUEST_TIMEOUT_MS (30s): the proxy answers with
 // a timeout error instead of waiting on an idle timer the trickle keeps alive.
 const { startTricklingDaemon, callMcpProxy } = require("../../../tests/helpers/stalled-daemon.cjs");

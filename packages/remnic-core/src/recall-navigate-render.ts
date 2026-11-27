@@ -1,8 +1,3 @@
-/**
- * Markdown renderer for a recall navigate step (issue #1956 leftover).
- *
- * Deterministic. Surfaces wait. Empty children prints (empty).
- */
 
 export type NavigateResult = {
   action: string;

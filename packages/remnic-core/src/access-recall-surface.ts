@@ -1,15 +1,3 @@
-/**
- * Access recall read-surface (extracted from access-service.ts; god-file
- * decomposition follow-through of #1526, same playbook: verbatim move +
- * live selfDeps wiring so Object.create(prototype) fakes and instance
- * stubs keep working).
- *
- * Owns the recall read pipeline of the access layer:
- *   - executeRecall (budget/audit-gated recall + serialization)
- *   - recallXray (X-ray capture surface, #570)
- *   - serializeRecallResults / buildRecallResponseFromXraySnapshot
- *   - fetchRawExcerpts (raw-excerpt read gate)
- */
 
 import { createHash } from "node:crypto";
 import * as nodePath from "node:path";
@@ -64,12 +52,6 @@ export interface AccessRecallSurfaceDeps {
     startedAt: number;
     requestedMode?: RecallPlanMode | "auto";
     normalizedMode?: RecallPlanMode;
-    /**
-     * Read-authorization-gated namespace for the raw-excerpt LCM lookup (#1505
-     * thread 2f7). Threaded through to `serializeRecallResults` so the
-     * `includeRecall` x-ray path honours the SAME read gate as normal recall and
-     * never attaches overlay transcript rows the gate excludes.
-     */
     rawExcerptNamespace?: string;
     /**
      * Ordered, read-authorized LCM read session_id SET (#1505 fallback
@@ -142,14 +124,6 @@ export interface AccessRecallSurfaceDeps {
       | {
           query: string;
           sessionKey?: string;
-          /**
-           * Read-authorization-gated namespace for the raw-excerpt LCM lookup
-           * (#1505 thread 2f7). When the caller supplies it, the raw lookup uses
-           * THIS namespace prefix instead of `snapshot.namespace` (the
-           * write/overlay namespace), so raw disclosure honours the SAME read
-           * gate as normal recall + `lcmSearch`. Omitted ⇒ falls back to the
-           * snapshot namespace (single-store / sessionless callers, unchanged).
-           */
           rawExcerptNamespace?: string;
           /**
            * Ordered, read-authorized LCM read session_id SET (#1505 fallback
@@ -246,7 +220,6 @@ export class AccessRecallSurface {
         finalContextChars: options.snapshot.budget.used,
       },
       latencyMs: Date.now() - options.startedAt,
-      // The record the capture's own recall wrote carries the section timings (traceId-pinned).
       timings: lastRecallTimingsFor(this.deps.orchestrator.lastRecall, options.sessionKey, options.snapshot.traceId),
       includedMemories,
     };
@@ -474,9 +447,6 @@ export class AccessRecallSurface {
       }
 
       // A preferred namespace was supplied but its file is missing/stale. For a
-      // relative path the preferred store was the only correct lead, so do not
-      // fall through to the default store and surface a same-relative-path file
-      // from the wrong namespace (#2020). Absolute paths self-identify above.
       if (preferredAttempted && !nodePath.isAbsolute(memoryPath)) return null;
 
       for (const candidate of qmdResultPathCandidates(storageDir, memoryPath)) {
@@ -490,19 +460,10 @@ export class AccessRecallSurface {
     // hit the LCM archive per-result (issue #677 PR 2/4).  Each excerpt is
     // attributed to the result whose provenance quote it contains (issue
     // #3546); excerpts no result claims stay anchored to the first result.
-    // Coerce `null` (non-raw disclosure) to `undefined` so the optional
-    // serializer field is never explicitly `null`.
     // Namespace for the LCM `${namespace}:${sessionKey}` prefix: prefer the
-    // caller-supplied READ-AUTHORIZATION-GATED `rawExcerptNamespace` (#1505
-    // thread 2f7) so raw disclosure honours the same read gate as normal recall
-    // + `lcmSearch` and never attaches `<principal>-project-*` overlay rows the
-    // gate excludes. Fall back to the snapshot's resolved namespace only when no
-    // gated namespace was threaded (sessionless / legacy callers) — unchanged.
     const rawExcerptsResult =
       rawContext?.rawExcerptsSuppressed === true
         ? // Implicit raw recall with NO readable LCM namespace (#1505 thread
-          // NBHWz): emit empty excerpts rather than falling back to the
-          // write/overlay `namespace` the read gate excludes.
           []
         : await this.deps.fetchRawExcerpts(
             disclosure,
@@ -596,13 +557,6 @@ export class AccessRecallSurface {
   ): Promise<EngramAccessMemorySummary["rawExcerpts"] | null> {
     if (disclosure !== "raw") return null;
     if (!context || !context.query) return [];
-    // Privacy guard: raw disclosure must be session-scoped.  Without a
-    // sessionKey, `lcm.searchContextFull(query, n, undefined)` searches
-    // across every archived session in the LCM store and would return
-    // excerpts from unrelated sessions (potentially crossing namespaces
-    // via their `${namespace}:${sessionKey}` prefix encoding).  Treat a
-    // missing sessionKey as "no excerpts" — callers asking for raw
-    // disclosure outside a session get an empty list, not a leak.
     if (!context.sessionKey) return [];
     const lcm = this.deps.orchestrator.lcmEngine;
     if (!lcm || !lcm.enabled) return [];
@@ -613,11 +567,6 @@ export class AccessRecallSurface {
           ? `${context.namespace}:${context.sessionKey}`
           : context.sessionKey;
       const lcmSessionIds = context.lcmSessionIds !== undefined ? context.lcmSessionIds : [legacyKey];
-      // Cap the excerpt fanout so recall responses stay bounded.  Five matches
-      // is enough to anchor the model in the raw transcript without ballooning
-      // token spend; raw is meant as the escape hatch, not the default. The cap
-      // is applied across the MERGED result set so adding fallback keys never
-      // inflates the excerpt budget.
       const limit = 5;
       const seenRows = new Set<string>();
       const excerpts: NonNullable<EngramAccessMemorySummary["rawExcerpts"]> = [];
@@ -644,8 +593,6 @@ export class AccessRecallSurface {
       }
       return excerpts;
     } catch {
-      // CLAUDE.md rule 13: never let an external subsystem (LCM/SQLite)
-      // crash the primary recall flow.
       return [];
     }
   }
@@ -658,9 +605,6 @@ export class AccessRecallSurface {
     reservation?: BudgetReservation;
   }> {
     const query = request.query;
-    // Disclosure depth (issue #677).  Default to `"chunk"` when omitted so
-    // pre-#677 callers see unchanged behavior.  Reject explicitly invalid
-    // string values per CLAUDE.md rule 51 (do not silently fall back).
     const callerProvidedDisclosure =
       request.disclosure !== undefined && request.disclosure !== null;
     const requestedDisclosure: RecallDisclosure = (() => {
@@ -674,8 +618,6 @@ export class AccessRecallSurface {
       }
       return request.disclosure;
     })();
-    // Attach any coding context shipped with the recall request BEFORE
-    // namespace resolution so the overlay applies to this recall (issue #569).
     if (request.codingContext !== undefined && request.sessionKey) {
       this.deps.setCodingContext({
         sessionKey: request.sessionKey,
@@ -683,10 +625,6 @@ export class AccessRecallSurface {
         authenticatedPrincipal: request.authenticatedPrincipal, remote: true,
       });
     }
-    // Auto-resolve coding context from cwd/projectTag when no explicit
-    // codingContext was supplied (issue #569 wiring). This allows Claude
-    // Code hooks and OpenClaw connectors to get project-scoped memory
-    // transparently.
     if (request.codingContext === undefined && request.sessionKey) {
       await this.deps.maybeAttachCodingContext(request.sessionKey, {
         cwd: request.cwd, projectTag: request.projectTag,
@@ -700,8 +638,6 @@ export class AccessRecallSurface {
       authenticatedPrincipal,
     );
     const namespace = namespaceOverride ?? this.deps.orchestrator.config.defaultNamespace;
-    // Normalize mode early so that no_recall / invalid modes skip budget
-    // accounting (Codex P1: budget recorded before mode validation).
     const mode = this.deps.normalizeRecallMode(request.mode);
     const maybePrincipal = this.deps.resolveRequestPrincipal(request.sessionKey, authenticatedPrincipal);
     if (resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces && !maybePrincipal) {
@@ -742,7 +678,6 @@ export class AccessRecallSurface {
       codingContext: profileCodingContext,
       namespacesEnabled: resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces,
     });
-    // Skip budget checks for modes that never perform a cross-namespace read.
     const modeSkipsBudget = mode === "no_recall";
     const effectiveNamespaces = recallScopePlan.readNamespaces;
     const budgetPrincipalNamespace = profilePlan?.baseNamespace ?? principalNamespace;
@@ -760,13 +695,6 @@ export class AccessRecallSurface {
         },
       };
     } else {
-      // Peek at every effective namespace to determine whether ANY would be
-      // cross-namespace WITHOUT recording side effects (Cursor review:
-      // multi-count bug). When cross-namespace, the actual reserve
-      // (budget.record) happens ATOMICALLY at admission just before the
-      // pipeline runs (issue #1906) — see the reserve+rollback block below —
-      // so concurrent recalls for one principal cannot each pass a stale peek
-      // and collectively overrun the hard limit.
       let anyCrossNamespace = false;
       let denied: BudgetDecision | null = null;
       let crossNamespaceDecision: BudgetDecision | null = null;
@@ -786,8 +714,6 @@ export class AccessRecallSurface {
         }
       }
       if (denied) {
-        // The peek projected a denial — deny without recording so the
-        // bucket is not inflated by rejected attempts.
         budgetDecision = denied;
       } else if (anyCrossNamespace) {
         budgetDecision = crossNamespaceDecision ?? {
@@ -818,15 +744,9 @@ export class AccessRecallSurface {
           `recall denied: cross-namespace budget exceeded (${budgetDecision.count}/${budgetDecision.limit.hardLimit} in ${budgetDecision.limit.windowMs}ms window)`,
         );
       }
-      // Prune expired principal buckets to prevent unbounded Map growth from
-      // high-cardinality / transient principals (Codex P2 review feedback).
       this.deps.budget.gc();
     }
     const topK = Number.isFinite(request.topK) ? Math.max(0, Math.floor(request.topK ?? 0)) : undefined;
-    // Issue #680 — historical recall pin.  Validate at the input boundary so
-    // a malformed `asOf` is rejected with a structured 400 instead of
-    // silently flooring at NaN inside the orchestrator (rule 51, gotcha #51).
-    // Empty / undefined is fine — means "no pin".
     let asOf: string | undefined;
     if (request.asOf !== undefined && request.asOf !== null) {
       if (typeof request.asOf !== "string" || request.asOf.trim().length === 0) {
@@ -857,7 +777,6 @@ export class AccessRecallSurface {
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
-      // Omit queueWaitMs when 0 (#1906 uncontended path unchanged).
       ...(typeof request.queueWaitMs === "number" && request.queueWaitMs > 0
         ? { queueWaitMs: request.queueWaitMs }
         : {}),
@@ -865,12 +784,6 @@ export class AccessRecallSurface {
     if (request.searchOptions) recallOptions.searchOptions = request.searchOptions;
     if (request.deadlineMs !== undefined) recallOptions.deadlineMs = request.deadlineMs;
     const startedAt = Date.now();
-    // #1906 atomic budget admission: the peek loop above and this record are
-    // one synchronous JS turn (no await between them), so record()'s own
-    // atomic project-and-push denies the Nth concurrent cross-namespace recall
-    // for a principal BEFORE its pipeline runs — no over-admission. On a
-    // pipeline failure/abort the reservation is rolled back (budget.release)
-    // so an errored recall does not consume budget permanently.
     let reservedBudgetPrincipal: string | null = null;
     let reservedBudget: BudgetReservation | undefined;
     if (willReserveBudget) {
@@ -884,10 +797,6 @@ export class AccessRecallSurface {
       reservedBudgetPrincipal = principal;
       reservedBudget = reserveDecision.reservation;
     }
-    // #1906 review #5: the rollback covers the ENTIRE post-reservation
-    // operation — orchestrator.recall AND serialization / debug / response
-    // construction — so ANY failure after the reserve releases the exact
-    // budget entry (by token, review #4) instead of leaking it.
     let storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }> = [];
     try {
       const context = await this.deps.orchestrator.recall(
@@ -912,9 +821,6 @@ export class AccessRecallSurface {
         budgetDecision,
         budgetRecordPrincipal: reservedBudgetPrincipal,
       });
-      // Expose the reservation token so a consumer that fails AFTER this
-      // returns (response clone, idempotency put) can release the exact entry
-      // (#1906 review round 3, findings #1/#3).
       return { ...assembled, reservation: reservedBudget };
     } catch (err) {
       if (reservedBudget) this.deps.budget.release(reservedBudget);
@@ -980,16 +886,8 @@ export class AccessRecallSurface {
   }> {
     const query = typeof request.query === "string" ? request.query : "";
     if (query.trim().length === 0) {
-      // Match the CLI contract (CLAUDE.md rule 51): reject empty
-      // input with an explicit error rather than silently producing
-      // an empty snapshot.
       throw new Error("recallXray: query is required and must be non-empty");
     }
-    // Validate disclosure UP FRONT — before recall executes, before
-    // the xray queue mutex is acquired, before namespace resolution.
-    // A bad value should fail fast rather than after we've burned
-    // cycles on an irreversible recall (Cursor Medium review on PR
-    // #699).
     if (
       request.disclosure !== undefined &&
       !isRecallDisclosure(request.disclosure)
@@ -1021,14 +919,9 @@ export class AccessRecallSurface {
       && !authenticatedPrincipal
       && !request.sessionKey?.trim()
     ) {
-      // Namespaces enabled but no identity supplied — reject rather
-      // than scanning the global namespace (CLAUDE.md rule 48:
-      // least-privileged default).
       return { snapshotFound: false };
     }
 
-    // Optional `--budget` override must be a positive integer.  Invalid
-    // values throw rather than silently defaulting (CLAUDE.md rule 51).
     let budgetOverride: number | undefined;
     if (request.budget !== undefined && request.budget !== null) {
       const parsed =
@@ -1049,8 +942,6 @@ export class AccessRecallSurface {
     const mode = this.deps.normalizeRecallMode(request.mode);
     const disclosure = request.disclosure ?? DEFAULT_RECALL_DISCLOSURE;
 
-    // Reset when the orchestrator-owned snapshot lock is actually acquired so
-    // queue wait is not misreported as recall latency.
     let recallStartedAt = Date.now();
 
     const recallSessionKey = request.sessionKey?.trim() || undefined;
@@ -1061,9 +952,6 @@ export class AccessRecallSurface {
     } = { snapshotFound: false };
 
     {
-      // Capture through the orchestrator-owned critical section so every
-      // consumer of its mutable snapshot slot shares the same queue. The
-      // returned clone remains owned by this call after the lock is released.
       const {
         snapshot: rawSnapshot,
         recallStartedAt: capturedRecallStartedAt,
@@ -1077,16 +965,6 @@ export class AccessRecallSurface {
             : {}),
           ...(mode !== undefined ? { mode } : {}),
           onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = mergeRecallCorpusVersions(storageCorpusVersionsAtRecallStart, versions); }, true),
-          // When the caller supplies an authenticated principal, forward
-          // it via the dedicated override channel so orchestrator-side
-          // ACL decisions use the SAME principal the access-surface
-          // pre-check above authorized.  Threading an
-          // `authenticatedPrincipal` through `sessionKey` would be wrong:
-          // `resolvePrincipal(sessionKey)` only maps configured raw
-          // session keys and otherwise collapses to `"default"`, which
-          // in namespace-enabled deployments produces false denials /
-          // wrong-scope serving despite the pre-check passing
-          // (CLAUDE.md rule 42).
           ...(authenticatedPrincipal
             ? { principalOverride: authenticatedPrincipal }
             : {}),
@@ -1098,15 +976,7 @@ export class AccessRecallSurface {
         },
       );
       recallStartedAt = capturedRecallStartedAt;
-      // Cancellation covers queueing, capture, and post-capture shaping:
-      // a check sits at each mid-I/O boundary below (issue #3547).
       throwIfAborted(request.abortSignal, "recall X-ray aborted before postprocessing");
-      // Re-check namespace after capture: the recall may have served
-      // from a different namespace than the caller requested.  Drop
-      // the snapshot rather than leak cross-tenant data (CLAUDE.md
-      // rules 42 + 47).  The comparison is strict so a snapshot whose
-      // namespace is `undefined` cannot bypass the scope the caller
-      // asked for.
       const namespaceMismatch =
         requestedNamespace !== undefined &&
         rawSnapshot?.namespace !== requestedNamespace;
@@ -1115,10 +985,6 @@ export class AccessRecallSurface {
       } else if (namespaceMismatch) {
         xrayResponse = { snapshotFound: false };
       } else {
-        // Tag filter (issue #689). Mirrors `recall()` semantics — applied
-        // post-capture by reading each result's frontmatter tags and
-        // dropping non-matching results. Filter activity surfaces as a
-        // `tag-filter` entry in `snapshot.filters` so X-ray consumers can
         // see the "considered → admitted" delta.
         let snapshot = rawSnapshot;
         const xrayFilterTags = normalizeTags(request.tags);
@@ -1140,11 +1006,6 @@ export class AccessRecallSurface {
                 const storage = await this.deps.orchestrator.getStorage(namespace);
                 const memory = await storage.readMemoryByPath(result.path);
                 const t = memory?.frontmatter?.tags;
-                // Normalize identically to the recall path
-                // (`normalizeProjectionTags`): trim and drop empty strings
-                // so X-ray tag matching stays consistent with the recall
-                // surface. Without this, a frontmatter tag like " draft "
-                // would match in recall but not in X-ray (cursor review).
                 return Array.isArray(t) ? normalizeProjectionTags(t) : [];
               } catch {
                 return [];
@@ -1164,42 +1025,12 @@ export class AccessRecallSurface {
           const filters = trace ? [...snapshot.filters, trace] : snapshot.filters;
           snapshot = { ...snapshot, results: admittedResults, filters };
         }
-        // Decorate per-result disclosure + token estimate when the caller
-        // wired a depth knob (issue #677 PR 3/4 — codex review on #699
-        // flagged that the renderer's per-disclosure summary stays empty
-        // until callers populate these fields).  Estimate tokens from
-        // the actual rendered payload at the requested depth so the
-        // summary reflects real spend; chunk uses the preview, section
-        // and raw use full content.  Best-effort only — a missing
-        // memory or read failure is silently dropped (CLAUDE.md rule 13).
         if (request.disclosure !== undefined) {
-          // Disclosure already validated up front; pin to the narrowed
-          // type here.  Re-validation inside the queue would be dead code.
           const disclosure: RecallDisclosure = request.disclosure;
           const namespace = snapshot.namespace
             ? this.deps.resolveNamespace(snapshot.namespace)
             : this.deps.orchestrator.config.defaultNamespace;
-          // Pre-fetch raw excerpts ONCE so the first raw-disclosure
-          // result's token estimate includes the LCM-side excerpt spend
-          // that `shapeMemorySummary` actually attaches in the recall
-          // response.  Without this, raw recalls systematically
-          // undercounted spend on the first result (Cursor Medium review
-          // on PR #699).  Excerpts are scoped to the same session +
-          // namespace as the recall.
-          // Trim sessionKey to match what `orchestrator.recall(...)`
-          // already does (`request.sessionKey?.trim() || undefined`),
-          // otherwise a whitespace-padded key drives recall under one
-          // identity but probes LCM under a different prefix and
-          // misses stored excerpts (Cursor Low review on PR #699).
           const trimmedSessionKey = request.sessionKey?.trim() || undefined;
-          // Read-authorization-gated namespace for the raw-excerpt LCM lookup
-          // (#1505 thread 2f7). NOT `snapshot.namespace` (the write/overlay
-          // namespace), which would attach `<principal>-project-*` overlay rows
-          // when the principal can WRITE but not READ its self base. Mirrors the
-          // recall + `lcmSearch` read gate. Resolved ONLY for raw disclosure (its
-          // sole consumer); the `namespace` above is still used for the
-          // memory-FILE reads below (a separate, snapshot-scoped read), so non-raw
-          // x-ray decoration stays byte-for-byte unchanged.
           const rawExcerptNamespace =
             disclosure === "raw"
               ? this.deps.resolveRawExcerptReadNamespace(
@@ -1208,10 +1039,6 @@ export class AccessRecallSurface {
                   authenticatedPrincipal,
                 )
               : namespace;
-          // `undefined` for an IMPLICIT raw recall means NO readable LCM namespace
-          // exists (restrictive `default` READ policy, no readable overlay/self)
-          // — suppress excerpts rather than fall back to the write/overlay
-          // namespace the read gate excludes (#1505 thread NBHWz).
           const xrayHasExplicitNamespace =
             typeof request.namespace === "string" &&
             request.namespace.trim().length > 0;
@@ -1219,11 +1046,6 @@ export class AccessRecallSurface {
             disclosure === "raw" &&
             !xrayHasExplicitNamespace &&
             rawExcerptNamespace === undefined;
-          // Ordered, read-authorized LCM read key SET (#1505 fallback
-          // unification) so raw disclosure finds excerpts a branch-scoped session
-          // archived at project/root scope — exactly as recall + `lcmSearch` do.
-          // Only meaningful with a concrete sessionKey + a readable namespace;
-          // already read-gated so no unauthorized overlay key is present.
           const rawExcerptSessionIds =
             disclosure === "raw" && trimmedSessionKey && rawExcerptNamespace
               ? this.deps.resolveLcmReadSessionIds(
@@ -1253,16 +1075,6 @@ export class AccessRecallSurface {
             rawExcerpts && rawExcerpts.length > 0
               ? rawExcerpts.map((e) => e.content).join("\n")
               : "";
-          // Pre-load every memory in parallel so we can:
-          //   (a) re-attribute raw excerpts to the *first readable* result
-          //       rather than always to index 0 (Cursor Low review on PR
-          //       #699: a missing/unreadable result[0] orphaned the excerpt
-          //       budget); and
-          //   (b) include the metadata fields `shapeMemorySummary` actually
-          //       emits at every depth (id, path, category, status, created,
-          //       updated, tags, entityRef) in the token estimate, so the
-          //       summary reflects real spend rather than only payload-body
-          //       spend (Cursor Low review on PR #699).
           throwIfAborted(request.abortSignal, "recall X-ray aborted before result reads");
           const memoryByIndex = await Promise.all(
             snapshot.results.map(async (result) => {
@@ -1282,19 +1094,8 @@ export class AccessRecallSurface {
           const decorated = snapshot.results.map((result, index) => {
             const memory = memoryByIndex[index];
             if (!memory) {
-              // Unreadable result: attach the disclosure tag anyway so
-              // the per-disclosure summary classifies it correctly,
-              // but skip the token estimate since we don't have the
-              // content to measure.  Without the disclosure tag the
-              // result silently flows into the `unspecified` bucket
-              // even though the caller explicitly requested a depth
-              // (Cursor Low review on PR #699).
               return { ...result, disclosure };
             }
-            // Build a representative shaped summary so the estimate
-            // counts every field `shapeMemorySummary` actually emits.
-            // The serialized JSON form is a close-enough proxy for the
-            // wire payload size.
             const shaped = shapeMemorySummary(
               memory,
               baseDir,
@@ -1312,11 +1113,6 @@ export class AccessRecallSurface {
               estimatedTokens: estimateRecallTokens(JSON.stringify(shaped)),
             };
           });
-          // Edge case: every result was unreadable but rawExcerpts
-          // still has content — credit that spend to result[0] rather
-          // than dropping it on the floor.  Without this, the raw row
-          // in the per-disclosure summary under-reports spend whenever
-          // every memory file is missing/unreadable.
           if (
             disclosure === "raw" &&
             firstReadableIndex === -1 &&
@@ -1348,13 +1144,6 @@ export class AccessRecallSurface {
       xrayResponse.snapshotFound === true &&
       xrayResponse.snapshot
     ) {
-      // Same read-authorization-gated raw-excerpt namespace the recall path uses
-      // (#1505 thread 2f7), so the includeRecall x-ray path can't leak overlay
-      // transcript rows via raw disclosure. Resolved ONLY for raw disclosure (the
-      // sole consumer) so non-raw x-ray recall stays byte-for-byte unchanged. The
-      // ordered LCM read key SET (#1505 fallback unification) adds the coding read
-      // fallbacks so a branch-scoped session also finds excerpts at project/root
-      // scope.
       const xrayRawExcerptNamespace =
         disclosure === "raw"
           ? this.deps.resolveRawExcerptReadNamespace(
@@ -1363,9 +1152,6 @@ export class AccessRecallSurface {
               authenticatedPrincipal,
             )
           : undefined;
-      // `undefined` for an IMPLICIT raw recall means NO readable LCM namespace
-      // exists — suppress excerpts rather than fall back to the write/overlay
-      // namespace the read gate excludes (#1505 thread NBHWz).
       const xrayHasExplicitNamespace =
         typeof request.namespace === "string" &&
         request.namespace.trim().length > 0;

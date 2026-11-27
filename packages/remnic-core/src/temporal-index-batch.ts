@@ -1,12 +1,3 @@
-/**
- * Batch temporal/tag index mutations.
- *
- * Split from temporal-index.ts (issue #1911B / #1995): maintenance loops that
- * add or invalidate N memories at once collect their entries and call these once
- * instead of paying the per-memory read-parse-stringify-write amplification.
- * Both operations reuse the low-level primitives exported from temporal-index.ts;
- * per-entry semantics are byte-identical to indexMemoryAsync / deindexMemoryAsync.
- */
 
 import {
   INDEX_VERSION,

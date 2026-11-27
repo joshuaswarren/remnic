@@ -1,7 +1,3 @@
-// Streaming offline-sync snapshot builder (PR #3148 round 5). Extracted from
-// access-service.ts so the god-file line-count ratchet does not grow: the
-// stream carries whole-generation omission metadata alongside the file walk,
-// so a filtered embedding generation is announced instead of looking deleted.
 import { createHash } from "node:crypto";
 import type {
   OfflineSyncDeletionRevision,
@@ -48,9 +44,6 @@ export async function buildEmbeddingAwareSnapshotStream(
   options: OfflineSyncSnapshotStreamBuildOptions,
 ): Promise<OfflineSyncSnapshotStreamBuild> {
   const storageHash = createHash("sha256").update(options.root).digest("hex").slice(0, 16);
-  // Deletions: the canonical filter (exclusions + stale-tombstone exists
-  // check) FIRST, then whole-generation suppression so a filtered generation
-  // is never announced as deleted (PR #3148 round 6).
   const deletions = await filterOfflineSyncDeletionRevisions({
     root: options.root,
     deletions: options.deletions,
@@ -62,7 +55,6 @@ export async function buildEmbeddingAwareSnapshotStream(
     rootAbs: options.root,
     userExcludeRegexps: options.userExcludeRegexps,
     excludeFile: options.excludeFile,
-    // RAW pre-filter tombstones (see resolvePushEmbeddingGenerationState).
     tombstonedPaths: options.deletions.map((deletion) => deletion.path),
     isExcludedRelPath: (relPath) =>
       matchesOfflineSyncDefaultExclude(relPath) ||

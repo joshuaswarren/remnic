@@ -1,6 +1,3 @@
-// ---------------------------------------------------------------------------
-// Importer integration tests.
-//
 // Uses synthetic in-memory SQLite databases — no real user data, no fixture
 // files. Per CLAUDE.md (public repo policy): test data must be synthetic.
 // ---------------------------------------------------------------------------
@@ -213,11 +210,6 @@ function buildSourceDb(seed: {
   return db;
 }
 
-/**
- * Build a destination database with the EXACT Remnic LCM schema (kept
- * inline here so the test fails loudly if the production schema drifts).
- * Mirrors packages/remnic-core/src/lcm/schema.ts.
- */
 function buildDestDb(): DbHandle {
   const db = new BetterSqlite3(":memory:");
   db.exec(`
@@ -697,9 +689,6 @@ describe("importLosslessClaw — compaction-event boundary", () => {
   });
 
   it("dry-run COUNTS markers (matches other counters) but does not write them", () => {
-    // Cursor low-sev: Messages/Summaries inserted are reported as
-    // 'would insert' counts in dry-run; compactionEventsInserted must
-    // follow the same contract for output consistency.
     const src = buildSourceDb(TWO_CONVS());
     const dst = buildDestDb();
     const result = importLosslessClaw({
@@ -919,11 +908,8 @@ describe("importLosslessClaw — compaction-event token aggregation", () => {
     const src = buildSourceDb(seed);
     const dst = buildDestDb();
 
-    // Pre-populate dst with the same messages so this run is summary-only.
     importLosslessClaw({ sourceDb: src, destDb: dst });
 
-    // Wipe summaries + compaction events so the next run re-inserts them
-    // but messages are already there.
     dst.exec("DELETE FROM lcm_summary_nodes; DELETE FROM lcm_compaction_events;");
 
     const result = importLosslessClaw({ sourceDb: src, destDb: dst });
@@ -1024,11 +1010,6 @@ describe("importLosslessClaw — compaction-event token aggregation", () => {
 
 describe("importLosslessClaw — multiple conversations per session (Codex P1)", () => {
   it("preserves all messages when two conversations share a session_id, despite seq overlap", () => {
-    // Two conversations under one session, both starting at seq=0.
-    // Naive (session_id, turn_index) dedup would silently drop the
-    // second conversation's seq=0,1 as 'already present'. The fix
-    // assigns session-global turn_index and dedupes on
-    // metadata.{conversation_id, source_seq}.
     const seed = {
       conversations: [
         { conversation_id: "conv-A", session_id: "shared-sess" },
@@ -1093,13 +1074,10 @@ describe("importLosslessClaw — multiple conversations per session (Codex P1)",
       source_seq: number;
     }>;
     assert.equal(rows.length, 4);
-    // Session-global turn_index 0..3, no collisions
     assert.deepEqual(
       rows.map((r) => r.turn_index),
       [0, 1, 2, 3],
     );
-    // Conversation order is deterministic by conversation_id sort:
-    // conv-A first (seqs 0,1), then conv-B (seqs 0,1).
     assert.deepEqual(
       rows.map((r) => `${r.conv}:${r.source_seq}`),
       ["conv-A:0", "conv-A:1", "conv-B:0", "conv-B:1"],
@@ -1107,9 +1085,6 @@ describe("importLosslessClaw — multiple conversations per session (Codex P1)",
   });
 
   it("interleaves messages across conversations by created_at (Codex P1 follow-up #2)", () => {
-    // Conv-A: messages at t=0 and t=10
-    // Conv-B: messages at t=5 and t=6
-    // Expected turn_index order: A@t0, B@t5, B@t6, A@t10
     const seed = {
       conversations: [
         { conversation_id: "conv-A", session_id: "sess" },
@@ -1171,10 +1146,6 @@ describe("importLosslessClaw — multiple conversations per session (Codex P1)",
   });
 
   it("orders conversations by earliest message timestamp, not by conversation_id (Codex P1 follow-up)", () => {
-    // UUID-like ids that sort the OPPOSITE direction of chronology.
-    // 'aaaa-conv-id' < 'zzzz-conv-id' lexicographically, but 'zzzz' is
-    // chronologically earlier. A conversation_id sort would give the
-    // wrong session timeline.
     const seed = {
       conversations: [
         { conversation_id: "aaaa-conv-id", session_id: "sess" },
@@ -1210,8 +1181,6 @@ describe("importLosslessClaw — multiple conversations per session (Codex P1)",
         "SELECT turn_index, content FROM lcm_messages WHERE session_id = 'sess' ORDER BY turn_index",
       )
       .all() as Array<{ turn_index: number; content: string }>;
-    // Earliest message (zzzz-conv-id, 2026-04-01) gets turn_index 0
-    // even though 'zzzz' sorts AFTER 'aaaa' lexicographically.
     assert.equal(rows[0]!.turn_index, 0);
     assert.match(rows[0]!.content, /earliest in time/);
     assert.equal(rows[1]!.turn_index, 1);

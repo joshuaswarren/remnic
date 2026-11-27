@@ -43,23 +43,14 @@ export interface RemnicSkillSource {
  * This is the same shape the Codex skills directory expects.
  */
 export function isValidSkillSlug(slug: string): boolean {
-  // Must start with alphanumeric; each dash must be followed by alphanumeric
-  // (no trailing dashes, no consecutive dashes); 1–64 characters total.
   return /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,63}$/.test(slug);
 }
 
-// ---------------------------------------------------------------------------
-// Built-in skill paths — resolved relative to this module.
-// ---------------------------------------------------------------------------
 //
-// This file lives at `packages/remnic-core/src/skills-registry.ts`.
-// After tsup build it lives at `packages/remnic-core/dist/skills-registry.js`.
 // Packaged @remnic/core artifacts ship skill sources under
 // `packages/remnic-core/skills/<slug>/SKILL.md`; source checkouts can fall back
 // to the canonical monorepo copies in `packages/plugin-codex/skills`.
 //
-// We compute the absolute path from the current module so that callers in any
-// cwd can resolve the files.
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGED_SKILLS_DIR = resolve(HERE, "..", "skills");

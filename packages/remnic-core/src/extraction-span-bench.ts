@@ -1,10 +1,3 @@
-/**
- * Sampling gate for the extraction span benchmark (issue #2333).
- *
- * Pure predicate, deliberately standalone: it does not import the extraction
- * engine and is not wired into the default extraction path. A future caller
- * opts in explicitly; until then this module changes nothing at runtime.
- */
 
 export interface SpanBenchOptions {
 	enabled: boolean;

@@ -1,11 +1,3 @@
-/**
- * Structural types for the OpenClaw memory-slot capability.
- *
- * These mirror the host SDK's memory runtime contract without importing it, so
- * the plugin keeps building against SDK versions that predate a given field.
- * Both bridge modes implement the same shapes: embedded backs them with the
- * in-process orchestrator, delegate backs them with the standalone daemon.
- */
 
 export type RuntimeMemorySource = "memory" | "sessions";
 

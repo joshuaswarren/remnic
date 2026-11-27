@@ -119,7 +119,6 @@ test("abort landing during construction stops the freshly-started scheduler", as
   const created: FakeScheduler[] = [];
   const { deps } = makeDeps({
     createScheduler: (options) => {
-      // Simulate the abort arriving in the window between the guard and start().
       controller.abort();
       const s = new FakeScheduler(options);
       created.push(s);

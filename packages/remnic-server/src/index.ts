@@ -40,7 +40,6 @@ export {
   type StartupReadinessState,
 } from "./startup-readiness.js";
 
-// ── Config loading ──────────────────────────────────────────────────────────
 
 export interface ServerConfig {
   remnic: Record<string, unknown>;
@@ -105,8 +104,6 @@ function parseOptionalPositiveInteger(value: unknown, source: string): number | 
 
 function parseOptionalNonNegativeInteger(value: unknown, source: string): number | undefined {
   if (value === undefined) return undefined;
-  // Reject blank strings BEFORE coercion: Number("") is 0, which would
-  // silently enable the 0-means-strict-gate semantics (codex review).
   const parsed = typeof value === "string"
     ? value.trim() === "" ? Number.NaN : Number(value.trim())
     : value;
@@ -237,9 +234,6 @@ function resolveEffectiveServerRuntimeConfig(
   if (options?.host !== undefined) cliServerConfig.host = options.host;
   if (options?.authToken !== undefined) cliServerConfig.authToken = options.authToken;
   if (options?.port !== undefined) cliServerConfig.port = options.port;
-  // User-facing config (server.port, REMNIC_PORT, --port) stays 1-65535 so
-  // runServerHealthcheck's configured-port probe never targets port 0.
-  // allowEphemeralPort bypasses the parser AFTER validation instead.
   const ephemeralRequested = options?.allowEphemeralPort === true && options.port === undefined;
   const serverConfig = {
     ...fileConfig.server,
@@ -269,15 +263,11 @@ export function mergeRemnicConfigForServer(
 ): Record<string, unknown> {
   const effectiveEnvRemnic = { ...(envRemnic ?? {}) };
   if (isOpenaiApiKeyDisabled(fileRemnic.openaiApiKey)) {
-    // A local/gateway-only deployment can explicitly disable the direct
-    // OpenAI client. Preserve that opt-out even when the process has a
-    // global OPENAI_API_KEY for unrelated tools.
     delete effectiveEnvRemnic.openaiApiKey;
   }
   return { ...fileRemnic, ...effectiveEnvRemnic };
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
 
 const WRITABLE_BOOLEAN_CONFIG_KEYS = new Set([
   "citationsAutoDetect",
@@ -749,7 +739,6 @@ export function createSupportPassportServerRuntime(
   };
 }
 
-// ── Server startup ──────────────────────────────────────────────────────────
 
 export interface ServerResult {
   config: PluginConfig;
@@ -770,13 +759,6 @@ export interface ServerResult {
 export async function startServer(options?: ServerRuntimeOptions): Promise<ServerResult> {
   initLogger();
 
-  // Startup driver-load check (issue #1829): attempt to load the better-sqlite3
-  // native binding under THIS process. A wrong-ABI build previously threw inside
-  // each projection open, was caught, and returned the same silent null as a
-  // missing file — so every memory list fell back to a full-corpus scan with no
-  // visible error. Probe once at startup and log LOUDLY. Do not crash: the
-  // full-corpus fallback still serves, and the projection-open path records the
-  // distinct rate-limited signal + doctor entry on its own.
   const driverProbe = probeBetterSqlite3Driver();
   if (!driverProbe.ok) {
     const detailSuffix = driverProbe.detail ? ` (${driverProbe.detail})` : "";
@@ -799,29 +781,18 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
 
   const config = parseConfig(remnicConfig);
   const codexRunner = getCodexSubscriptionRunnerForOwner(config);
-  // Re-init now that config is known. The call at the top of startServer runs
-  // BEFORE the config file is read, so it could only ever default `debug` to
-  // false — `debug: true` was accepted, documented, and silently inert on the
-  // standalone daemon, which is exactly the flag you reach for when the daemon
-  // is misbehaving (issue #2209).
   initLogger(undefined, config.debug);
   log.debug(`debug logging enabled from config (${resolvedConfigPath.source})`);
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
 
-  // Start the HTTP server immediately so health checks, MCP handshakes,
-  // and liveness probes can connect while deferred init is still running.
   const readiness: StartupReadinessState = { ready: false, warmupAttempts: 0, lastError: null, degraded: false };
 
   const authToken = parsedServerConfig.authToken ?? readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN") ?? "";
 
-  // Connector tokens are loaded dynamically per request via authTokensGetter
-  // so that token generate/revoke takes effect without server restart
   if (!authToken && getAllValidTokens().length === 0) {
     log.warn("No auth token set — server will reject all requests. Set REMNIC_AUTH_TOKEN, server.authToken in config, or generate tokens with 'remnic token generate'.");
   }
-  // OAuth facade (ChatGPT developer-mode apps): file block < REMNIC_OAUTH_* env.
-  // Parsed strictly — invalid values abort startup with a precise message.
   const oauthConfig = applyOAuthEnvOverrides((serverConfig as { oauth?: unknown }).oauth);
   const oauthRequestHandler = buildOAuthRequestHandler(oauthConfig);
   const supportPassportRuntime = createSupportPassportServerRuntime(
@@ -833,12 +804,6 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     host: parsedServerConfig.host,
     port: parsedServerConfig.port,
     authToken: authToken || undefined,
-    // Entry-based getter: validation + connector identity from ONE cached
-    // snapshot (see tokens.ts). The path policy pins OAuth-minted tokens
-    // (chatgpt, claude-ai, oauth-app-<host>; see isOAuthConnector) to
-    // the MCP endpoint only — they never
-    // authorize REST/admin routes. All other connector tokens keep full
-    // access, matching pre-OAuth behavior.
     authTokenEntriesGetter: () => getAllValidTokenEntriesCached(),
     tokenPathPolicy: (connector, pathname) => !isOAuthConnector(connector) || pathname === "/mcp",
     readiness: () => readiness,
@@ -874,24 +839,15 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   let backlogScheduler: BacklogScheduler | undefined;
   try {
     ({ host, port } = await httpServer.start()); orchestrator.maintenanceScheduler.armCompoundingWeeklyCron(); logListenerBound(host, port);
-    // The daemon owns extraction-backlog draining: the bounded scheduler
-    // starts AFTER the listener and stops before the orchestrator.
     backlogScheduler = startBacklogScheduler(orchestrator);
   } catch (err) {
     await cleanupFailedStartup(orchestrator, httpServer, codexRunner);
     throw err;
   }
 
-  // Fire-and-forget: wait for deferred init (QMD probe, collection setup,
-  // warmup) then check QMD availability and retry if needed. This does NOT
-  // block the server listener — connections are accepted immediately above.
-  // An AbortController allows the shutdown handler to cancel pending retries.
   const startupSyncAbort = new AbortController();
   const readinessAbort = new AbortController();
   startEventLoopLagMonitor({ signal: readinessAbort.signal });
-  // The two sync levels (#3518): the warm-up gate takes the readiness level
-  // (probe + collection ensure) while the post-ready retry loop owns the
-  // corpus update via the full sync.
   const { ensureSearchReady, ensureStartupSync } = createStartupSyncEnsurers(orchestrator);
   const readinessTask = completeStartupReadiness({
     deferredReady: orchestrator.deferredReady,
@@ -919,8 +875,6 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     },
     shutdownSignal: readinessAbort.signal,
   });
-  // Wrap httpServer.stop() so that existing callers also get full lifecycle
-  // cleanup: retry timers, deferred init, HTTP listener, and orchestrator.
   const originalStop = httpServer.stop.bind(httpServer);
   let stopPromise: Promise<void> | undefined;
   const stop = async (): Promise<void> => {
@@ -944,8 +898,6 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     return stopPromise;
   };
   httpServer.stop = stop;
-  // SAFETY: assigned inside the try above; the catch rethrows, so past this
-  // point the scheduler exists.
   const startedBacklogScheduler = backlogScheduler as BacklogScheduler;
 
   orchestrator.deferredReady.then(() => {
@@ -954,21 +906,11 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
       return;
     }
 
-    // Skip retries when search is explicitly disabled via config or when the
-    // orchestrator already resolved to a noop backend (e.g. missing collection
-    // detected during deferredInitialize). Both cases mean no sync should ever
-    // run; scheduling retries would create misleading operational noise and
-    // unnecessary background work on every server start.
     if (!config.qmdEnabled || orchestrator.qmd.debugStatus() === "backend=noop") {
       log.debug("QMD startup-sync: search disabled or noop backend, skipping retries");
       return;
     }
 
-    // Retry when either: (a) QMD is not available yet (cold-start race), or
-    // (b) QMD is available but the deferred init sync step failed silently
-    // (e.g., update errors swallowed by backend, throttle skip, transient
-    // network failure). Without (b), the daemon permanently serves stale
-    // recall after a failed sync despite healthy QMD probe.
     const needsRetry = !orchestrator.qmd.isAvailable() || !orchestrator.deferredSyncSucceeded;
     if (!needsRetry) {
       log.debug("QMD startup-sync: deferred init completed successfully, no retries needed");
@@ -1062,7 +1004,6 @@ export async function runServerHealthcheck(options?: {
   );
 }
 
-// ── CLI entry point ──────────────────────────────────────────────────────────
 
 const BOOLEAN_CLI_OPTIONS = new Set(["help", "healthcheck"]);
 const VALUE_CLI_OPTIONS = new Set(["config", "host", "port", "auth-token"]);
@@ -1165,7 +1106,6 @@ Environment:
 
   console.log(`Remnic server listening on http://${result.host}:${result.port}`);
 
-  // Graceful shutdown
   const shutdown = async (signal: string) => {
     console.log(`\nReceived ${signal}, shutting down...`);
     await result.stop();
@@ -1176,10 +1116,6 @@ Environment:
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-// Auto-run when executed directly
-// Matches direct execution of `node .../remnic-server/dist/index.js` or
-// `node .../remnic-server/src/index.ts`. Package command names are handled by
-// the bin wrappers in ../bin so importing this module cannot start twice.
 if (
   process.argv[1] &&
   /(?:remnic-server|engram-server)[\\/](?:dist|src)[\\/]index\.[jt]s$/.test(process.argv[1])

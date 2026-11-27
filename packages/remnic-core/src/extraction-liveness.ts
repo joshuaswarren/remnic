@@ -1,23 +1,3 @@
-/**
- * Extraction-pipeline liveness (issue #2151).
- *
- * A daemon's implicit extraction can fail continuously for months while
- * `/health` stays green and recall keeps serving: every individual failure is
- * logged (timeouts, fallback-no-parsed-output), but nothing aggregates them
- * into a checkable status. This module surfaces a liveness *watermark* — the
- * last successful extraction plus the current buffer backlog — and decides when
- * that watermark is stale enough to call the pipeline degraded.
- *
- * The §22 error-vs-empty principle applies at the pipeline level: "no
- * extraction succeeded for 90 days" (a non-empty buffer with a stale/absent
- * watermark) must be distinguishable from "nothing to extract" (an empty
- * buffer). Degradation therefore requires a NON-EMPTY buffer — an idle daemon
- * with nothing buffered is healthy, not degraded.
- *
- * The core decision (`evaluateExtractionLiveness`) is a pure function shared by
- * every surface (authenticated `/health`, `remnic doctor`, `remnic stats`) so
- * the verdict never diverges across code paths.
- */
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 import { getExtractionLlmHealth } from "./extraction-llm-health.js";
 import { log } from "./logger.js";
@@ -184,29 +164,12 @@ export function parseExtractionLivenessConfig(
   }
   const block = (raw ?? {}) as Record<string, unknown>;
   return {
-    // `?? true` keeps the default on when the key is absent while honoring
-    // explicit "false"/"0"/false opt-outs (coerceBool handles the string forms).
     enabled: coerceBool(block.enabled) ?? true,
     staleWindowMs: parseStaleWindowMs(block.staleWindowMs),
   };
 }
 
-/**
- * Parse `extractionLiveness.staleWindowMs`. Absent (`undefined`) → the 24h
- * default; any PRESENT value (including an explicit `null`) must coerce to a
- * positive INTEGER of milliseconds, else THROW. A fractional or non-positive
- * value ("0.5" would floor to 0, making every backlog instantly stale; 1.9 would
- * floor to 1) is rejected, never floored/reinterpreted (§1/§17/§39). Mirrors
- * config.ts's `parseIntegerInClosedRange` (round 9 finding 1): only an absent key
- * falls back; an explicit `null` is invalid input, not "use the default".
- * Inlined rather than imported because config.ts already imports this module
- * (importing back would be circular), the same reason `recall-concurrency-config.ts`
- * inlines its numeric validation.
- */
 function parseStaleWindowMs(value: unknown): number {
-  // Only an absent key (undefined) falls back to the default; an explicit `null`
-  // is invalid input and proceeds to validation → throw (mirrors
-  // parseIntegerInClosedRange, round 9 finding 1).
   if (value === undefined) return DEFAULT_STALE_WINDOW_MS;
   const coerced = coerceNumber(value);
   if (coerced === undefined || !Number.isFinite(coerced) || !Number.isInteger(coerced) || coerced < 1) {
@@ -234,25 +197,6 @@ export function formatAgeMs(ms: number): string {
   return `${s}s`;
 }
 
-/**
- * Pure liveness verdict. Degraded when the feature is enabled AND any of: the
- * last-extraction watermark could not be READ (a storage fault, §22), the buffer
- * read failed (a pipeline fault, §22), claimed turns exist and the oldest has
- * waited longer than the staleness window (#3442 — the in-memory watermark can
- * stay fresh while claimed turns pile up invisibly), or the buffer is non-empty
- * and the watermark is absent or stale. Each cause yields a DISTINCT reason so
- * an operator can tell a meta-read failure from a buffer-read failure from a
- * pipeline that has genuinely never extracted.
- *
- * Staleness uses a half-open freshness window (§23): an extraction is fresh
- * while its age is in `[0, staleWindowMs)`, so an age of EXACTLY `staleWindowMs`
- * is stale (the upper bound on "fresh" is exclusive). A null/unparsable watermark
- * means "never succeeded" and is treated as stale — as is a FUTURE watermark (a
- * clock-skewed or corrupt timestamp ahead of now must not read as a fresh
- * extraction and hide a real backlog stall). The claimed-turn rule shares the
- * half-open window and stays inert when no verified sidecar reports an
- * oldest-turn timestamp: "unknown age" is not "fresh" and not "stale".
- */
 export function evaluateExtractionLiveness(input: {
   config: ExtractionLivenessConfig;
   lastExtractionAt: string | null;
@@ -270,13 +214,8 @@ export function evaluateExtractionLiveness(input: {
   const lastMs = lastExtractionAt !== null ? Date.parse(lastExtractionAt) : Number.NaN;
   const hasWatermark = Number.isFinite(lastMs);
   const ageMs = nowMs - lastMs;
-  // A future watermark (negative age) is clock-skewed or corrupt data, not a
-  // fresh extraction: treat it as stale so a real backlog stall is not hidden.
   const stale = !hasWatermark || ageMs < 0 || ageMs >= config.staleWindowMs;
   const hasBacklog = snapshot.bufferedSessionCount > 0;
-  // A watermark or buffer that cannot be READ is a fault, not an empty queue
-  // (§22): a storage/pipeline outage must not read as healthy, and must stay
-  // distinct from a pipeline that has genuinely never extracted.
   const metaReadFailed = input.metaReadFailed === true;
   const watermarkPending = input.watermarkPending === true;
   const readFailed = snapshot.readFailed === true;
@@ -337,12 +276,6 @@ const EMPTY_SNAPSHOT: ExtractionBufferSnapshot = {
   oldestTurnTimestamp: null,
 };
 
-/**
- * Read a buffer snapshot without throwing. An ABSENT buffer degrades to an empty
- * (healthy) snapshot — some service constructions have no orchestrator buffer. A
- * buffer that EXISTS but whose read throws yields a `readFailed` snapshot so the
- * verdict can distinguish a pipeline fault from an empty queue (§22).
- */
 async function readBufferSnapshot(
   buffer: ExtractionBufferSource | undefined,
 ): Promise<ExtractionBufferSnapshot> {
@@ -382,25 +315,16 @@ export async function gatherExtractionLivenessStatus(input: {
     metaReadError: watermarkRead.readError,
     watermarkPending: watermarkRead.pending,
     claims: input.claims,
-    // #3442: the claimed-backlog reason names the last failure while the
-    // extractor is unreachable, matching the /health llm block.
     llmFailureReason: getExtractionLlmHealth().lastFailureReason,
   });
 }
 
-/**
- * Aggregated-WARN throttle (issue #2151): emit at most ONE warning per
- * staleness window while degraded — not one line per failed extraction attempt.
- * State is instance-scoped (held by the owning service), never a module global
- * (§5), so multiple service instances throttle independently.
- */
 export class ExtractionLivenessWarnThrottle {
   private lastWarnAtMs: number | null = null;
 
   /** Warn if degraded and outside the throttle window; returns whether a WARN was emitted. */
   maybeWarn(status: ExtractionLivenessStatus, staleWindowMs: number, nowMs: number): boolean {
     if (!status.degraded) {
-      // Recovered (or never degraded): reset so a fresh episode warns at once.
       this.lastWarnAtMs = null;
       return false;
     }
@@ -413,17 +337,6 @@ export class ExtractionLivenessWarnThrottle {
   }
 }
 
-/**
- * Normalize the `extractionLiveness` block at the read boundary. `parseConfig`
- * always populates it, but a host adapter, an older persisted config, or a
- * hand-built `PluginConfig` can hand us an absent, partial, or loosely-typed
- * block - and every liveness surface (/health, doctor, stats) must degrade to
- * the documented default (enabled, 24h window) rather than throw. Both fields
- * are coerced with the same rules as `parseExtractionLivenessConfig` (§24:
- * `"false"`/`"0"` read as falsy; a numeric string like `"5000"` parses), except a
- * present but non-integer or non-positive `staleWindowMs` falls back to the
- * default here rather than throwing.
- */
 export function resolveExtractionLivenessConfig(
   block: { enabled?: unknown; staleWindowMs?: unknown } | undefined,
 ): ExtractionLivenessConfig {
@@ -473,8 +386,6 @@ export async function computeExtractionLivenessStatus(
     claims,
   });
   throttle?.maybeWarn(status, config.staleWindowMs, nowMs);
-  // Extraction-LLM availability (#3140): a silent no_models / LLM-unreachable
-  // outage must be visible on /health (and doctor/stats) without debug logs.
   return { ...status, ...getExtractionLlmHealth() };
 }
 

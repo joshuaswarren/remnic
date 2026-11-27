@@ -46,10 +46,6 @@ export interface HttpRouteEntry {
   readonly operation: OperationName | null;
 }
 
-// Each tool below corresponds 1:1 to an `engram.*` definition in
-// `EngramMcpServer.tools` (access-mcp.ts). The fitness test asserts the live
-// `tools/list` response matches this list by short name, so a new tool cannot
-// land without either migrating it or acknowledging the unmigrated count.
 export const MCP_TOOLS: readonly McpToolEntry[] = [
   { tool: "recall", operation: "recall" },
   { tool: "recall_explain", operation: "recall_explain" },
@@ -94,11 +90,8 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { tool: "memory_get", operation: "memory_get" },
   { tool: "memory_timeline", operation: "memory_timeline" },
   { tool: "memory_store", operation: "memory_store" },
-  // Correction Contract (issue #1580) — one plan/apply pipeline.
   { tool: "memory_correct_plan", operation: "memory_correct_plan" },
   { tool: "memory_correct_apply", operation: "memory_correct_apply" },
-  // Conversational memory inspection + correction (issue #1583) — unmigrated
-  // handler dispatched to processChatMessage (not a boundary operation).
   { tool: "memory_chat", operation: "chat_message" },
   { tool: "coding_decision", operation: "coding_decision" },
   { tool: "coding_architecture", operation: "coding_architecture" },
@@ -194,15 +187,6 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { tool: "support_passport_grant_revoke", operation: "support_passport_grant_revoke" },
 ];
 
-// Each route below corresponds 1:1 to a service-invoking route branch in
-// `EngramAccessHttpServer.handle` (access-http.ts). Pathname patterns use
-// `:param` for path segments. The fitness test asserts each entry resolves
-// against the catalog so a new service route cannot land without either
-// Infrastructure routes (health, the /mcp delegate, admin console, UI assets)
-// carry no user request envelope and are intentionally excluded. The adapters
-// route was migrated through the boundary in issue #1850 round 5 (finding 1):
-// it is now op-gated by `enforceTokenOp("adapters_status")` so a scoped token
-// cannot reach adapter metadata, and is tracked here so the gate is enforced.
 export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "GET", pathname: "/engram/v1/adapters", operation: "adapters_status" },
   { method: "POST", pathname: "/engram/v1/recall", operation: "recall" },
@@ -258,7 +242,6 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "GET", pathname: "/engram/v1/lcm/status", operation: "lcm_status" },
   { method: "GET", pathname: "/engram/v1/relay/missions/:id", operation: "relay_mission_read" },
   { method: "POST", pathname: "/engram/v1/relay/missions/:id/events", operation: "relay_mission_append" },
-  // Correction Contract (issue #1580) — plan/apply/pending.
   { method: "POST", pathname: "/engram/v1/correction/plan", operation: "memory_correct_plan" },
   { method: "POST", pathname: "/engram/v1/correction/apply", operation: "memory_correct_apply" },
   { method: "GET", pathname: "/engram/v1/correction/pending", operation: "correction_pending" },
@@ -300,9 +283,6 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "DELETE", pathname: "/engram/v1/peers/:id", operation: "peer_delete" },
   { method: "GET", pathname: "/engram/v1/dreams/status", operation: "dreams_status" },
   { method: "POST", pathname: "/engram/v1/dreams/run", operation: "dreams_run" },
-  // SSE-only endpoints: carried in the catalog for completeness tracking.
-  // The operation registration makes them visible to the boundary; the
-  // streaming lifecycle is owned by the HTTP transport (handleGraphEventsSSE).
   { method: "GET", pathname: "/engram/v1/offline-sync/snapshot-stream", operation: "offline_sync_snapshot_stream" },
   { method: "GET", pathname: "/engram/v1/offline-sync/manifest-stream", operation: "offline_sync_snapshot_stream" },
   { method: "GET", pathname: "/engram/v1/graph/events", operation: "graph_events" },

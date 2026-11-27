@@ -150,8 +150,6 @@ test("an invalid target reinforcement_count is rejected", () => {
   }
 });
 
-// Date.parse alone accepts "123" and rolls 2026-02-30 into March; the value is
-// echoed verbatim into frontmatter, so the full ISO shape is required.
 test("nowIso must be a full ISO instant with a real calendar date", () => {
   for (const bad of ["", "   ", "123", "2026-01-01", "2026-02-30T00:00:00Z", "nope"]) {
     assert.throws(

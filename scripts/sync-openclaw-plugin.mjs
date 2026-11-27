@@ -13,8 +13,6 @@ const source = path.resolve(
 const target = path.resolve(repoRoot, "openclaw.plugin.json");
 
 const raw = await readFile(source, "utf-8");
-// Atomic write (rule 54): temp-then-rename so a concurrent reader never sees a
-// truncated manifest during a parallel build.
 const tmp = `${target}.tmp-${process.pid}`;
 await writeFile(tmp, `${JSON.stringify(JSON.parse(raw), null, 2)}\n`);
 await rename(tmp, target);

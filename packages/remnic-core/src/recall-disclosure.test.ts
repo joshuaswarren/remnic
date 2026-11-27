@@ -1,20 +1,3 @@
-/**
- * Tests for the recall disclosure-depth plumbing introduced in PR 1/4 of
- * issue #677.  Covers:
- *
- *  - Type-level constants (`DEFAULT_RECALL_DISCLOSURE`,
- *    `RECALL_DISCLOSURE_LEVELS`).
- *  - The `isRecallDisclosure()` type guard.
- *  - The zod `recallRequestSchema` accept/reject behavior for the new
- *    `disclosure` field.
- *  - The MCP `engram.recall` handler forwards `disclosure` to the service
- *    layer instead of silently dropping it (regression for the
- *    cursor[bot] / codex review feedback on PR #694).
- *
- * Full surface integration tests (HTTP path, CLI flag) ship with their
- * respective surface work in PR 2/4.  Auto-escalation tests ship in
- * PR 4/4.  All fixtures are synthetic — no real user data.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -29,9 +12,6 @@ import { EngramMcpServer } from "./access-mcp.js";
 import type { EngramAccessRecallRequest, EngramAccessService } from "./access-service.js";
 
 test("RECALL_DISCLOSURE_LEVELS is ordered chunk -> section -> raw", () => {
-  // Order matters for future escalation policy comparisons (PR 4/4).  The
-  // ladder must be stable; freezing here so a refactor that flips order is
-  // caught immediately.
   assert.deepStrictEqual(
     [...RECALL_DISCLOSURE_LEVELS],
     ["chunk", "section", "raw"],
@@ -105,12 +85,6 @@ test("lcmSearchRequestSchema accepts requests without sessionPrefix", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// MCP handler must forward `disclosure` to the service layer.
-//
-// Regression coverage for the review feedback on PR #694: schema-level
-// validation alone is not enough — the handler must actually pass the
-// validated field through, otherwise callers see a silent default.
-// ──────────────────────────────────────────────────────────────────────────
 
 function makeMcpRecallSpyService(): {
   service: EngramAccessService;
@@ -155,9 +129,6 @@ test("MCP engram.recall handler forwards explicit `disclosure` to the service", 
 });
 
 test("MCP engram.recall handler omits `disclosure` when caller does not supply it", async () => {
-  // The service layer owns default-application; the handler should pass
-  // `undefined` (not `"chunk"`) when the caller did not provide a value
-  // so the single source of truth stays in `EngramAccessService.recall()`.
   const { service, calls } = makeMcpRecallSpyService();
   const server = new EngramMcpServer(service);
   await server.handleRequest({
@@ -171,11 +142,6 @@ test("MCP engram.recall handler omits `disclosure` when caller does not supply i
 });
 
 test("MCP engram.recall rejects non-string disclosure with a structured error", async () => {
-  // Codex review on PR #694: a number (e.g. `1`) used to be coerced to
-  // `undefined`, masking malformed input and silently applying the
-  // chunk default.  The handler now distinguishes "absent" from
-  // "present-but-wrong-type" and throws a structured error for the
-  // latter.  The MCP transport surfaces tool errors as `isError: true`.
   const { service, calls } = makeMcpRecallSpyService();
   const server = new EngramMcpServer(service);
   const response = await server.handleRequest({
@@ -195,9 +161,6 @@ test("MCP engram.recall rejects non-string disclosure with a structured error", 
 });
 
 test("MCP engram.recall treats explicit `null` disclosure as absent (service applies default)", async () => {
-  // JSON-RPC clients sometimes serialize an unset field as `null`.
-  // Treat `null` like absence so the service-layer default path runs
-  // — matches `EngramAccessService.recall()`'s own null-tolerance.
   const { service, calls } = makeMcpRecallSpyService();
   const server = new EngramMcpServer(service);
   await server.handleRequest({
@@ -214,9 +177,6 @@ test("MCP engram.recall treats explicit `null` disclosure as absent (service app
 });
 
 test("MCP engram.recall inputSchema advertises the `disclosure` enum", () => {
-  // MCP clients with strict validation reject unknown fields; the
-  // tool-list schema must declare `disclosure` so legitimate clients
-  // can use it.
   const { service } = makeMcpRecallSpyService();
   const server = new EngramMcpServer(service);
   const tools = (server as unknown as { tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }> }).tools;

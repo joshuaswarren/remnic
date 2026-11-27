@@ -82,7 +82,6 @@ describe("wecloneExportAdapter", () => {
     const records = [{ instruction: "Q", input: "", output: "A" }];
     const result = wecloneExportAdapter.formatRecords(records);
 
-    // Verify indentation: lines should have 2-space or 4-space indentation
     const lines = result.split("\n");
     assert.ok(lines.length > 1, "output should be multi-line (pretty-printed)");
     assert.ok(

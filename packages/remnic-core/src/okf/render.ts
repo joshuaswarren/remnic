@@ -1,14 +1,3 @@
-/**
- * Shared OKF bundle-rendering helpers (issues #1948 + #1950).
- *
- * One source of truth for the mechanics every OKF bundle exporter uses:
- * deterministic frontmatter rendering, staging-directory file writes, the
- * symlink-guarded atomic publish, and the bundle version stamp. The memory
- * exporter (transfer/export-okf.ts) and the codegraph exporter
- * (coding/export-okf-codegraph.ts) both consume this module so their
- * bundles are byte-compatible in convention (rule 38 — deterministic
- * rendering discipline; rule 9 — stable seam over shared mechanics).
- */
 import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -16,14 +5,6 @@ import path from "node:path";
 /** OKF spec version emitted in every bundle root index. */
 export const OKF_EXPORT_VERSION = "0.1";
 
-/**
- * Render a YAML frontmatter block from a flat field map.
- *
- * Key order: the canonical OKF keys first (`type`, `title`, `description`,
- * `tags`, `timestamp`), everything else alphabetical — one deterministic
- * layout so identical inputs always render byte-identical files. A key set
- * to `undefined` is omitted; callers must not pass a key twice.
- */
 export function renderFrontmatter(fields: Record<string, unknown>): string {
   const keys = Object.keys(fields).sort((a, b) => {
     const order = ["type", "title", "description", "tags", "timestamp"];
@@ -89,11 +70,6 @@ export function publishBundle(staging: string, outDir: string, force: boolean): 
   }
   mkdirSync(path.dirname(outDir), { recursive: true });
   if (exists && force) {
-    // A fixed backup name is not reusable: an earlier crash between the two
-    // renames, or an unrelated directory a user created, leaves the path
-    // occupied and every later --force export fails on the rename. Each
-    // attempt takes its own name and removes it on both the success and the
-    // rollback path.
     const backup = `${outDir}.okf-prev-${randomUUID().slice(0, 8)}`;
     try {
       renameSync(outDir, backup);
@@ -119,11 +95,6 @@ export function publishBundle(staging: string, outDir: string, force: boolean): 
   renameSync(staging, outDir);
 }
 
-/**
- * Reject a --out path with a symlink anywhere in its component chain
- * (pattern 42 + hermes-shim precedent): a symlinked component could aim
- * the atomic rename outside the operator's chosen directory.
- */
 export function rejectSymlinkPath(target: string): void {
   let current = path.resolve(target);
   while (true) {

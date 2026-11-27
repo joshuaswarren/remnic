@@ -23,10 +23,8 @@ test("coding-recall: cross-project case yields perfect isolation + precision", a
   assert.ok(task);
   assert.equal(task!.taskId, "cross-project-basic");
   assert.equal(task!.scores.isolation, 1, "no cross-project leakage");
-  // Expected memories are top of the ranking.
   const actual = JSON.parse(task!.actual);
   assert.ok(Array.isArray(actual));
-  // The session can only see project A's namespace; project B candidates are filtered out.
   assert.ok(!actual.includes("b1"));
   assert.ok(!actual.includes("b2"));
   assert.deepEqual(actual, ["a1", "a2"]);
@@ -61,8 +59,6 @@ test("coding-recall: review-context case boosts touched-file memories via tie-br
   const task = result.results.tasks.find((t) => t.taskId === "review-context-boosts-touched-files");
   assert.ok(task);
   const actual = JSON.parse(task!.actual);
-  // "strong" (0.8 + 0) ties with "touched" (0.3 + 0.5); stable id sort
-  // places "strong" first. Then "touched" (0.8), then "untouched" (0.3).
   assert.deepEqual(actual, ["strong", "touched", "untouched"]);
 });
 
@@ -163,7 +159,6 @@ test("coding-recall: aggregates include all metrics", async () => {
   assert.ok(typeof agg.p_at_1 === "object" && agg.p_at_1 !== null);
   assert.ok(typeof agg.workflow_coverage === "object" && agg.workflow_coverage !== null);
   assert.equal(result.results.tasks.length, 5);
-  // Overall isolation and workflow coverage means should be 1.0.
   assert.equal(agg.isolation!.mean, 1, "overall isolation mean across fixture must be 1.0");
   assert.equal(agg.workflow_coverage!.mean, 1, "workflow facet coverage across fixture must be 1.0");
 });

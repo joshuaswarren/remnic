@@ -1,14 +1,10 @@
 #!/usr/bin/env node
-// Builds @remnic/core: JS bundle via tsup, declarations via tsc.
-//
-// History: tsup emitted declarations through rollup-plugin-dts, which runs ONE
 // type rollup per entry point. This package declares 438 entries over a
 // ~375k-line type graph, so that is 438 rollups sharing a program inside a
 // single worker thread. It sat on the V8 heap cliff from PR #1562 onward and
 // was kept alive by raising --max-old-space-size (4096 -> 8192 -> 12288);
 // unrelated lockfile refreshes were enough to flip it to
 // ERR_WORKER_OUT_OF_MEMORY, and it stopped completing at any heap size.
-//
 // `tsc --emitDeclarationOnly` builds the program once and writes one .d.ts per
 // source file. Measured on the same tree:
 //
@@ -39,7 +35,6 @@ function run(command, args) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-// 1. JS bundle. tsup's own dts is off (see tsup.config.ts).
 run("tsup", process.argv.slice(2));
 
 // 2. Declarations. Skipped for the runtime-only container image, which ships

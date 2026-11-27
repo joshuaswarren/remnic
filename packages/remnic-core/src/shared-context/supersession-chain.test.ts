@@ -37,7 +37,6 @@ test("2-cycle returns cycle_detected without hanging", () => {
 });
 
 test("longer cycle is also detected", () => {
-  // b supersedes a, c supersedes b, a supersedes c.
   const items = [link("a", "c"), link("b", "a"), link("c", "b")];
   assert.deepEqual(resolveSupersessionHead({ items, startId: "a" }), {
     ok: false,
@@ -58,7 +57,6 @@ test("depth_exceeded with a small maxDepth", () => {
     error: "depth_exceeded",
     chain: ["a"],
   });
-  // A chain exactly maxDepth ids long still resolves.
   assert.deepEqual(resolveSupersessionHead({ items, startId: "b", maxDepth: 3 }), {
     ok: true,
     headId: "d",
@@ -117,13 +115,11 @@ test("maxDepth 0, negative, and float throw RangeError naming maxDepth", () => {
 });
 
 test("fork resolves to the smallest successor id, stable across shuffles", () => {
-  // Both b and c supersede a; b < c, so b wins even though c appears first.
   const ordered = [link("a"), link("c", "a"), link("b", "a"), link("d", "b")];
   const shuffled = [link("d", "b"), link("b", "a"), link("a"), link("c", "a")];
   const expected = { ok: true, headId: "d", chain: ["a", "b", "d"] };
   assert.deepEqual(resolveSupersessionHead({ items: ordered, startId: "a" }), expected);
   assert.deepEqual(resolveSupersessionHead({ items: shuffled, startId: "a" }), expected);
-  // Same shuffled input twice: identical results.
   assert.deepEqual(resolveSupersessionHead({ items: shuffled, startId: "a" }), expected);
 });
 
@@ -136,13 +132,11 @@ test("blank-id items are ignored", () => {
     { supersedes: "b" } as unknown as SupersessionItem,
     link("z", "   "),
   ];
-  // The blank-id items must not make themselves successors of b.
   assert.deepEqual(resolveSupersessionHead({ items, startId: "a" }), {
     ok: true,
     headId: "b",
     chain: ["a", "b"],
   });
-  // z has a blank supersedes pointer: it supersedes nothing.
   assert.deepEqual(resolveSupersessionHead({ items, startId: "z" }), {
     ok: true,
     headId: "z",

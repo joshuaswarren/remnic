@@ -1,11 +1,3 @@
-/**
- * Issue #3148 review round 1: detectLayout() must decide the layout on the
- * FIRST call after a restart inside the replacement rename gap — rolling the
- * transaction backup back into place and returning "sharded" immediately, so
- * a stray legacy embeddings.json never wins. Higher-level search tests can
- * hide this because a second detectLayout() call inside the same operation
- * sees the already-rolled-back directory.
- */
 import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
@@ -49,9 +41,6 @@ test("detectLayout returns sharded on the first post-gap call and ignores a stra
       "utf-8",
     );
 
-    // First post-gap call reports SHARDED without writing: reads fail open
-    // to an empty view (the gap generation cannot be enumerated) and the
-    // stray legacy file never wins.
     assert.equal(await store.detectLayout(), "sharded");
     let probe: Record<string, { vector: number[]; path: string }> = {};
     const identity = await store.readShardGenerationInto(probe);
@@ -64,8 +53,6 @@ test("detectLayout returns sharded on the first post-gap call and ignores a stra
       assert.equal((err as NodeJS.ErrnoException).code, "ENOENT");
     }
 
-    // The mutation wrapper performs the recovery (restored generation
-    // becomes the loaded view) and lands the write on it: old + new.
     assert.equal(await store.recoverIfInterrupted(), true);
     const loaded = await (async () => {
       const merged: Record<string, { vector: number[]; path: string }> = {};
@@ -93,13 +80,6 @@ test("detectLayout returns sharded on the first post-gap call and ignores a stra
   }
 });
 
-// ---------------------------------------------------------------------------
-// PR #3176 codex P2 — the generation stamp must not alias consecutive
-// publications. A dirty-shard write keeps the published directory's inode and
-// only moves its mtime; on a coarse-tick filesystem two consecutive
-// publications can report the same directory stat, so the stamp must move
-// through something that cannot alias.
-// ---------------------------------------------------------------------------
 
 test("consecutive shard publications move the generation stamp even when the directory stat is preserved", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-stamp-"));
@@ -117,8 +97,6 @@ test("consecutive shard publications move the generation stamp even when the dir
       { version: 1, ...identity, entries: { "mem-old": entryOld } },
       { touchedIds: ["mem-old"], memoryId: "mem-old" },
     );
-    // Force the exact stat the stamp reads, emulating a coarse mtime tick:
-    // the aliased stamp must still move on the NEXT publication.
     await utimes(shardDir, 1_700_000_000.5, 1_700_000_000.5);
     const stampBefore = await store.identityStamp();
 
@@ -134,8 +112,6 @@ test("consecutive shard publications move the generation stamp even when the dir
       stampBefore,
       "two consecutive publications must never alias to one generation stamp",
     );
-    // The published generation itself carries both entries: the stamp move
-    // is about revalidation, not about losing data.
     const merged: Record<string, { vector: number[]; path: string }> = {};
     await store.readShardGenerationInto(merged);
     assert.deepEqual(Object.keys(merged).sort(), ["mem-new", "mem-old"]);
@@ -162,8 +138,6 @@ test("a publication's stamp moves twice: in-flight before its writes and final o
     );
     const stampBefore = await store.identityStamp();
 
-    // Freeze the publication between its first shard write and completion;
-    // the write-boundary signal guarantees the in-flight marker already moved.
     const { promise: release, resolve: unblock } = Promise.withResolvers<void>();
     const { promise: atWrite, resolve: reachedWrite } = Promise.withResolvers<void>();
     let gated = false;
@@ -227,9 +201,6 @@ test("an in-flight marker never yields a repeatable stamp, so a cached probe alw
       { version: 1, ...identity, entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
       { touchedIds: ["mem-old"], memoryId: "mem-old" },
     );
-    // Real post-crash state: the in-flight marker landed, the completion
-    // marker never did. A reader may have cached this stamp mid-flight; it
-    // must never see the same stamp again until a publication completes.
     await writeFile(path.join(memoryDir, "state", "embeddings.generation"), "in-flight");
     const probeA = await store.identityStamp();
     const probeB = await store.identityStamp();
@@ -444,9 +415,6 @@ test("recovering an interrupted replacement finalizes the marker on the restored
       { touchedIds: ["mem-old"], memoryId: "mem-old" },
     );
 
-    // Crash after the in-flight marker, before the staging publication: the
-    // published directory sits in the transaction backup and the marker is
-    // still in-flight.
     await rename(shardDir, path.join(stateDir, "embeddings.pre-replace.tmp"));
     await writeFile(path.join(stateDir, "embeddings.generation"), "in-flight");
 
@@ -501,9 +469,6 @@ test("a failed publication's rollback finalizes the marker on the restored gener
       { touchedIds: ["mem-old"], memoryId: "mem-old" },
     );
 
-    // A publication whose staging rename fails: the shard directory was
-    // already demoted to the backup, so the catch rolls it back. The
-    // restored generation must be finalized, not left in-flight.
     await assert.rejects(
       () => store.publishSwappedGeneration(path.join(stateDir, "embeddings.staging.tmp-nonexistent")),
       (err: NodeJS.ErrnoException) => err.code === "ENOENT",
@@ -542,8 +507,6 @@ test("a failed recovery rollback keeps the marker in-flight and a later recovery
     await rename(shardDir, path.join(stateDir, "embeddings.pre-replace.tmp"));
     await writeFile(path.join(stateDir, "embeddings.generation"), "in-flight");
 
-    // Real rollback failure at the filesystem boundary: the state dir is
-    // unwritable, so the restore rename fails and recovery fails closed.
     const prevMode = (await stat(stateDir)).mode;
     await chmod(stateDir, 0o500);
     try {
@@ -560,7 +523,6 @@ test("a failed recovery rollback keeps the marker in-flight and a later recovery
       await chmod(stateDir, prevMode);
     }
 
-    // A later recovery under a writable state dir restores and finalizes.
     assert.equal(await store.recoverIfInterrupted(), true);
     const marker = (await readFile(path.join(stateDir, "embeddings.generation"), "utf-8")).trim();
     assert.notEqual(marker, "in-flight");
@@ -578,15 +540,7 @@ test("a corrupt replacement backup shape surfaces as a tagged storage error, nev
   try {
     const stateDir = path.join(memoryDir, "state");
     await mkdir(stateDir, { recursive: true });
-    // `embeddings.pre-replace.tmp` exists but is NOT a directory: the
-    // rollback moves that junk file into the published position, where the
-    // shard enumeration must fail loudly (tagged) instead of degrading to
-    // the legacy fallback.
     await writeFile(path.join(stateDir, "embeddings.pre-replace.tmp"), "junk", "utf-8");
-    // The mutation wrapper's recovery moves the junk file into the published
-    // position; the subsequent persist must then fail loudly (tagged) when
-    // shard enumeration hits it, instead of degrading to the legacy
-    // fallback.
     assert.equal(await store.recoverIfInterrupted(), true);
     await assert.rejects(
       store.persist({
@@ -617,7 +571,6 @@ test("misplaced shard entries record read diagnostics before failing closed", as
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-misplaced-status-"));
   try {
     await mkdir(path.join(root, "state/embeddings"), { recursive: true });
-    // mem-old hashes to shard-0058, not 0000.
     await writeFile(path.join(root, "state/embeddings/shard-0000.json"), SHARD_FILE);
     const store = newStore(root);
     await assert.rejects(() => store.readShardGenerationInto({}), /shard/);
@@ -631,18 +584,12 @@ test("misplaced shard entries record read diagnostics before failing closed", as
 });
 
 // ---------------------------------------------------------------------------
-// Codex PRRT_kwDORJXyws6mZ72r — symlinked generation dir / members are
-// rejected at read and mutation boundaries; planted links must never serve
-// or write through to paths outside the state directory.
 // ---------------------------------------------------------------------------
 
 test("a symlinked embedding shard directory is rejected at the layout and read boundaries", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb-symlink-dir-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-emb-symlink-outside-"));
   try {
-    // Use a shard whose entry id hashes to the same shard name so a
-    // successful parse would otherwise validate; the symlink boundary must
-    // throw BEFORE any shard membership check.
     const shardNameForId = (id: string): string => {
       let h = 0x811c9dc5;
       for (let i = 0; i < id.length; i++) {

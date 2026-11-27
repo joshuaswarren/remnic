@@ -1,17 +1,3 @@
-/**
- * #1649: a retried observe POST (same `idempotencyKey`) must be deduplicated
- * server-side — the batch is ingested exactly once even when the HTTP response
- * is lost and the client replays the request. Without the key the daemon
- * re-runs every side effect under `skipDedupeCheck: true` and the turn is
- * queued for extraction twice.
- *
- * Verified here against the `EngramAccessService.observe` path with a stub
- * orchestrator that records every namespace-bearing side effect (LCM enqueue +
- * extraction replay), the same probe shape used by the #1495 observe-scope
- * tests. The idempotency store is filesystem-backed, so `memoryDir` is a real
- * temp directory (not the synthetic path the scope tests use, which never touch
- * the store because they omit the key).
- */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,8 +37,6 @@ function makeObserveProbe(memoryDir: string, projectScope = true): ObserveProbe 
     ],
     codingMode: { projectScope },
     memoryDir,
-    // Disable objective-state snapshots so the probe doesn't need a writable
-    // storage backend — the idempotency contract under test is LCM + extraction.
     objectiveStateMemoryEnabled: false,
     objectiveStateSnapshotWritesEnabled: false,
     principalFromSessionKeyMode: "prefix",
@@ -116,13 +100,10 @@ test("#1649 a retried observe with the same idempotencyKey is deduplicated to a 
     const key = "observe-batch-pi-geek-abc123-#1";
 
     const first = await service.observe(observeRequest({ idempotencyKey: key }));
-    // First attempt is a real ingest.
     assert.equal(first.idempotencyReplay, undefined, "first attempt is not a replay");
     assert.equal(probe.extractionCalls.length, 1, "first attempt ingests once");
     assert.equal(probe.lcmCalls.length, 1, "first attempt archives LCM once");
 
-    // Retry: same key, same payload — the daemon already processed the body, so
-    // this is the response-lost-after-process case the issue describes.
     const second = await service.observe(observeRequest({ idempotencyKey: key }));
     assert.equal(second.idempotencyReplay, true, "retry is served from the cache");
     assert.equal(second.accepted, first.accepted, "retry reports the same accepted count");
@@ -132,7 +113,6 @@ test("#1649 a retried observe with the same idempotencyKey is deduplicated to a 
       "retry reports the same effective namespace",
     );
 
-    // The defining contract: NO second ingest, NO second LCM archive.
     assert.equal(probe.extractionCalls.length, 1, "retry must not queue extraction a second time");
     assert.equal(probe.lcmCalls.length, 1, "retry must not archive LCM a second time");
   } finally {
@@ -186,8 +166,6 @@ test("#1649 reusing an idempotencyKey with a divergent payload is rejected as a 
 
     await service.observe(observeRequest({ idempotencyKey: key }));
 
-    // Same key, DIFFERENT messages — a stale key must never silently mask a
-    // unrelated batch. Same contract as memory_store/suggestion_submit.
     await assert.rejects(
       service.observe(
         observeRequest({
@@ -238,15 +216,10 @@ test("#1649 review fix: the same idempotencyKey under a different principal is a
     const service = new EngramAccessService(probe.orch);
     const key = "observe-batch-shared-key-#4";
 
-    // Principal alice ingests under the key.
     await service.observe(
       observeRequest({ idempotencyKey: key, authenticatedPrincipal: "alice" }),
     );
 
-    // A different principal reusing the same key + same body must NOT replay
-    // alice's cached response — the fingerprint folds in authenticatedPrincipal,
-    // so this is a conflict (defends against cross-identity replay when the
-    // principal is supplied out-of-band via HTTP/MCP auth).
     await assert.rejects(
       service.observe(
         observeRequest({ idempotencyKey: key, authenticatedPrincipal: "bob" }),
@@ -269,15 +242,9 @@ test("#1649 review fix: rebinding the session's ambient coding context makes the
     const key = "observe-batch-ambient-scope-#5";
     const req = observeRequest({ idempotencyKey: key });
 
-    // No explicit namespace/cwd/projectTag and no ambient context yet — the
-    // scope resolves to the default store. This caches the response.
     await service.observe(req);
     assert.equal(probe.extractionCalls.length, 1, "first observe ingests once");
 
-    // The session is now rebound to a coding project by an external caller
-    // (e.g. a memory_store with cwd, or a direct setCodingContextForSession).
-    // The resolved writeNamespace changed, so reusing the same key + same body
-    // must NOT silently replay — it is a conflict.
     probe.contexts.set(req.sessionKey, {
       projectId: "tag:remnic",
       branch: null,
@@ -349,7 +316,6 @@ test("#1649 a capacity-refused observe does not consume its idempotencyKey", asy
     };
     const key = "observe-capacity-pi-geek-abc123-#1";
 
-    // First attempt refuses at entry capacity — the key must stay unused.
     await assert.rejects(
       service.observe(observeRequest({ idempotencyKey: key })),
       (err: Error) => err instanceof ReplayAdmissionRefusedError,
@@ -357,13 +323,10 @@ test("#1649 a capacity-refused observe does not consume its idempotencyKey", asy
     );
     assert.equal(probe.extractionCalls.length, 0, "refused attempt must not ingest");
 
-    // Identical retry, same key: a REAL miss once capacity exists, not a replay
-    // of a response that never happened.
     const retry = await service.observe(observeRequest({ idempotencyKey: key }));
     assert.equal(retry.idempotencyReplay, undefined, "refusal must not have cached a response");
     assert.equal(probe.extractionCalls.length, 1, "retry is admitted exactly once");
 
-    // Third identical request replays — the success bound the key, not the refusal.
     const replay = await service.observe(observeRequest({ idempotencyKey: key }));
     assert.equal(replay.idempotencyReplay, true, "post-success identical request replays");
     assert.equal(probe.extractionCalls.length, 1, "replay must not ingest again");
@@ -373,11 +336,6 @@ test("#1649 a capacity-refused observe does not consume its idempotencyKey", asy
 });
 
 test("#1649 review fix: projectTag observe replays correctly despite scope resolution side effects", async () => {
-  // The fingerprint folds in the RESOLVED writeNamespace (not the raw ambient
-  // context). resolveMemoryScopePlan seeds the session context from projectTag
-  // on the first call; the replay reads the SAME seeded context and resolves the
-  // SAME writeNamespace. This proves the fingerprint is stable across replays
-  // even though the scope resolution mutates session state on the first call.
   const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-tag-replay-"));
   try {
     const probe = makeObserveProbe(memoryDir);
@@ -388,15 +346,11 @@ test("#1649 review fix: projectTag observe replays correctly despite scope resol
     const first = await service.observe(req);
     assert.equal(first.idempotencyReplay, undefined, "first attempt is a real ingest");
 
-    // The first observe's resolveMemoryScopePlan seeded a coding context for
-    // this session. Verify it was actually set (the side effect we depend on).
     assert.ok(
       probe.contexts.get(req.sessionKey),
       "first observe seeded a coding context via resolveMemoryScopePlan",
     );
 
-    // Retry with the same key + same body + same projectTag — the pre-resolved
-    // writeNamespace matches because the seeded context produces the same scope.
     const replay = await service.observe(req);
     assert.equal(replay.idempotencyReplay, true, "projectTag observe replays despite scope-resolution side effects");
     assert.equal(probe.extractionCalls.length, 1, "replay did not re-ingest");

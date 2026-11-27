@@ -1,18 +1,3 @@
-/**
- * `remnic-capture-screen` CLI. Subcommands:
- *   init | start | stop | status | install-service | logs | test-snapshot
- *
- * `start --replay <dir>` feeds synthetic fixtures through the full capture
- * pipeline + HTTP API (the CI-friendly, hardware-free path). Live capture needs
- * the native helper (@remnic/capture-native-*); where it is absent the daemon
- * still serves the spool and reports axAvailable/ocrAvailable = false.
- *
- * The bearer token comes from the environment (REMNIC_CAPTURE_TOKEN), never
- * argv: a long-lived daemon's argv is world-readable via `ps`/`/proc`, so a
- * token on the command line would let any local account read captured screen
- * text. `--auth-token` is rejected. When the env var is unset, the token file
- * created by `init` is used instead.
- */
 
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
@@ -75,7 +60,6 @@ const VALUE_FLAGS: Record<string, true> = {
   lines: true,
 };
 
-/** Standalone boolean flags. */
 const BOOLEAN_FLAGS: Record<string, true> = {
   foreground: true,
   force: true,
@@ -94,7 +78,6 @@ const COMMAND_FLAGS: Record<string, Record<string, true>> = {
   help: {},
 };
 
-/** Flags accepted regardless of subcommand. */
 const GLOBAL_FLAGS: Record<string, true> = { "base-dir": true, spool: true, help: true };
 
 const READINESS_TIMEOUT_MS = 10_000;
@@ -202,12 +185,6 @@ export function ensurePrivateDir(dir: string): void {
   }
 }
 
-/**
- * Prepare a custom --spool parent WITHOUT clobbering an existing directory's
- * mode. Absent → create a dedicated 0700 dir. Present → refuse a symlink or a
- * non-owner-only dir, but never chmod it, so `--spool ./x.sqlite` can't tighten
- * the caller's cwd. The daemon's own base-dir is handled by ensurePrivateDir.
- */
 export function ensureSpoolParentDir(spoolPath: string): void {
   const dir = dirname(spoolPath);
   let stat: ReturnType<typeof lstatSync>;
@@ -287,12 +264,6 @@ export async function recordedDaemonIsRunning(record: PidRecord, paths: CaptureP
   return isOwnRunningDaemon(record, paths, env, stderr);
 }
 
-/**
- * Run replay ingestion as a supervised task AFTER the daemon is ready. Never
- * throws: success/failure is surfaced via the spool's `replay_status` meta
- * (also on /v1/health) and the daemon log, so a slow/failed replay never kills
- * the daemon or retracts its readiness.
- */
 export async function superviseReplay(
   spool: Spool,
   replayDir: string,
@@ -413,12 +384,10 @@ async function cmdStart(
   const token = resolveToken(paths, env, true);
   const helperRes = await resolveHelperBinaryPath(env);
   const axAvailable = helperRes.binaryPath !== null;
-  // A custom --spool may live outside base-dir; prepare its parent (create 0700
   // if absent; refuse a symlinked or non-owner-only existing dir) without ever
   // chmod-ing an existing directory.
   ensureSpoolParentDir(paths.spoolPath);
   const spool = new Spool(paths.spoolPath);
-  // Retention janitor: prune expired rows once on start so a long-idle spool is
   // trimmed even if the (native) capture loop never runs on this platform.
   spool.pruneOlderThan(config.spoolRetentionDays);
   let handle: DaemonHandle;
@@ -474,7 +443,6 @@ async function cmdStart(
     const shutdown = () => {
       if (closing) return;
       closing = true;
-      // Stop the capture loop and cancel replay, then drain BOTH before closing
       // the spool so no capture/ingestion write can ever hit a closed database.
       replayAbort.abort();
       void Promise.resolve(scheduler?.stop())

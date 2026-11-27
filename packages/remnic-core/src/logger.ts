@@ -24,7 +24,6 @@ let _debug = false;
 let _timestamps = true;
 let _clock: () => string = () => new Date().toISOString();
 
-// Coerce a boolean-like env string. Empty/whitespace-only and unrecognized
 // values return undefined so callers fall through to the default (timestamps
 // on) rather than silently disabling — an empty env var reads as "unset".
 function coerceBool(value: string | undefined): boolean | undefined {
@@ -36,7 +35,6 @@ function coerceBool(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
-// Late-bind console.* rather than capturing references at module import
 // time. In production this is behaviour-identical to the pre-bound
 // `.bind(console)` form — `console.info(msg, ...)` resolves `this` to
 // `console` whether called directly or via an arrow wrapper — but it lets
@@ -55,19 +53,16 @@ const CONSOLE_LOGGER: LoggerBackend = {
 export function initLogger(backend?: LoggerBackend, debug?: boolean, options?: LoggerOptions): void {
   _backend = backend ?? CONSOLE_LOGGER;
   _debug = debug ?? false;
-  // Precedence: explicit option > REMNIC_LOG_TIMESTAMPS env > default (on).
   _timestamps = options?.timestamps ?? coerceBool(process.env.REMNIC_LOG_TIMESTAMPS) ?? true;
   _clock = options?.clock ?? (() => new Date().toISOString());
 }
 
-// Whether a real backend has been installed via initLogger. Lets diagnostics
 // that must not be swallowed (config misconfiguration warnings) fall back to
 // console when a host-agnostic consumer uses core without calling initLogger.
 export function isLoggerInitialized(): boolean {
   return _backend !== NOOP_LOGGER;
 }
 
-// Restore the pristine no-op backend (as at module load, before initLogger).
 // Primarily a test seam for exercising the standalone/no-host path.
 export function resetLogger(): void {
   _backend = NOOP_LOGGER;
@@ -76,7 +71,6 @@ export function resetLogger(): void {
   _clock = () => new Date().toISOString();
 }
 
-// Format one log line: "<iso> remnic: <msg>" when timestamps are enabled,
 // otherwise the legacy "remnic: <msg>". Timestamp is per-call.
 function fmt(msg: string, label = "remnic"): string {
   const ts = _timestamps ? `${_clock()} ` : "";

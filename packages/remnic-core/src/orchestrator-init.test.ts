@@ -10,16 +10,6 @@ import { Orchestrator } from "./orchestrator.js";
 import { initLogger, resetLogger } from "./logger.js";
 import { NoopSearchBackend } from "./search/noop-backend.js";
 
-/**
- * Watchdog for startup lifecycle awaits. This is a HANG guard, not a speed
- * budget: a real Orchestrator.initialize() does real fs/sqlite discovery and
- * can take well over a second on a loaded CI runner (a merge to main failed
- * its shard when initialize settled ~40ms after the old 1250ms deadline had
- * already resolved), and the discovery paths can block the loop so even
- * in-file timers stall meanwhile. The deadline only needs to fire when the
- * awaited lifecycle genuinely never settles, so keep it far above any
- * legitimate startup cost.
- */
 async function withTestDeadline<T>(
   promise: Promise<T>,
   timeoutMs = 10_000,
@@ -1498,8 +1488,6 @@ test("retiring an epoch aborts its in-flight probe and primary collection check"
     assert.equal(await withTestDeadline(initialization.then(() => "settled" as const)), "settled");
     assert.equal(await withTestDeadline(destroy.then(() => "settled" as const)), "settled");
 
-    // Fresh lifecycle uses a new epoch controller; retirement during collection
-    // must abort the controller forwarded to the real namespace-check seam.
     const freshInitialization = orchestrator.initialize();
     assert.notEqual(await withTestDeadline(collectionReached), "deadline");
     const freshDestroy = orchestrator.destroy();
@@ -1567,7 +1555,6 @@ test("startupSearchSync composes its caller abort into the QMD probe", async () 
   }
 });
 
-// Both startup call sites must open read readiness without migration replay.
 for (const namespace of ["default", "shared"]) {
   test(`startup defers entity migration for ${namespace} storage`, async () => {
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-init-migration-defer-"));
@@ -1603,7 +1590,6 @@ for (const namespace of ["default", "shared"]) {
       assert.equal(existsSync(journalPath), false, "startup must not run the migration");
       await rm(lockPath);
       await storage.ensureDirectories();
-      // SAFETY: the journal is written by the migration under test and carries an optional boolean `complete`.
       const state = JSON.parse(await readFile(journalPath, "utf8")) as { complete?: boolean };
       assert.equal(state.complete, true, "default setup must still run migration");
     } finally {
@@ -1650,7 +1636,6 @@ test("daemon start builds the fact-hash index once in the background and a save 
     };
 
     assert.notEqual(await withTestDeadline(orchestrator.initialize()), "deadline", "initialize must not wait on the held rebuild");
-    // SAFETY: test reads the private deferredReady gate, as the neighbouring tests do.
     assert.notEqual(
       await withTestDeadline((orchestrator as any).deferredReady),
       "deadline",
@@ -1664,7 +1649,6 @@ test("daemon start builds the fact-hash index once in the background and a save 
     clearTimeout(giveUp);
     assert.equal(outcome, "started", "start must begin the fact-hash corpus rebuild before any save arrives");
 
-    // Two saves landing while the warm-up still runs: both wait on that one flight.
     const saves = Promise.all([storage.lookupContentHash("first save"), storage.lookupContentHash("second save")]);
     releaseCorpus?.();
     const results = await withTestDeadline(saves);
@@ -1766,9 +1750,6 @@ test("an unverified collection ensure does not complete the maintenance-off sync
       knowledgeIndexEnabled: false,
     }),
   );
-  // SAFETY: the test stubs the same private orchestrator seams the neighbouring
-  // lifecycle tests do (qmd, passiveCorrectionService, maintenanceNamespaces,
-  // namespaceSearchRouter, deferredReady, deferredSyncSucceeded).
   const orch = orchestrator as any;
   try {
     orch.qmd = {

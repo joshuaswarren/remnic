@@ -1,16 +1,3 @@
-/**
- * Review-only journal extraction pass (issue #1987, reusing #1984's design).
- *
- * Vault journal text is user-authored but unverified: candidates land
- * `pending_review` ONLY — there is no auto-approve path by design, so no
- * journal-derived memory ever reaches `active` without explicit review
- * approval. A judge reject drops the candidate even in review mode.
- * Standard sanitization applies before extraction; unsafe text extracts
- * nothing (the placeholder is never written as memory content).
- *
- * Per-day change detection lives in journal-state.ts (timeline.json);
- * this module is the pure pass over one day's POST-STRIP text.
- */
 import { persistUnderFactDedupWindow } from "../orchestration/fact-dedup-window.js";
 import { scoreImportance } from "../importance.js";
 import { getVerdictKind, type JudgeCandidate, type JudgeVerdict } from "../extraction-judge.js";
@@ -48,23 +35,12 @@ export interface JournalMemoryWriter {
     envelope: SealedMemoryEnvelope,
     extras: { status: MemoryStatus; contentHashSource: string; importance?: ImportanceScore },
   ): Promise<{ tombstoneBlocked?: boolean; duplicate?: boolean }>;
-  /** Dedup beyond the fact-only hash index: scans journal-tagged memories. */
   hasJournalMemoryContent(content: string): Promise<boolean>;
 }
 
-/**
- * The storage fact-hash index only covers category "fact"; journal
- * candidates span every category, so dedup additionally scans existing
- * journal-tagged memories for an exact content match (wearables parity,
- * Codex P2 on PR #1458).
- */
 export function createJournalMemoryWriter(storage: JournalStorageIo): JournalMemoryWriter {
   return {
     writeSealedMemory: async (envelope, extras) => {
-      // Facts register in the fact hash index, so extraction and this pass can
-      // commit the same new fact. Commit it under the same window extraction
-      // uses and recheck the index there. The scan in hasJournalMemoryContent
-      // stays outside: it is corpus-sized and the window is bounded.
       if (envelope.category !== "fact") return storage.writeSealedMemory(envelope, extras);
       const outcome = await persistUnderFactDedupWindow(
         storage.dir,
@@ -103,7 +79,6 @@ export interface JournalExtractionDeps {
 }
 
 export interface JournalExtractionResult {
-  /** pending_review candidates written this run. */
   pendingReview: number;
   /** Candidates the judge rejected — dropped, never queued. */
   rejectedByJudge: number;
@@ -134,8 +109,6 @@ export async function runJournalReviewExtraction(input: {
     return result;
   }
 
-  // Standard sanitization like any other source. A violation extracts
-  // NOTHING — the sanitized placeholder must never become memory content.
   const sanitized = sanitizeMemoryContent(input.journalText);
   if (!sanitized.clean) {
     result.warnings.push(
@@ -207,7 +180,6 @@ export async function runJournalReviewExtraction(input: {
       result.skipped += 1;
       continue;
     }
-    // Journal text is machine-extracted: salvage mode, warn-logged drops.
     const envelope = composeMemoryEnvelope(
       {
         content: fact.content,
@@ -243,8 +215,6 @@ export async function runJournalReviewExtraction(input: {
     try {
       await input.deps.afterWrites();
     } catch (err) {
-      // The writes are durable; a reindex failure is reported, not thrown
-      // (§31 — the data indexes on the next update).
       result.warnings.push(
         `reindex after journal writes failed: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -253,7 +223,6 @@ export async function runJournalReviewExtraction(input: {
   return result;
 }
 
-/** Keep the strongest copy per normalized content so one day cannot duplicate itself. */
 function dedupeInRun(
   facts: ExtractedFact[],
   result: JournalExtractionResult,

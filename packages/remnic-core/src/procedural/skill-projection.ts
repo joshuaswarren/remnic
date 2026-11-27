@@ -17,7 +17,6 @@ import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile, MemoryStatus } from "../types.js";
 import { parseProcedureStepsFromBody, type ProcedureStep } from "./procedure-types.js";
 
-/** Provenance frontmatter keys. Namespaced so hosts treat them as opaque. */
 export const SKILL_MEMORY_ID_KEY = "x-remnic-memory-id";
 export const SKILL_UPDATED_KEY = "x-remnic-updated";
 export const SKILL_SOURCE_KEY = "x-remnic-source";
@@ -39,7 +38,6 @@ const PROJECTABLE_STATUSES: Partial<Record<MemoryStatus, true>> = { active: true
 /** Default projection cap. `0` disables projection entirely. */
 export const DEFAULT_SKILL_PROJECTION_MAX_SKILLS = 20;
 
-/** Hard ceiling so a misconfigured cap cannot flood a host skills directory. */
 const MAX_SKILL_PROJECTION_MAX_SKILLS = 500;
 
 const MAX_SLUG_LENGTH = 64;
@@ -116,7 +114,6 @@ export function parseSkillProjectionConfig(raw: unknown): SkillProjectionConfig 
         `procedural.skillProjection.maxSkills must be between 0 and ${MAX_SKILL_PROJECTION_MAX_SKILLS} (got ${JSON.stringify(block.maxSkills)}). 0 disables projection.`,
       );
     }
-    // `0` is a documented disable value (§33) — never clamp it up.
     maxSkills = coerced;
   }
 
@@ -171,7 +168,6 @@ function allocateSlug(base: string, used: Set<string>, reserved: ReadonlySet<str
       return next;
     }
   }
-  // Unreachable in practice (10k distinct suffixes per base slug).
   throw new Error(`skill-projection: could not allocate a unique slug for ${base}`);
 }
 
@@ -230,9 +226,6 @@ export function projectProceduresToSkills(
   const used = new Set<string>();
   const bundles: SkillBundle[] = [];
   for (const memory of candidates) {
-    // Drop the machine "[Attributes: ...]" footer writeMemory appends: a human
-    // skill body must not carry it, and leaving it in would let the footer be
-    // absorbed into the final step's intent on re-parse.
     const body = stripAttributesSuffix(memory.content.replace(/\r\n/g, "\n")).trim();
     const title = procedureTitleFromBody(body) || memory.frontmatter.id;
     const slug = allocateSlug(sanitizeSkillSlug(title), used, reserved);
@@ -295,7 +288,6 @@ export interface ParsedSkillBundle {
  */
 export function parseSkillBundle(text: string, slug: string): ParsedSkillBundle | null {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
-  // Line scan rather than a lazy `[\s\S]*?` fence regex (issue #2439).
   let frontmatter: Record<string, string> = {};
   let bodyLines = lines;
   if (lines[0]?.trim() === "---") {

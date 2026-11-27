@@ -32,7 +32,6 @@ function settings(overrides: Partial<WearableSourceSettings> = {}): WearableSour
   };
 }
 
-/** Route a mocked fetch by URL: list vs single-note-detail. */
 function mockGranola(notes: Record<string, unknown>, detailByPath: Record<string, { body: unknown; status?: number }>): typeof fetch {
   return (async (url: string | URL | Request) => {
     const u = String(url);

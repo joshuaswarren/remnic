@@ -1,12 +1,3 @@
-/**
- * Synthetic fixture for the direct-answer latency benchmark
- * (issue #518).
- *
- * Each case feeds a hand-crafted candidate set + a query into the
- * eligibility gate.  Cases are split by expected verdict so the
- * scorer can measure precision (positive cases fire Tier 2), recall
- * (negative cases defer to the hybrid path), and gate latency.
- */
 
 import type { MemoryFile } from "@remnic/core";
 
@@ -205,7 +196,6 @@ export const DIRECT_ANSWER_BENCH_FIXTURE: DirectAnswerBenchCase[] = [
     ],
     expected: "defer",
   },
-  // Positive: runbook bucket is eligible.
   {
     id: "pos-runbook",
     query: "ship the branch",

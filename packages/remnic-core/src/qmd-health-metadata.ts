@@ -4,7 +4,6 @@ import { z } from "zod";
 import type { JsonValue } from "./extraction-reply-diagnostic.js";
 import type { OperationalSearchHealth } from "./search/port.js";
 
-// QMD health schema v1's native-owned input contract; no config parsing here.
 const ENVIRONMENT_NAMES = [
   "HOME", "USERPROFILE", "PATH", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
   "QMD_CONFIG_DIR", "INDEX_PATH", "QMD_EMBED_MODEL", "QMD_GENERATE_MODEL",
@@ -49,7 +48,6 @@ function environmentIdentity(env: NodeJS.ProcessEnv, cwd: string): string {
   return identity([cwd, ENVIRONMENT_NAMES.map(name => [name, env[name] ?? null])]);
 }
 
-/** Capability absence is negotiated by the session, never inferred from a broken snapshot. */
 export function parseOperationalHealth(
   result: z.infer<typeof qmdHealthResponseSchema> | undefined,
   collection: string,
@@ -77,7 +75,6 @@ export function parseOperationalHealth(
     names.add(entry.name);
     if (entry.name === targetName) target = entry;
   }
-  // A freshly removed collection cannot be resurrected by the old active catalog.
   if (!target) return { ...UNKNOWN_OPERATIONAL_HEALTH, collectionState: "missing" };
   if (
     target.path !== identity(path.resolve(memoryDir)) ||

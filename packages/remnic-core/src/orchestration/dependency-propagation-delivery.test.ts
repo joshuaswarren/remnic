@@ -1349,9 +1349,7 @@ test("recovery routes an expired recovery lease through primary replay before de
     const token = await first.prepare(propagationEvent);
     assert.ok(token);
 
-    // Reproduce the crash: a recovery run claimed the prepared job, persisted a
     // recovery-owned lease, and died BEFORE primary replay. Plant that exact
-    // durable state — a `leased` job whose owner carries `:recovery:`.
     const preparedPath = path.join(queueRoot, "prepared", `${token.jobId}.json`);
     const leasedDir = path.join(queueRoot, "leased");
     const leasedPath = path.join(leasedDir, `${token.jobId}.json`);
@@ -1377,8 +1375,6 @@ test("recovery routes an expired recovery lease through primary replay before de
     assert.equal(old.frontmatter.status, "active");
     assert.equal(extractionCalls, 0);
 
-    // The next recovery run observes the expired recovery lease and must replay
-    // the primary mutation BEFORE any dependent delivery.
     now = 1_001_001;
     const second = new DependencyPropagationDelivery(
       deliveryOptions(queueRoot, fixtureValue, {
@@ -2179,12 +2175,7 @@ test("terminal queue files retain only the recent fixed cap", async () => {
 
 // ---------------------------------------------------------------------------
 // Recovery index reconciliation — focused tests for the injected
-// DependencyPropagationReplayReconciliationPort.
 //
-// A normal consolidation MERGE reindexes the survivor and deindexes the
-// superseded source inline; an INVALIDATE deindexes. Recovery that replays the
-// same primary mutation must perform the equivalent reconciliation BEFORE the
-// job becomes ready. Failed index work keeps the job retryable, not ready.
 // ---------------------------------------------------------------------------
 
 function recordingReplayReconciliation(): DependencyPropagationReplayReconciliationPort & {
@@ -2316,7 +2307,6 @@ test("replayed invalidation removes stale index visibility during recovery", asy
 
     // The superseded source (old) is the replayed INVALIDATION target: its
     // stale index visibility is removed via the injected deindex port. No
-    // survivor exists for an invalidation, so reindex is never called.
     assert.deepEqual(replay.deindexCalls, [["old"]], "recovery deindexes the invalidated source");
     assert.deepEqual(replay.reindexCalls, [], "an invalidation replays no survivor to reindex");
     assert.equal(jobById(await delivery.listJobs(), token).status, "ready");
@@ -2344,8 +2334,6 @@ test("failed index work keeps recovery retryable rather than marking ready", asy
 
     // The injected port threw, so the failed index work keeps recovery
     // retryable — the job is retained (prepared), NOT marked ready. The primary
-    // mutation already landed, so a later replay with the backend available will
-    // see it applied and finish only the reconciliation.
     const retained = jobById(await second.listJobs(), jobId);
     assert.notEqual(retained.status, "ready", "a failed reconciliation must not mark the job ready");
     assert.equal(retained.attempts, 1, "the failed replay counts as one attempt");

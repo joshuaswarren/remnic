@@ -102,7 +102,6 @@ test("pruneOlderThan removes only rows before the cutoff, incl. their FTS rows",
     assert.equal(removed, 1);
     const all = store.listSnapshotsForDay(null, "2026-01-01T00:00:00.000Z", "2026-12-31T00:00:00.000Z");
     assert.deepEqual(all.map((r) => r.contentHash), ["new"]);
-    // FTS row for the pruned snapshot is gone too.
     assert.equal(store.searchSnapshots("ancient", 10).length, 0);
     assert.equal(store.searchSnapshots("recent", 10).length, 1);
   });
@@ -113,9 +112,7 @@ test("searchSnapshots never throws on FTS-special input (URLs, quotes, operators
     store.insertSnapshot(
       snapshot({ contentHash: "u", app: "Chrome", windowTitle: "PR", browserUrl: "https://github.com/x/pull/412", text: "review the change" }),
     );
-    // URL with slashes/dots would be FTS5 syntax without sanitization.
     assert.equal(store.searchSnapshots("github.com/x/pull/412", 10).length, 1);
-    // Bare boolean operators and quotes must not throw.
     assert.doesNotThrow(() => store.searchSnapshots('AND OR "', 10));
     assert.deepEqual(store.searchSnapshots("   ", 10), []);
     assert.deepEqual(store.searchSnapshots('""', 10), []);
@@ -125,7 +122,6 @@ test("searchSnapshots never throws on FTS-special input (URLs, quotes, operators
 test("ActivityStore.open works on a fresh memoryDir (creates state/ itself)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "activity-fresh-"));
   try {
-    // No pre-created state/ dir: the public factory must not throw.
     const store = ActivityStore.open(dir);
     const result = store.insertSnapshot(snapshot());
     assert.equal(result.inserted, true);
@@ -139,7 +135,6 @@ test("insertSnapshot writes the FTS row atomically (searchable right after inser
   await withStore((store) => {
     const result = store.insertSnapshot(snapshot({ text: "atomic search token zzq", contentHash: "atomic-1" }));
     assert.equal(result.inserted, true);
-    // A committed base row without its FTS row would return zero hits here.
     const hits = store.searchSnapshots("zzq", 10);
     assert.equal(hits.length, 1);
     assert.equal(hits[0]?.contentHash, "atomic-1");
@@ -159,7 +154,6 @@ test("dedup keeps the same content at a different time; exact re-ingest dedups",
 
 test("captured timestamps are canonicalized so day-window filtering matches", async () => {
   await withStore((store) => {
-    // Non-canonical inputs (explicit +00:00 offset, missing millis) must land in the day.
     store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T14:00:00+00:00", contentHash: "c1" }));
     store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T15:30:00Z", contentHash: "c2" }));
     const { startUtc, endUtc } = activityDayWindow("2026-03-10", "UTC");
@@ -191,7 +185,6 @@ test("pruneOlderThan canonicalizes a non-canonical cutoff", async () => {
   await withStore((store) => {
     store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T09:00:00.000Z", contentHash: "old" }));
     store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T11:00:00.000Z", contentHash: "new" }));
-    // A non-canonical cutoff (no millis) must still prune the 09:00 snapshot.
     assert.equal(store.pruneOlderThan("2026-03-10T10:00:00Z"), 1);
   });
 });
@@ -200,7 +193,6 @@ test("pruneOlderThan rejects a malformed cutoff instead of deleting by a raw str
   await withStore((store) => {
     store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T09:00:00.000Z", contentHash: "keep" }));
     assert.throws(() => store.pruneOlderThan("not-a-date"), RangeError);
-    // The valid row survived the rejected prune.
     const { startUtc, endUtc } = activityDayWindow("2026-03-10", "UTC");
     assert.equal(store.listSnapshotsForDay(null, startUtc, endUtc).length, 1);
   });

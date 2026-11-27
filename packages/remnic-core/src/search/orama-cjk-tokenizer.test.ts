@@ -34,7 +34,6 @@ test("CJK tokenizer expands Japanese runs into n-grams", () => {
 });
 
 test("CJK tokenizer reuses the recall segmentation n-gram sizes", () => {
-  // A 5-char run yields chars + 2/3/4-grams + the whole run.
   const tokens = tokenizer.tokenize("用户喜欢深");
   const expected = new Set(["用", "户", "喜", "欢", "深"]);
   for (const size of [2, 3, 4]) {

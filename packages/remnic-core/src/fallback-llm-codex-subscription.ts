@@ -1,8 +1,3 @@
-/**
- * Helpers extracted from FallbackLlmClient so fallback-llm.ts stays under
- * the 1200-line cap: Codex-subscription lifecycle (issue #2833) plus
- * generic chain helpers used by the same client.
- */
 
 import path from "node:path";
 import { raceAbort } from "./abort-error.js";
@@ -47,12 +42,6 @@ export function isTerminalCodexSubscriptionError(error: unknown): boolean {
   );
 }
 
-/**
- * Single bounded headroom shared by both sides of the Codex deadline
- * (issue #2890): the provider gets it as SIGTERM lead time
- * (`timeoutMs - headroom`) and the outer race as settle grace, so the hard
- * outer bound stays `timeoutMs + headroom` (<= 25 ms past the deadline).
- */
 export function codexDeadlineHeadroomMs(timeoutMs: number): number {
   return Math.min(25, Math.max(1, Math.floor(timeoutMs / 10)));
 }
@@ -152,18 +141,12 @@ export async function tryCodexSubscriptionProvider(
     ...(resolvedApiKey ? { apiKey: resolvedApiKey } : {}),
   };
 
-  // Let the provider surface its typed timeout before the generic outer
-  // deadline: the shared bounded headroom is SIGTERM lead time here and
-  // settle grace in raceFallbackLlmDeadline (issue #2890).
   const callOptions = {
     timeoutMs: options.timeoutMs === undefined
       ? undefined
       : Math.max(1, options.timeoutMs - codexDeadlineHeadroomMs(options.timeoutMs)),
     signal: options.signal,
   };
-  // A host/benchmark runner on the process seam still wins. The core
-  // default runner does not: prefer the owning runtime so shutdown
-  // terminates the request that runtime started.
   if (isCodexCliFallbackRunnerRegistered() && !(runner && isDefaultRegisteredCodexSubscriptionRunner())) {
     return await callCodexCliFallback(effectiveConfig, model.modelId, messages, callOptions);
   }
@@ -194,25 +177,14 @@ export function withCodexRuntimeShutdown<T extends { signal?: AbortSignal }>(
 
 export function isUnsupportedJsonSchemaError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  // An echoed request format is not a capability rejection.
   if (!/\b(?:400|404|422)\b/.test(message)) {
     return false;
   }
   return (
     /(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)\b[^;,\n]{0,60}\b(?:unsupported|not supported|not implemented|not available)\b/i.test(message) ||
-    // "unavailable" counts only when it directly describes the format (DeepSeek:
-    // "This response_format type is unavailable now"). A wider window would also
-    // match an outage message that merely echoes the format.
     /(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)(?:\s{1,8}(?:type|mode|parameter|option|feature))?\s{1,8}(?:is\s{1,8})?unavailable\b/i.test(message) ||
     /\b(?:unsupported|unknown|unrecognized)(?:[\s:"'=]|parameter|argument|request|supplied|field|type|value){1,40}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
     /\b(?:does not|doesn't|cannot|can't) support(?:[\s:"'=]|the|native|type){1,20}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
-    // A strict provider parser rejecting the SCHEMA CONTENT itself (2026-11-05
-    // MiniMax-M3.1-Flash: "invalid params, Mismatch type string with value
-    // array ... \"episodeTitle\": {\"type\": [\"string\",\"null\"]}"). The
-    // provider never names response_format here; it dies parsing our payload.
-    // Evidence is the observed signature only — a quoted (JSON-escaped)
-    // type-array fragment. A generic "mismatch type" naming an unrelated
-    // parameter, or a bare echo of the format name, is not enough to degrade.
     (/invalid\s+(?:params|parameters)/i.test(message) &&
       /\\{0,4}"\s{0,8}type\s{0,8}\\{0,4}"\s{0,8}:\s{0,8}\[/.test(message))
   );

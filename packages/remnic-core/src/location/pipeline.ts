@@ -190,7 +190,6 @@ export async function syncLocationDay(options: LocationDaySyncOptions): Promise<
         const meta = composeLocationDayMeta(options.date, options.config.timezone, merged, body);
         dayWritten = await writeLocationDay(options.memoryDir, options.date, serializeLocationDay(meta, body));
       }
-      // State advances only after the durable day write above succeeded.
       await updateLocationSourceDay(
         options.memoryDir,
         source.id,

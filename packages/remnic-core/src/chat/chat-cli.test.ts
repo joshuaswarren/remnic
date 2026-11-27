@@ -1,11 +1,3 @@
-/**
- * Chat CLI surface tests (issue #1583 PR 2).
- *
- * Tests the non-TTY `--once` scripting mode and the no-LLM error path.
- * Interactive readline mode is exercised via the golden-transcript pattern
- * in chat-engine.test.ts (the engine loop is identical); here we cover the
- * CLI's own input/output contract.
- */
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
@@ -23,7 +15,6 @@ import {
 } from "./chat-session.js";
 import { DEFAULT_CHAT_CONFIG } from "./chat-config.js";
 
-/** Capture stdout.write for the duration of `fn`. */
 async function captureStdout(fn: () => Promise<void>): Promise<string> {
   const chunks: string[] = [];
   const original = process.stdout.write.bind(process.stdout);
@@ -129,14 +120,12 @@ test("CLI: resumes an existing session by id", async () => {
       memoryDir,
       configRef: parseConfig({ memoryDir, chat: { ...DEFAULT_CHAT_CONFIG, enabled: true } }),
     });
-    // First message creates a session.
     const first = await captureStdout(() =>
       runChatCli({ service, config: service.configRef!.chat, memoryDir, once: true, input: "hello" }),
     );
     const sessionMatch = /\[session: ([^\]]+)\]/.exec(first);
     assert.ok(sessionMatch, "first run should print a session id");
     const sessionId = sessionMatch[1]!;
-    // Second message resumes it.
     const second = await captureStdout(() =>
       runChatCli({ service, config: service.configRef!.chat, memoryDir, once: true, input: "again", sessionId }),
     );
@@ -151,18 +140,15 @@ test("CLI --once: pending plan is visible on reload the same way as HTTP (issue 
       configRef: parseConfig({ memoryDir, chat: { ...DEFAULT_CHAT_CONFIG, enabled: true } }),
     });
 
-    // CLI side: first turn mints the session.
     const first = await captureStdout(() =>
       runChatCli({ service, config: service.configRef!.chat, memoryDir, once: true, input: "hello" }),
     );
     const sessionId = /\[session: ([^\]]+)\]/.exec(first)![1]!;
-    // Pending plan minted by an earlier correction-preview turn.
     await markPendingPlan(memoryDir, sessionId, "plan-cli-2479");
     await captureStdout(() =>
       runChatCli({ service, config: service.configRef!.chat, memoryDir, once: true, input: "anything else?", sessionId }),
     );
     const viaCli = await loadChatSession(memoryDir, sessionId);
-    // HTTP side: identical scenario through the shared processor.
     const httpSession = await createChatSession(memoryDir, {});
     await processChatMessage({
       service,
@@ -183,7 +169,6 @@ test("CLI --once: pending plan is visible on reload the same way as HTTP (issue 
 
     assert.equal(viaCli?.pendingPlanId, "plan-cli-2479", "CLI turn must leave the pending plan visible on reload");
     assert.equal(viaHttp?.pendingPlanId, "plan-http-2479", "HTTP turn must leave the pending plan visible on reload");
-    // Transcript shape parity: both surfaces append the same role sequence.
     assert.deepEqual(
       viaCli!.transcript.map((e) => e.role),
       viaHttp!.transcript.map((e) => e.role),

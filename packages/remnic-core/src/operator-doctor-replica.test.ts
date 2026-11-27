@@ -5,15 +5,6 @@ import type { AddressInfo, Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-/**
- * Replica-divergence doctor check (issue #2149).
- *
- * Verifies `summarizeReplicaDivergence` is ok when disabled / peerless /
- * converged, warns (never ok) when a peer diverges or cannot be polled, surfaces
- * concrete deltas, never leaks a token, and is wired into `runOperatorDoctor`.
- * The check takes a pre-computed local watermark set (kept DTS-light); a real
- * ephemeral 127.0.0.1 server stands in for the peer daemon.
- */
 import { parseConfig } from "./config.js";
 import type { CorpusWatermark } from "./corpus-watermark.js";
 import { summarizeReplicaDivergence } from "./operator-doctor-replica.js";
@@ -118,9 +109,6 @@ test("summarizeReplicaDivergence: a converged peer resolves ok", async () => {
 });
 
 test("summarizeReplicaDivergence: an incomplete local census downgrades a converged peer AND warns (round 6)", async () => {
-  // /health downgrades a would-be-converged peer to unknown/local_census_incomplete
-  // when the local census is partial; the doctor must derive the SAME peer state
-  // through the shared gate, not render `peer: converged` with converged details.
   const local = [watermark("global")];
   const peer = await startPeer(healthHandler(local));
   try {

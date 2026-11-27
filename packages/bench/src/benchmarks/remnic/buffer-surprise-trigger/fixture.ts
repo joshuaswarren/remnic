@@ -1,29 +1,6 @@
-/**
- * Fixture for the `buffer-surprise-trigger` benchmark (issue #563 PR 4).
- *
- * Each case represents a short synthetic conversation with 2–3 annotated
- * topic shifts. A "topic shift" is the turn where the conversation moves
- * to a semantically distant subject — that is the turn we expect the
- * D-MEM surprise gate to flush on when it's working.
- *
- * Conversations are intentionally short (12–15 turns) and written in
- * plain English so the deterministic hash embedder used by the runner
- * produces meaningful cosine similarities across topic boundaries
- * without requiring a real embedding model. The runner does NOT call any
- * LLM, network, or QMD instance — everything is in-memory and
- * reproducible by seed.
- *
- * Each `topicShiftTurnIndices` is 0-indexed into the `turns` array. The
- * first turn (index 0) is never a topic shift by construction — there is
- * no prior context to shift away from.
- */
 
 export interface BufferSurpriseTriggerCase {
   id: string;
-  /**
-   * Ordered turns in the conversation. Only the text matters — the
-   * runner handles role assignment deterministically.
-   */
   turns: string[];
   /** 0-indexed turn positions that introduce a new topic. */
   topicShiftTurnIndices: number[];
@@ -89,12 +66,10 @@ export const BUFFER_SURPRISE_TRIGGER_FIXTURE: BufferSurpriseTriggerCase[] = [
       "I've been learning the blues scale on guitar this week.",
       "The minor pentatonic with a flat 5 gives it that distinctive sound.",
       "Which B.B. King album should I study for phrasing?",
-      // Topic shift 1: music → gardening
       "Switching topics — my tomato plants have yellow leaves on the bottom.",
       "Is that nitrogen deficiency or just normal old-leaf drop?",
       "Should I side-dress with compost or use a liquid fertilizer?",
       "My soil pH tested at 6.8 last month, which seems okay.",
-      // Topic shift 2: gardening → finance
       "On another note, I wanted to ask about Treasury I-bonds.",
       "How does the inflation adjustment compound over time?",
       "What's the annual purchase limit per person?",
@@ -122,15 +97,12 @@ export const BUFFER_SURPRISE_TRIGGER_FIXTURE: BufferSurpriseTriggerCase[] = [
       "I'm designing a rate limiter for our public API.",
       "Token bucket vs leaky bucket — which fits bursty traffic better?",
       "I was leaning toward a sliding-window counter with Redis.",
-      // Shift 1: engineering → cooking
       "Unrelated — thinking about making sourdough this weekend.",
       "My starter has been in the fridge for two weeks, is it still alive?",
       "Should I refresh it twice before baking?",
-      // Shift 2: cooking → history
       "Separately — when did the Byzantine Empire actually fall?",
       "Was it 1453 when Constantinople fell to the Ottomans?",
       "What happened to the remnants in the Morea after that?",
-      // Shift 3: history → photography
       "One more thing — I just bought a used Fujifilm X-T4.",
       "Which lens should I start with for street photography?",
       "Do you recommend the 23mm f/2 or the 35mm f/1.4?",
@@ -139,6 +111,5 @@ export const BUFFER_SURPRISE_TRIGGER_FIXTURE: BufferSurpriseTriggerCase[] = [
   },
 ];
 
-/** A small smoke subset for `--mode quick` runs. */
 export const BUFFER_SURPRISE_TRIGGER_SMOKE_FIXTURE =
   BUFFER_SURPRISE_TRIGGER_FIXTURE.slice(0, 2);

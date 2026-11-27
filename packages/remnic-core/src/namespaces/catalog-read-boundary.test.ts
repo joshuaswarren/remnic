@@ -60,14 +60,10 @@ function rec(namespace: string, storageDir: string): NamespaceRecord {
 test("storageRootOwnershipRank orders the ownership tiers", () => {
   const configured = configuredNamespaceIdentities(config);
   const tokenA = namespaceIdentityToken("project-a");
-  // Tier 0: the catalog-owned literal for a configured namespace.
   assert.equal(storageRootOwnershipRank(port, rec("project-a", `/mem/namespaces/${tokenA}`), `/mem/namespaces/${tokenA}`, configured), 0);
-  // Tier 1: the namespace name is the root's leaf.
   assert.equal(storageRootOwnershipRank(port, rec("leaf", "/mem/namespaces/leaf"), "/mem/namespaces/leaf", configured), 1);
-  // Tier 2: token-shaped root for an unconfigured namespace.
   const tokenOther = namespaceIdentityToken("other");
   assert.equal(storageRootOwnershipRank(port, rec("other", `/mem/namespaces/${tokenOther}`), `/mem/namespaces/${tokenOther}`, configured), 2);
-  // Tier 3: neither, and the memoryDir root is only owned by the default namespace.
   assert.equal(storageRootOwnershipRank(port, rec("other", "/mem/unrelated-root"), "/mem/unrelated-root", configured), 3);
   assert.equal(storageRootOwnershipRank(port, rec("default", "/mem"), "/mem", configured), 0, "the default namespace owns the memoryDir root");
   assert.equal(storageRootOwnershipRank(port, rec("other", "/mem"), "/mem", configured), 3);
@@ -76,7 +72,6 @@ test("storageRootOwnershipRank orders the ownership tiers", () => {
 test("configuredNamespaceIdentities drops empty names and keeps configured ones", () => {
   const cfg = namesOnlyConfig(" default ", "", ["  ", "project-a"]);
   assert.deepEqual([...configuredNamespaceIdentities(cfg)].sort(), ["default", "project-a"]);
-  // A single-character namespace is a valid identity and must survive the empty filter.
   const shortCfg = namesOnlyConfig("x", "y", []);
   assert.deepEqual([...configuredNamespaceIdentities(shortCfg)].sort(), ["x", "y"]);
 });
@@ -87,17 +82,14 @@ test("preferStorageRootOwner breaks ties by name then identityToken", () => {
   const b = rec("alpha", "/mem/x");
   assert.equal(preferStorageRootOwner(port, a, b, "/mem/x", configured), b);
   assert.equal(preferStorageRootOwner(port, b, a, "/mem/x", configured), b);
-  // Same name: the lower identityToken wins, whichever side it arrives on.
   const t1 = { ...rec("alpha", "/mem/x"), identityToken: "token-one" };
   const t2 = { ...rec("alpha", "/mem/x"), identityToken: "token-two" };
   assert.equal(preferStorageRootOwner(port, t2, t1, "/mem/x", configured), t1);
   assert.equal(preferStorageRootOwner(port, t1, t2, "/mem/x", configured), t1);
-  // Exact identity tie: the CURRENT wins (localeCompare returns 0, and 0 < 0 is false).
   const same1 = rec("alpha", "/mem/x");
   const same2 = { ...rec("alpha", "/mem/x"), lastWriteAt: "2026-02-02T00:00:00.000Z" };
   assert.equal(preferStorageRootOwner(port, same1, same2, "/mem/x", configured), same1);
   assert.equal(preferStorageRootOwner(port, same2, same1, "/mem/x", configured), same2);
-  // Candidate sorts AFTER the current name: the current wins on the name comparison alone.
   const zeta = rec("zeta", "/mem/x");
   assert.equal(preferStorageRootOwner(port, b, zeta, "/mem/x", configured), b);
   assert.equal(preferStorageRootOwner(port, zeta, b, "/mem/x", configured), b);

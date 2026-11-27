@@ -7,13 +7,6 @@ import { LocalLlmClient } from "./local-llm.js";
 import { orderedLocalServers } from "./local-llm-servers.js";
 import type { PluginConfig } from "./types.js";
 
-/**
- * A LiteLLM proxy answers `GET /` with the JSON string "LiteLLM: RUNNING" and
- * runs a live completion against every deployment in its pool on `GET /health`.
- * The availability probe must classify LiteLLM from `/` and never reach
- * `/health`; before this test the once-a-minute probe was the largest load
- * source on the pool behind the proxy.
- */
 
 function createConfig(localLlmUrl: string): PluginConfig {
   return {
@@ -88,10 +81,8 @@ test("LiteLLM is probed before any /health probe on every port; other orders are
     const firstHealth = order.findIndex((s) => s.healthEndpoint === "/health");
     assert.ok(litellmAt !== -1 && litellmAt < firstHealth, `${url}: ${types.join(" > ")}`);
   }
-  // Port-matched shapes with harmless probes keep the lead they had before.
   assert.equal(orderedLocalServers("http://127.0.0.1:1234/v1")[0]?.type, "lmstudio");
   assert.equal(orderedLocalServers("http://127.0.0.1:11434/v1")[0]?.type, "ollama");
-  // LiteLLM displaces the port-matched llama.cpp / vLLM /health probes.
   assert.deepEqual(orderedLocalServers("http://127.0.0.1:8080/v1").map((s) => s.type).slice(0, 3), ["litellm", "llamacpp", "mlx"]);
   assert.deepEqual(orderedLocalServers("http://127.0.0.1:8000/v1").map((s) => s.type).slice(0, 2), ["litellm", "vllm"]);
 });

@@ -13,13 +13,9 @@ import {
 } from "./extraction-prompt.js";
 import type { BufferTurn } from "./types.js";
 
-// Issue #2190: prompts that produce memory content must embed the
-// output-language policy so a non-English conversation is not silently
-// translated to English — translated memories fail later lexical recall.
 const ENGLISH_OUTPUT_DIRECTIVE_RE =
   /\b(?:write|respond|answer|output|produce|always reply)[^.]{0,60}\bin English\b/i;
 
-// Japanese fixture: a non-English conversation that must stay Japanese.
 const JAPANESE_TURNS: BufferTurn[] = [
   { role: "user", content: "私は毎朝緑茶を飲みます。", timestamp: "2026-08-17T01:00:00.000Z" },
   { role: "assistant", content: "承知しました。", timestamp: "2026-08-17T01:00:05.000Z" },

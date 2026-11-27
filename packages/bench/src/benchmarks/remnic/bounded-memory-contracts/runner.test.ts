@@ -48,12 +48,6 @@ function options(
   } as unknown as ResolvedRunBenchmarkOptions;
 }
 
-/**
- * Pull the per-condition aggregate bundles off a result. `benchmarkOptions` is
- * optional on BenchmarkResult; this narrows it once so the five tests below
- * read cleanly without re-casting (and without growing the test-typecheck
- * baseline with TS18048 "possibly undefined" entries).
- */
 function conditionsOf(
   result: { config: { benchmarkOptions?: Record<string, unknown> } },
 ): Record<string, Record<string, number>> {
@@ -62,9 +56,6 @@ function conditionsOf(
   }).conditions;
 }
 
-// ---------------------------------------------------------------------------
-// Registry integration
-// ---------------------------------------------------------------------------
 
 test("registry: bounded-memory-contracts is registered and resolvable", () => {
   const all = listBenchmarks();
@@ -85,7 +76,6 @@ test("registry: bounded-memory-contracts is tier=remnic, status=ready, runnerAva
 });
 
 // ---------------------------------------------------------------------------
-// Fixture shape
 // ---------------------------------------------------------------------------
 
 test("fixture: smoke subset spans all 7 families; full fixture has 12-20 tasks", () => {
@@ -114,7 +104,6 @@ test("fixture: stable fixtureHash is deterministic", () => {
 });
 
 // ---------------------------------------------------------------------------
-// End-to-end quick run
 // ---------------------------------------------------------------------------
 
 test("runner: quick run emits one task per (task × condition) with all 4 conditions", async () => {
@@ -146,18 +135,15 @@ test("runner: per-condition headline bundles attached to config.benchmarkOptions
 });
 
 // ---------------------------------------------------------------------------
-// The differentiated outcomes the benchmark exists to demonstrate
 // ---------------------------------------------------------------------------
 
 test("hypothesis: C1 raw-transcript wins pure recall but loses governance traps", async () => {
   const result = await runBoundedMemoryContractsBenchmark(options({ mode: "full" }));
   const c = conditionsOf(result);
-  // Recall parity on pure-recall (C1 is a fair baseline).
   assert.ok(
     c["raw-transcript"].relevantMemoryRecall >= c["typed-contract"].relevantMemoryRecall - 0.001,
     "C1 should recall as well as C2 on pure-recall tasks",
   );
-  // C1 surfaces stale + wrong-scope; C2 excludes them.
   assert.equal(c["raw-transcript"].staleMemoryHarmRate, 1, "C1 surfaces every stale decoy");
   assert.equal(c["typed-contract"].staleMemoryHarmRate, 0, "C2 excludes stale decoys");
   assert.equal(c["raw-transcript"].wrongScopeRetrievalRate, 1, "C1 surfaces every wrong-scope decoy");
@@ -176,11 +162,9 @@ test("hypothesis: typed contract asks when needed; raw transcript violates the b
 test("hypothesis: C3 triggers skills positively and declines negative triggers", () => {
   const log = buildSkillTriggerLog(BOUNDED_MEMORY_FIXTURE);
   const deploySkill = "skill:deploy-gateway";
-  // skill-positive: deploy-gateway fires on the deploy task.
   const posDeploy = log.find((e) => e.taskId === "skill-deploy-gateway" && e.skillId === deploySkill);
   assert.ok(posDeploy?.injected, "deploy skill must trigger on the positive task");
   assert.equal(posDeploy?.outcome, "helped");
-  // skill-negative: the question form must NOT trigger.
   const negDeploy = log.find((e) => e.taskId === "skill-deploy-gateway-question" && e.skillId === deploySkill);
   assert.ok(negDeploy && !negDeploy.injected, "deploy skill must NOT trigger on the negative task");
   assert.match(negDeploy!.triggerReason, /doesNotApplyWhen/);
@@ -190,13 +174,11 @@ test("hypothesis: typed contract appends NO raw transcript", async () => {
   const recallTask = BOUNDED_MEMORY_FIXTURE.find((t) => t.id === "recall-framework-choice")!;
   const pack = assemblePack(recallTask, "typed-contract", BOUNDED_MEMORY_CONTRACT, []);
   assert.equal(pack.transcriptBlock, null, "C2 pack must carry no transcript block");
-  // C1 must carry one.
   const c1 = assemblePack(recallTask, "raw-transcript", BOUNDED_MEMORY_CONTRACT, []);
   assert.ok(c1.transcriptBlock && c1.transcriptBlock.length > 0, "C1 must carry a transcript block");
 });
 
 // ---------------------------------------------------------------------------
-// Determinism
 // ---------------------------------------------------------------------------
 
 test("runner: identical mode → identical datasetHash and identical aggregate task-success", async () => {
@@ -212,15 +194,12 @@ test("runner: identical mode → identical datasetHash and identical aggregate t
 
 test("runner: datasetHash matches the standalone fixture hash", async () => {
   const result = await runBoundedMemoryContractsBenchmark(options());
-  // Quick mode serves the smoke subset, so the digest must hash THAT slice —
-  // not the full 16-task fixture (a run with --limit would differ again).
   assert.equal(result.meta.datasetHash, fixtureHash(BOUNDED_MEMORY_SMOKE_FIXTURE));
   assert.notEqual(result.meta.datasetHash, fixtureHash(BOUNDED_MEMORY_FIXTURE),
     "quick-mode digest must differ from the full-fixture digest");
 });
 
 // ---------------------------------------------------------------------------
-// Artifact emission
 // ---------------------------------------------------------------------------
 
 test("runner: writes prompt packs + retrieval + scores + report when outputDir is set", async () => {
@@ -256,7 +235,6 @@ test("runner: writes prompt packs + retrieval + scores + report when outputDir i
 });
 
 // ---------------------------------------------------------------------------
-// Skill-trigger precision/recall aggregation
 // ---------------------------------------------------------------------------
 
 test("scoring: C3 aggregate reports full trigger precision (no false positives)", async () => {
@@ -268,13 +246,10 @@ test("scoring: C3 aggregate reports full trigger precision (no false positives)"
 });
 
 // ---------------------------------------------------------------------------
-// Schema round-trip
 // ---------------------------------------------------------------------------
 
 test("runner: emitted result validates against BENCHMARK_RESULT_SCHEMA", async () => {
   const result = await runBoundedMemoryContractsBenchmark(options());
-  // The schema is a JSON-schema object; validate by its required-key contract
-  // (the publishing pipeline consumes it the same way).
   const required = BENCHMARK_RESULT_SCHEMA.required as readonly string[];
   for (const key of required) {
     assert.ok(key in result, `result missing required top-level key ${key}`);
@@ -284,7 +259,6 @@ test("runner: emitted result validates against BENCHMARK_RESULT_SCHEMA", async (
 });
 
 // ---------------------------------------------------------------------------
-// Unit: scoreTaskPair on a known stale trap
 // ---------------------------------------------------------------------------
 
 test("unit: stale trap — C1 surfaces stale (harm=1), C2 excludes it (supersession=1)", () => {

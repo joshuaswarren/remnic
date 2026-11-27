@@ -149,7 +149,6 @@ function rankTotals(totals: Map<string, number>, limit: number): WeeklySourceTot
     .slice(0, limit);
 }
 
-/** Build the full dashboard snapshot for one half-open week. Pure. */
 export function buildWeeklyDashboard(
   cards: readonly TimelineCard[],
   options: WeeklyDashboardOptions,
@@ -160,8 +159,6 @@ export function buildWeeklyDashboard(
     throw new RangeError(`topSourceLimit must be an integer >= 1; got ${topSourceLimit}`);
   }
 
-  // Canonical bounds from the summary: identical clipping arithmetic to
-  // weekly.ts regardless of how the caller spelled the input timestamps.
   const weekStartMs = Date.parse(summary.weekStartUtc);
   const weekEndMs = Date.parse(summary.weekEndUtc);
   const inWeek = clippedInWeek(cards, weekStartMs, weekEndMs);

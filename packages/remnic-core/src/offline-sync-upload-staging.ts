@@ -1,6 +1,3 @@
-// Offline-sync upload staging: chunked upload spool under
-// `.offline-sync/uploads/` (issue #2033). Extracted from offline-sync.ts so
-// the god-file line-count ratchet does not grow; behavior is unchanged.
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -106,8 +103,6 @@ export async function writeOfflineUploadChunk(options: {
 
   const writeStagingFile = options.writeStagingFile ?? options.writeFile;
   if (writeStagingFile) {
-    // Storage-backed services provide these hooks so secure-store deployments
-    // keep staged partial uploads encrypted at rest without mutating indexes.
     await writeOfflineUploadContent({
       root: options.root,
       relPath: chunk.relPath,

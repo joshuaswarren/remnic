@@ -1,34 +1,3 @@
-/**
- * Extraction queue coordinator — extracted from the orchestrator (issue #1526).
- *
- * Owns the background bounded-parallel queue that drains extraction tasks
- * while avoiding races between concurrent flush/heartbeat/bulk-import
- * triggers:
- *   - queue state (`queue` + `processing` + per-task preempt slots)
- *   - the scheduling trigger (start the drain when the first task lands and
- *     capacity is free)
- *   - the drain loop itself (`processQueue`): up to `concurrency` tasks run
- *     at once; tasks sharing an entry `key` (a buffer/session) never run
- *     concurrently, so the same buffer is never extracted twice in parallel
- *   - failure classification (`logExtractionQueueFailure`) — issue #549:
- *     AbortError from session transitions logs at debug, real failures at
- *     error
- *   - the idle wait (`waitForIdle`) used by bootstrap and tests
- *
- * Does NOT own the WHAT — `runExtraction`, the dedupe fingerprint check,
- * the deadline timer, and the buffer-clear policy remain on the
- * orchestrator (they need the full extraction dependency surface). The
- * orchestrator builds each task closure and hands it to `enqueue`; the
- * coordinator owns only the queue mechanics.
- *
- * Preemption is per task: each running task receives an
- * `ExtractionPreemptHandle` at run time and registers its own abort, so two
- * concurrent automatic extractions cannot clobber each other's registration
- * (the previous single-slot `runningPreempt` could only hold one).
- * `preemptRunning` aborts at most ONE armed task — the requested key's own
- * running work when it is armed, else the most recently armed task — which
- * is exactly the single-slot semantics generalized from one worker to N.
- */
 
 import { isAbortError, preemptedExtractionError } from "../abort-error.js";
 import { log } from "../logger.js";
@@ -36,19 +5,14 @@ import { log } from "../logger.js";
 /** Preemption registration for ONE running task. Armed work can be aborted
  *  by a fail-closed flush; disarmed work (past persist) cannot. */
 export interface ExtractionPreemptHandle {
-  /** Register the task's abort (replacing any previous registration). */
   arm(abort: () => void): void;
-  /** Remove the task's registration (idempotent). */
   disarm(): void;
 }
 
-/** A queued task; the coordinator passes the task's own preempt handle. */
 export type ExtractionQueueTask = (preempt?: ExtractionPreemptHandle) => Promise<void>;
 
 export interface ExtractionQueueEnqueueOptions {
-  /** Jump the queue and preempt the running automatic work (force flush). */
   front?: boolean;
-  /** Buffer/session key. Tasks sharing a key never run concurrently. */
   key?: string;
 }
 
@@ -62,31 +26,14 @@ interface PreemptSlot {
   armed?: { abort: () => void; seq: number };
 }
 
-/**
- * Coordinates the background bounded-parallel extraction queue. Owns the
- * queue array, the per-key in-flight guard, and the per-task preempt slots.
- */
 export class ExtractionQueueCoordinator {
   /** Maximum tasks that run at the same time (config `extractionQueueConcurrency`). */
   private readonly concurrency: number;
-  /**
-   * Background queue for extractions (agent_end optimization). Queue stores
-   * tasks that resolve when extraction should run.
-   */
   private readonly queue: QueueEntry[] = [];
-  /** Whether the drain loop is currently running. */
   private processing = false;
   private accepting = true;
-  /** Buffer keys with a task currently running (per-key exclusion). */
   private readonly activeKeys = new Set<string>();
-  /**
-   * Buffer keys with a claim DECISION in flight (daemon backlog scheduler).
-   * A reservation is taken synchronously BEFORE the async claim/decision so
-   * no queued task for the key can start past the gate while the decision is
-   * unsettled; selection skips reserved keys until release.
-   */
   private readonly reservedKeys = new Set<string>();
-  /** Preempt slots of the currently running tasks, keyed by slot identity. */
   private readonly preemptSlots = new Map<object, PreemptSlot>();
   private preemptSeq = 0;
   /** Resolves the processor's park while a new task arrives mid-drain. */
@@ -96,17 +43,14 @@ export class ExtractionQueueCoordinator {
     this.concurrency = Number.isInteger(concurrency) && concurrency >= 1 ? concurrency : 1;
   }
 
-  /** Current queue depth (idle-wait + test seam). */
   get length(): number {
     return this.queue.length;
   }
 
-  /** Whether the drain loop is currently running (idle-wait + test seam). */
   get isProcessing(): boolean {
     return this.processing;
   }
 
-  /** How many tasks may run at once (test seam + diagnostics). */
   get maxConcurrency(): number {
     return this.concurrency;
   }
@@ -134,26 +78,15 @@ export class ExtractionQueueCoordinator {
         this.processing = false;
       });
     } else {
-      // The processor may be parked waiting for an in-flight task while a
-      // slot is free; wake it so the new task starts instead of waiting
-      // behind work it could overlap with.
       this.wake?.();
     }
     return true;
   }
 
-  /**
-   * Synchronously reserve `key` so no task for it starts until the key's
-   * owner (the backlog scheduler's claim decision) settles and releases.
-   * Returns false when the key is active, queued, or already reserved —
-   * single-threaded JS makes this check+add atomic.
-   */
   tryReserveKey(key: string): boolean {
     if (this.activeKeys.has(key) || this.reservedKeys.has(key)) return false;
     if (this.queue.some((entry) => entry.key === key)) return false;
     this.reservedKeys.add(key);
-    // The processor may be parked with ONLY reserved entries left: restart
-    // it so selection is re-evaluated (it will skip the reserved key).
     if (!this.processing && this.queue.length > 0) {
       this.processing = true;
       this.processQueue().catch((err) => {
@@ -164,9 +97,6 @@ export class ExtractionQueueCoordinator {
     return true;
   }
 
-  /** Settle a reservation: the key's decision is made and enqueued work (if
-   * any) now carries the key authority itself. Idempotent; wakes a parked
-   * processor waiting only on this release. */
   releaseKeyReservation(key: string): void {
     if (!this.reservedKeys.delete(key)) return;
     if (this.queue.length > 0 && !this.processing) {
@@ -208,24 +138,14 @@ export class ExtractionQueueCoordinator {
     });
   }
 
-  /** Stop new producers from entering the queue. */
   stopAccepting(): void {
     this.accepting = false;
   }
 
-  /** Resume producer acceptance after an orchestrator re-initializes. */
   resumeAccepting(): void {
     this.accepting = true;
   }
 
-  /**
-   * Stop new producers and wait for all accepted work to finish. `timeoutMs`
-   * is the nominal budget; `tailBudgetMs` bounds the grace wait past it so a
-   * task that never settles cannot stall shutdown indefinitely. The flag is
-   * honest: false when the tail expired with work outstanding, so the
-   * caller's "did not drain" path is live. Callers persist buffered turns
-   * before this drain runs, so an abandoned tail loses nothing durable.
-   */
   async pauseAndDrain(timeoutMs: number = 60_000, tailBudgetMs: number = 15_000): Promise<boolean> {
     this.stopAccepting();
     const startedMs = Date.now();
@@ -251,12 +171,6 @@ export class ExtractionQueueCoordinator {
     return names.length > 0 ? `outstanding: ${names.join(", ")}` : "outstanding: (none)";
   }
 
-  /**
-   * Background queue processor. Runs up to `concurrency` tasks at a time,
-   * never two tasks with the same entry key. Called automatically when items
-   * are queued via `enqueue`; also exposed for the characterization tests
-   * that push raw tasks and assert drain semantics directly.
-   */
   async processQueue(): Promise<void> {
     const inFlight = new Set<Promise<void>>();
     try {
@@ -269,12 +183,6 @@ export class ExtractionQueueCoordinator {
           });
           inFlight.add(running);
         }
-        // Park until a task settles OR a new task is enqueued. A queued task
-        // whose key is still held always implies an in-flight task holding
-        // it, so inFlight is non-empty here whenever the loop must wait. A
-        // queued task behind a RESERVATION (no in-flight holder) leaves the
-        // loop instead; releaseKeyReservation and enqueue restart the
-        // processor when it is not running.
         if (inFlight.size === 0) break;
         const { promise: wakePromise, resolve: wake } = Promise.withResolvers<void>();
         this.wake = wake;
@@ -301,7 +209,6 @@ export class ExtractionQueueCoordinator {
     return undefined;
   }
 
-  /** Run one entry with its own preempt slot; failures are classified + logged. */
   private async runEntry(entry: QueueEntry): Promise<void> {
     const slot: PreemptSlot = {};
     this.preemptSlots.set(slot, { key: entry.key });
@@ -324,11 +231,6 @@ export class ExtractionQueueCoordinator {
     return this.createPreemptHandle(slot);
   }
 
-  /** Force-flush-scoped preemption: abort EVERY armed slot whose key matches
-   *  `key` and abort nothing when none does. Unlike `preemptRunning` there is
-   *  deliberately no newest-slot fallback - a keyed caller (force-flush on
-   *  session K) must never take out an unrelated background task just
-   *  because K's own extraction is not (yet) armed. */
   preemptKeyed(key: string): void {
     for (const state of this.preemptSlots.values()) {
       if (state.key !== key || state.armed === undefined) continue;
@@ -351,23 +253,6 @@ export class ExtractionQueueCoordinator {
     };
   }
 
-  /**
-   * Classify + log a failure from either the per-task catch inside
-   * `runEntry` or the outer `processQueue().catch(...)` in
-   * `enqueue()`.  Issue #549: `throwIfRecallAborted`
-   * (used throughout `runExtraction`) raises an Error whose `name` is
-   * `"AbortError"`.  That path fires when `before_reset` aborts a
-   * queued task to avoid duplicate extraction — it is intentional
-   * cancellation, not a failure.  Downgrading the log to debug
-   * prevents spurious `error`-level lines that routinely appear
-   * right next to a successful `persisted: N facts, M entities` log
-   * and that confuse operators into thinking extraction is broken.
-   * Genuine extraction failures (network, parse, I/O) still log at
-   * `error`.
-   *
-   * Source differentiates the two call sites so the log message
-   * names the right layer (`task` vs `processor`).
-   */
   logExtractionQueueFailure(
     err: unknown,
     source: "task" | "processor",
@@ -407,7 +292,6 @@ export class ExtractionQueueCoordinator {
     return true;
   }
 
-  // ── Test seams ─────────────────────────────────────────────────────────
   // Mirror the pre-extraction `orchestrator.extractionQueue` /
   // `orchestrator.queueProcessing` direct-field access the characterization
   // and flush deadline tests relied on. Each is a thin, well-named handle

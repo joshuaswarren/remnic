@@ -1,15 +1,3 @@
-/**
- * Daemon process control: an atomic, identity-bearing pid file plus liveness
- * probing.
- *
- * The pid file is JSON `{ pid, instanceId, startedAtIso, host, port }` written
- * via a temp-file + rename so a reader never sees a partial write, and reads
- * are tolerant of a concurrent delete. `instanceId` (the spool instance id)
- * lets `stop`/`status` confirm — over the authenticated health endpoint — that
- * the recorded pid really is our daemon before signalling it, which guards
- * against PID reuse. Removal is owner-checked so a late shutdown can't delete a
- * newer daemon's control file.
- */
 
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -98,11 +86,6 @@ export function removePidFile(pidPath: string): void {
   rmSync(pidPath, { force: true });
 }
 
-/**
- * Remove the pid file only when it still records `pid`. Prevents a late
- * shutdown or `stop` from deleting a NEWER daemon's control file after a
- * restart or PID reuse.
- */
 export function removePidFileIfOwner(pidPath: string, pid: number): void {
   const record = readPidRecord(pidPath);
   if (record && record.pid === pid) rmSync(pidPath, { force: true });

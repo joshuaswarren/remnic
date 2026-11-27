@@ -131,9 +131,6 @@ test("stampSpanSource: two stamps of the same string are identical", () => {
   assert.equal(JSON.stringify(a), JSON.stringify(b));
 });
 
-// Review: Node's UTF-8 encoder replaces an unpaired surrogate with U+FFFD, so
-// hashing utf8 gave these three distinct strings ONE digest and drift between
-// them verified as unchanged. Unpaired surrogates arrive via JSON escapes.
 test("unpaired surrogates produce distinct stamps", () => {
   const a = stampSpanSource("\ud800");
   const b = stampSpanSource("\ud801");
@@ -141,7 +138,6 @@ test("unpaired surrogates produce distinct stamps", () => {
   assert.notEqual(a.hash, b.hash);
   assert.notEqual(a.hash, replacement.hash);
   assert.notEqual(b.hash, replacement.hash);
-  // And drift between them is now caught rather than passing.
   assert.deepEqual(verifySpanSource("\ud801", a), {
     ok: false,
     error: "hash_mismatch",
@@ -150,8 +146,6 @@ test("unpaired surrogates produce distinct stamps", () => {
   });
 });
 
-// Review: the result echoed the caller's stamp object, so an extra property
-// holding the source text would travel with the failure.
 test("a failure result carries only the two stamp fields", () => {
   const stamped = stampSpanSource("the original source text");
   const contaminated = { ...stamped, source: "SENSITIVE-SOURCE-TEXT" } as typeof stamped;

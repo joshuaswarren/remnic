@@ -20,8 +20,6 @@ test("computeCohensKappa: perfect agreement → kappa = 1", () => {
 });
 
 test("computeCohensKappa: identical single category for both raters → kappa = 1 (degenerate convention)", () => {
-  // Both raters label everything "correct". p_e collapses to 1, so the
-  // denominator is 0; convention returns 1 for perfect agreement.
   const result = computeCohensKappa(
     ["correct", "correct", "correct"],
     ["correct", "correct", "correct"],
@@ -32,8 +30,6 @@ test("computeCohensKappa: identical single category for both raters → kappa = 
 });
 
 test("computeCohensKappa: pure disagreement → kappa < 0 (worse than chance)", () => {
-  // Each rater uses both labels equally (marginals balanced → p_e = 0.5),
-  // but they disagree on every item → p_o = 0 → kappa = -1.
   const result = computeCohensKappa(
     ["correct", "incorrect", "correct", "incorrect"],
     ["incorrect", "correct", "incorrect", "correct"],
@@ -44,10 +40,6 @@ test("computeCohensKappa: pure disagreement → kappa < 0 (worse than chance)", 
 });
 
 test("computeCohensKappa: kappa below raw agreement when marginals agree (Wikipedia 0.8→0.6 example)", () => {
-  // Balanced marginals (5/5 each): 4 correct-correct + 4 incorrect-incorrect
-  // = 8 agreements → p_o = 0.8. p_e = 0.5*0.5 + 0.5*0.5 = 0.5.
-  // kappa = (0.8 - 0.5) / (1 - 0.5) = 0.6.
-  // (Canonical "you cannot eyeball kappa from raw agreement" case.)
   const raterA = ["correct", "correct", "correct", "correct", "correct", "incorrect", "incorrect", "incorrect", "incorrect", "incorrect"];
   const raterB = ["correct", "correct", "correct", "correct", "incorrect", "incorrect", "incorrect", "incorrect", "incorrect", "correct"];
   const result = computeCohensKappa(raterA, raterB);
@@ -102,11 +94,6 @@ test("bootstrapCohensKappaConfidenceInterval validates paired input and options"
   );
 });
 test("computeCohensKappa: skewed marginals depress kappa below raw agreement (textbook 2x2)", () => {
-  // Unequal marginals: A is 7 correct / 3 incorrect; B is 8 correct / 2 incorrect.
-  // They agree on 9 of 10 (p_o = 0.9), but because both skew toward "correct",
-  // chance agreement is high → kappa ≈ 0.74, far below 0.9.
-  //   p_e = (7/10 * 8/10) + (3/10 * 2/10) = 0.56 + 0.06 = 0.62
-  //   kappa = (0.9 - 0.62) / (1 - 0.62) = 0.28 / 0.38 ≈ 0.7368
   const raterA = ["correct", "correct", "correct", "correct", "correct", "correct", "correct", "incorrect", "incorrect", "incorrect"];
   const raterB = ["correct", "correct", "correct", "correct", "correct", "correct", "correct", "incorrect", "incorrect", "correct"];
   const result = computeCohensKappa(raterA, raterB);

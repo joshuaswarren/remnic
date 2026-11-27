@@ -1,13 +1,3 @@
-/**
- * Extraction-LLM health surfacing (issue #3140).
- *
- * Covers the three #3140 surfaces:
- *   1. the singleton tracker that `/health.extraction` reads for LLM
- *      availability + last failure reason,
- *   2. the ERROR-level, per-reason-deduplicated failure event emitted by the
- *      extraction run instead of debug-only lines,
- *   3. the runExtraction integration recording failures/successes.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -82,17 +72,14 @@ test("dedup: the first failure of a reason logs at ERROR level, repeats are supp
     assert.equal(errors.length, 1);
     assert.match(errors[0] ?? "", /no_models/);
 
-    // Same reason inside the window: suppressed to debug, no second ERROR.
     assert.equal(emitExtractionLlmFailureError("no_models", "auth_config", 60_000), false);
     assert.equal(errors.length, 1);
     assert.equal(debugs.length, 1);
 
-    // A different reason emits its own first ERROR.
     assert.equal(emitExtractionLlmFailureError("local_llm_unavailable", undefined, 60_000), true);
     assert.equal(errors.length, 2);
     assert.match(errors[1] ?? "", /local_llm_unavailable/);
 
-    // Outside the window the same reason emits again.
     assert.equal(emitExtractionLlmFailureError("no_models", undefined, 3_600_000), true);
     assert.equal(errors.length, 3);
   } finally {

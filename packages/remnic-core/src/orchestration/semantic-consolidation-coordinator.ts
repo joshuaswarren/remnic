@@ -1,26 +1,3 @@
-/**
- * Semantic-consolidation coordinator — extracted from the orchestrator
- * (issue #1526, seam 5).
- *
- * Owns the semantic-consolidation lifecycle: discovering clusters of
- * similar memories, synthesizing a canonical memory per cluster via the
- * LLM (operator-aware or legacy), archiving the superseded sources, and
- * firing post-consolidation hooks (Codex materialize, peer-profile
- * reasoner).
- *
- * The orchestrator constructs one instance and delegates the internal
- * entrypoint (`runSemanticConsolidation`) to it. The public wrappers
- * (`runSemanticConsolidationNow`, `runSemanticConsolidationFanout`)
- * remain on the orchestrator as thin pass-throughs. Storage is the
- * orchestrator's stable `this.storage` (or a per-namespace override
- * passed via options); the fast-tier LLM, content-hash removal, and
- * index save arrive as callbacks so the orchestrator keeps ownership of
- * gateway routing and cross-subsystem persistence.
- *
- * Behavior-preserving move from orchestrator.ts. No logic changes — the
- * orchestrator keeps a thin delegating method so existing call sites
- * and tests that exercise the public API continue to work.
- */
 
 import {
   findSimilarClusters,
@@ -64,24 +41,15 @@ export interface SemanticConsolidationCoordinatorDeps {
    *  this). Injected as an accessor so tests that overwrite orchestrator.fastLlm
    *  after construction still take effect. */
   getFastLlm: () => LocalLlmClient;
-  /** The embedding-fallback manager used for index cleanup on archival. */
   embeddingFallback: EmbeddingFallback;
-  /** Remove a memory's content-hash entry from the storage-scoped index.
-   *  Delegated to the orchestrator which owns the per-storage index map. */
   removeContentHashForMemory: (
     targetStorage: StorageManager,
     memory: MemoryFile,
     context: string,
   ) => Promise<void>;
-  /** Persist all dirty content-hash indexes to disk. */
   saveContentHashIndexes: () => Promise<void>;
 }
 
-/**
- * Coordinates semantic consolidation. Holds no mutable state of its own —
- * all persistence flows through the injected storage managers and
- * callbacks.
- */
 export class SemanticConsolidationCoordinator {
   constructor(private readonly deps: SemanticConsolidationCoordinatorDeps) {}
 
@@ -150,10 +118,6 @@ export class SemanticConsolidationCoordinator {
     if (modelSetting === "fast" && this.deps.getFastLlm() && !useGateway) {
       log.info("[semantic-consolidation] using fast local LLM for synthesis");
     }
-    // Gateway routing: an explicit "fast" setting keeps the fast persona chain
-    // (the operator's deliberate fast-tier choice). Otherwise route through the
-    // shared task-chain resolution so taskModelChain applies to semantic
-    // consolidation like every other background task (gotcha #22). Issue #1365.
     const gatewayChainOptions: { modelChain?: AgentPersonaModelConfig; agentId?: string } =
       !useGateway
         ? {}
@@ -175,7 +139,6 @@ export class SemanticConsolidationCoordinator {
       return result;
     }
 
-    // Discover memory extensions once for all clusters (#382)
     let extensionsBlock = "";
     try {
       extensionsBlock = await buildExtensionsBlockForConsolidation(this.config);
@@ -186,15 +149,6 @@ export class SemanticConsolidationCoordinator {
     for (const cluster of clusters) {
       let canonicalWriteCompleted = false;
       try {
-        // Operator-aware prompt (issue #561 PR 3): ask the LLM to pick the
-        // SPLIT/MERGE/UPDATE operator alongside the canonical output.  Falls
-        // back to the legacy plain-blob prompt when operator-aware
-        // consolidation is explicitly disabled via config, so rollbacks stay
-        // clean.
-        // Use the `=== true` idiom for default-false flags (PR #632
-        // review, cursor Low): sibling disabled-by-default flags like
-        // `semanticConsolidationEnabled` follow the same convention,
-        // while `!== false` is reserved for default-on flags.
         const operatorAwareEnabled =
           resolveConversationContextCapabilities(this.config).operatorAwareConsolidation === true;
         let prompt = operatorAwareEnabled
@@ -214,10 +168,8 @@ export class SemanticConsolidationCoordinator {
         ];
         const llmOpts = { temperature: 0.2, maxTokens: 2000 };
 
-        // Route to the configured model
         let response: { content: string } | null = null;
         if (useGateway) {
-          // Gateway model source — use the appropriate agent chain
           response = await llm.chatCompletion(messages, { ...llmOpts, ...gatewayChainOptions });
         } else if (modelSetting === "fast" && this.deps.getFastLlm()) {
           const fastResult = await this.deps.getFastLlm().chatCompletion(messages, {
@@ -240,14 +192,6 @@ export class SemanticConsolidationCoordinator {
           continue;
         }
 
-        // Operator-aware parse (issue #561 PR 3).  In legacy mode we fall
-        // back to the plain-text parser and derive the operator from the
-        // cluster-shape heuristic so `derived_via` still lands.
-        // Restricted to `SemanticConsolidationLlmOperator`
-        // (split/merge/update) — `pattern-reinforcement` joined the
-        // wider `ConsolidationOperator` type in #687 PR 2/4 but is
-        // reserved for the maintenance job and must never be assignable
-        // here (Cursor Bugbot review, PR #730).
         let canonicalOutputs: string[];
         let operator: SemanticConsolidationLlmOperator;
         if (operatorAwareEnabled) {
@@ -263,7 +207,6 @@ export class SemanticConsolidationCoordinator {
         }
         cluster.canonicalContent = canonicalOutputs.join("\n\n");
 
-        // Pick the most recent memory's metadata as the basis for lineage
         const sorted = [...cluster.memories].sort(
           (a, b) =>
             new Date(b.frontmatter.created).getTime() -
@@ -272,17 +215,6 @@ export class SemanticConsolidationCoordinator {
         const newest = sorted[0];
         const lineageIds = cluster.memories.map((m) => m.frontmatter.id);
 
-        // Consolidation provenance (issue #561 PR 2+3): snapshot each
-        // source memory BEFORE archiving it, collecting
-        // "<relpath>:<versionId>" pointers for the new canonical memory's
-        // `derived_from` frontmatter field.  Snapshots are best-effort — if
-        // page-versioning is disabled (default in `config.ts`) or a single
-        // source fails to snapshot we simply omit that entry rather than
-        // abort the consolidation.  The `derived_via` operator is chosen
-        // above (PR 3) from the LLM response or the cluster-shape
-        // heuristic fallback and emitted unconditionally so consolidation
-        // outputs stay identifiable even when no snapshots are captured
-        // (PR #624 review feedback).
         const derivedFromEntries: string[] = [];
         for (const m of cluster.memories) {
           if (!m.path) continue;
@@ -290,10 +222,6 @@ export class SemanticConsolidationCoordinator {
           if (entry) derivedFromEntries.push(entry);
         }
 
-        // Write the canonical memory
-        // Sealed-envelope write (issue #1989 PR4): canonical content is
-        // LLM-merged and tags are unioned from stored rows — salvage so a
-        // limit-violating union cannot abort consolidation (warn-logged).
         // SPLIT writes one canonical memory per output (#3566); every write shares the lineage.
         const canonicalIds: string[] = [];
         let canonicalBlocked = false;
@@ -328,8 +256,6 @@ export class SemanticConsolidationCoordinator {
           if (written.tombstoneBlocked) canonicalBlocked = true;
         }
         if (canonicalBlocked) {
-          // #1645: canonical matched a tombstone (pending_review). Don't archive
-          // the sources — consolidation must never delete the only active copy.
           log.info(`[semantic-consolidation] cluster in "${cluster.category}" tombstone-blocked — keeping ${cluster.memories.length} source(s) active (pending_review ${canonicalIds.join(", ")})`);
           continue;
         }
@@ -337,10 +263,6 @@ export class SemanticConsolidationCoordinator {
 
         result.memoriesConsolidated++;
 
-        // Archive originals
-        // Collect deindex entries and remove them in one batch rather than a full
-        // index read-modify-write per archived source. Guard is preserved: entries
-        // are only collected when queryAwareIndexing is on.
         const clusterDeindexBatch: Array<{ path: string; createdAt: string; tags: string[] }> = [];
         try {
           for (const m of cluster.memories) {
@@ -350,17 +272,11 @@ export class SemanticConsolidationCoordinator {
               relatedMemoryIds: canonicalIds,
             });
             if (archiveResult) {
-              // Remove from the same storage-scoped content-hash index that
-              // originally deduped this memory.
               await this.deps.removeContentHashForMemory(
                 targetStorage,
                 m,
                 "semantic-consolidation",
               );
-              // Best-effort index cleanup: a failure here (e.g. on-disk index save
-              // under disk-full) must NOT abort the archival loop and thereby skip
-              // the catalog write touch below for an already-durable canonical write
-              // (kilo NV0mh).
               try {
                 await this.deps.embeddingFallback.removeFromIndex(m.frontmatter.id);
                 if (
@@ -383,10 +299,6 @@ export class SemanticConsolidationCoordinator {
             }
           }
         } finally {
-          // Best-effort batch index cleanup, flushed in `finally` so sources
-          // already archived on disk are de-indexed even if a later archive
-          // iteration throws. Never abort the cluster (and thereby skip the
-          // catalog touch in the outer `finally`) on an index write failure.
           if (clusterDeindexBatch.length > 0) {
             try {
               await deindexMemoriesBatchAsync(targetStorage.dir, clusterDeindexBatch);
@@ -420,7 +332,6 @@ export class SemanticConsolidationCoordinator {
       }
     }
 
-    // Save hash indexes if we modified them.
     if (result.memoriesArchived > 0) {
       await this.deps.saveContentHashIndexes().catch((err) =>
         log.warn(
@@ -433,13 +344,6 @@ export class SemanticConsolidationCoordinator {
       `[semantic-consolidation] complete: clusters=${result.clustersFound}, consolidated=${result.memoriesConsolidated}, archived=${result.memoriesArchived}, errors=${result.errors}`,
     );
 
-    // #378: fire the Codex materialize post-hook so `codexMaterializeOnConsolidation`
-    // actually has a runtime effect. The helper silently no-ops when the
-    // feature flag or the per-trigger toggle is off, when the sentinel is
-    // missing, or when nothing has changed since the previous run, so it's
-    // safe to always call here. Wrapped in a try/catch because a failed
-    // materialize must never abort the consolidation result — consolidation
-    // is the load-bearing operation; materialization is an optional mirror.
     try {
       await materializeAfterSemanticConsolidation({
         config: this.config,
@@ -453,12 +357,6 @@ export class SemanticConsolidationCoordinator {
       );
     }
 
-    // Issue #679 PR 2/5 — async peer profile reasoner runs as part of
-    // the REM phase, immediately after semantic consolidation. Gated
-    // on `peerProfileReasonerEnabled` (default false, opt-in). Wrapped
-    // in a try/catch because reasoner I/O (LLM call, peer-profile
-    // writes) must never abort the consolidation result. The reasoner
-    // itself also defends against partial failure — see profile-reasoner.ts.
     if (resolveConversationContextCapabilities(this.config).peerProfileReasoner) {
       try {
         const peerLlm = new FallbackLlmClient(

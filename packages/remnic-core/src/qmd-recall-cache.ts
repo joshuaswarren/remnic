@@ -22,9 +22,6 @@ export interface QmdRecallCacheKeyOptions {
   memoryDir?: string;
   collection?: string;
   searchOptions?: SearchQueryOptions;
-  // QMD search/subprocess strategies change the recalled results, so they must
-  // participate in the cache key — otherwise a different strategy's cached QMD
-  // phase is served within the TTL (gotcha #37). Issue #1335 (codex review #1422).
   searchStrategy?: string;
   subprocessStrategy?: string;
 }

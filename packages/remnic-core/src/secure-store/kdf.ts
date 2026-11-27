@@ -1,35 +1,3 @@
-/**
- * Key-derivation functions for the secure-store module.
- *
- * Issue #690 (PR 1/4) — pure primitives, no I/O.
- *
- * Naming note
- * -----------
- * The directory is named `secure-store/` — NOT `vault/` — because
- * `vault` is already a content-source concept in `native-knowledge.ts`
- * (Obsidian vaults: `ObsidianVaultState`, `vaultId`, `obsidianVaults`
- * config, etc.). Reusing the `vault` namespace for at-rest encryption
- * would cause symbol collisions and reader confusion.
- *
- * KDF choice — Argon2id primary, scrypt compatibility
- * ---------------------------------------------------
- * Issue #690 specifies Argon2id (OWASP m=64 MiB, t=3, p=4) as the
- * preferred KDF. We use `@node-rs/argon2` for the Argon2id runtime
- * and keep scrypt as the compatibility path for stores initialized
- * before Argon2id support landed.
- *
- * The algorithm name + params are persisted in the metadata file, so
- * stores keep deriving with the same KDF they were initialized with.
- *
- * Trade-off summary:
- *   - scrypt N=2^17, r=8, p=1 → ~128 MiB memory, ~150 ms on a modern
- *     laptop. Memory-hard. Resists GPU/ASIC attacks meaningfully.
- *   - Argon2id m=64 MiB, t=3, p=4 → ~64 MiB memory, similar wall
- *     time. Considered the modern best-in-class but requires native
- *     bindings.
- *
- * Both produce a 32-byte key suitable for AES-256-GCM.
- */
 
 import { scryptSync, timingSafeEqual } from "node:crypto";
 import { createRequire } from "node:module";
@@ -52,7 +20,6 @@ function loadArgon2Runtime(): Argon2Runtime {
   }
 }
 
-/** KDF algorithms supported by the secure-store metadata format. */
 export type KdfAlgorithm = "scrypt" | "argon2id";
 
 /** Parameters for the scrypt KDF (RFC 7914). */
@@ -83,16 +50,13 @@ export interface Argon2idParams {
 
 /** Strong scrypt defaults (OWASP-acceptable for 2024+). */
 export const DEFAULT_SCRYPT_PARAMS: Readonly<ScryptParams> = Object.freeze({
-  // 2^17. Hex-coding the literal would obscure the doubling chain.
   N: 1 << 17,
   r: 8,
   p: 1,
   keyLength: 32,
-  // 256 MiB ceiling — comfortably above the 128 MiB scrypt needs at N=2^17.
   maxmem: 256 * 1024 * 1024,
 });
 
-/** OWASP Argon2id defaults. */
 export const DEFAULT_ARGON2ID_PARAMS: Readonly<Argon2idParams> = Object.freeze({
   memoryKiB: 64 * 1024,
   iterations: 3,
@@ -115,7 +79,6 @@ export function validateScryptParams(params: ScryptParams): void {
   if (!Number.isInteger(N) || N < 2) {
     throw new Error(`scrypt N must be an integer ≥ 2, got ${N}`);
   }
-  // Cursor Low + codex P2: a `(N & (N - 1)) !== 0` check truncates
   // to 32-bit semantics for `N >= 2**31`, so values like `5 * 2**30`
   // would pass even though they are not powers of two, and absurdly
   // large values like `2**33` would silently lock up the KDF. Use
@@ -144,7 +107,6 @@ export function validateScryptParams(params: ScryptParams): void {
   }
 }
 
-/** Validate Argon2id parameters before invoking the native KDF binding. */
 export function validateArgon2idParams(params: Argon2idParams): void {
   const { memoryKiB, iterations, parallelism, keyLength } = params;
   if (!Number.isInteger(memoryKiB) || memoryKiB < 8) {

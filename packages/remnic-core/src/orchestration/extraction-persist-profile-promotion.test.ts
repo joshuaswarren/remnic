@@ -17,7 +17,6 @@ import type { ExtractionResult, MemoryFile } from "../types.js";
 // profile-only scope plan and a concurrent pre-merge publication interleaved
 // at the promoted-copy probe's scan, then asserts exactly ONE active profile
 // copy carrying the merged body.
-//
 // Synthetic fixtures only — no real paths, hosts, or memory content.
 
 const TEAM_NS = "team-promotarget";
@@ -53,7 +52,6 @@ interface TestSurface {
   };
 }
 
-/** Profile-only plan: `userGlobal` auto-promotes; `serverShared` is absent. */
 function profileOnlyScopePlan(
   minConfidenceTier: "speculative" | "implied" = "speculative",
 ): ResolvedScopeProfilePlan {
@@ -118,7 +116,6 @@ test("merged-target promotion reconciles profile copies in a profile-only plan (
     await sharedStorage.ensureDirectories();
 
     // Seed a merge target with past timestamps and high importance so the
-    // incoming fact never bypasses as unpreservable metadata.
     const created = new Date(Date.now() - 3600_000).toISOString();
     const seededDir = path.join(storage.dir, "facts", created.slice(0, 10));
     await mkdir(seededDir, { recursive: true });
@@ -144,7 +141,6 @@ test("merged-target promotion reconciles profile copies in a profile-only plan (
       "utf8",
     );
 
-    // Band neighbor for the incoming fact only ([minSimilarity, threshold)).
     orchestrator.embeddingFallback = {
       isAvailable: async () => true,
       search: async (query) =>
@@ -235,7 +231,6 @@ test("merged-target promotion reconciles profile copies in a profile-only plan (
     );
     assert.deepEqual(persistedIds, [], "the merged target is not a new fragment");
 
-    // The interleaved publication happened exactly as modeled.
     assert.ok(staleCopyId, "the concurrent pre-merge publication must have run");
 
     const teamCorpus = await originalReadAll();
@@ -265,7 +260,6 @@ test("merged-target promotion reconciles profile copies in a profile-only plan (
     );
     assert.equal(staleRow?.frontmatter.supersededBy, active[0]?.frontmatter.id);
 
-    // Profile-only means no shared copy was written either.
     const sharedCorpus = await sharedStorage.readAllMemories();
     assert.equal(
       sharedCorpus.filter((m) => m.frontmatter.sourceMemoryId === TARGET_ID)
@@ -308,7 +302,6 @@ test("below-threshold merged target still reconciles the stale profile copy (rou
     const teamStorage = await orchestrator.getStorage(TEAM_NS);
     await teamStorage.ensureDirectories();
 
-    // Same seed as P1-A: high-confidence target.
     const created = new Date(Date.now() - 3600_000).toISOString();
     const seededDir = path.join(storage.dir, "facts", created.slice(0, 10));
     await mkdir(seededDir, { recursive: true });
@@ -380,7 +373,6 @@ test("below-threshold merged target still reconciles the stale profile copy (rou
     };
 
     // Same interleaving as P1-A: the probe's first team-namespace scan
-    // publishes the PRE-merge profile copy right after the read resolves.
     let probeScanDone = false;
     const originalReadAll = teamStorage.readAllMemories.bind(teamStorage);
     let staleCopyId = "";
@@ -424,7 +416,6 @@ test("below-threshold merged target still reconciles the stale profile copy (rou
     );
     assert.deepEqual(persistedIds, [], "the merged target is not a new fragment");
     assert.ok(staleCopyId, "the concurrent pre-merge publication must have run");
-    // The merge committed and the downgrade landed on the record.
     const committed = await storage.getMemoryByIdIncludingArchived(TARGET_ID);
     assert.equal(committed?.content, MERGED_BODY);
     assert.equal(committed?.frontmatter.confidence, 0.5);

@@ -148,19 +148,9 @@ export interface SmartDecision {
 }
 
 export interface SmartDecisionOptions {
-  /**
-   * Deny auto-approval regardless of score (issue #2294). Set for high-impact
-   * personal facts derived from ambient capture: clamping extraction
-   * confidence to the speculative ceiling is not enough on its own, because
-   * judge-accept plus cross-source and existing-memory boosts sum past
-   * `autoApproveTrust` — and two devices in one room recording the same
-   * television program corroborate each other perfectly. Such a candidate
-   * tops out in the review queue.
-   */
   capAtReview?: boolean;
 }
 
-/** Map judge verdict + trust score to the smart-mode decision. */
 export function decideSmart(
   trust: number,
   judgeVerdict: "accept" | "reject" | "defer" | undefined,

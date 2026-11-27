@@ -74,21 +74,11 @@ export function parseCodingKnowledgeConfig(raw: unknown): CodingKnowledgeConfig 
       typeof record.codegraphDbDir === "string"
         ? record.codegraphDbDir.trim()
         : "",
-    // `lsp` is spread conditionally so an absent key stays ABSENT — an own
-    // `lsp: undefined` property would change the pinned defaults shape
-    // (config.test.ts) and leak a new key into serialized configs.
     ...readLspField(record.lsp),
   };
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Shared surface gates (rule 39: ONE predicate pair, identical on every
-// surface — issue #2478 dedupe). Each Track A surface used to carry its own
-// copy of this logic; they all resolve here now. The booleans are already
-// strict-coerced by parseCodingKnowledgeConfig, so `=== true` is safe here.
-// ──────────────────────────────────────────────────────────────────────────
 
-/** Boolean feature switches governed by the master `codingKnowledge.enabled` gate. */
 export type CodingKnowledgeFeatureFlag = "decisionRecords" | "architectureCard" | "sessionDelta";
 
 /**
@@ -183,11 +173,6 @@ function parseLspConfig(raw: Record<string, unknown>): CodingGraphLspConfig {
   const enabled = readStrictBool(raw.enabled, "lsp.enabled", false);
   if (!enabled) return { enabled: false };
 
-  // Server overrides are validated STRICTLY (rule 51): a malformed entry
-  // or a misspelled language key must not silently fall through to the
-  // built-in default server — the operator configured an override for a
-  // reason. Keys validate against TIER_1_LANGUAGES (core owns the tier-1
-  // list in coding-graph-types.ts, so there is no drift risk).
   const servers: CodingGraphLspConfig["servers"] = {};
   if (raw.servers !== undefined && raw.servers !== null) {
     if (typeof raw.servers !== "object" || Array.isArray(raw.servers)) {

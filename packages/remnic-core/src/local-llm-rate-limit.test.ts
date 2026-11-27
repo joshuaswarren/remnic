@@ -25,12 +25,6 @@ import {
 import { LocalLlmClient } from "./local-llm.js";
 import type { PluginConfig } from "./types.js";
 
-/**
- * COS-447: a saturated LiteLLM proxy answered `429 No deployments available`
- * and the client returned at once, so caller loops re-fired immediately
- * (2,400+ calls/h). These tests pin backoff, Retry-After, the retry cap, the
- * process-wide endpoint deadline, and the concurrency cap.
- */
 
 const LITELLM_429 = JSON.stringify({
   error: {
@@ -88,7 +82,6 @@ function modelsResponse(): Response {
   });
 }
 
-/** Route chat completions to `chat`; answer availability probes with a model list. */
 async function withFetch(chat: () => Promise<Response>, fn: () => Promise<void>): Promise<void> {
   const original = globalThis.fetch;
   globalThis.fetch = async (input: string | URL | Request) => {
@@ -109,7 +102,6 @@ function failureStatus(diag: LocalLlmChatCompletionOptions["failureDiag"]): numb
   return err instanceof Error && "status" in err && Number.isInteger(err.status) ? Number(err.status) : undefined;
 }
 
-// ---- pure helpers ----------------------------------------------------------
 
 test("classifies 429/503/408 and LiteLLM cooldown bodies as rate limits, not 400s", () => {
   assert.equal(isRateLimitedResponse(429, ""), true);
@@ -136,9 +128,6 @@ test("classifies 429/503/408 and LiteLLM cooldown bodies as rate limits, not 400
 });
 
 test("the terminal predicate matches the proxy's error-only pool-missing payload", () => {
-  // remnic-llm-proxy.py answers {"error": "..."} — no code field. The terminal
-  // check must catch the same bodies isRateLimitedResponse rejects, or the
-  // generic 5xx retry still fires (wAN review on #3474).
   const proxyBody = JSON.stringify({
     error: "recall pool missing or disabled; recall ops must not use the extraction pool",
   });
@@ -149,9 +138,6 @@ test("the terminal predicate matches the proxy's error-only pool-missing payload
 });
 
 test("the terminal predicate parses a structured pool code at any JSON spacing", () => {
-  // kilo on #3474: the needles matched only '"code":"x"' and '"code": "x"'; any
-  // other valid JSON spacing ('"code" : "x"', key reorder, pretty print with a
-  // deeper indent) fell through to the generic 5xx retry. Parse the body.
   assert.equal(
     isTerminalLocalLlmProxyPoolError(503, '{"code" : "remnic_recall_pool_unavailable"}'),
     true,
@@ -278,7 +264,6 @@ test("limiter caps concurrency, serves high priority first, and drops aborted wa
   assert.equal(limiter.inFlight, 0);
 });
 
-// ---- client integration ----------------------------------------------------
 
 test("429 is retried with backoff and then succeeds", async () => {
   let calls = 0;

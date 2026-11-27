@@ -1,9 +1,3 @@
-/**
- * Issue #2192: write-path classifiers must not dump non-English content
- * into the lowest importance/taxonomy bucket merely for lacking English
- * tokens. Script-agnostic signals (weighted length, CJK bigrams) carry the
- * decision instead of English keywords.
- */
 import test from "node:test";
 import assert from "node:assert/strict";
 

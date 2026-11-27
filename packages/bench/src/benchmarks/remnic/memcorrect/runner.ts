@@ -1,26 +1,3 @@
-/**
- * MemCorrect runner (issue #1584 PR 2).
- *
- * Drives a `MemCorrectSystemAdapter` through the correction protocol:
- *
- *   reset → ingest establishing → baseline probe
- *         → correct → post-correction probe
- *         → ingest anti-events → post-correction probe (false_apply window)
- *         → runMaintenance ×K → post-maintenance probe
- *         → re-ingest establishing transcript → post-reingest probe
- *         → re-assertion (if present) → post-reassertion probe
- *
- * Every probe is recorded in a probe log with a monotonic turn index. The
- * metrics module turns that log into the 8 scores; this file resolves the
- * scenario metadata into the inputs the pure metric functions expect and
- * emits one `BenchmarkResult` task per scenario.
- *
- * The default adapter is the hermetic `PromptOnlyBaselineAdapter` so the
- * bench runs green without a live orchestrator (the lab run swaps in the
- * Remnic-native adapter via `benchmarkOptions.adapter`). Per the assignment,
- * no real GPU/lab run is performed here — the harness is unit-tested with
- * the baseline + a deterministic recording adapter.
- */
 
 import { randomUUID } from "node:crypto";
 import type {
@@ -71,13 +48,6 @@ export const memcorrectDefinition: BenchmarkDefinition = {
   },
 };
 
-/**
- * MemCorrect metrics where a LOWER value is better. Used by the bench
- * comparison tool (getBenchmarkLowerIsBetter) so regressions in latency or
- * false-apply are reported as regressions, not improvements. `collateral_delta`
- * is target-zero (signed after − before) and is intentionally excluded from
- * directional verdicts — a magnitude check, not a lower-is-better one.
- */
 export const MEMCORRECT_LOWER_IS_BETTER: ReadonlySet<string> = new Set([
   "uptake_latency",
   "uptake_latency_censored",
@@ -101,19 +71,6 @@ const FULL_OPTIONS = {
   uptakeLatencyCap: 8,
 };
 
-/**
- * Resolve the adapter to drive. The lab run is explicit about which adapter
- * MemCorrect exercises:
- *   - `benchmarkOptions.adapter` (a `MemCorrectSystemAdapter`) → use directly.
- *     This is how any in-process custom or third-party adapter is selected.
- *   - `benchmarkOptions.adapter === "prompt-only"` → the hermetic
- *     `PromptOnlyBaselineAdapter` floor (CLI: `--memcorrect-adapter prompt-only`).
- *   - `benchmarkOptions.adapter === "remnic"` or absent → wrap the bench
- *     `system` adapter (a `BenchMemoryAdapter`) into the MemCorrect contract
- *     via the public access-service surface.
- *   - Any other string is rejected with the valid options listed (rule 51) —
- *     never silently reinterpreted.
- */
 function resolveAdapter(
   options: ResolvedRunBenchmarkOptions,
 ): { adapter: MemCorrectSystemAdapter; adapterLabel: string } {
@@ -157,7 +114,6 @@ interface ScenarioRun {
   metrics: MemCorrectMetricBundle;
 }
 
-/** Run the protocol for one scenario against the adapter. */
 async function runScenario(
   scenario: MemCorrectScenario,
   adapter: MemCorrectSystemAdapter,
@@ -179,16 +135,11 @@ async function runScenario(
     log.push({ scenarioId: scenario.id, phase, turnIndex: turn, namespace, query, recalled, at });
   };
 
-  // --- Establishing transcript (primary fact) ---
   for (const t of scenario.establishingTurns) {
     await adapter.ingestTurn(sessionKey, t.role, t.text, t.at);
     turn += 1;
   }
 
-  // --- Scoped twin establishment (alternate namespace, BEFORE the correction) ---
-  // Seeded before the correction so scope_precision can catch a system that
-  // wrongly applies the correction across every namespace at correction time
-  // (the twin must already exist to be overwritten).
   if (scenario.scopedTwin) {
     for (const t of scenario.scopedTwin.establishingTurns) {
       await adapter.ingestTurn(scenario.scopedTwin.namespace, t.role, t.text, t.at);
@@ -196,9 +147,6 @@ async function runScenario(
     }
   }
 
-  // --- Collateral-fact establishment (primary namespace) ---
-  // Seed the unrelated facts before the baseline probe so collateral_delta
-  // measures recall over facts that were actually stored.
   for (const probe of scenario.unrelatedProbes) {
     for (const t of probe.establishingTurns) {
       await adapter.ingestTurn(sessionKey, t.role, t.text, t.at);
@@ -206,7 +154,6 @@ async function runScenario(
     }
   }
 
-  // --- Baseline probe (unrelated-fact recall before correction) ---
   const collateralBefore: number[] = [];
   for (const probe of scenario.unrelatedProbes) {
     turn += 1;
@@ -217,49 +164,30 @@ async function runScenario(
     );
   }
 
-  // --- Correction ---
   await adapter.correct(scenario.correction.turn.text, sessionKey, scenario.correction.turn.at);
   turn += 1;
   const correctionTurnIndex = turn;
 
-  // --- Post-correction probe (uptake@next) ---
-  // Recorded at the interaction turn AFTER the correction (strictly greater
-  // than correctionTurnIndex) so uptake@next / uptake_latency count the
-  // dedicated uptake probe, not only the later anti-event / twin probes.
   {
     turn += 1;
     const recalled = await adapter.recall(scenario.probe.query, sessionKey);
     recordProbe("post_correction", scenario.probe.query, sessionKey, recalled, scenario.correction.turn.at);
   }
 
-  // --- Anti-events (false_apply window) ---
   for (const anti of scenario.antiEvents) {
     await adapter.ingestTurn(sessionKey, anti.turn.role, anti.turn.text, anti.turn.at);
     turn += 1;
-    // Bump the turn BEFORE the recall probe so the probe gets its own
-    // interaction turn (not the ingest's). Otherwise uptake_latency
-    // underreports by one when the anti-event probe is the first recall
-    // to reflect the correction. Mirrors the dedicated uptake probe above.
     turn += 1;
     const recalled = await adapter.recall(anti.probeQuery, sessionKey);
-    // Recorded under post_correction so false_apply (which scans
-    // post_correction for the scenario) sees the leaked token.
     recordProbe("post_correction", anti.probeQuery, sessionKey, recalled, anti.turn.at);
   }
 
-  // --- Scoped twin probe (namespace-B must stay intact AFTER the correction) ---
-  // The twin was established above (before the correction); this probe checks
-  // it survived. Only the probe runs here — no re-ingestion.
   if (scenario.scopedTwin) {
     turn += 1;
     const recalled = await adapter.recall(scenario.probe.query, scenario.scopedTwin.namespace);
     recordProbe("post_correction", scenario.probe.query, scenario.scopedTwin.namespace, recalled, scenario.correction.turn.at);
   }
 
-  // --- Collateral after: re-probe unrelated facts IMMEDIATELY after the
-  // correction (before maintenance / re-ingest / re-assertion) so the delta
-  // isolates correction collateral damage rather than conflating it with
-  // later protocol steps that can also change unrelated recall.
   const collateralAfter: number[] = [];
   for (const probe of scenario.unrelatedProbes) {
     const recalled = await adapter.recall(probe.query, sessionKey);
@@ -268,7 +196,6 @@ async function runScenario(
     );
   }
 
-  // --- Maintenance cycles (non_resurrection) ---
   for (let i = 0; i < maintenanceCycles; i += 1) {
     await adapter.runMaintenance();
     turn += 1;
@@ -279,7 +206,6 @@ async function runScenario(
     turn += 1;
   }
 
-  // --- Re-ingest the original establishing transcript ---
   for (const t of scenario.establishingTurns) {
     await adapter.ingestTurn(sessionKey, t.role, t.text, t.at);
     turn += 1;
@@ -290,7 +216,6 @@ async function runScenario(
     turn += 1;
   }
 
-  // --- Re-assertion (if present) ---
   let reassertion: ResolvedReassertion | null = null;
   if (scenario.reassertion) {
     await adapter.ingestTurn(
@@ -326,8 +251,6 @@ async function runScenario(
     shouldNotAppear: anti.shouldNotAppear,
   }));
 
-  // Provenance: the baseline does not surface provenance; the metric reports
-  // n/a unless the adapter opts in (future Remnic-native extension).
   const provenanceCite: number | null = null;
 
   const metrics = computeMetricBundle({
@@ -415,10 +338,6 @@ export async function runMemCorrectBenchmark(
     );
   }
 
-  // Honor options.limit so quick / limited runs don't fan out across every
-  // scenario, mirroring the other remnic runners. `limit === 0` is a valid
-  // zero-item cap (issue #1584): slice(0,0) yields [] rather than silently
-  // running the full corpus; non-number => no cap; reject negatives/fractions.
   const { limit } = options;
   let scenarios: typeof corpus.scenarios;
   if (typeof limit !== "number") {
@@ -461,11 +380,6 @@ export async function runMemCorrectBenchmark(
     aggregateProvenance.push(run.provenanceCite);
 
     const m = run.metrics;
-    // Per-task directional scores: only metrics that are both directional
-    // and applicable to the scenario. collateral_delta is target-zero (not
-    // directional); scope_precision / reassertion are n/a for non-scoped /
-    // non-re-assertion scenarios. All three remain in the full bundle under
-    // details.metrics.memcorrect so they are not lost.
     const scores: Record<string, number> = {
       uptake_at_next: m.uptake_at_next,
       uptake_latency: m.uptake_latency,
@@ -536,7 +450,6 @@ export async function runMemCorrectBenchmark(
     options.onTaskComplete?.(task, tasks.length, scenarios.length);
   }
 
-  // Aggregate metric bundle across all scenarios (the headline numbers).
   const aggregateMetrics = computeMetricBundle({
     log: aggregateLog,
     corrections: aggregateCorrections,
@@ -551,9 +464,6 @@ export async function runMemCorrectBenchmark(
   const remnicVersion = await getRemnicVersion();
   const totalLatencyMs = tasks.reduce((sum, t) => sum + t.latencyMs, 0);
   const totalTokens = judgeInputTokens + judgeOutputTokens;
-  // Omit the live adapter instance from the persisted config so the result
-  // stays JSON-serializable — a stateful/circular adapter would otherwise be
-  // walked by the reporter. The adapter label is already captured in `adapterMode`.
   const { adapter: _liveAdapter, ...persistableBenchmarkOptions } =
     (options.benchmarkOptions as Record<string, unknown> | undefined) ?? {};
   return {
@@ -593,10 +503,6 @@ export async function runMemCorrectBenchmark(
               },
             }
           : {}),
-        // Headline metric bundle computed across the union of all scenario
-        // probe logs (more robust than the per-task mean for fraction
-        // metrics when scenario sizes vary). `aggregateTaskScores` in
-        // results.aggregates is the per-task-mean view.
         aggregateMetrics,
       },
     },

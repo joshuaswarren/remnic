@@ -8,9 +8,6 @@ import type { FallbackLlmClient, FallbackLlmOptions } from "./fallback-llm.js";
 import { ExtractedFactSchema } from "./schemas.js";
 import type { BufferTurn, ExtractionResult } from "./types.js";
 
-// The fallback fixture is typed against the real method signature so a future
-// change to the parseWithSchemaDetailed call contract surfaces here instead of
-// passing silently (AGENTS.md §21 — Test Mock Signature Fidelity).
 type GatewayFixture = Pick<FallbackLlmClient, "parseWithSchemaDetailed" | "parseWithSchema">;
 
 const EMPTY_RESULT: ExtractionResult = {
@@ -25,10 +22,6 @@ interface Captured {
   user: string;
 }
 
-// Drives the gateway extraction path and captures the system (instructions)
-// and user (conversation) messages. The gateway path renders the full
-// scope-classification block and applies source grounding by default, so it is
-// the right surface for both prompt-text and grounding assertions.
 async function extractViaGateway(
   turns: BufferTurn[],
   fixtureResult: ExtractionResult = EMPTY_RESULT,
@@ -51,8 +44,6 @@ async function extractViaGateway(
       _schema: { parse: (data: unknown) => T },
       _options?: FallbackLlmOptions,
     ): Promise<T | null> {
-      // Proactive extraction is off in the default config, so this is never
-      // reached for the prompt/grounding assertions above.
       return null;
     },
   };
@@ -75,9 +66,6 @@ const PI_ASSISTANT: BufferTurn = {
   sourceConnector: "pi",
 };
 
-// ---------------------------------------------------------------------------
-// Scope-classification prompt surface
-// ---------------------------------------------------------------------------
 
 test("scope prompt no longer teaches that tool configurations are global", async () => {
   const { captured } = await extractViaGateway([PI_USER, PI_ASSISTANT]);
@@ -109,7 +97,6 @@ test("scope field schema describe no longer lists tool configs and qualifies by 
 });
 
 // ---------------------------------------------------------------------------
-// Source-agent rendering in the conversation
 // ---------------------------------------------------------------------------
 
 test("conversation names the source agent when all turns share one connector", async () => {
@@ -119,8 +106,6 @@ test("conversation names the source agent when all turns share one connector", a
 });
 
 test("conversation still names the source agent when an untagged context-only turn is present", async () => {
-  // An extractionContextOnly turn without a connector is reference context,
-  // not a fact-establishing turn, so it must not suppress the header.
   const ctxTurn: BufferTurn = {
     role: "user",
     content: "Reference: the auth module lives under src/.",
@@ -157,7 +142,6 @@ test("conversation is byte-identical to the pre-change rendering when turns are 
 });
 
 // ---------------------------------------------------------------------------
-// Grounding keeps trusted-connector-qualified tool facts (#2183 review P1)
 // ---------------------------------------------------------------------------
 
 const QUALIFIED_PI_FACT: ExtractionResult["facts"][number] = {
@@ -191,10 +175,6 @@ test("grounding still rejects a tool fact qualified with a different (hallucinat
 });
 
 // ---------------------------------------------------------------------------
-// Proactive pass keeps trusted-connector-qualified tool facts (#2183 review)
-// The proactive pass grounds its additions with the SAME context object as the
-// primary paths, so a tool fact it emits must survive (and a hallucinated
-// qualifier must still be rejected).
 // ---------------------------------------------------------------------------
 
 async function extractViaGatewayProactive(
@@ -227,8 +207,6 @@ async function extractViaGatewayProactive(
       _options?: FallbackLlmOptions,
     ): Promise<T | null> {
       const user = messages[messages.length - 1]?.content ?? "";
-      // generate-proactive-questions prompt ("Generate up to …") vs the
-      // answer-proactive-questions prompt.
       if (user.includes("Generate up to")) {
         return { questions: [{ question: "What does the search tool accept?", context: "pi", priority: 0.5 }] } as unknown as T;
       }
@@ -259,8 +237,6 @@ test("proactive pass rejects a tool fact qualified with a different (hallucinate
 });
 
 // ---------------------------------------------------------------------------
-// Round-4 review: positional restore, telemetry prefilter, connector
-// validation, qualifier forms
 // ---------------------------------------------------------------------------
 
 const singleFact = (content: string): ExtractionResult => ({
@@ -276,7 +252,6 @@ const ctxFor = (source: string, connector?: string): ExtractionGroundingContext 
   sourceConnector: connector,
 });
 
-// FIX 1: restoration is positional — colliding stripped text never loses a qualifier.
 test("qualifier restore is positional — colliding stripped text keeps every qualifier", () => {
   const source = "use the search tool to find the auth module.";
   const result = applyGroundingWithConnector(parseConfig({}), {
@@ -295,11 +270,7 @@ test("qualifier restore is positional — colliding stripped text keeps every qu
   );
 });
 
-// FIX 2: prefilter runs on turn content only, so the header cannot dilute it.
 test("telemetry prefilter runs on turn content, not the Source agent header", async () => {
-  // 9 mechanical telemetry marker lines + 11 non-mechanical = 20 lines.
-  // ratio 9/20 = 0.45 -> filtered. The two-line header would make it 9/22 -> 0.41
-  // (not filtered) if the prefilter saw the header.
   const turns: BufferTurn[] = [];
   for (let i = 1; i <= 9; i += 1) turns.push({ role: "user", content: `[action ${i}]: moved left`, timestamp: TS });
   for (let i = 0; i < 11; i += 1) turns.push({ role: "assistant", content: "ok", timestamp: TS });
@@ -332,7 +303,6 @@ test("prefilter results identify why provider extraction was skipped", async () 
   assert.equal(mechanical.result.extractionSkippedReason, "mechanical_telemetry");
 });
 
-// FIX 3: connector is validated before interpolation; injection yields no header.
 test("resolveSourceConnector reuses the registry validator (accepts . and _) and blocks injection", () => {
   const t = (connector: string): BufferTurn => ({ role: "user", content: "Use the search tool.", timestamp: TS, sourceConnector: connector });
   assert.equal(resolveSourceConnector([t("pi"), { ...t("pi"), role: "assistant" }]), "pi");
@@ -366,7 +336,6 @@ test("over-long connector ID: no header but provenance is still persisted", asyn
   assert.equal(result.sourceConnector, overLong);
 });
 
-// FIX 5: In/For/'s forms are stripped+restored; a different agent is still rejected.
 test("qualifier strip accepts In/For/'s forms; a different agent is still rejected", () => {
   const base = "use the search tool to find the auth module.";
   const survive = (content: string, source: string) => {
@@ -383,8 +352,6 @@ test("qualifier strip accepts In/For/'s forms; a different agent is still reject
   }
 });
 
-// Both #2183 transformations are gated on the scope-classification capability
-// (the same one that gates the scope prompt); disabled == byte-identical pre-change.
 test("Source agent header and qualifier strip are gated on extractionScopeClassificationEnabled", async () => {
   const turns: BufferTurn[] = [PI_USER, PI_ASSISTANT];
   const on = await extractViaGateway(turns);
@@ -422,12 +389,6 @@ test("canonical In-<agent> qualifier instruction is present in every prompt surf
 });
 
 test("proactive answer prompt teaches the canonical agent qualifier (prompt-driven, not auto-reject)", async () => {
-  // Behavior choice: the system teaches the canonical "In <connector>," form
-  // in the proactive answer prompt (consistent with the base extraction
-  // prompts). It does not auto-reject unqualified agent-tied facts — it cannot
-  // detect agent-tied-ness without the qualifier, which is the model's job —
-  // so this asserts the PROMPT carries the instruction, using an UNQUALIFIED
-  // fixture so the assertion is about the prompt rather than a canned result.
   const { answerPrompt } = await extractViaGatewayProactive(
     [PI_USER, PI_ASSISTANT],
     "use the search tool with a repository path.",

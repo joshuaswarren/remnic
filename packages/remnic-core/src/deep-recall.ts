@@ -1,17 +1,3 @@
-/**
- * Budgeted deep-recall loop (issue #2332, harmonic series P4).
- *
- * REFINE / EXPAND / STOP retrieval over the abstraction-node + cue-anchor
- * graph built by issue #2329, blended with QMD search. This is the deep
- * surface ONLY — never wired into `before_prompt_build` or any recall
- * section (that latency disqualifies the hot path; see the issue).
- *
- * The loop is dependency-injected: seeding, graph loading, memory loading,
- * and the policy LLM call arrive as `DeepRecallDeps`, so the loop is
- * deterministic under a scripted fake policy (tests) and thin when the
- * access service wires real deps. Pure decision helpers are reused from
- * the `recall-deep-*` primitives — never re-implemented here.
- */
 
 import { z } from "zod";
 import type { AbstractionNode } from "./abstraction-nodes.js";
@@ -125,28 +111,12 @@ const EXPAND_SCORE_INHERITANCE = 0.8;
 const STATE_WORKING_SET_ENTRIES = 12;
 const STATE_ENTRY_SNIPPET_CHARS = 200;
 
-/** Thrown when the shared whole-invocation deadline expires mid-await. */
 class DeepRecallDeadlineExceeded extends Error {
   constructor() {
     super("deep recall total timeout reached");
   }
 }
 
-/**
- * Race one dependency call against the SHARED whole-invocation deadline AND
- * the transport cancellation signal — one helper, never two nested races
- * (issue #2915: an early abort return that abandons an already-started
- * deadline timer leaves its eventual rejection unhandled).
- *
- * `deadlineMs` is an absolute instant computed once per invocation, so every
- * await subtracts elapsed time instead of restarting the budget, and a stalled
- * seed search, graph load, or memory read can no longer outlive the documented
- * `totalTimeoutMs` just because the deadline is only *checked* between steps.
- * An infinite deadline (`totalTimeoutMs: 0`, a documented disable value) races
- * only the signal — no timer. The timer stays REFERENCED: it is the only thing
- * keeping the loop alive when the awaited dependency never settles. Every
- * arm is cleared in the `finally`, whichever wins.
- */
 async function guardCall<T>(
   work: Promise<T>,
   deadlineMs: number,
@@ -208,8 +178,6 @@ function mergeIntoWorkingSet(
     if (typeof hit.memoryId !== "string" || hit.memoryId.length === 0) continue;
     if (typeof hit.score !== "number" || !Number.isFinite(hit.score)) continue;
     const existing = workingSet.get(hit.memoryId);
-    // Duplicates keep the higher score and the earlier origin (§13: one
-    // content form, one merge rule, everywhere).
     if (existing && existing.score >= hit.score) continue;
     workingSet.set(hit.memoryId, {
       memoryId: hit.memoryId,
@@ -252,33 +220,12 @@ function buildFrontierIndex(graph: DeepRecallGraphSnapshot): FrontierIndex {
   return { memoryIdToNodeIds, nodeIdToNode, nodeIdToAnchorIds, anchorIdToAnchor };
 }
 
-/**
- * A candidate node adds nothing when every source memory the EXPAND path would
- * load is already in the working set (or when it has none): offering it as an
- * unretrieved candidate lets the policy burn steps re-expanding a node that can
- * only re-add what is already present.
- */
 function nodeAddsNothing(node: AbstractionNode, workingSet: ReadonlyMap<string, WorkingEntry>): boolean {
   return (node.sourceMemoryIds ?? [])
     .slice(0, MAX_SOURCE_MEMORY_IDS_PER_NODE)
     .every((memoryId) => workingSet.has(memoryId));
 }
 
-/**
- * Frontier refresh (after every working-set change): for each working-set
- * memory, anchors whose nodeRefs include a node listing that memory make
- * every OTHER referenced node a frontier candidate. `sharedAnchorCount`
- * counts DISTINCT anchors (issue #2915): one anchor adds one no matter how
- * many working-set memories or nodes reach the candidate through it. Ranked
- * by the shared pure helper (shared-anchor count desc, nodeId asc — total
- * comparator).
- *
- * Nodes in `expandedNodeIds` are dropped: a node EXPAND already followed is
- * not an unretrieved candidate, even when some of its source memories never
- * entered the working set (an inactive or foreign read is skipped), so
- * re-offering it would let the policy spend every remaining step adding
- * nothing.
- */
 function refreshFrontier(
   workingSet: ReadonlyMap<string, WorkingEntry>,
   graph: FrontierGraph,
@@ -287,9 +234,6 @@ function refreshFrontier(
   const index = graph.index;
   interface Candidate {
     nodeId: string;
-    // Distinct shared anchors ONLY (issue #2915): one anchor counts once no
-    // matter how many working-set memories reach the candidate through it,
-    // so a candidate sharing one anchor can never outrank one sharing two.
     sharedAnchorIds: Set<string>;
     parentMemoryId: string;
     parentScore: number;
@@ -412,11 +356,6 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
   const now = deps.nowMs ?? Date.now;
   const startedMs = now();
   const deadlineMs = cfg.totalTimeoutMs > 0 ? startedMs + cfg.totalTimeoutMs : Number.POSITIVE_INFINITY;
-  // Every dependency await races BOTH bounds: the shared whole-invocation
-  // deadline and the transport cancellation signal (issue #2915). An abort
-  // propagates as a standard AbortError — never as ok:false backend failure
-  // and never as a partial result — so each transport applies its own
-  // cancelled-response semantics.
   const guarded = <T>(work: Promise<T>): Promise<T> =>
     guardCall(work, deadlineMs, deps.signal, now);
 
@@ -426,14 +365,7 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
   const contentFor = (memoryId: string): string => contentCache.get(memoryId) ?? "";
   const workingSet = new Map<string, WorkingEntry>();
   let graph: FrontierGraph = { index: buildFrontierIndex({ nodes: [], anchors: [] }) };
-  // Nodes already followed by EXPAND leave the frontier for good.
   const expandedNodeIds = new Set<string>();
-  /**
-   * Hydrate one working-set entry from `loadMemory`, DROPPING it when the read
-   * is missing or reports a non-active memory: QMD can still index a memory
-   * whose governance status moved out of the active set, and hydrating it
-   * would surface content the active-set check excluded.
-   */
   const hydrateOrDrop = async (memoryId: string): Promise<void> => {
     const memory = await guarded(deps.loadMemory(memoryId));
     if (!memory || !memory.active) {
@@ -445,9 +377,6 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
     const entry = workingSet.get(memoryId);
     if (entry) entry.content = memory.content;
   };
-  // Pre-policy work (seed search, graph load, seed hydration) is bounded by the
-  // SAME deadline as the policy calls; exhausting it here yields the partial
-  // working set rather than blocking the later check from ever running.
   let exhaustedDetail: string | null = null;
   try {
     throwIfAborted(deps.signal, "deep recall aborted");
@@ -456,8 +385,6 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
   } catch (err) {
     if (isAbortError(err)) throw err;
     if (!(err instanceof DeepRecallDeadlineExceeded)) {
-      // Seed backend failure is the only ok:false path (§22: an empty index
-      // proceeds; a thrown search does not).
       return { ok: false, error: "backend_unavailable", entries: [], trace: [] };
     }
     exhaustedDetail = "total timeout reached during seed search";
@@ -465,8 +392,6 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
   if (exhaustedDetail === null) {
     try {
       graph = { index: buildFrontierIndex(await guarded(deps.loadGraph())) };
-      // Seed hydration also enforces the active set: a stale or non-active
-      // QMD hit leaves the working set instead of being hydrated in place.
       for (const memoryId of [...workingSet.keys()]) {
         await hydrateOrDrop(memoryId);
       }
@@ -493,14 +418,8 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
   };
 
   if (exhaustedDetail !== null) {
-    // Pre-policy work already spent the whole-invocation budget: report the
-    // partial working set (ok:true, §22) instead of starting a policy call
-    // that cannot finish inside the deadline.
     pushStep(0, "BUDGET_EXHAUSTED", exhaustedDetail, startedMs);
   } else if (cfg.maxSteps <= 0) {
-    // `maxSteps: 0` is a documented disable value (§33): seed-only retrieval,
-    // with no policy call at all. The zero check dominates the step threshold
-    // instead of relying on the loop condition falling through.
     pushStep(0, "STOP", "policy loop disabled (maxSteps=0)", startedMs);
   }
   let step = 0;
@@ -512,11 +431,6 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
         pushStep(step, "BUDGET_EXHAUSTED", "total timeout reached before policy call", stepStartMs);
         break;
       }
-      // Two independent axes bound the policy call: its own per-step timeout and
-      // whatever is left of the shared deadline. `stepTimeoutMs: 0` disables only
-      // its own axis (§33) — a finite total budget still applies, so the call can
-      // never outlive `totalTimeoutMs`. `timeoutMs: 0` reaches the policy only
-      // when BOTH axes are disabled.
       const stepBudgetMs = cfg.stepTimeoutMs > 0 ? cfg.stepTimeoutMs : Number.POSITIVE_INFINITY;
       const effectiveBudgetMs = Math.min(stepBudgetMs, deadlineMs - now());
       const timeoutMs = Number.isFinite(effectiveBudgetMs) ? Math.max(1, effectiveBudgetMs) : 0;
@@ -556,10 +470,6 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
             }
           }
         } catch (err) {
-          // Re-search failure mid-loop is partial, not fatal (§22): the loop
-          // keeps what it has and the policy decides the next move. Deadline
-          // expiry and cancellation are NOT partial failures — they end the
-          // invocation.
           if (err instanceof DeepRecallDeadlineExceeded || isAbortError(err)) throw err;
         }
         frontier = refreshFrontier(workingSet, graph, expandedNodeIds);
@@ -567,8 +477,6 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
         step += 1;
         continue;
       }
-      // EXPAND. A configured ceiling of 0 is a documented no-op limit (§33):
-      // the action is honored but selects nothing.
       const selection =
         cfg.maxExpandPerStep <= 0
           ? { ok: true as const, nodeIds: [] as string[], truncated: false }
@@ -589,8 +497,6 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
         for (const memoryId of (node.sourceMemoryIds ?? []).slice(0, MAX_SOURCE_MEMORY_IDS_PER_NODE)) {
           if (workingSet.has(memoryId)) continue;
           const memory = await guarded(deps.loadMemory(memoryId));
-          // Only active memories enter the working set (§41); a null read
-          // (foreign namespace, §30) skips the same way.
           if (!memory || !memory.active) continue;
           workingSet.set(memoryId, {
             memoryId,
@@ -609,20 +515,15 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
     }
   } catch (err) {
     if (!(err instanceof DeepRecallDeadlineExceeded)) throw err;
-    // A dependency call inside a step outran the shared deadline: the per-step
-    // timeout is not the wall clock, so record exhaustion and keep the partial
-    // working set. durationMs spans the whole invocation.
     pushStep(step, "BUDGET_EXHAUSTED", "total timeout reached mid-step", startedMs);
   }
 
   if (cfg.maxSteps > 0 && step >= cfg.maxSteps && trace[trace.length - 1]?.action !== "STOP") {
     pushStep(step, "BUDGET_EXHAUSTED", "maxSteps policy calls reached", startedMs);
-    // durationMs for the exhaustion marker is the whole invocation so far.
     const marker = trace[trace.length - 1];
     if (marker) marker.durationMs = Math.max(0, now() - startedMs);
   }
 
-  // Final output carries full content; the 200-char trim is state rendering only.
   const entries = finalRank([...workingSet.values()]).map((entry) => ({ ...entry }));
   return {
     ok: true,

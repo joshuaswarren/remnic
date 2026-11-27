@@ -13,7 +13,6 @@ import {
   type HelperChild,
 } from "./native.js";
 
-/** A controllable fake helper child process for deterministic runner tests. */
 class FakeChild implements HelperChild {
   #stdout: Array<(chunk: Buffer | string) => void> = [];
   #stderr: Array<(chunk: Buffer | string) => void> = [];

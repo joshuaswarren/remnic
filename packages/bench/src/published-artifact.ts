@@ -1,20 +1,3 @@
-/**
- * Public leaderboard artifact schema for published benchmarks.
- *
- * `BenchmarkArtifact` is deliberately flatter and more opinionated than
- * the internal `BenchmarkResult`. The goal is a stable, versioned payload
- * that Remnic.ai and third-party leaderboard consumers can rely on
- * without digging into every per-task field the internal runner captures.
- *
- * One artifact is written per run to
- *   docs/benchmarks/results/<iso-date>-<benchmark>-<model>-<gitShaShort>.json
- * (gitignored during development; promoted per-release by slice 6).
- *
- * Any breaking change to the artifact shape requires a `schemaVersion`
- * bump. The companion `buildBenchmarkArtifact()` and
- * `writeBenchmarkArtifact()` functions in this file emit the current
- * version; `parseBenchmarkArtifact()` rejects unknown versions.
- */
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -45,7 +28,6 @@ export const PUBLISHED_BENCHMARK_ARTIFACT_IDS = Object.freeze([
   "membench",
 ] as const);
 
-/** Identifier of a published-benchmark runner. */
 export type PublishedBenchmarkId = (typeof PUBLISHED_BENCHMARK_ARTIFACT_IDS)[number];
 
 export interface BenchmarkArtifactSystem {
@@ -130,9 +112,7 @@ export interface BenchmarkArtifactPerTaskScore {
 }
 
 export interface BenchmarkArtifact {
-  /** Artifact schema version. See `BENCHMARK_ARTIFACT_SCHEMA_VERSION`. */
   schemaVersion: typeof BENCHMARK_ARTIFACT_SCHEMA_VERSION;
-  /** Benchmark identifier, e.g. "longmemeval" or "locomo". */
   benchmarkId: PublishedBenchmarkId;
   /**
    * Dataset version the runner evaluated against. Free-form string so
@@ -617,14 +597,6 @@ export async function loadBenchmarkArtifact(
 // Helpers
 // ----------------------------------------------------------------------------
 
-/**
- * Sanitize a filename segment. Only `[a-z0-9._-]` survives; any
- * path-traversal tokens (`..`, `...`, leading/trailing dots) collapse
- * to `_`. Written to avoid the polynomial-regex pattern
- * `/\.{2,}/g` flagged by CodeQL — instead we do a single linear pass
- * that treats any non-allowed character AND any run of dots as a
- * boundary that inserts a `_`.
- */
 function sanitizeSegment(value: string): string {
   const lowered = value.trim().toLowerCase();
   const out: string[] = [];
@@ -657,15 +629,9 @@ function sanitizeSegment(value: string): string {
       pushUnderscore();
     }
   }
-  // Flush trailing dots — single trailing dot is a path-traversal
-  // foothold ("."), and a multi-dot run was already dangerous, so
-  // either way we emit `_`.
   if (dotRun > 0) {
     pushUnderscore();
   }
-  // Strip any leading dot that survived the initial pass (it can only
-  // appear as the very first character; the loop would already collapse
-  // inner dot runs).
   while (out.length > 0 && out[0] === ".") {
     out.shift();
   }

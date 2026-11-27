@@ -1,8 +1,3 @@
-/**
- * Sibling of {@link "./graph.js"} holding the append-failure error type so
- * graph.ts stays within its file-size ratchet cap (issue #1995). Type-only
- * dependency on GraphEdge — no runtime cycle with graph.ts.
- */
 import type { GraphEdge } from "./graph.js";
 
 /**

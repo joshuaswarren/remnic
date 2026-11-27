@@ -1,9 +1,3 @@
-/**
- * Recall navigation budget take (issue #1956 leftover).
- *
- * Pure. Surfaces wait. Budget 0 or cost above budget is exhausted.
- * Negative budget or cost throws.
- */
 
 export type NavigateBudgetResult =
   | { ok: true; remaining: number }

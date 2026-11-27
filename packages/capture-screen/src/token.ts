@@ -1,10 +1,3 @@
-/**
- * Bearer-token lifecycle. The daemon auto-generates a 256-bit token on first
- * use and stores it 0600; a pre-existing file is re-chmod'd 0600 defensively
- * because a world-readable token is a credential leak. The token is REQUIRED on
- * every request (even on loopback) so another local user cannot read captured
- * screen text off 127.0.0.1.
- */
 
 import { Buffer } from "node:buffer";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -24,8 +17,6 @@ export function loadOrCreateToken(tokenPath: string): string {
   }
   const token = generateToken();
   try {
-    // Exclusive create: if two daemons start together, the loser gets EEXIST and
-    // reads the winner's token rather than both persisting divergent values.
     writeFileSync(tokenPath, `${token}\n`, { mode: 0o600, flag: "wx" });
     chmodSync(tokenPath, 0o600);
     return token;
@@ -34,7 +25,6 @@ export function loadOrCreateToken(tokenPath: string): string {
     chmodSync(tokenPath, 0o600);
     const raced = readFileSync(tokenPath, "utf8").trim();
     if (raced) return raced;
-    // Pre-existing empty file (interrupted prior write): overwrite it.
     writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
     chmodSync(tokenPath, 0o600);
     return token;

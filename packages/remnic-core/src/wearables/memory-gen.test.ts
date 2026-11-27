@@ -245,9 +245,6 @@ test("a fact write the dedup window suppressed counts as skipped, not created", 
 });
 
 test("auto mode still refuses to write a high-impact personal claim active (#2294)", async () => {
-  // `auto` has no trust scoring, and an operator may lower minConfidence to or
-  // below the speculative ceiling the ambient clamp writes — which would let a
-  // clamped TV line straight into recall without this guard.
   const { writer, writes } = makeWriter();
   await generateWearableMemories(
     "limitless",
@@ -391,9 +388,6 @@ test("daily digest writes one deterministic episode memory and dedups", async ()
 });
 
 test("review mode queues a clamped personal claim instead of dropping it below the floor (#2294)", async () => {
-  // The extraction clamp pins high-impact ambient facts to 0.39, under the 0.6
-  // default minConfidence — so without an exemption the pre-filter would drop
-  // exactly the candidates review mode promises to queue.
   const { writer, writes } = makeWriter();
   const result = await generateWearableMemories(
     "limitless",
@@ -417,9 +411,6 @@ test("review mode queues a clamped personal claim instead of dropping it below t
 });
 
 test("a digest whose provider title is a personal claim is held for review (#2294)", async () => {
-  // Providers derive conversation.title from the same captured audio, so a
-  // title lifted from a television scene must not ride into recall on the
-  // digest, which bypasses extraction and its clamp entirely.
   const { writer, writes } = makeWriter();
   const wrote = await writeDailyDigestMemory(
     "limitless",
@@ -485,7 +476,6 @@ test("smart mode: judge verdicts gate active/review/drop with trust metadata", a
       judgeFacts: judgeReturning(["accept", "reject", "defer"]),
     },
   );
-  // accept @ 0.9*0.8 + 0.15 = 0.87 -> active; reject -> drop; defer -> review.
   assert.equal(result.created, 2);
   assert.equal(result.skippedByReason["judge-rejected"], 1);
   const byContent = new Map(writes.map((write) => [write.content, write]));
@@ -527,7 +517,6 @@ test("smart mode without a judge degrades to confidence x sourceTrust banding", 
       writer,
     },
   );
-  // 0.95*0.8=0.76 active; 0.7*0.8=0.56 review; 0.4*0.8=0.32 dropped.
   assert.equal(result.created, 2);
   assert.equal(result.skippedByReason["below-trust"], 1);
   const statuses = writes.map((write) => write.options.status).sort();
@@ -604,7 +593,6 @@ test("smart mode: dropped facts never consume day-cap slots", async () => {
     REGISTRY,
     {
       extract: extractionReturning([
-        // Highest trust but judge-rejected — must not occupy the only slot.
         { category: "fact", content: "A high-confidence fact the judge rejects as not durable.", confidence: 0.99, tags: [] },
         { category: "fact", content: "The vendor contract renews every October first as agreed.", confidence: 0.95, tags: [] },
       ]),
@@ -671,15 +659,11 @@ test("smart native import: judge gates writes; dropped ids re-score on later syn
       judgeFacts: judgeReturning(["accept", "reject"]),
     },
   );
-  // accept: 0.7 * (0.8*0.9) + 0.15 = 0.654 -> review band (no corroboration).
   assert.equal(result.imported, 1);
   assert.equal(writes.length, 1);
   assert.equal(writes[0].options.status, "pending_review");
   const attrs = writes[0].options.structuredAttributes as Record<string, string>;
   assert.equal(attrs.judgeVerdict, "accept");
-  // Dropped facts are deliberately NOT tracked: later corpus or
-  // corroboration support must be able to admit them on a re-fetch
-  // (the judge verdict cache keeps repeated rejections cheap).
   assert.ok(!result.importedIds.includes("n2"), "dropped ids re-fetch and re-score later");
   assert.ok(result.importedIds.includes("n1"));
 });
@@ -702,7 +686,6 @@ test("smart mode: new evidence promotes an earlier pending_review write in place
     settings({ memoryMode: "smart" }),
     REGISTRY,
     {
-      // 0.75*0.8 = 0.6 (review band) + 0.15 cross-source = 0.75 -> active.
       extract: extractionReturning([
         { category: "fact", content: borderline, confidence: 0.75, tags: [] },
       ]),
@@ -739,7 +722,6 @@ test("smart mode: duplicates without stronger evidence stay skipped, not promote
     settings({ memoryMode: "smart" }),
     REGISTRY,
     {
-      // 0.75*0.8 = 0.6 — still review band without corroboration.
       extract: extractionReturning([
         { category: "fact", content: borderline, confidence: 0.75, tags: [] },
       ]),
@@ -836,7 +818,6 @@ test("smart mode: below-trust re-score without a reject verdict does not demote"
     "limitless",
     "2026-06-10",
     [LONG_CONVERSATION],
-    // 0.62 * 0.5 = 0.31 < reviewTrust 0.45 -> drop band, verdict undefined.
     settings({ memoryMode: "smart", sourceTrust: 0.5 }),
     REGISTRY,
     {
@@ -871,8 +852,6 @@ test("native memories always import as pending_review and respect prior imports"
     settings({ importNativeMemories: "review" }),
     { extract: extractionReturning([]), writer },
   );
-  // n1 imports; n2 dedups against existing storage; n3 dedups against
-  // n1 within the run; n4 is empty; n5 was imported on a prior sync.
   assert.equal(result.imported, 1);
   assert.equal(writes.length, 1);
   assert.equal(writes[0].options.status, "pending_review");
@@ -882,10 +861,6 @@ test("native memories always import as pending_review and respect prior imports"
 
 
 test("#1645: a tombstone-blocked wearable write counts as blocked, not created", async () => {
-  // The writer returns tombstoneBlocked: true — the #1579 chokepoint downgraded
-  // the write to pending_review (no active copy). The day-write loop must count
-  // it as blocked, NOT created, so the sync summary and callers don't report
-  // blocked content as successfully created active memories.
   const writes: Array<{ category: string; content: string; options: Record<string, unknown> }> = [];
   const writer: WearableMemoryWriter = {
     writeSealedMemory: asSealedWrite(async (category, content, options) => {

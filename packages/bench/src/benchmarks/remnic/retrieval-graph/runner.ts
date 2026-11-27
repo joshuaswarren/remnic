@@ -1,15 +1,3 @@
-/**
- * Graph retrieval A/B benchmark (issue #559 PR 5).
- *
- * Runs every case twice — once with graph-on (PPR over the extracted
- * edge graph) and once with graph-off (lexical / id-match only) — and
- * reports precision@K for both. The result JSON carries both columns
- * so downstream analysis can judge whether graph-on wins, ties, or
- * loses before the default flag gets flipped.
- *
- * Pure bench — no I/O, no config, no external services. All inputs are
- * declared in `fixture.ts`.
- */
 
 import { randomUUID } from "node:crypto";
 import type {
@@ -91,7 +79,6 @@ export async function runRetrievalGraphBenchmark(
         p_at_3_off: pOff,
         p_at_5_off: precisionAtK(off, sample.expectedIds, 5),
         delta_p_at_3,
-        // 1 for graph-on win, 0 for tie, -1 for graph-on loss.
         graph_on_win: pOn > pOff ? 1 : pOn < pOff ? -1 : 0,
       },
       latencyMs,

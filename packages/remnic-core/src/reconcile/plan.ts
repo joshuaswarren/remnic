@@ -267,12 +267,6 @@ function assertMtimeMs(value: unknown, context: string): number {
   return value;
 }
 
-/**
- * Digests are canonicalized to lowercase, exactly as offline-sync's
- * `assertSha256` does. Keeping the caller's spelling would make two forms of
- * one digest compare unequal, so identical files would plan `both_modified`
- * and tombstone lookups would silently miss.
- */
 function assertDigest(value: unknown, context: string): string {
   if (!isSha256Hex(value)) {
     throw new ReconcilePlanInputError(`reconcile: ${context} must carry a 64-character sha256 hex digest`);
@@ -332,7 +326,6 @@ function assertIterable(value: unknown, side: string, namespace: string): Iterab
  */
 // eslint-disable-next-line no-control-regex -- control characters are exactly what this rejects
 const WIN32_INVALID_CHARS = /[<>:"|?*\u0000-\u001f]/;
-// Windows treats the superscripts as their digits in COM/LPT device names.
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const WIN32_RESERVED_NAMES = /^(con|prn|aux|nul|(com|lpt)[1-9\u00b9\u00b2\u00b3])$/i;
 
@@ -649,7 +642,6 @@ export function planNamespaceReconciliation(
     }
     seenLocal.set(path, { sha256: localFile.sha256, mtimeMs: localFile.mtimeMs });
     const peerFile = peer.get(path);
-    // Consumed: whatever remains in the index afterwards is peer-only.
     peer.delete(path);
     const baseSha256 = base?.get(path);
     // Retraction outranks every other decision for this path, on EITHER side.
@@ -847,7 +839,6 @@ export function planReconciliation(
   if (!Array.isArray(namespaces)) {
     throw new ReconcilePlanInputError("reconcile: planReconciliation expects an array of namespace inputs");
   }
-  // Validated here too: with an empty array the per-namespace path never runs,
   // and a malformed options envelope would return `converged` instead of
   // raising - the same call failing or succeeding based on list length.
   if (!isPlainObject(options)) {

@@ -9,7 +9,6 @@ import { BUILTIN_SKILLS, isValidSkillSlug } from "./skills-registry.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CORE_PACKAGE_DIR = resolve(HERE, "..");
 
-// The two on-disk directories that hold authored SKILL.md folders.
 const CODEX_SKILLS_DIR = resolve(HERE, "..", "..", "plugin-codex", "skills");
 const CLAUDE_CODE_SKILLS_DIR = resolve(HERE, "..", "..", "plugin-claude-code", "skills");
 const CORE_PACKAGED_SKILLS_DIR = resolve(CORE_PACKAGE_DIR, "skills");
@@ -33,7 +32,6 @@ const LEGACY_ENGRAM_STRINGS = [
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Slug validation
 // ---------------------------------------------------------------------------
 
 test("isValidSkillSlug accepts canonical remnic slugs", () => {
@@ -69,7 +67,6 @@ test("isValidSkillSlug accepts well-formed slugs", () => {
 });
 
 // ---------------------------------------------------------------------------
-// BUILTIN_SKILLS shape
 // ---------------------------------------------------------------------------
 
 test("BUILTIN_SKILLS has exactly six entries", () => {
@@ -145,7 +142,6 @@ test("@remnic/core package ships the built-in skill sources referenced by BUILTI
 });
 
 // ---------------------------------------------------------------------------
-// Frontmatter + required sections (applied to each authored SKILL.md)
 // ---------------------------------------------------------------------------
 
 interface ParsedSkill {
@@ -159,14 +155,12 @@ function parseSkillFile(filePath: string): ParsedSkill {
   const raw = readFileSync(filePath, "utf8");
   const lineCount = raw.split(/\r?\n/).length;
 
-  // Extract YAML frontmatter delimited by leading `---` lines.
   const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   assert.ok(fmMatch, `${filePath} must start with a YAML frontmatter block`);
   const fmBlock = fmMatch[1];
   const body = fmMatch[2];
 
   // Tiny frontmatter parser: only supports `key: value` pairs on top-level
-  // lines — good enough for our six-key schema.
   const frontmatter: Record<string, string> = {};
   for (const line of fmBlock.split(/\r?\n/)) {
     if (!line.trim() || line.trim().startsWith("#")) continue;
@@ -233,7 +227,6 @@ test("BUILTIN_SKILLS disableModelInvocation mirrors the authored frontmatter", (
   for (const skill of BUILTIN_SKILLS) {
     if (!skill.staticPath) continue;
     const parsed = parseSkillFile(skill.staticPath);
-    // An absent key means the host may invoke the skill, i.e. false.
     const authored = parsed.frontmatter["disable-model-invocation"] ?? "false";
     assert.equal(
       authored,
@@ -247,8 +240,6 @@ test("every authored SKILL.md contains the six required H2 sections in order", (
   for (const file of ALL_SKILL_FILES) {
     const parsed = parseSkillFile(file);
     const headers = findH2Sections(parsed.body);
-    // Required sections must appear as a prefix subsequence — allow extra H2s
-    // but the six canonical ones must be present in the defined order.
     let idx = 0;
     for (const header of headers) {
       if (idx < REQUIRED_SECTIONS.length && header === REQUIRED_SECTIONS[idx]) {
@@ -274,7 +265,6 @@ test("every authored SKILL.md is at most 500 lines", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Legacy engram:* naming must not appear in any authored SKILL.md
 // ---------------------------------------------------------------------------
 
 test("no authored SKILL.md mentions legacy engram:* skill names", () => {

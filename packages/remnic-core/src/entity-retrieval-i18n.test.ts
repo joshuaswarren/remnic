@@ -55,7 +55,6 @@ test("non-English follow-ups resolve the recently discussed entity like the Engl
     });
     const dialogue = dialogueTurn("I spoke with Alice about the launch review yesterday.");
 
-    // English pronoun follow-up and its Japanese/Chinese equivalents must
     // resolve to the same recently-discussed entity.
     for (const query of ["What about her?", "それで、どうなった？", "彼はどうなった？", "然后呢？"]) {
       const section = await buildEntityRecallSection({
@@ -66,7 +65,6 @@ test("non-English follow-ups resolve the recently discussed entity like the Engl
       assert.match(section, /alice/i);
     }
 
-    // Without recent dialogue both decline identically — no entity to carry.
     for (const query of ["What about him?", "それで、どうなった？"]) {
       const section = await buildEntityRecallSection({
         ...recallBase(config, storage, []),

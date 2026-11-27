@@ -73,7 +73,6 @@ export function expandQuery(
   const maxQueries = Math.max(1, Math.min(20, options.maxQueries));
   const tokens = tokenize(trimmed, options.minTokenLen);
 
-  // Keep deterministic ordering: first-seen tokens win.
   const seen = new Set<string>();
   const uniqTokens: string[] = [];
   for (const t of tokens) {

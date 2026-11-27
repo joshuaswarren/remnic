@@ -200,12 +200,6 @@ function splitLoopMarkdown(raw: string | null): { header: string; sections: Mark
   let current: MarkdownSection | null = null;
 
   for (const line of lines) {
-    // /^##\s(.+)$/ + the trim below is exactly equivalent to the original
-    // /^##\s+(.+?)\s*$/ (same match/no-match and same trimmed title across all
-    // inputs, including "## " → no-match and "##  " → empty title) but has no
-    // adjacent overlapping quantifiers, so it cannot backtrack polynomially
-    // (CodeQL js/polynomial-redos). \s matches a single fixed-width char and
-    // .+ runs greedily to the line end — no \s+/.* overlap.
     const sectionMatch = line.match(/^##\s(.+)$/);
     if (sectionMatch) {
       if (current) sections.push({ title: current.title, body: current.body.trimEnd() });

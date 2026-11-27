@@ -1,16 +1,3 @@
-/**
- * Commit-adjacent effects for judge-mediated merge-on-write (issue #2330
- * round N+11). Extracted from semantic-merge-persist.ts so that file stays
- * at its file-size ratchet cap (1200 LOC).
- *
- * Round N+11 (C) + N+12 (A): version snapshots for a merge are STAGED
- * without pruning and the prune is FINALIZED only after the FULL
- * content-and-metadata transaction commits (both compare-and-swaps), so a
- * failed merge attempt cannot discard the oldest rollback point.
- * Round N+11 (B) + N+12 (D): the merged target is persisted into the
- * thread's durable episode set MOVE-TO-END — a re-merged target already
- * earlier in the thread moves to the tail, not a unique-append no-op.
- */
 
 import { GraphEdgeAppendError } from "../graph-append-error.js";
 import type { CasRevisionReadStatus } from "../storage/cas-revision-store.js";
@@ -37,15 +24,6 @@ import type { ThreadingManager } from "../threading.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import type { StorageManager } from "../index.js";
 
-/**
- * Stage the pre-merge rollback snapshot WITHOUT pruning, marked `pending`.
- * The CAS that follows can still fail on a concurrent writer; an eager
- * prune at a full history would have already discarded the oldest rollback
- * point for a merge that never happened, and a concurrent writer's
- * finalizing prune cannot count this entry until its own write commits
- * (round N+15 B). Returns the staged version id; throws on a
- * failed snapshot (the caller bypasses to the create path).
- */
 export async function stageMergedTargetSnapshot(
   target: MemoryFile,
   versioning: VersioningConfig,
@@ -65,19 +43,6 @@ export async function stageMergedTargetSnapshot(
   return String(version.versionId);
 }
 
-/**
- * Finalize the deferred prune once the FULL content-and-metadata transaction
- * has committed (round N+12 A: both compare-and-swaps, not just the content
- * one) — the staged `versionId` becomes a committed rollback point (its
- * `pending` flag clears under the same page lock as the prune, round N+15 B),
- * and the prune then counts only committed snapshots, so a concurrent
- * still-pending writer's staged entry is never traded away. Best-effort: a
- * prune failure records the staged id as a stranded commit (round N+22) so
- * the NEXT successful finalization for the page reconciles its `pending`
- * flag and the prune bound applies again — without it, every transient
- * failure (manifest lock timeout, I/O error) stranded one unprunable
- * snapshot beyond maxVersionsPerPage. Never fails the committed merge.
- */
 export async function finalizeMergedVersionPrune(
   targetPath: string,
   versioning: VersioningConfig,
@@ -92,25 +57,10 @@ export async function finalizeMergedVersionPrune(
       `semantic-merge: version prune finalization failed for ${targetId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
     );
     // The merge HAS committed — the staged snapshot is a real rollback
-    // point whose `pending` flag never cleared. Record it so the next
-    // successful finalization reconciles the flag and pruning bounds
-    // history again.
     await recordStrandedCommit(targetPath, versioning, versionId, log, memoryDir);
   });
 }
 
-/**
- * Round N+13 (B): undo the staged pre-merge snapshot after an aborted
- * attempt — a lost content CAS, or a metadata failure whose content revert
- * succeeded. Staging mutates version history, so without this rollback every
- * failed attempt left a snapshot of an unchanged body in the manifest;
- * repeated failures grew history past `maxVersionsPerPage` and a later
- * successful merge's prune then discarded real rollback states to make room
- * for those duplicates. History returns to its pre-attempt state. Best-effort
- * and idempotent: a removal failure is logged and never masks the abort's
- * own result. A degraded success (unrollbackable metadata failure) keeps the
- * staged snapshot — it is the recovery point for the committed merge.
- */
 export async function discardMergedTargetSnapshot(
   targetPath: string,
   versioning: VersioningConfig,
@@ -173,22 +123,7 @@ export async function revertMergedContent(
     const current = await readTargetSnapshot(storage, target);
     if (!current) return "stands";
     if (current.content !== mergedContent) return "reverted";
-    // #2813 (P1): the merged body standing is provably OURS only while the
-    // target still carries the revision token our CAS minted. A different
-    // token means a concurrent writer committed the same deterministic
-    // body after our lock was released — reverting would delete their valid
-    // merge while their provenance patch may already have landed.
     if (committedRevision !== undefined) {
-      // #2813 (P1 B): the standing receipt is a THREE-WAY truth. Only a
-      // PROVEN foreign token may take the superseded path — that proof is
-      // what licenses discarding this writer's staged snapshot. The old
-      // fail-open read collapsed an unreadable sidecar into undefined,
-      // which classified as superseded and discarded the recovery
-      // snapshot on unproven grounds. Unavailable (transiently
-      // unreadable, or a reservation pending finalization) and absent
-      // (which cannot corroborate EITHER writer while this receipt is in
-      // hand) are keep-side: the degraded branch preserves the snapshot
-      // and reconciliation retries.
       let standing: Awaited<ReturnType<StorageManager["readCasRevisionStatus"]>>;
       try {
         standing = await storage.readCasRevisionStatus(target.path);
@@ -224,20 +159,6 @@ export async function revertMergedContent(
   }
 }
 
-/**
- * Round N+11 (B) + N+12 (D): persist the merged target into the thread's
- * DURABLE episode set, MOVE-TO-END. `runMergedTargetPostEffects` orders the
- * batch-local episode list, but that copy dies with the batch — the next
- * extraction reloads the thread from disk, and a target that entered the
- * thread only through a merge vanished. A target already EARLIER in the
- * durable list must move to the end, not stay put: `appendEpisodeIds` is a
- * unique-append no-op for present ids, so after the reload the target sat at
- * its old position and could fall outside
- * `resolveRecentThreadMemoryPaths(...).slice(-3)`. Remove-then-append matches
- * the batch-local ordering fix exactly, while the public `persistedIds`
- * return stays new-fragments-only (round N+7 D). Fail-open: the committed
- * merge stands; a thread write failure is logged.
- */
 export async function persistMergedTargetThreadEpisode(
   threading: Pick<ThreadingManager, "loadThread" | "saveThread">,
   threadId: string | null | undefined,
@@ -259,36 +180,6 @@ export async function persistMergedTargetThreadEpisode(
   }
 }
 
-/**
- * Round N+12 (C) + N+14 + #2837: replace a merged target's generated graph
- * edges with the rebuild's rows, revision-guarded end to end. The caller's
- * committed-body check can pass, writer B can then commit a NEWER merge and
- * finish rebuilding edges for it, and writer A would resume to remove B's
- * edges and install edges derived from A's older body. The revision observed
- * at the check is carried THROUGH the remove-and-rebuild; before the install
- * counts as final the target is re-read, and an advanced revision (or a
- * vanished target) aborts the install. The advancing writer owns the rebuild.
- * Returns whether the install finalized (the caller advances its adjacency
- * chain only then). A build failure rolls back the same way (round N+10 C)
- * and rethrows — fail-open stays the caller's decision.
- *
- * #2837: the post-build guard reads the truthful receipt STATUS, never the
- * fail-open token. The old guard collapsed an unreadable sidecar into
- * undefined on both reads, so an unavailable-vs-unavailable rewrite compared
- * undefined against undefined, passed, and installed replacement edges no
- * receipt ever verified. An `unavailable` post-build status now aborts the
- * install (rollback, false) so the next merge retries; only a PROVEN match —
- * present-and-equal, or absent-against-absent for a pre-sidecar target —
- * may install.
- *
- * Round N+14 makes the ROLLBACK surgical: `build` returns the exact rows it
- * appended (by identity), and the rollback removes only those — never a
- * node-wide sweep — so rows a newer writer appended after this writer's
- * removal survive. The snapshot restore is residue-gated per graph type: a
- * type whose file still holds node rows the aborting writer cannot account
- * for belongs to the newer writer and is NOT restored over. See
- * {@link rollbackNodeEdgeRewrite}.
- */
 export async function rewriteMergedTargetGraphEdges(
   storage: {
     dir: string;
@@ -299,20 +190,12 @@ export async function rewriteMergedTargetGraphEdges(
     targetId: string;
     memoryRelPath: string;
     mergedContent: string;
-    /** The CAS revision token the committed-body check observed (undefined
-     * only when the check PROVED the receipt absent — #2837). */
     revisionChecked: string | undefined;
     rewriteTypes: readonly GraphType[];
     build: () => Promise<GraphEdge[] | void>;
   },
 ): Promise<boolean> {
   const removedEdges = await removeNodeEdgesForRewrite(storage.dir, input.memoryRelPath, input.rewriteTypes);
-  // Round N+14 + N+16 (A): the rows THIS writer's build appended, by exact
-  // identity. A build that THROWS carries its partial row set on the error
-  // (GraphEdgeAppendError — tracked incrementally as each row is written),
-  // so the rollback stays surgical on the throwing path too; only a build
-  // that neither returns rows nor wraps its failure falls back to the
-  // node-wide sweep, identical outcome absent interleaving.
   let appended: readonly GraphEdge[] | undefined;
   try {
     appended = (await input.build()) ?? undefined;
@@ -354,14 +237,6 @@ export async function rewriteMergedTargetGraphEdges(
   }
 }
 
-/**
- * Round N+7 (C) + #2916: the citation form of the committed merged body.
- * A liftable incoming marker still wins. The fallback attaches only when
- * the current template can be re-matched later. An already-recognized
- * marker — current, default, or a prior configured format still in
- * history — is left in place so a template change does not duplicate it.
- * All-placeholder templates cannot be stripped, so they are not attached.
- */
 export function committedMergedBody(
   deps: ExtractionPersistDeps,
   mergedContent: string,
@@ -389,12 +264,6 @@ export function committedMergedBody(
   );
 }
 
-/**
- * Round N+2 (C) — the canonical RAW pre-citation merged body for hashing.
- * Strips every recognized citation form (current, default, and any prior
- * configured template still in history). All-placeholder templates are
- * not attached on the merge path, so they never reach this hash input.
- */
 export function rawPreCitationMergedBody(deps: ExtractionPersistDeps, mergedContent: string): string {
   if (resolvePipelineProcessingCapabilities(deps.config).inlineSourceAttribution !== true) {
     return mergedContent;
@@ -402,14 +271,6 @@ export function rawPreCitationMergedBody(deps: ExtractionPersistDeps, mergedCont
   return stripRecognizedCitations(mergedContent, citationTemplatesForMerge(deps.config));
 }
 
-/**
- * Round N+16 (C): the fact-hash identity of the COMMITTED merged body —
- * the same raw sanitized rule the provenance patch stamps. The degraded
- * repair registers THIS value (what storage actually holds), never the
- * record's persisted `frontmatter.contentHash`, which on that path is the
- * stale PRE-merge identity. Undefined for non-fact categories (hash ops
- * are fact-category no-ops there).
- */
 export function committedMergedFactHash(
   deps: ExtractionPersistDeps,
   category: string,
@@ -419,20 +280,6 @@ export function committedMergedFactHash(
   return ContentHashIndex.computeHash(sanitizeMemoryContent(rawPreCitationMergedBody(deps, committedContent)).text);
 }
 
-/**
- * Round N+19 (B): durably persist the degraded merge's repaired hash. The
- * round-N+16 C repair registered the committed body's hash in the
- * process-local fact-hash index, but the record's PERSISTED frontmatter
- * `contentHash` still carried the stale pre-merge identity — and a restart's
- * first-use index rebuild derives hashes from the durable corpus, where
- * `corpusRegisteredHashes` returns the stale persisted value whenever it
- * disagrees with the current body. The repair was therefore discarded on
- * restart. This restamps the persisted identity to the committed body's hash
- * through the same conditional frontmatter API the provenance patch uses: a
- * writer that replaced the record meanwhile fails the compare and keeps its
- * own (correct) identity. Best-effort — failures are logged, never fatal to
- * the degraded merge.
- */
 export async function persistRepairedContentHash(
   storage: {
     getMemoryByIdIncludingArchived: (id: string) => Promise<MemoryFile | null>;

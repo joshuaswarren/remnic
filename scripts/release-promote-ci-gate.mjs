@@ -1,75 +1,4 @@
 #!/usr/bin/env node
-/**
- * CI gate for release-promote.yml (extracted into a script for testability,
- * issue #3032). Owns only the decision; commit/parent/PR resolution and the
- * ruleset fetch stay in the workflow (those touch the network and the
- * workflow already owns that surface).
- *
- * Input (one of):
- *   --input <JSON STRING>   pipe a JSON document directly
- *   --input-file <path>    read the JSON document from a file (the workflow
- *                          writes the merged check-run + commit-status record
- *                          set to RUNNER_TEMP and passes the path here)
- *   stdin                  default when neither --input nor --input-file
- *                          is given
- * Document shape:
- *   { "type": "check-runs", "records": [ { name, status, conclusion,
- *                                           completed_at?, started_at?,
- *                                           id?, source?, app?: { id } }, ... ] }
- *   Records may be check-runs (from /commits/{sha}/check-runs) and/or
- *   commit statuses (from /commits/{sha}/status), normalized to the same
- *   shape by the workflow before being handed to this script. Statuses
- *   arrive with their `updated_at` projected into both `started_at` and
- *   `completed_at`, so every status record is timestamped.
- *
- * CLI:
- *   --required-contexts <JSON array>   required strings or
- *     { context, integration_id? } pairs from the ruleset; null/omitted/-1
- *     integration_id means any app, a positive integer pins verified app.id.
- *   --self-excluded    <JSON array of strings>    optional, names that never
- *                                                 block even if required
- *
- * Output: { decision: "allow" | "refuse", reasons: string[] }
- *
- * Rules:
- *   - Zero records is refuse ("no CI evidence"). Zero records cannot be a
- *     pass; it is evidence the evaluated commit was never tested.
- *   - Required contexts are the single source of truth. Non-required
- *     contexts (Dependabot, latest-openclaw-scanner, `checks`, etc.) cannot
- *     block. If the ruleset API cannot be read the workflow must NOT call
- *     this script with an empty required list — it fails the step.
- *   - Pinned requirements only consider records from their integration.
- *     Check-runs carry app.id directly; legacy statuses are enriched by the
- *     workflow using their bot creator and GitHub's app endpoint. Unverified
- *     authors cannot satisfy a pin. Status/check-run verdicts stay independent.
- *   - For each required context, take the LATEST record (per
- *     `completed_at`; falls back to `started_at`; falls back to the
- *     record `id` when a record carries no timestamps at all — that
- *     only happens for a never-started run, and such a record then
- *     supersedes timestamped ones, which fails the gate closed).
- *     Rulesets evaluate the latest run per
- *     context — earlier runs are superseded. Refuse if that latest record
- *     is unfinished (status != "completed" or conclusion == null) OR its
- *     conclusion is in the failure set {failure, cancelled, timed_out,
- *     action_required, stale, pending, startup_failure}.
- *   - The verdict is allow-list on the conclusion: only `success` is green.
- *     `skipped`, `neutral`, and unknown values are NOT green. The repo's
- *     own `ai-reviewers` gate deliberately posts `neutral` for superseded
- *     runs and `skipped` for path-filtered jobs; treating those as green
- *     would let a required review gate with no real verdict authorise a
- *     promotion.
- *   - A required context that has NO records at all is refuse (fail closed).
- *     This fires when the ruleset gained a new required context after the
- *     merge OR when the required context is reported only as a commit status
- *     and the workflow's records fetch missed it (the workflow merges both
- *     endpoints to minimise this).
- *   - Records for `promote` (the workflow's own job) never block, even if
- *     it ever leaks into the required list. Defence in depth — the
- *     promoter dispatching against its own sources should never self-block.
- *
- * The script reads either stdin or --input/--input-file; it does not call
- * the network. Its `decide` export is a pure function over its inputs.
- */
 
 import process from "node:process";
 
@@ -83,10 +12,6 @@ const FAILURE_CONCLUSIONS = new Set([
   "startup_failure",
 ]);
 
-// Only `success` is green. `skipped` (path-filtered) and `neutral`
-// (superseded) are not verdicts the gate can rely on; they are recorded as
-// refusal triggers so a required review that never produced a real opinion
-// cannot authorise a promotion.
 const ALLOW_CONCLUSIONS = new Set(["success"]);
 
 const SELF_EXCLUDED_DEFAULT = ["promote"];
@@ -187,7 +112,6 @@ export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_D
     if (selfSet.has(name)) continue;
     const pinned = integrationId != null && integrationId !== -1;
     const bySource = new Map();
-    // ponytail: scan once per required check; index if rulesets grow beyond a small context list.
     for (const r of records) {
       if (!r || r.name !== name) continue;
       const source = typeof r.source === "string" && r.source !== "" ? r.source : "check-run";

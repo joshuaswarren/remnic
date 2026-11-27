@@ -138,10 +138,6 @@ export class XMcpClient {
     this.clientVersion = options.clientVersion ?? "1.0.0";
   }
 
-  /**
-   * Calls an MCP tool. Re-initializes once when the server rejects the
-   * session id (e.g. expired session), then retries the call.
-   */
   async callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<XMcpToolCallResult> {
     return this.withSessionRetry(async () => {
       const { result } = await this.rpcMessage(
@@ -190,7 +186,6 @@ export class XMcpClient {
       return await operation();
     } catch (err) {
       if (err instanceof XMcpError && err.status === 404) {
-        // Session expired server-side: drop it and retry once on a fresh session.
         this.sessionId = null;
         await this.ensureSession();
         return operation();

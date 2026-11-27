@@ -995,8 +995,6 @@ test("codex typed timeout wins past the outer deadline within the settle grace",
     (request) => {
       const { promise, reject } = Promise.withResolvers<never>();
       const onAbort = (): void => {
-        // Real timer by design: the settle grace itself is wall-clock
-        // behavior under test. Lands inside the grace (T=250 -> 25ms).
         setTimeout(() => reject(new CodexSubscriptionTimeoutError(250)), 5);
       };
       if (request.options.signal?.aborted) {
@@ -1056,8 +1054,6 @@ test("outer deadline stays the hard bound when the runner settles after the grac
     (request) => {
       const { promise, reject } = Promise.withResolvers<never>();
       const onAbort = (): void => {
-        // Real timer by design: the hard bound must hold against a provider
-        // that outlives the grace. Lands past it (T=250 -> 25ms grace).
         setTimeout(() => {
           reject(new CodexSubscriptionTimeoutError(250));
           lateSettled.resolve();
@@ -1098,7 +1094,6 @@ test("outer deadline stays the hard bound when the runner settles after the grac
       [{ role: "user", content: "Say OK" }],
       { temperature: 0, maxTokens: 16, timeoutMs: 250 },
     );
-    // Await the runner's actual late rejection — observed, never unhandled.
     await lateSettled.promise;
   } finally {
     restoreRunner();
@@ -1484,7 +1479,6 @@ test("fallback llm adds reasoningHeadroomTokens to max_output_tokens on the Resp
 
   try {
     const messages = [{ role: "user" as const, content: "Say OK" }];
-    // Non-finite headroom is ignored, like a negative one.
     await llm.chatCompletion(messages, { temperature: 0, maxTokens: 8, reasoningHeadroomTokens: Number.NaN });
     await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64, reasoningHeadroomTokens: 1024 });
     await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64 });
@@ -1676,7 +1670,6 @@ test("fallback llm appends gateway default model as implicit last resort when ch
       },
     );
 
-    // All chain models failed, but gateway default model was appended and succeeds
     assert.equal(response?.content, "default-model ok");
     assert.equal(response?.modelUsed, "openai/default-model");
     assert.deepEqual(attemptedModels, ["stale-primary", "stale-fallback", "default-model"]);
@@ -1739,7 +1732,6 @@ test("fallback llm does not duplicate gateway default model when it is already i
       },
     );
 
-    // The default model is already primary in the chain — should not be appended again
     assert.equal(response?.content, "ok");
     assert.equal(response?.modelUsed, "openai/default-model");
     assert.deepEqual(attemptedModels, ["default-model"]);
@@ -1796,8 +1788,6 @@ test("fallback llm does not append gateway default model when no chain is provid
       { temperature: 0, maxTokens: 16 },
     );
 
-    // Without modelChainOverride, the chain is built from agents.defaults.model;
-    // the default model is already the primary, so no duplication
     assert.equal(response?.content, "ok");
     assert.equal(response?.modelUsed, "openai/default-model");
     assert.deepEqual(attemptedModels, ["default-model"]);
@@ -1809,22 +1799,18 @@ test("fallback llm does not append gateway default model when no chain is provid
 });
 
 test("gatewayTaskChainOptions resolves the single source of truth for task routing", () => {
-  // taskModelChain wins over gatewayAgentId in gateway mode.
   assert.deepEqual(
     gatewayTaskChainOptions({ modelSource: "gateway", gatewayAgentId: "persona", taskModelChain: { primary: "zai/glm-4.7-flash" } }),
     { modelChain: { primary: "zai/glm-4.7-flash" } },
   );
-  // Falls back to gatewayAgentId when no taskModelChain.
   assert.deepEqual(
     gatewayTaskChainOptions({ modelSource: "gateway", gatewayAgentId: "persona", taskModelChain: undefined }),
     { agentId: "persona" },
   );
-  // Empty when gateway mode but neither configured.
   assert.deepEqual(
     gatewayTaskChainOptions({ modelSource: "gateway", gatewayAgentId: "", taskModelChain: undefined }),
     {},
   );
-  // Plugin mode never routes through the chain, even if taskModelChain is set.
   assert.deepEqual(
     gatewayTaskChainOptions({ modelSource: "plugin", gatewayAgentId: "persona", taskModelChain: { primary: "zai/glm-4.7-flash" } }),
     {},
@@ -1835,8 +1821,6 @@ test("fallback llm last-resort appends the full gateway default chain (primary +
   clearModelsJsonCache();
   clearSecretCache();
 
-  // taskModelChain exhausted AND default primary unreachable — a listed default
-  // fallback must still be tried (cursor review #1425).
   const llm = new FallbackLlmClient({
     agents: {
       defaults: { model: { primary: "openai/default-primary", fallbacks: ["openai/default-fallback"] } },
@@ -1893,9 +1877,6 @@ test("fallback llm does NOT append gateway default to a persona chain (last-reso
   clearModelsJsonCache();
   clearSecretCache();
 
-  // A persona chain that deliberately excludes the gateway default. Without a
-  // modelChain override, the implicit last-resort must NOT augment it, so the
-  // main agent's persona fallback behavior is preserved (gotcha #39).
   const llm = new FallbackLlmClient({
     agents: {
       defaults: { model: { primary: "openai/default-model" } },
@@ -1931,7 +1912,6 @@ test("fallback llm does NOT append gateway default to a persona chain (last-reso
     );
 
     assert.equal(response?.modelUsed, "openai/persona-model");
-    // The gateway default must not be appended to the persona chain.
     assert.deepEqual(attemptedModels, ["persona-model"]);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1944,9 +1924,6 @@ test("fallback llm does NOT append default for a primary-less override that fall
   clearModelsJsonCache();
   clearSecretCache();
 
-  // A primary-less override ({}) is inactive — chain resolution uses the persona
-  // chain. The implicit last-resort must key on the SAME activation condition
-  // (override.primary), so the persona chain is not augmented with the default.
   const llm = new FallbackLlmClient({
     agents: {
       defaults: { model: { primary: "openai/default-model" } },
@@ -2059,7 +2036,6 @@ test("fallback llm does not retry schema-stripping for unrelated unsupported err
   globalThis.fetch = (async (_url, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     bodies.push(body);
-    // Unrelated provider error: "unsupported" without schema/format context.
     return new Response(JSON.stringify({ error: { message: "'temperature' is unsupported with this model" } }), { status: 400 });
   }) as typeof fetch;
   try {
@@ -2067,7 +2043,6 @@ test("fallback llm does not retry schema-stripping for unrelated unsupported err
       jsonSchema: { name: "test_result", schema: { type: "object" } },
     });
     assert.equal(response, null);
-    // Exactly one request: no schema-stripping duplicate for unrelated errors.
     assert.equal(bodies.length, 1);
   } finally {
     globalThis.fetch = originalFetch;
@@ -2091,7 +2066,6 @@ test("fallback llm retries without responsesJsonSchema when the Responses API re
     if ((body as { text?: { format?: unknown } }).text?.format) {
       return new Response('text.format json_schema is unsupported', { status: 400 });
     }
-    // Model 1 always fails content-wise; model 2 succeeds.
     const model = String(body.model ?? "");
     if (model.endsWith("test-model")) {
       return new Response(JSON.stringify({ output_text: "not json" }), { status: 200 });
@@ -2104,8 +2078,6 @@ test("fallback llm retries without responsesJsonSchema when the Responses API re
       acceptResponse: (r) => r.content.includes("ok"),
     });
     assert.ok(response?.content.includes("ok"));
-    // model1: schema attempt (rejected) + unstructured retry (bad output)
-    // model2: unstructured only — the schema must NOT be re-sent chain-wide.
     assert.equal(bodies.length, 3);
     assert.ok((bodies[0] as { text?: { format?: unknown } }).text?.format);
     assert.equal((bodies[1] as { text?: { format?: unknown } }).text?.format, undefined);

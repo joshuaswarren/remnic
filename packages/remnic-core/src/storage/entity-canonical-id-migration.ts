@@ -49,13 +49,6 @@ const EntityCanonicalIdMigrationStateSchema = z.object({
   complete: z.boolean(),
   mappings: z.record(z.string(), z.string().min(1)),
   completionFingerprint: z.string().optional(),
-  /**
-   * Pairs the migration refused to resolve, PARKED rather than dropped.
-   * Deleting the record would strand the collision: once an operator removes
-   * the legacy file, no later scan can rediscover the mapping, so references
-   * still naming the legacy id would never be rewritten. Optional so a journal
-   * written by an older build still parses.
-   */
   blocked: z.record(z.string(), z.string().min(1)).optional(),
 });
 
@@ -103,12 +96,6 @@ async function fingerprintPath(filePath: string): Promise<string> {
     : "missing";
 }
 
-/**
- * Completion fingerprint for migration inputs only. Entity entry identities
- * catch same-path edits that do not change the directory inode; the cooperative
- * sentinel covers managed writes. Memory-corpus writes stay excluded so plain
- * fact writes do not reopen migration.
- */
 export async function getFingerprint(
   baseDir: string,
   entitiesDir: string,
@@ -122,8 +109,6 @@ export async function getFingerprint(
     consumingFingerprint,
   ] = await Promise.all([
     fingerprintPath(entitiesDir),
-    // The entry enumeration is one lstat per entity file — a corpus-sized
-    // syscall storm on the main thread. It runs in the corpus-scan worker.
     corpusScanWorker.request({ kind: "entity-entries-fingerprint", entitiesDir }),
     fingerprintPath(path.join(baseDir, "config", "aliases.json")),
     fingerprintPath(path.join(baseDir, "state", ENTITY_CANONICAL_ID_RECONCILE_MARKER)),
@@ -276,14 +261,6 @@ async function writeState(
   }
 }
 
-/**
- * Every journal publish — additive merges, completion markers, prunes —
- * serializes under the entity MUTATION lock (issue #2213 review): entity
- * writers, post-persist repair settles, and tombstone appends revalidate
- * the journal identity under that lock, so an unlocked publish could land
- * inside their resolve→write window and strand the write on a superseded
- * id space.
- */
 async function publishState(
   deps: EntityCanonicalIdMigrationDependencies,
   state: EntityCanonicalIdMigrationState
@@ -368,13 +345,6 @@ export async function readSafeEntityEntries(entitiesDir: string): Promise<string
   return entries;
 }
 
-/**
- * Legacy ids the migration cannot resolve on its own, mapped to the canonical
- * id they collide with. Two entity files describing one entity is an ORDINARY
- * operator state, and picking a winner would silently drop whichever side lost.
- * So the pair is skipped and reported: reads of the legacy id keep working
- * exactly as they did before the migration ran.
- */
 export type BlockedEntityPairs = Map<string, string>;
 
 interface EntityScanNotes {
@@ -390,19 +360,9 @@ async function discoverMappings(
 ): Promise<Record<string, string>> {
   const mappings: Record<string, string> = {};
   const canonicalOwners = new Map<string, string[]>();
-  // Blocks describe THIS scan of the directory, so they are rebuilt per pass.
-  // Accumulating them across a run would let a collision another writer has
-  // since resolved keep pruning its now-valid mapping: the entity file gets
-  // renamed while the pruned mapping skips the reference rewrite, stranding
-  // memories on a filename that no longer exists.
   blocked.clear();
   const entityEntries = await readSafeEntityEntries(deps.entitiesDir);
   for (const entry of entityEntries) {
-    // AppleDouble (`._*`) and `.DS_Store` are Finder metadata, not entity
-    // files. A real file that cannot be parsed is left in place: this scan
-    // runs during directory init, and aborting it took the daemon down.
-    // Skipping is the same outcome as the old throw (the file is not
-    // rewritten) without refusing to boot. Symlink checks above still run.
     if (isMacOsReplicationJunkBasename(entry)) {
       scanNotes?.junk.add(entry);
       continue;
@@ -443,9 +403,6 @@ async function discoverMappings(
     canonicalOwners.set(canonicalId, [...(canonicalOwners.get(canonicalId) ?? []), legacyId]);
     mappings[legacyId] = canonicalId;
   }
-  // A canonical id claimed by more than one legacy file has no non-arbitrary
-  // winner, and readdir order is not stable (§6) - so the "winner" would differ
-  // between hosts reading identical data. Block every claimant instead.
   for (const [canonicalId, claimants] of canonicalOwners) {
     if (claimants.length < 2) continue;
     for (const legacyId of claimants) {
@@ -772,8 +729,6 @@ async function migrateEntityFilePair(
         deps.isEncryptedStorageFile(canonicalPath),
       ]);
       if (legacyContent !== canonicalContent) {
-        // A mapping persisted by an older build, or a file changed since
-        // discovery. Same verdict as discovery: skip the pair, keep both files.
         return { deferred: false, progressed: false, blocked: true };
       }
       if (legacyEncrypted && !canonicalEncrypted) {
@@ -803,9 +758,6 @@ async function migrateEntityFilePair(
     const entityContent = await deps.readStorageSecureFile(legacyPath);
     await assertNotSymlink(legacyPath, legacyId);
     await assertEntityContentUnchanged(deps, legacyPath, entityContent, legacyId);
-    // A journal entry must not relocate Finder metadata or a record this scan
-    // would leave in place. readStorageSecureFile has already decrypted, so
-    // the check is on that plaintext. The mapping stays for a later repair.
     if (
       isMacOsReplicationJunkBasename(path.basename(legacyPath))
       || isMalformedEntityRecord(entityContent)
@@ -856,12 +808,6 @@ export async function migrateLegacyEntityCanonicalIds(
       if (!acquired) throw new Error("Timed out waiting for active entity canonical-id migration.");
       await deps.validateMemoryScanRoots?.();
       await readSafeEntityEntries(deps.entitiesDir);
-      // A raw-byte writer (offline sync, consolidation-undo, governance
-      // restore) may have landed memory bytes this process never vetted; the
-      // marker requests ONE reference-reconciliation pass (issue #2213). The
-      // observed generation is RENAMED aside before the pass so a request made
-      // WHILE this run scans creates a fresh marker that survives finish() —
-      // and a `.consuming` file left by a crashed run still owes its pass.
       const reconcileMarkerPath = path.join(deps.stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER);
       const consumingMarkerPath = path.join(deps.stateDir, ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER);
       let reconcileRequested = await fileExists(consumingMarkerPath);
@@ -880,13 +826,7 @@ export async function migrateLegacyEntityCanonicalIds(
       };
       const blocked: BlockedEntityPairs = new Map();
       const scanNotes: EntityScanNotes = { junk: new Set(), malformed: new Set() };
-      // Parks for pairs whose files are GONE, tracked separately from
-      // collision parks: pruneBlocked drops these (the canonical file is gone
-      // too), and the rescan's blocked.clear() would otherwise silence them
-      // before finish() reports anything.
       const staleParked: BlockedEntityPairs = new Map();
-      // ONE aggregated line per run, not one per pair per restart: this used to
-      // abort the daemon, so the operator needs the whole list and the remedy.
       const finish = async (): Promise<string | undefined> => {
         if (blocked.size > 0) {
           const pairs = [...blocked].map(([legacyId, canonicalId]) => `${legacyId} -> ${canonicalId}`).join(", ");
@@ -912,26 +852,11 @@ export async function migrateLegacyEntityCanonicalIds(
             + "Each file was left in place; startup continues. Fix or remove the file to migrate it.",
           );
         }
-        // Every finish() path either just rewrote references (main/reconcile
-        // paths), has none to rewrite (empty mappings), or observed no marker
-        // (stable no-op) — so the CONSUMED generation is removed here. A fresh
-        // marker written mid-run is untouched, and a crash before this point
-        // leaves `.consuming` set for the next run (the rewrite is idempotent).
         if (reconcileRequested) {
           await unlink(consumingMarkerPath).catch((error: unknown) => {
             if (!isErrnoCode(error, "ENOENT")) throw error;
           });
         }
-        // A FRESH marker written while this run scanned means bytes landed the
-        // pass may not have covered. Withholding the completion fingerprint
-        // makes the runner's stability check fail, so it immediately retries —
-        // and the retry consumes the fresh generation. ORDER MATTERS: read the
-        // fingerprint BEFORE the marker check. A marker landing after the
-        // fingerprint read but before the check is caught by the check; one
-        // landing after the check is absent from the returned fingerprint, so
-        // the live marker mismatches the runner's cached completion and the
-        // next ensure() re-invokes. Checking first left a window where the
-        // fingerprint could SEAL a marker the check never saw.
         const completionFingerprint = await deps.readMigrationFingerprint?.();
         if (await fileExists(reconcileMarkerPath)) return undefined;
         if (completionFingerprint !== undefined && state.completionFingerprint !== completionFingerprint) {
@@ -940,20 +865,10 @@ export async function migrateLegacyEntityCanonicalIds(
         }
         return completionFingerprint;
       };
-      /**
-       * Drop blocked pairs from the working set. Discovery only refuses to
-       * ADD them; a mapping persisted by an earlier run would otherwise still
-       * be applied - migrating one claimant and rewriting every reference onto
-       * the canonical file, i.e. picking the winner this fix exists to avoid,
-       * off stale state rather than what is on disk.
-       */
       /** @returns true when a park was promoted back into the mapping set. */
       const pruneBlocked = async (): Promise<boolean> => {
         const current = state;
         if (!current) return false;
-        // THIS scan's verdict wins over the journal: normalization can change
-        // between runs, so a stale parked target would otherwise be promoted
-        // later and rewrite references onto an id that does not exist.
         let revived = false;
         const parked: Record<string, string> = { ...(current.blocked ?? {}) };
         const active: Record<string, string> = {};
@@ -961,24 +876,12 @@ export async function migrateLegacyEntityCanonicalIds(
           if (!blocked.has(legacyId)) active[legacyId] = canonicalId;
         }
         for (const [legacyId, canonicalId] of blocked) parked[legacyId] = canonicalId;
-        // A parked pair whose legacy file is gone was resolved by keeping the
-        // canonical side. The rename is moot; the reference rewrite is not, and
-        // this record is the only thing that can still perform it.
-        // A park survives ONLY while this scan re-establishes the collision.
-        // Anything else - the scan found a real migration, or found the source
-        // needs none (already canonical under a newer normalization) - makes
-        // the record obsolete, and keeping it lets a later deletion promote a
-        // target the entity never occupied.
         for (const [legacyId, canonicalId] of Object.entries(parked)) {
           if (blocked.has(legacyId)) continue;
           delete parked[legacyId];
           if (active[legacyId] !== undefined) continue;
           const legacyPath = deps.resolveEntityFilePath(legacyId);
           if (legacyPath !== null && (await fileExists(legacyPath))) continue;
-          // Resolve the parked target through ACTIVE moves before deciding
-          // its file is gone: a parked A -> B beside an active B -> C must
-          // promote to A -> C and rewrite, not drop because B was moved
-          // out-of-band. Only a target with no surviving file may drop.
           let target = canonicalId;
           const seenTargets = new Set<string>();
           while (active[target] !== undefined && !seenTargets.has(target)) {
@@ -993,12 +896,7 @@ export async function migrateLegacyEntityCanonicalIds(
           active[legacyId] = target;
           revived = true;
         }
-        // Reviving a whole chain at once yields A -> B -> C, and each rewrite
-        // surface makes a different number of passes over it - so collapse
-        // transitively before anything consumes the set.
         const collapsed = collapseMappings(active);
-        // Parked targets follow ACTIVE moves only: hopping over a still-blocked
-        // link would jump to an id the migration has not been allowed to reach.
         for (const [legacyId, canonicalId] of Object.entries(parked)) {
           const moved = collapsed[canonicalId];
           if (moved !== undefined && moved !== legacyId) parked[legacyId] = moved;
@@ -1007,10 +905,6 @@ export async function migrateLegacyEntityCanonicalIds(
           Object.keys(a).length === Object.keys(b).length
           && Object.entries(a).every(([key, value]) => b[key] === value);
         if (same(collapsed, current.mappings) && same(parked, current.blocked ?? {})) return revived;
-        // Parking/removing an active mapping mid-entity-write would land an
-        // alias/activity/relationship mutation on a now-unrelated canonical
-        // claimant — the reconcile pass rewrites references, it cannot move
-        // a misplaced mutation. publishState serializes under the lock.
         state = { ...current, mappings: collapsed, blocked: parked };
         await publishState(deps, state);
         return revived;
@@ -1031,26 +925,12 @@ export async function migrateLegacyEntityCanonicalIds(
         );
         const revivedBefore = await pruneBlocked();
         const mergedBefore = collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredBefore));
-        // Stable completed journal → no-op (issue #2213). Retained mappings are
-        // read-compat state whose references were already rewritten (to
-        // convergence) before `complete: true` was persisted, so re-running
-        // `rewriteKnownReferences` here re-read the ENTIRE hot+cold+archived
-        // corpus — twice — and invalidated every memory cache on EVERY
-        // `ensureDirectories()`. On a write-active daemon that was a
-        // self-sustaining hot loop (multi-GB/s of re-reads, caches never warm,
-        // recall degraded to the fallback path). A park revived by THIS run's
-        // pruneBlocked still owes its reference rewrite: it falls through to
-        // the main flow below, which demotes `complete` BEFORE rewriting — so
-        // a crash mid-rewrite resumes, which the old in-place rewrite did not.
         if (
           state.complete
           && Object.keys(discoveredBefore).length === 0
           && !mappingsChanged
           && !revivedBefore
         ) {
-          // Stable journal, but a raw-byte writer requested reconciliation:
-          // run ONE bounded rewrite pass over the retained mappings, then let
-          // finish() consume the marker.
           if (reconcileRequested && Object.keys(state.mappings).length > 0) {
             const rewroteColdMemory = await rewriteKnownReferences(
               deps,
@@ -1078,10 +958,6 @@ export async function migrateLegacyEntityCanonicalIds(
             state.mappings,
             await discoverMappings(deps, state.mappings, blocked, scanNotes),
           );
-          // Reconcile before declaring completion: this rescan can resolve a
-          // park (another writer removed the legacy file), and completing
-          // without promoting it strands its references behind a fingerprint
-          // that already reflects the deletion - so no later run revisits it.
           const revivedInRescan = await pruneBlocked();
           if (Object.keys(discoveredAfter).length === 0 && !revivedInRescan) {
             await publishState(deps, { ...state, complete: true });
@@ -1112,8 +988,6 @@ export async function migrateLegacyEntityCanonicalIds(
           }
           if (deferredMappings.length === 0) break;
           if (!progressed) {
-            // Deferred means both files are missing: no later pass can help
-            // these pairs, so park them all instead of Fatal-exiting.
             for (const [legacyId, canonicalId] of deferredMappings) {
               blocked.set(legacyId, canonicalId);
               staleParked.set(legacyId, canonicalId);
@@ -1139,10 +1013,6 @@ export async function migrateLegacyEntityCanonicalIds(
           state.mappings,
           await discoverMappings(deps, state.mappings, blocked, scanNotes),
         );
-        // A park resolved after the rewrite pass is promoted here, and a
-        // promotion still has to be APPLIED. Completing on `discoveredAfter`
-        // alone fingerprints the post-deletion corpus, so the runner never
-        // retries and those references stay stranded.
         const revivedAfterRewrite = await pruneBlocked();
         if (Object.keys(discoveredAfter).length === 0 && !revivedAfterRewrite) {
           await publishState(deps, { ...state, complete: true });

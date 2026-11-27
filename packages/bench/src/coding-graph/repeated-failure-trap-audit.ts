@@ -39,9 +39,6 @@ import {
   createRepeatedFailureProfileDriver,
   runEpisodeForAudit,
 } from "./repeated-failure-suite.js";
-// Caps and tool-output limits are shared with the suite on purpose. A local
-// copy silently diverged once and defeated a cap change, so import rather than
-// redeclare.
 import {
   DEFAULT_CAPS,
   DEFAULT_TOOL_OUTPUT_CHARS,

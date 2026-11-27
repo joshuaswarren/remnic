@@ -1,11 +1,3 @@
-/**
- * COS-666d: loading the corpus built a key-sorted JSON snapshot of every memory
- * (`createMemorySnapshot`), 5-6.6 s of synchronous main-thread work at ~120k
- * facts on every cache rebuild, for a value only `moveMemoryToPath` reads. The
- * snapshot is now derived from the raw file text the loader already keeps, at
- * the moment a tier move needs it, and means the same thing: the memory as it
- * was loaded.
- */
 
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
@@ -17,7 +9,6 @@ import { StorageManager } from "../storage.js";
 import type { MemoryFile } from "../types.js";
 import { resetStaticCaches } from "./harness.js";
 
-/** Calls to the snapshot serializer: the only JSON.stringify here that is given a replacer function. */
 async function countSnapshotCalls<T>(fn: () => Promise<T>): Promise<{ result: T; calls: number }> {
   const spy = mock.method(JSON, "stringify");
   try {
@@ -102,8 +93,6 @@ test("a memory with no retained file text falls back to an eager snapshot", asyn
     const { id } = await storage.writeMemory("fact", "no raw text");
     const loaded = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
     assert.ok(loaded);
-    // A handcrafted object has no retained raw document and was never loaded: the old fallback
-    // compares `frontmatter.updated` only, so the same state moves and a changed one is refused.
     const copy: MemoryFile = { path: loaded.path, frontmatter: { ...loaded.frontmatter }, content: loaded.content };
     assert.equal(await storage.moveMemoryToPath(copy, storage.buildTierMemoryPath(copy, "cold")), true);
   });

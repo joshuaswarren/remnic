@@ -39,20 +39,7 @@ import {
   type ConversationContextCapabilitySet,
 } from "./capabilities.js";
 
-/**
- * Characterization tests for the recall-operation CapabilitySet (issue #1523).
- *
- * These guard against composition drift: every capability field must project
- * from its `<field>Enabled` config flag, so a future edit to
- * `resolveCapabilities` that accidentally maps a field to the wrong flag (the
- * rule-39 gate-divergence class, moved up one layer) fails loudly here.
- */
 
-/**
- * Map of CapabilitySet field → the PluginConfig flag it projects from.
- * Kept explicit (rather than derived by string concat) so the two graph flags
- * with non-`<field>Enabled` names are covered too.
- */
 const FIELD_TO_FLAG: Record<keyof CapabilitySet, string> = {
   rerankCache: "rerankCacheEnabled",
   recallDirectAnswer: "recallDirectAnswerEnabled",
@@ -66,7 +53,6 @@ const FIELD_TO_FLAG: Record<keyof CapabilitySet, string> = {
   graphRecall: "graphRecallEnabled",
   graphAssistInFullMode: "graphAssistInFullModeEnabled",
   graphExpandedIntent: "graphExpandedIntentEnabled",
-  // Issue #1566 Cluster C: mixed-operation flags.
   rerank: "rerankEnabled",
   harmonicRetrieval: "harmonicRetrievalEnabled",
   parallelRetrieval: "parallelRetrievalEnabled",
@@ -75,7 +61,6 @@ const FIELD_TO_FLAG: Record<keyof CapabilitySet, string> = {
 const FIELDS = Object.keys(FIELD_TO_FLAG) as Array<keyof CapabilitySet>;
 
 test("resolveCapabilities projects every field from its <field>Enabled flag (true variant)", () => {
-  // Build a config where every migrated flag is explicitly true.
   const overrides: Record<string, boolean> = {};
   for (const flag of Object.values(FIELD_TO_FLAG)) overrides[flag] = true;
   const config = parseConfig(overrides);
@@ -100,8 +85,6 @@ test("resolveCapabilities projects every field from its <field>Enabled flag (fal
 
   for (const field of FIELDS) {
     const flag = FIELD_TO_FLAG[field];
-    // The two optional graph flags carry default-when-undefined semantics, but
-    // when explicitly set to a concrete boolean the projection must match it.
     assert.equal(
       caps[field],
       (config as unknown as Record<string, boolean>)[flag],
@@ -112,10 +95,6 @@ test("resolveCapabilities projects every field from its <field>Enabled flag (fal
 });
 
 test("resolveCapabilities preserves optional-flag defaults when the flag is undefined", () => {
-  // parseConfig with no overrides exercises the documented defaults. The two
-  // optional graph flags encode asymmetric defaults on purpose:
-  //   graphAssistInFullModeEnabled → default-ON  (`!== false`)
-  //   graphExpandedIntentEnabled    → default-OFF (`=== true`)
   const config = parseConfig({});
   const caps = resolveCapabilities(config);
 
@@ -137,11 +116,6 @@ test("resolveCapabilities returns a frozen object", () => {
 });
 
 test("resolveCapabilities is deterministic — same config always yields identical gate values (one-resolution-per-op #1523)", () => {
-  // The one-resolution-per-op contract (issue #1523): resolve ONCE at the
-  // operation entry, thread the frozen result down. This test proves the
-  // resolution is deterministic — calling it twice with the same config
-  // produces identical values for every gate, so there is never a reason to
-  // re-resolve mid-operation.
   const config = parseConfig({
     rerankCacheEnabled: true,
     recallDirectAnswerEnabled: false,
@@ -158,24 +132,12 @@ test("resolveCapabilities is deterministic — same config always yields identic
       `field ${field} must be deterministic across resolutions`,
     );
   }
-  // Both must be frozen — a mid-operation mutation would break the contract.
   assert.equal(Object.isFrozen(first), true);
   assert.equal(Object.isFrozen(second), true);
 });
 
 
-// ---------------------------------------------------------------------------
-// GraphConstructionCapabilitySet — gate-parity tests (issue #1566 Cluster A).
 //
-// Same invariant as the recall CapabilitySet tests above: every caps field
-// must project from its `<field>Enabled` config flag, so a future edit to
-// `resolveGraphConstructionCapabilities` that maps a field to the wrong flag
-// (or drops the `!== false` default for the optional session-adjacency flag)
-// fails loudly here.
-//
-// Parity contract: a caps-resolved run and a config-derived run MUST produce
-// identical boolean values for every gate — on AND off. These tests are the
-// executable proof of that contract.
 // ---------------------------------------------------------------------------
 
 import {
@@ -236,10 +198,6 @@ test("resolveGraphConstructionCapabilities projects every field from its flag (f
 });
 
 test("resolveGraphConstructionCapabilities preserves graphWriteSessionAdjacency default-on when undefined", () => {
-  // graphWriteSessionAdjacencyEnabled is optional — `!== false` means
-  // default-ON. This is the exact semantics the migrated call site used
-  // (orchestrator.ts buildGraphEdge), and the parity test below verifies
-  // the caps resolver does not drift from it.
   const config = parseConfig({});
   const graphCaps = resolveGraphConstructionCapabilities(config);
 
@@ -254,7 +212,6 @@ test("resolveGraphConstructionCapabilities preserves graphWriteSessionAdjacency 
     "with no explicit override, graphWriteSessionAdjacency should be true",
   );
 
-  // Explicit-false must propagate (not get swallowed by the default).
   const disabled = parseConfig({ graphWriteSessionAdjacencyEnabled: false });
   assert.equal(
     resolveGraphConstructionCapabilities(disabled).graphWriteSessionAdjacency,
@@ -269,17 +226,7 @@ test("resolveGraphConstructionCapabilities returns a frozen object", () => {
 });
 
 test("resolveGraphConstructionCapabilities matches pre-migration config reads (parity contract)", () => {
-  // This is the core parity test: for EVERY combination of the 5 cluster-A
-  // flags, the caps-resolved values MUST be identical to what the old
-  // scattered `this.config.<flag>Enabled` reads would have produced.
   //
-  // We exercise representative combinations rather than the full 2^5 space
-  // (32 cases) to keep the test cheap, but we cover:
-  //   - all-off (the "no graphs" baseline)
-  //   - all-on (the "full graph" mode)
-  //   - only entity graph
-  //   - multiGraph off but others on (the recall-without-write split)
-  //   - session-adjacency undefined vs explicit-false
   const cases: Record<string, Record<string, boolean | undefined>> = {
     "all-off": {
       entityGraphEnabled: false,
@@ -322,11 +269,6 @@ test("resolveGraphConstructionCapabilities matches pre-migration config reads (p
     const config = parseConfig(overrides);
     const graphCaps = resolveGraphConstructionCapabilities(config);
 
-    // Parity: each caps field must equal the pre-migration config read.
-    // entityGraph/timeGraph/causalGraph/multiGraphMemory used bare reads:
-    //   config.entityGraphEnabled  → graphCaps.entityGraph
-    // graphWriteSessionAdjacency used `!== false`:
-    //   config.graphWriteSessionAdjacencyEnabled !== false  → graphCaps.graphWriteSessionAdjacency
     assert.equal(graphCaps.entityGraph, config.entityGraphEnabled, `[${label}] entityGraph parity`);
     assert.equal(graphCaps.timeGraph, config.timeGraphEnabled, `[${label}] timeGraph parity`);
     assert.equal(graphCaps.causalGraph, config.causalGraphEnabled, `[${label}] causalGraph parity`);
@@ -345,16 +287,8 @@ test("resolveGraphConstructionCapabilities matches pre-migration config reads (p
 
 
 // ---------------------------------------------------------------------------
-// MemoryLifecycleCapabilitySet — gate-parity tests (issue #1523 batch 3).
 //
-// Same invariant as the sets above: every caps field must project from its
-// `<field>Enabled` config flag, so a future edit that maps a field to the wrong
-// flag fails loudly here. All ten flags are required booleans on PluginConfig
-// (defaults resolved at the parse boundary), so the projection is a pure
-// passthrough — no optional-default variants needed.
 //
-// Parity contract: a caps-resolved run and a config-derived run MUST produce
-// identical boolean values for every gate — on AND off.
 // ---------------------------------------------------------------------------
 
 const LIFECYCLE_FIELD_TO_FLAG: Record<keyof MemoryLifecycleCapabilitySet, string> = {
@@ -418,12 +352,6 @@ test("resolveMemoryLifecycleCapabilities returns a frozen object", () => {
 });
 
 test("resolveMemoryLifecycleCapabilities matches pre-migration config reads (parity contract)", () => {
-  // For representative on/off combinations, the caps-resolved values MUST be
-  // identical to what the old scattered `this.config.<flag>Enabled` reads
-  // produced. All ten flags used bare reads (no `!== false`/`=== true` at the
-  // call site that would change the value — the two sites that wrote
-  // `=== true` were redundant coercion on an already-boolean config field),
-  // so parity is a direct equality against the resolved config boolean.
   const cases: Record<string, Record<string, boolean>> = {
     "all-off": {
       temporalSupersessionEnabled: false,
@@ -496,15 +424,9 @@ test("resolveMemoryLifecycleCapabilities matches pre-migration config reads (par
 
 
 // ---------------------------------------------------------------------------
-// IndexingCapabilitySet — gate-parity tests (issue #1523 batch 4).
 //
-// Same invariant as the sets above: every caps field must project from its
-// `<field>Enabled` config flag. All two flags are required booleans on
-// PluginConfig (defaults resolved at the parse boundary), so the projection
-// is a pure passthrough.
 //
 // Parity contract: a caps-resolved run and a config-derived run MUST produce
-// identical boolean values for every gate — on AND off.
 // ---------------------------------------------------------------------------
 
 import {
@@ -587,7 +509,6 @@ test("resolveIndexingCapabilities matches pre-migration config reads (parity con
 });
 
 // ---------------------------------------------------------------------------
-// CreationMemoryCapabilitySet — gate-parity tests (issue #1523 batch 4).
 // ---------------------------------------------------------------------------
 
 import {
@@ -680,11 +601,7 @@ test("resolveCreationMemoryCapabilities matches pre-migration config reads (pari
 });
 
 // ---------------------------------------------------------------------------
-// Namespace capability set parity tests (issue #1523 batch 5).
 //
-// Guard: resolveNamespaceCapabilities(config).namespaces must always equal
-// config.namespacesEnabled. The flag is a non-optional boolean so no default
-// coercion is needed.
 // ---------------------------------------------------------------------------
 
 test("resolveNamespaceCapabilities: namespaces === config.namespacesEnabled (parity)", () => {
@@ -711,11 +628,7 @@ test("resolveNamespaceCapabilities: result is frozen", () => {
 });
 
 // ---------------------------------------------------------------------------
-// QmdCapabilitySet — gate-parity tests (issue #1523 batch 6).
 //
-// Same invariant: every caps field must project from its `<field>Enabled`
-// config flag. All twelve flags are required booleans on PluginConfig (defaults
-// resolved at the parse boundary), so the projection is pure passthrough.
 // ---------------------------------------------------------------------------
 
 const QMD_FIELD_TO_FLAG: Record<keyof QmdCapabilitySet, string> = {
@@ -796,7 +709,6 @@ test("resolveQmdCapabilities matches pre-migration config reads (parity contract
 });
 
 // ---------------------------------------------------------------------------
-// IdentityContinuityCapabilitySet — gate-parity tests (issue #1523 batch 6).
 // ---------------------------------------------------------------------------
 
 test("resolveIdentityContinuityCapabilities: identityContinuity === config.identityContinuityEnabled (parity)", () => {
@@ -823,7 +735,6 @@ test("resolveIdentityContinuityCapabilities: result is frozen", () => {
 });
 
 // ---------------------------------------------------------------------------
-// LocalLlmCapabilitySet — gate-parity tests (issue #1523 batch 6).
 // ---------------------------------------------------------------------------
 
 test("resolveLocalLlmCapabilities: localLlm === config.localLlmEnabled (parity)", () => {
@@ -850,7 +761,6 @@ test("resolveLocalLlmCapabilities: result is frozen", () => {
 });
 
 // ---------------------------------------------------------------------------
-// SecurityCapabilitySet — gate-parity tests (issue #1523 batch 7).
 // ---------------------------------------------------------------------------
 
 // Boolean-flag parity only: `injectionScreenProfile` is an enum projection
@@ -893,7 +803,6 @@ test("resolveSecurityCapabilities returns a frozen object", () => {
 });
 
 // ---------------------------------------------------------------------------
-// EvalCapabilitySet — gate-parity tests (issue #1523 batch 7).
 // ---------------------------------------------------------------------------
 
 const EVAL_FIELD_TO_FLAG: Record<keyof EvalCapabilitySet, string> = {
@@ -932,7 +841,6 @@ test("resolveEvalCapabilities returns a frozen object", () => {
 });
 
 // ---------------------------------------------------------------------------
-// UtilityLearningCapabilitySet — gate-parity tests (issue #1523 batch 7).
 // ---------------------------------------------------------------------------
 
 const UTILITY_FIELD_TO_FLAG: Record<keyof UtilityLearningCapabilitySet, string> = {
@@ -968,7 +876,6 @@ test("resolveUtilityLearningCapabilities returns a frozen object", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ObjectiveStateCapabilitySet — gate-parity tests (issue #1523 batch 7).
 // ---------------------------------------------------------------------------
 
 const OBJECTIVE_FIELD_TO_FLAG: Record<keyof ObjectiveStateCapabilitySet, string> = {
@@ -1005,7 +912,6 @@ test("resolveObjectiveStateCapabilities returns a frozen object", () => {
 });
 
 // ---------------------------------------------------------------------------
-// CompressionCapabilitySet — gate-parity tests (issue #1523 batch 7).
 // ---------------------------------------------------------------------------
 
 const COMPRESSION_FIELD_TO_FLAG: Record<keyof CompressionCapabilitySet, string> = {
@@ -1042,7 +948,6 @@ test("resolveCompressionCapabilities returns a frozen object", () => {
 });
 
 // ---------------------------------------------------------------------------
-// PresentationCapabilitySet — gate-parity tests (issue #1523 batch 8).
 // ---------------------------------------------------------------------------
 
 const PRESENTATION_FIELD_TO_FLAG: Record<keyof PresentationCapabilitySet, string> = {
@@ -1083,7 +988,6 @@ test("resolvePresentationCapabilities returns a frozen object", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ConsolidationCapabilitySet — gate-parity tests (issue #1523 batch 8).
 // ---------------------------------------------------------------------------
 
 const CONSOLIDATION_FIELD_TO_FLAG = {
@@ -1127,7 +1031,6 @@ test("resolveConsolidationCapabilities returns a frozen object", () => {
 });
 
 // ---------------------------------------------------------------------------
-// RecallAuxiliaryCapabilitySet — gate-parity tests (issue #1523 batch 8).
 // ---------------------------------------------------------------------------
 
 const RECALL_AUX_FIELD_TO_FLAG: Record<keyof RecallAuxiliaryCapabilitySet, string> = {
@@ -1176,7 +1079,6 @@ test("resolveRecallAuxiliaryCapabilities returns a frozen object", () => {
 
 
 // ---------------------------------------------------------------------------
-// RecallEnhancementCapabilitySet — gate-parity tests (issue #1523 batch 9).
 // ---------------------------------------------------------------------------
 
 const RECALL_ENH_FIELD_TO_FLAG: Record<keyof RecallEnhancementCapabilitySet, string> = {
@@ -1234,7 +1136,6 @@ test("resolveRecallEnhancementCapabilities returns a frozen object", () => {
 });
 
 // ---------------------------------------------------------------------------
-// PipelineProcessingCapabilitySet — gate-parity tests (issue #1523 batch 9).
 // ---------------------------------------------------------------------------
 
 const PIPELINE_FIELD_TO_FLAG: Record<keyof PipelineProcessingCapabilitySet, string> = {
@@ -1290,7 +1191,6 @@ test("resolvePipelineProcessingCapabilities returns a frozen object", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ConversationContextCapabilitySet — gate-parity tests (issue #1523 batch 9).
 // ---------------------------------------------------------------------------
 
 const CONV_CTX_FIELD_TO_FLAG = {

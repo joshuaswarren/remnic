@@ -8,7 +8,6 @@ import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
 import { StorageManager } from "./storage.js";
 
-// #3240 follow-up: the host's onEntityMigrationComplete slot must fire once
 // per migration pass that rewrote entities (never on no-op replays or ensure() no-ops), fail open on a
 // throwing hook, reach router-created storages independent of auto-embed, and
 // be inert after Orchestrator.destroy(). No direct QMD calls; the re-arm is
@@ -92,7 +91,6 @@ test("orchestrator wires completion with auto-embed off and blocks it from teard
     set requestQmdMaintenance(fn: () => void) { orchestrator["requestQmdMaintenance"] = fn; },
   };
   try {
-    // Wiring must exist independent of auto-embed.
     const onMigrationComplete = internals.storage.onEntityMigrationComplete;
     assert.ok(
       onMigrationComplete instanceof Function,

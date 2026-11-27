@@ -1,17 +1,3 @@
-/**
- * consolidation-operator.ts — Standalone operator vocabulary + validators
- * for the consolidation subsystem (issue #561, All-Mem paper
- * arxiv:2603.19595).
- *
- * This module is intentionally dependency-free so storage, the `remnic
- * doctor` check (PR 4), and the undo CLI (PR 5) can import the validators
- * without dragging in the full consolidation engine — which in turn pulls
- * in the Codex materialize runner and creates a `storage → consolidation
- * → codex-materialize-runner → storage` import cycle.
- *
- * The `semantic-consolidation.ts` module re-exports these symbols so
- * existing import paths continue to work.
- */
 
 /**
  * Operator algebra for non-destructive consolidation.
@@ -80,23 +66,10 @@ const DERIVED_FROM_ENTRY_RE = /^(.+):(\d+)$/;
  */
 export const DERIVED_FROM_MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_:-]*$/;
 
-/**
- * Disambiguator: an entry is a `<path>:<version>` snapshot reference
- * iff it ends with `:<digits>` AND the left side contains a `/` or
- * `.` (path-shape).  Without the path-shape requirement a legitimate
- * namespace-prefixed memory id like `global:42` would be silently
- * misinterpreted as a snapshot reference.
- *
- * This mirrors the precedence used by `stripDerivedFromVersion` in
- * `graph-retrieval.ts`: only strip the trailing `:<digits>` when the
- * left side actually looks like a stored path.
- */
 function looksLikeSnapshotEntry(entry: string): boolean {
   const match = entry.match(DERIVED_FROM_ENTRY_RE);
   if (!match) return false;
   const pathPart = match[1];
-  // A real snapshot path always contains a directory separator or a
-  // file extension dot.  Memory IDs use neither.
   return pathPart.includes("/") || pathPart.includes(".");
 }
 
@@ -121,9 +94,6 @@ function looksLikeSnapshotEntry(entry: string): boolean {
 export function isValidDerivedFromEntry(entry: unknown): entry is string {
   if (typeof entry !== "string") return false;
   if (entry.length === 0) return false;
-  // Snapshot format takes precedence ONLY when the left side looks
-  // like a real path.  This avoids misclassifying memory IDs whose
-  // tail happens to be numeric (e.g. `global:42`).
   if (looksLikeSnapshotEntry(entry)) {
     const match = entry.match(DERIVED_FROM_ENTRY_RE);
     if (!match) return false;
@@ -132,15 +102,9 @@ export function isValidDerivedFromEntry(entry: unknown): entry is string {
     const versionNum = Number(match[2]);
     return Number.isInteger(versionNum) && versionNum >= 0;
   }
-  // Otherwise treat as a memory ID.  Empty or `:`-only entries are
-  // already excluded by the leading-alphanumeric requirement of the
-  // regex.
   return DERIVED_FROM_MEMORY_ID_RE.test(entry);
 }
 
-/**
- * Type guard for `ConsolidationOperator`.
- */
 export function isConsolidationOperator(value: unknown): value is ConsolidationOperator {
   return (
     typeof value === "string" &&
@@ -148,16 +112,6 @@ export function isConsolidationOperator(value: unknown): value is ConsolidationO
   );
 }
 
-/**
- * Narrow operator vocabulary for the LLM-driven semantic-consolidation
- * pass (issue #561 PR 3).  This explicitly excludes
- * `"pattern-reinforcement"` (issue #687 PR 2/4), which is reserved for
- * the maintenance job and must NEVER be emitted by the consolidation
- * LLM.  Without this narrow gate, a hallucinated
- * `{"operator":"pattern-reinforcement"}` response from the LLM would
- * write misleading provenance on a semantic-consolidation memory
- * (Cursor Bugbot review, PR #730 head `aa1c2a8`).
- */
 export type SemanticConsolidationLlmOperator = "split" | "merge" | "update";
 
 const SEMANTIC_CONSOLIDATION_LLM_OPERATORS: readonly SemanticConsolidationLlmOperator[] = [

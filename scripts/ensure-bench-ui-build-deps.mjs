@@ -4,13 +4,6 @@ import { ensurePackageBuild } from "./build-staleness.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-// @remnic/bench-ui resolves @remnic/bench through the dependency's dist
-// types/import exports; only its test script opts into the remnic-source
-// condition. In a fresh workspace with no packages/bench/dist, the
-// documented dev/check-types/build commands fail before doing any work,
-// so prepare the dependency build the same way @remnic/cli does via
-// ensure-cli-bench-build-deps.mjs. Building @remnic/bench runs its own
-// prebuild, which first ensures @remnic/core and @remnic/coding-graph.
 ensurePackageBuild(
   repoRoot,
   "@remnic/bench",

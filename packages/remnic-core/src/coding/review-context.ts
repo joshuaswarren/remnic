@@ -1,33 +1,9 @@
-/**
- * Diff-aware review-context packer (issue #569 PR 4).
- *
- * When an agent is asked "review this PR" / "what changed in this diff" /
- * "look at this diff", the prompt that reaches recall is short and generic
- * — the real signal is the diff itself. This module:
- *
- *   1. Detects review-intent prompts via `isReviewPrompt`.
- *   2. Extracts the touched file list from a unified diff via
- *      `parseTouchedFiles`.
- *   3. Re-ranks a set of candidate memories so that memories whose
- *      `entityRefs` mention a touched path float to the top. The boost is
- *      additive and bounded so it doesn't obliterate the original ranking —
- *      it's a bias, not a filter.
- *
- * Pure — no orchestrator, no storage. Callers inject the candidate memories
- * they already have from their normal recall pipeline. This keeps the
- * module easy to test and integrates cleanly with the existing tiered-recall
- * code in `orchestrator.ts` (the tier itself can be wired later; the pure
- * surface is what PRs 5/6/7 will call).
- */
 
 import type {
   StructuralContextDegradation,
   StructuralContextProvider,
 } from "./structural-context.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Public types
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * A memory candidate as fed into review-context ranking. The shape is a
@@ -78,14 +54,8 @@ export interface ReviewContext {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Review-prompt heuristic
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * Keyword list from the #569 design doc, plus obvious paraphrases. All
- * matching is case-insensitive and whole-word (so `reviewer` doesn't trigger
- * on `review` alone).
- */
 const REVIEW_KEYWORD_PATTERNS: RegExp[] = [
   /\breview\b/i,
   /\bdiff\b/i,
@@ -109,7 +79,6 @@ export function isReviewPrompt(prompt: string | null | undefined): boolean {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Unified-diff parser — extract touched files
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -126,14 +95,9 @@ export function parseTouchedFiles(diff: string | null | undefined): string[] {
   const lines = diff.split(/\r?\n/);
 
   for (const line of lines) {
-    // `diff --git a/foo/bar.ts b/foo/bar.ts`
     //
     // Paths may be quoted by git when they contain spaces or non-ASCII
     // characters, e.g. `diff --git "a/src/my file.ts" "b/src/my file.ts"`.
-    // The two paths are always separated by whitespace at the top level, but
-    // whitespace INSIDE quoted paths must NOT split the tokens. Parse the
-    // two paths with an explicit tokenizer instead of a `\S+`-based regex
-    // (which would shatter `"a/my file.ts"` into `"a/my` / `file.ts"`).
     const gitPrefix = line.match(/^diff --git\s+/);
     if (gitPrefix) {
       const rest = line.slice(gitPrefix[0].length);
@@ -146,19 +110,9 @@ export function parseTouchedFiles(diff: string | null | undefined): string[] {
       }
       continue;
     }
-    // `--- a/foo/bar.ts` or `+++ b/foo/bar.ts` — or quoted:
-    // `--- "a/foo bar.ts"` / `+++ "b/foo bar.ts"` when git emits C-quoted
-    // paths for whitespace or non-ASCII filenames.
     //
-    // Matched with an anchored prefix and an explicit tokenizer for the
-    // tail so quoted paths containing whitespace are not split on the
-    // first internal space. The previous `\S+` form silently dropped
-    // everything after the first whitespace in a quoted path.
     const headerPrefix = line.match(/^(?:---|\+\+\+)[ \t]+/);
     if (headerPrefix) {
-      // Linear trailing space/tab trim instead of /[ \t]+$/, whose anchored
-      // quantifier backtracks polynomially on a long diff line (CodeQL
-      // js/polynomial-redos).
       const sliced = line.slice(headerPrefix[0].length);
       let tailEnd = sliced.length;
       while (tailEnd > 0 && (sliced[tailEnd - 1] === " " || sliced[tailEnd - 1] === "\t")) tailEnd--;
@@ -196,9 +150,6 @@ function extractSingleDiffPathToken(tail: string): string | null {
     if (j >= tail.length) return null; // unterminated quoted path
     return tail.slice(0, j + 1);
   }
-  // Unquoted: consume up to the first tab or whitespace-run, so standard
-  // `--- a/foo	<timestamp>` lines surface just `a/foo`. For ordinary
-  // git-style output the tail has no whitespace at all.
   let j = 0;
   while (j < tail.length && tail[j] !== " " && tail[j] !== "\t") j += 1;
   return tail.slice(0, j);
@@ -213,7 +164,6 @@ function splitDiffGitPaths(rest: string): [string, string] | null {
   const tokens: string[] = [];
   let i = 0;
   while (i < rest.length && tokens.length < 2) {
-    // Skip leading whitespace between tokens.
     while (i < rest.length && (rest[i] === " " || rest[i] === "\t")) i += 1;
     if (i >= rest.length) break;
     if (rest[i] === '"') {
@@ -232,7 +182,6 @@ function splitDiffGitPaths(rest: string): [string, string] | null {
       tokens.push(rest.slice(i, j + 1));
       i = j + 1;
     } else {
-      // Unquoted path: run of non-whitespace.
       let j = i;
       while (j < rest.length && rest[j] !== " " && rest[j] !== "\t") j += 1;
       tokens.push(rest.slice(i, j));
@@ -244,11 +193,6 @@ function splitDiffGitPaths(rest: string): [string, string] | null {
 }
 
 function stripDiffPathPrefix(raw: string): string {
-  // Git conventionally prefixes paths with `a/` or `b/` in diffs, and
-  // quotes the whole path (including the prefix) when it contains spaces or
-  // non-ASCII bytes. Quote-stripping must therefore happen BEFORE the
-  // prefix check — otherwise `"a/path with spaces.ts"` still starts with
-  // `"a` and the prefix is never recognized.
   let s = raw;
   if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') {
     const decoded = decodeGitCQuotedPath(s.slice(1, -1));
@@ -257,9 +201,6 @@ function stripDiffPathPrefix(raw: string): string {
     }
     s = decoded;
   }
-  // Normalize Windows-style backslashes. Must happen AFTER quote stripping
-  // so that C-quote escape pairs are decoded before path separators are
-  // normalized.
   s = s.replace(/\\/g, "/");
   if (s.startsWith("a/") || s.startsWith("b/")) s = s.slice(2);
   return s;
@@ -338,15 +279,8 @@ function cEscapeValue(value: string): string | null {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Ranking
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * Additive boost per matching touched-file. Tuned so that a single exact
- * match is enough to float a `score=0` candidate above a `score=0.4`
- * unmatched peer, but not so large it buries multi-signal results. `0.5`
- * per match, capped at `1.0` so three matches don't eclipse strong recall.
- */
 const BOOST_PER_MATCH = 0.5;
 const MAX_BOOST = 1.0;
 
@@ -404,7 +338,6 @@ export function rankReviewCandidates(
     const adjA = a.score + a.boost;
     const adjB = b.score + b.boost;
     if (adjA !== adjB) return adjB - adjA;
-    // Stable secondary sort for deterministic ordering on ties.
     if (a.id < b.id) return -1;
     if (a.id > b.id) return 1;
     return 0;
@@ -414,7 +347,6 @@ export function rankReviewCandidates(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Packer entry point
 // ──────────────────────────────────────────────────────────────────────────
 
 export interface PackReviewContextInput {
@@ -439,7 +371,6 @@ export function packReviewContext(input: PackReviewContextInput): ReviewContext 
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Structural-context enhancement (issue #1548 Track A PR 5)
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -490,8 +421,6 @@ export async function packReviewContextStructural(
     const symbolNames = result.symbols.map((sym) => sym.symbol);
     matchTerms = symbolNames.length > 0 ? [...touchedFiles, ...symbolNames] : touchedFiles;
   } else {
-    // Fallback: file-path-only ranking, identical to the pure packer. The
-    // degradation is surfaced so the failure is never silent (rule 34).
     structuralDegradation = {
       backend: "structural-context",
       code: result.code,

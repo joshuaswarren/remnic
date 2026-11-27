@@ -28,7 +28,6 @@ import type { TrustScoreResult, TrustSignals } from "./trust-score.js";
 
 const NOW = new Date("2026-07-01T00:00:00.000Z");
 
-// ─── buildTrustSignalMap ──────────────────────────────────────────────────
 
 test("adapter: empty memories → empty map", () => {
   const map = buildTrustSignalMap([], NOW);
@@ -42,7 +41,6 @@ test("adapter: memory worth counters flow through computeMemoryWorth", () => {
   );
   const s = map.get("a.md");
   assert.ok(s?.memoryWorth);
-  // 9/1 success-heavy → score well above neutral 0.5.
   assert.ok(s.memoryWorth!.score > 0.5);
 });
 
@@ -98,7 +96,6 @@ test("adapter: fully-empty frontmatter is omitted from the map", () => {
   assert.equal(map.size, 0);
 });
 
-// ─── applyTrustScoreStage — neutral / gate-off semantics ──────────────────
 
 test("stage: candidates absent from signals map keep multiplier 1.0 (byte-identical to gate-off)", () => {
   const candidates: TrustStageCandidate[] = [
@@ -107,16 +104,13 @@ test("stage: candidates absent from signals map keep multiplier 1.0 (byte-identi
     { path: "c.md", score: 1 },
   ];
   const out = applyTrustScoreStage(candidates, { signals: new Map() });
-  // All admitted, none quarantined.
   assert.equal(out.quarantined.length, 0);
   assert.equal(out.admitted.length, 3);
-  // Multiplier exactly 1.0 → score unchanged.
   for (const item of out.admitted) {
     assert.equal(item.multiplier, 1);
     assert.equal(item.score, item.originalScore);
     assert.equal(item.trust.neutral, true);
   }
-  // Order preserved (stable) since scores are equal after neutral multiplier.
   assert.deepEqual(
     out.admitted.map((x) => x.path),
     ["a.md", "b.md", "c.md"],
@@ -130,7 +124,6 @@ test("stage: empty candidate list → empty output", () => {
   assert.equal(out.all.length, 0);
 });
 
-// ─── multiplier application ───────────────────────────────────────────────
 
 test("stage: high-trust candidate is boosted, low-trust candidate is damped", () => {
   const signals = new Map<string, TrustSignals>([
@@ -189,7 +182,6 @@ test("stage: reorder=false preserves input order", () => {
   );
 });
 
-// ─── quarantine ───────────────────────────────────────────────────────────
 
 test("stage: quarantine excludes contradicted item from injection but keeps it in `all`", () => {
   const signals = new Map<string, TrustSignals>([
@@ -241,15 +233,8 @@ test("stage: negative base score is clamped to 0 before multiplying", () => {
   assert.ok(item.multiplier > 1);
 });
 
-// ─── double-multiplier prevention (structural) ────────────────────────────
 
 test("double-multiplier prevention: stage applies trust once; neutral memory-worth-only candidate is not double-counted", () => {
-  // A candidate with memory-worth signal flows through TrustScore's memoryWorth
-  // component. The standalone memory-worth filter MUST NOT also run. This test
-  // pins that the stage's multiplier is derived SOLELY from the trust score
-  // (which already incorporates memory-worth), so re-applying a memory-worth
-  // multiplier on top would change the score — here we assert the stage's
-  // multiplier equals trustMultiplier(trust.score) exactly.
   const signals = new Map<string, TrustSignals>([
     ["mw.md", { memoryWorth: { score: 0.8, confidence: 4 } }],
   ]);
@@ -258,16 +243,12 @@ test("double-multiplier prevention: stage applies trust once; neutral memory-wor
     { signals: signals, minMultiplier: 0.5, maxMultiplier: 1.25 },
   );
   const item = out.admitted[0]!;
-  // multiplier is a pure function of the trust score.
   const expectedMul = item.multiplier;
   assert.ok(expectedMul > 0);
-  // Re-deriving from the trust score gives the same multiplier (idempotent).
   assert.equal(item.multiplier, expectedMul);
-  // Score = base * multiplier, nothing else stacked on.
   assert.ok(Math.abs(item.score - 10 * item.multiplier) < 1e-9);
 });
 
-// ─── X-ray projection ─────────────────────────────────────────────────────
 
 test("xray projection: admitted item has no quarantineReason", () => {
   const signals = new Map<string, TrustSignals>([
@@ -326,8 +307,6 @@ test("adapter: memory-worth half-life decays stale observations", () => {
   const staleWorth = stale.get("stale.md")?.memoryWorth;
   assert.ok(freshWorth, "fresh memory has worth signal");
   assert.ok(staleWorth, "stale memory has worth signal");
-  // Fresh memory retains most of its confidence; stale memory's confidence
-  // is heavily decayed (much less than fresh).
   assert.ok(
     staleWorth!.confidence < freshWorth!.confidence,
     "stale observations must decay → lower confidence than fresh",
@@ -345,16 +324,10 @@ test("adapter: no half-life → no decay (raw counters)", () => {
   );
   const worth = stale.get("old.md")?.memoryWorth;
   assert.ok(worth);
-  // Without decay, 5/1 success-heavy → confidence ~6 (raw count).
   assert.ok(worth!.confidence >= 5, "no half-life → raw confidence (no decay)");
 });
 
 test("signal cache: an aged entry re-derives even when the corpus version matches (#1905, Codex)", async () => {
-  // Trust signals bake wall-clock time into their values (ageDays,
-  // computeMemoryWorth(..., now) with recency half-life), so a version-only
-  // cache would serve stale decay forever on a read-only corpus. An entry
-  // older than TRUST_SIGNAL_CACHE_MAX_AGE_MS must re-derive; a fresh one with
-  // a matching version must be served without a corpus read.
   const { buildTrustSignalsForRerank, TRUST_SIGNAL_CACHE_MAX_AGE_MS } = await import(
     "./trust-score-stage.js"
   );
@@ -397,11 +370,6 @@ test("signal cache: an aged entry re-derives even when the corpus version matche
 });
 
 test("preloaded-but-neutral candidates skip the corpus and direct-read fallbacks (#1905, Cursor/Codex)", async () => {
-  // buildTrustSignalMap deliberately OMITS neutral memories (no trust fields),
-  // so a preloaded candidate can be examined yet absent from `signals`. It must
-  // be treated as EXAMINED — not missing — or every uninstrumented hot
-  // candidate re-triggers the namespace-wide corpus scan and a direct re-read,
-  // defeating the O(candidates) fast path.
   const { buildTrustSignalsForRerank } = await import("./trust-score-stage.js");
   const now = new Date("2026-07-01T12:00:00.000Z");
   let corpusReads = 0;
@@ -418,7 +386,6 @@ test("preloaded-but-neutral candidates skip the corpus and direct-read fallbacks
     getNamespaceVersion: async () => 1,
   };
   const cache = { cache: new Map() };
-  // Neutral frontmatter: no mw_* / trust fields at all.
   const preloadedFrontmatter = new Map([
     ["a.md", { frontmatter: {} }],
     ["b.md", { frontmatter: {} }],
@@ -471,10 +438,6 @@ test("cooperative abort stops the corpus and direct-read fallbacks at loop bound
 });
 
 test("trust direct-read fallback threads the candidate namespace (#2020)", async () => {
-  // A namespace-fanout candidate carries a relative path plus its owning
-  // namespace. The cold-tier direct read MUST pass that namespace so the
-  // relative path resolves against the right store instead of the first
-  // fallback namespace (which would apply the wrong memory's trust signals).
   const { buildTrustSignalsForRerank } = await import("./trust-score-stage.js");
   const now = new Date("2026-07-01T12:00:00.000Z");
   const directReads: Array<{ path: string; namespace?: string }> = [];

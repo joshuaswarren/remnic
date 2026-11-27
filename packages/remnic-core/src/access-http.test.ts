@@ -830,7 +830,6 @@ test("HTTP observe answers 503 buffer_admission_refused when durable capture hit
   t.after(() => resetLogger());
   const refusal = new Error("buffer at session-entry cap");
   refusal.name = "ReplayAdmissionRefusedError";
-  // SAFETY: this fixture drives only the observe route; the remaining service members are unreachable.
   const service = Object.assign({} as EngramAccessService, {
     observe: async () => {
       throw refusal;
@@ -881,7 +880,6 @@ test("HTTP observe missing-storage-target refusal is a non-retryable request fau
     "accepted capture requires an explicit storage target (writeNamespaceOverride or scopeProfileWritePlan.writeNamespace)",
   );
   refusal.name = "StorageTargetRequiredError";
-  // SAFETY: this fixture drives only the observe route; the remaining service members are unreachable.
   const service = Object.assign({} as EngramAccessService, {
     observe: async () => {
       throw refusal;
@@ -968,7 +966,6 @@ test("HTTP briefing endpoint dispatches through the briefing operation", async (
     assert.equal(body.markdown, "# Briefing");
     assert.deepEqual(body.json.sections.activeThreads, []);
     assert.equal(calls.length, 1);
-    // SAFETY: the registered handler builds this request after validating the HTTP body; assertions below check its values.
     const captured = calls[0] as EngramAccessBriefingRequest;
     const { abortSignal, ...briefingRequest } = captured;
     assert.ok(
@@ -2544,7 +2541,6 @@ test("HTTP server rejects invalid resourceMetadataUrl at construction", () => {
       `resourceMetadataUrl=${JSON.stringify(bad)} must be rejected`,
     );
   }
-  // http and https are accepted.
   for (const ok of [
     "https://example.com/.well-known/oauth-protected-resource",
     "http://127.0.0.1:8787/.well-known/oauth-protected-resource",
@@ -2616,9 +2612,6 @@ test("HTTP /mcp serves GET SSE, DELETE 204, and 405 without SSE Accept (issue #2
   });
   const status = await server.start();
   try {
-    // Authorized GET with SSE Accept → 200 text/event-stream whose first
-    // bytes are comment-only heartbeats (never JSON-RPC). Read one bounded
-    // chunk, then cancel so the open stream cannot hang the test.
     const controller = new AbortController();
     const sse = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
       headers: { authorization: "Bearer test-token", accept: "text/event-stream" },
@@ -2639,14 +2632,12 @@ test("HTTP /mcp serves GET SSE, DELETE 204, and 405 without SSE Accept (issue #2
     );
     controller.abort();
 
-    // Authorized GET without the SSE Accept → 405 + full method set.
     const rejected = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
       headers: { authorization: "Bearer test-token" },
     });
     assert.equal(rejected.status, 405);
     assert.equal(rejected.headers.get("allow"), "GET, POST, DELETE");
 
-    // Authorized DELETE → 204 with empty body.
     const deleted = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
       method: "DELETE",
       headers: { authorization: "Bearer test-token" },
@@ -2654,7 +2645,6 @@ test("HTTP /mcp serves GET SSE, DELETE 204, and 405 without SSE Accept (issue #2
     assert.equal(deleted.status, 204);
     assert.equal(await deleted.text(), "");
 
-    // Unauthenticated GET /mcp still gets 401 first (auth gate beats method handling).
     const unauth = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
       headers: { accept: "text/event-stream" },
     });
@@ -2691,7 +2681,6 @@ test("HTTP /mcp rejects unknown MCP-Protocol-Version header with 400 JSON-RPC er
     assert.equal(body.jsonrpc, "2.0");
     assert.match(body.error?.message ?? "", /unsupported MCP-Protocol-Version/);
 
-    // A supported header is accepted (and a valid request proceeds normally).
     for (const v of ["2025-06-18", "2025-03-26", "2024-11-05"]) {
       const ok = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
         method: "POST",
@@ -2705,7 +2694,6 @@ test("HTTP /mcp rejects unknown MCP-Protocol-Version header with 400 JSON-RPC er
       assert.equal(ok.status, 200, `version ${v} should be accepted`);
     }
 
-    // Absent header is also fine.
     const absent = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
       method: "POST",
       headers: {
@@ -2721,11 +2709,6 @@ test("HTTP /mcp rejects unknown MCP-Protocol-Version header with 400 JSON-RPC er
 });
 
 test("HTTP externalRequestHandler runs pre-auth, can end responses, and falls through on false", async () => {
-  // Minimal service stub: the fall-through leg hits /engram/v1/health, which
-  // calls service.health(). The stub is signature-faithful (full
-  // EngramAccessHealthResponse via `satisfies`) so interface drift fails here
-  // instead of passing vacuously; everything else in this test bypasses the
-  // service.
   const healthStub = {
     health: async () => ({
       ok: true as const,
@@ -2802,7 +2785,6 @@ test("HTTP externalRequestHandler runs pre-auth, can end responses, and falls th
   });
   const status = await server.start();
   try {
-    // Pre-auth, the handler sees authorized=false (no token sent).
     const handled = await fetch(
       `http://127.0.0.1:${status.port}/probe/handled`,
     );
@@ -2818,8 +2800,6 @@ test("HTTP externalRequestHandler runs pre-auth, can end responses, and falls th
       "handler must observe authorized=false pre-token",
     );
 
-    // Fall-through path: same handler returns false, request continues to normal
-    // routing. Hit a real endpoint so we know the request reached it.
     const passthrough = await fetch(
       `http://127.0.0.1:${status.port}/engram/v1/health`,
       { headers: { authorization: "Bearer test-token" } },
@@ -2840,7 +2820,6 @@ test("HTTP externalRequestHandler runs pre-auth, can end responses, and falls th
     );
     assert.equal(passthroughBody.memoryDir, "/tmp/remnic-test");
 
-    // Authorized request: handler sees ctx.authorized=true.
     const authed = await fetch(
       `http://127.0.0.1:${status.port}/probe/handled`,
       { headers: { authorization: "Bearer test-token" } },
@@ -2892,9 +2871,6 @@ test("HTTP externalRequestHandler errors flow through the existing error handler
 });
 
 test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connectors and never falls through", async () => {
-  // Signature-faithful health stub so non-MCP authorization outcomes are
-  // observable as 200-with-body (a bare `{}` service would 500 and mask
-  // accidental policy application).
   const healthStub = {
     health: async () => ({
       ok: true as const,
@@ -2954,9 +2930,6 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
     service: healthStub as unknown as EngramAccessService,
     port: 0,
     authToken: "operator-token",
-    // Dangerous shape on purpose: BOTH getters configured, and the string
-    // getter is a superset (extra "string_only_token"). The entries getter
-    // must decide alone; nothing may leak into the string getter.
     authTokensGetter: () => [
       ...entries.map((entry) => entry.token),
       "string_only_token",
@@ -2979,7 +2952,6 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
         : {}),
     });
   try {
-    // Scoped chatgpt token: /mcp only; health denied.
     assert.equal(
       (await request("remnic_cg_scoped", "/mcp", "POST")).status,
       200,
@@ -2989,15 +2961,11 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
       401,
       "chatgpt token must be denied off /mcp even with a permissive string getter present",
     );
-    // Other connector tokens are unrestricted by this policy: /mcp AND health.
     assert.equal((await request("remnic_cx_free", "/mcp", "POST")).status, 200);
     const codexHealth = await request("remnic_cx_free", "/engram/v1/health");
     assert.equal(codexHealth.status, 200);
     assert.equal(((await codexHealth.json()) as { ok?: boolean }).ok, true);
-    // Entry without connector fails closed when a policy is configured.
     assert.equal((await request("remnic_xx_anon", "/mcp", "POST")).status, 401);
-    // A token present ONLY in the string getter is NOT honored: the entries
-    // getter is authoritative and there is no fall-through.
     assert.equal(
       (await request("string_only_token", "/mcp", "POST")).status,
       401,
@@ -3006,12 +2974,10 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
       (await request("string_only_token", "/engram/v1/health")).status,
       401,
     );
-    // Unknown tokens are rejected everywhere.
     assert.equal(
       (await request("remnic_zz_unknown", "/mcp", "POST")).status,
       401,
     );
-    // Static operator token bypasses the policy entirely: /mcp AND health.
     assert.equal((await request("operator-token", "/mcp", "POST")).status, 200);
     const operatorHealth = await request("operator-token", "/engram/v1/health");
     assert.equal(operatorHealth.status, 200);
@@ -3022,12 +2988,6 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
 });
 
 test("HTTP scoped-token namespace allow-list is enforced on every namespace route (issue #1837 bypass fix)", async () => {
-  // A scoped token may touch ONLY ns_a. The server default tenant is "default"
-  // (≠ ns_a), so OMITTING ?namespace= must NOT silently fall through to the
-  // default tenant — the EFFECTIVE namespace (explicit OR defaulted) must be a
-  // member of the token's allow-list on every namespace-scoped route. Fail
-  // closed everywhere; the previous behavior let a scoped bearer drop the
-  // param and reach the server default tenant (memory_list / memory_get).
   const browseCalls: { namespace?: string }[] = [];
   const getCalls: { memoryId: string; namespace: string | undefined }[] = [];
   const service = {
@@ -3049,8 +3009,6 @@ test("HTTP scoped-token namespace allow-list is enforced on every namespace rout
   const server = new EngramAccessHttpServer({
     service,
     port: 0,
-    // Entry-based tokens with a capabilities record. The scoped token carries
-    // a namespaces allow-list; the operator token is explicit-unrestricted.
     authTokenEntriesGetter: () => [
       {
         token: "scoped-ns-a",
@@ -3066,7 +3024,6 @@ test("HTTP scoped-token namespace allow-list is enforced on every namespace rout
       headers: { authorization: `Bearer ${token}` },
     });
   try {
-    // ── memory_list: the named bypass route ──
     assert.equal(
       (await request("scoped-ns-a", "/engram/v1/memories")).status,
       403,
@@ -3093,7 +3050,6 @@ test("HTTP scoped-token namespace allow-list is enforced on every namespace rout
       "scoped: the allowed namespace is forwarded to the service",
     );
 
-    // ── memory_get: the other named bypass route (dispatches via the op registry) ──
     assert.equal(
       (await request("scoped-ns-a", "/engram/v1/memories/m_1")).status,
       403,
@@ -3120,14 +3076,12 @@ test("HTTP scoped-token namespace allow-list is enforced on every namespace rout
       "scoped memory_get: the allowed namespace reaches the service",
     );
 
-    // ── a global-store route is fleet-wide: a namespace-scoped token is denied (issue #3225 B3) ──
     assert.equal(
       (await request("scoped-ns-a", "/engram/v1/peers")).status,
       403,
       "peer routes touch global stores, so a namespace-scoped token is denied",
     );
 
-    // ── unrestricted token: omitting namespace still reaches the default tenant ──
     assert.equal(
       (await request("operator", "/engram/v1/memories")).status,
       200,
@@ -3139,12 +3093,6 @@ test("HTTP scoped-token namespace allow-list is enforced on every namespace rout
 });
 
 test("HTTP scoped-token namespace allow-list gates id-loaded contradiction routes (issue #1850 round 2)", async () => {
-  // The contradiction detail GET and review/resolve routes load the pair BY
-  // ID — its namespace comes from the record, NOT a ?namespace= query param
-  // that resolveNamespace() already gates. A namespace-scoped bearer that
-  // knows a pair id in a namespace outside its allow-list must NOT be able to
-  // read (GET) or mutate (resolve) it. Fail closed (403) everywhere; the pair
-  // in the allowed namespace is reachable.
   const dir = await mkdtemp(
     path.join(os.tmpdir(), "remnic-http-scoped-contradiction-"),
   );
@@ -3212,20 +3160,17 @@ test("HTTP scoped-token namespace allow-list gates id-loaded contradiction route
       body: JSON.stringify({ pairId, verb }),
     });
   try {
-    // ── GET detail: scoped token, denied namespace → 403 (fail closed, no leak) ──
     assert.equal(
       (await getDetail("scoped-ns-a", deniedPair.pairId)).status,
       403,
       "scoped GET: a pair in an unlisted namespace must be denied (403), not leaked",
     );
-    // ── GET detail: scoped token, allowed namespace → 200 ──
     assert.equal(
       (await getDetail("scoped-ns-a", allowedPair.pairId)).status,
       200,
       "scoped GET: a pair in the allowed namespace must succeed",
     );
 
-    // ── review/resolve: scoped token, denied namespace → 403 before any mutation ──
     const deniedResolve = await resolve(
       "scoped-ns-a",
       deniedPair.pairId,
@@ -3236,14 +3181,12 @@ test("HTTP scoped-token namespace allow-list gates id-loaded contradiction route
       403,
       "scoped resolve: a pair in an unlisted namespace must be denied (403) before any mutation",
     );
-    // The denied pair must NOT have been mutated (no resolution leak).
     assert.notEqual(
       readPair(dir, deniedPair.pairId)?.resolution,
       "both-valid",
       "scoped resolve: the denied pair must remain unresolved",
     );
 
-    // ── review/resolve: scoped token, allowed namespace → succeeds (not 403) ──
     const allowedResolve = await resolve(
       "scoped-ns-a",
       allowedPair.pairId,
@@ -3260,7 +3203,6 @@ test("HTTP scoped-token namespace allow-list gates id-loaded contradiction route
       "scoped resolve: the allowed pair is marked resolved",
     );
 
-    // ── unrestricted operator token: the denied-namespace pair is reachable ──
     assert.equal(
       (await getDetail("operator", deniedPair.pairId)).status,
       200,
@@ -3272,19 +3214,8 @@ test("HTTP scoped-token namespace allow-list gates id-loaded contradiction route
   }
 });
 
-// ===========================================================================
-// Issue #1850 round 4 — uniform effective-namespace chokepoint coverage.
-// One helper (enforceNamespaceAllowList) gates every surface; these tests
-// prove the gate fires on the surfaces round 3 missed: MCP tools/call, HTTP
-// body-namespace (coding) routes, and the legacy undefined-namespace pair.
-// ===========================================================================
 
 test("HTTP-MCP tools/call enforces the token namespace allow-list (issue #1850 finding 1)", async () => {
-  // MCP `tools/call` previously never applied the namespace allow-list, so a
-  // scoped bearer could reach another tenant via tool args. capsule_list is a
-  // namespace-scoped MCP tool (accepts a `namespace` argument), so the gate
-  // must fire on it. The 403 is thrown BEFORE op.run, so the denied case never
-  // reaches the service.
   const capsuleCalls: Array<Record<string, unknown>> = [];
   const service = {
     configRef: parseConfig({
@@ -3325,7 +3256,6 @@ test("HTTP-MCP tools/call enforces the token namespace allow-list (issue #1850 f
       }),
     });
   try {
-    // scoped: an unlisted namespace is rejected with 403 BEFORE op.run.
     assert.equal(
       (await mcpCall("scoped-ns-a", "ns_b")).status,
       403,
@@ -3336,7 +3266,6 @@ test("HTTP-MCP tools/call enforces the token namespace allow-list (issue #1850 f
       0,
       "scoped MCP: the service must NOT be reached for a denied namespace",
     );
-    // scoped: the allowed namespace proceeds past the gate (200, not 403).
     const allowed = await mcpCall("scoped-ns-a", "ns_a");
     assert.notEqual(
       allowed.status,
@@ -3348,7 +3277,6 @@ test("HTTP-MCP tools/call enforces the token namespace allow-list (issue #1850 f
       "ns_a",
       "scoped MCP: the allowed namespace reaches the service",
     );
-    // unrestricted: an unlisted namespace is a no-op (proceeds, not 403).
     const unrestricted = await mcpCall("operator", "ns_b");
     assert.notEqual(
       unrestricted.status,
@@ -3361,10 +3289,6 @@ test("HTTP-MCP tools/call enforces the token namespace allow-list (issue #1850 f
 });
 
 test("HTTP coding POST routes gate the body namespace through the allow-list (issue #1850 finding 2)", async () => {
-  // coding_decision passes `body` straight to op.run; a scoped bearer setting
-  // body.namespace to another tenant must be rejected. The gate fires on the
-  // body namespace field via the same resolveNamespace chokepoint as query
-  // routes. 403 before op.run; the allowed namespace reaches the service.
   const decisionCalls: Array<Record<string, unknown>> = [];
   const service = {
     configRef: parseConfig({
@@ -3403,7 +3327,6 @@ test("HTTP coding POST routes gate the body namespace through the allow-list (is
       }),
     });
   try {
-    // scoped: body.namespace to an unlisted tenant → 403 before op.run.
     assert.equal(
       (await postDecision("scoped-ns-a", "ns_b")).status,
       403,
@@ -3414,7 +3337,6 @@ test("HTTP coding POST routes gate the body namespace through the allow-list (is
       0,
       "scoped coding: the service must NOT be reached for a denied namespace",
     );
-    // scoped: the allowed body.namespace reaches the service.
     const allowed = await postDecision("scoped-ns-a", "ns_a");
     assert.notEqual(
       allowed.status,
@@ -3426,7 +3348,6 @@ test("HTTP coding POST routes gate the body namespace through the allow-list (is
       "ns_a",
       "scoped coding: the allowed namespace reaches the service",
     );
-    // unrestricted: any body.namespace is a no-op.
     assert.notEqual(
       (await postDecision("operator", "ns_b")).status,
       403,
@@ -3438,12 +3359,6 @@ test("HTTP coding POST routes gate the body namespace through the allow-list (is
 });
 
 test("Legacy undefined-namespace contradiction pair: default-allow-list token reads+resolves; non-default denied (issue #1850 findings 3+4)", async () => {
-  // A legacy pair carries namespace:undefined, which downstream storage maps to
-  // the server DEFAULT. Round 3's assertNamespaceAllowed(caps, undefined)
-  // wrongly denied a scoped token whose allow-list INCLUDES the default. The
-  // effective-namespace chokepoint maps undefined → default, so:
-  //   - namespaces:['default'] (== server default) ⇒ ALLOWED read + resolve;
-  //   - namespaces:['ns_a'] (not default) ⇒ DENIED.
   const dir = await mkdtemp(
     path.join(os.tmpdir(), "remnic-http-scoped-legacy-pair-"),
   );
@@ -3454,7 +3369,6 @@ test("Legacy undefined-namespace contradiction pair: default-allow-list token re
     confidence: 0.9,
     detectedAt: new Date().toISOString(),
   });
-  // Sanity: the fixture really is a legacy unscoped pair.
   assert.equal(readPair(dir, legacyPair.pairId)?.namespace, undefined);
   const storage = { dir } as unknown as StorageManager;
   const baseService = {
@@ -3489,7 +3403,6 @@ test("Legacy undefined-namespace contradiction pair: default-allow-list token re
     });
   };
 
-  // ── default-allow-list token: legacy pair is reachable + resolvable ──
   const defaultServer = mkServer("allow-default", ["default"]);
   const defaultStatus = await defaultServer.start();
   try {
@@ -3527,9 +3440,6 @@ test("Legacy undefined-namespace contradiction pair: default-allow-list token re
     await defaultServer.stop();
   }
 
-  // A fresh legacy pair for the deny case — independent of the pair the
-  // default-allow token already resolved above, so "must remain unresolved"
-  // is a clean assertion.
   const deniedLegacyPair = writePair(dir, {
     memoryIds: ["legacy-deny-x", "legacy-deny-y"],
     verdict: "contradicts",
@@ -3539,7 +3449,6 @@ test("Legacy undefined-namespace contradiction pair: default-allow-list token re
   });
   assert.equal(readPair(dir, deniedLegacyPair.pairId)?.namespace, undefined);
 
-  // ── non-default-allow-list token: legacy pair is DENIED (undefined→default not listed) ──
   const deniedServer = mkServer("allow-ns-a", ["ns_a"]);
   const deniedStatus = await deniedServer.start();
   try {
@@ -3583,13 +3492,9 @@ test("Legacy undefined-namespace contradiction pair: default-allow-list token re
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Issue #1850 round 5: comprehensive access-surface coverage
 // ──────────────────────────────────────────────────────────────────────────
 
 test("HTTP adapters route is op-gated: deny-all → 403, unrestricted → 200 (issue #1850 finding 1)", async () => {
-  // The adapters route serves adapter metadata after auth but previously had
-  // NO enforceTokenOp, so a deny-all / narrow-ops token reached it. It now
-  // dispatches through the adapters_status op; a scoped token is rejected.
   const service = {
     configRef: parseConfig({
       memoryDir: "/tmp/remnic-http-adapters-opgate",
@@ -3640,13 +3545,7 @@ test("HTTP adapters route is op-gated: deny-all → 403, unrestricted → 200 (i
 });
 
 test("HTTP chat routes gate the resumed session's STORED namespace (issue #1850 finding 2)", async () => {
-  // A chat session is an id-loaded record: its namespace comes from the stored
-  // session header, NOT a ?namespace= query param. A namespace-scoped bearer
-  // that knows a chatSessionId must not post to / stream a session in a
-  // namespace outside its allow-list. The gate runs before delegation.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-chat-ns-gate-"));
-  // Session bound to ns_a (no principal ⇒ accessible to anyone per
-  // sessionBelongsToPrincipal, so the namespace gate is the ONLY gate in play).
   const session = await createChatSession(dir, { namespace: "ns_a" });
   const service = {
     configRef: parseConfig({
@@ -3676,7 +3575,6 @@ test("HTTP chat routes gate the resumed session's STORED namespace (issue #1850 
     headers: { authorization: `Bearer ${token}` },
   });
   try {
-    // ── POST chat/message resuming a CROSS-namespace session → 403 ──
     const cross = await fetch(
       `http://127.0.0.1:${status.port}/engram/v1/chat/message`,
       {
@@ -3695,9 +3593,6 @@ test("HTTP chat routes gate the resumed session's STORED namespace (issue #1850 
       "scoped-ns-b must NOT post to a session bound to ns_a",
     );
 
-    // ── POST chat/message resuming a SAME-namespace session → passes the gate ──
-    // (Chat is unconfigured here so the handler returns chat_disabled 404; the
-    //  point is it is NOT 403 — the namespace gate let it through.)
     const same = await fetch(
       `http://127.0.0.1:${status.port}/engram/v1/chat/message`,
       {
@@ -3715,7 +3610,6 @@ test("HTTP chat routes gate the resumed session's STORED namespace (issue #1850 
       "scoped-ns-a must pass the namespace gate for its own session",
     );
 
-    // ── GET chat/events for a CROSS-namespace session → 403 ──
     const crossEvents = await fetch(
       `http://127.0.0.1:${status.port}/engram/v1/chat/events/${session.id}`,
       authed("scoped-ns-b"),
@@ -3726,7 +3620,6 @@ test("HTTP chat routes gate the resumed session's STORED namespace (issue #1850 
       "scoped-ns-b must NOT stream a session bound to ns_a",
     );
 
-    // ── GET chat/events for a SAME-namespace session → passes the gate ──
     const sameEvents = await fetch(
       `http://127.0.0.1:${status.port}/engram/v1/chat/events/${session.id}`,
       authed("scoped-ns-a"),
@@ -3743,14 +3636,6 @@ test("HTTP chat routes gate the resumed session's STORED namespace (issue #1850 
 });
 
 test("HTTP per-request token capabilities never bleed across concurrent async requests (issue #1850 r7 ALS run fix)", async () => {
-  // The capability store must be bound via run() (NOT enterWith) so each
-  // request's async scope observes its OWN resolved capabilities across every
-  // await. Interleave concurrent requests with DIFFERENT scopes against an
-  // op+namespace-gated route whose service read yields, then assert:
-  //   (1) a deny-all op token is ALWAYS rejected — never fail-opens to 200
-  //       because its caps leaked to undefined/unrestricted mid-handler;
-  //   (2) the store read AFTER an async yield inside the service still carries
-  //       the REQUESTING token's scope on every call — zero cross-request bleed.
   const observed: Array<TokenCapabilities | undefined> = [];
   const service = {
     configRef: parseConfig({
@@ -3759,9 +3644,6 @@ test("HTTP per-request token capabilities never bleed across concurrent async re
       defaultNamespace: "default",
     }),
     memoryBrowse: async () => {
-      // Yield so concurrent requests overlap at this await — the exact window
-      // where an enterWith-based store would read another request's caps (or
-      // undefined). run() keeps each request in its own scope across the yield.
       await new Promise<void>((resolve) => setTimeout(resolve, 8));
       observed.push(tokenCapabilityStore.getStore());
       return { total: 0, memories: [] };
@@ -3811,8 +3693,6 @@ test("HTTP per-request token capabilities never bleed across concurrent async re
     }
     const responses = await Promise.all(batch);
 
-    // (1) Op-gate holds under concurrency: every deny-all request is 403, never
-    //     fail-open 200 (which would mean its caps bled to unrestricted).
     const denyAllStatuses = responses
       .filter((_, i) => i % 3 === 0)
       .map((r) => r.status);
@@ -3821,7 +3701,6 @@ test("HTTP per-request token capabilities never bleed across concurrent async re
       `deny-all token must always be 403, got: ${JSON.stringify(denyAllStatuses)}`,
     );
 
-    // scoped tokens reach the service (200) — op + namespace gates both pass.
     const nsAStatuses = responses
       .filter((_, i) => i % 3 === 1)
       .map((r) => r.status);
@@ -3837,9 +3716,6 @@ test("HTTP per-request token capabilities never bleed across concurrent async re
       `scoped-ns-b should all be 200: ${JSON.stringify(nsBStatuses)}`,
     );
 
-    // (2) No cross-request bleed: the store read AFTER the async yield carried
-    //     the REQUESTING token's namespace on every service call. memoryBrowse
-    //     ran once per scoped request (2 * REPEATS).
     assert.equal(
       observed.length,
       2 * REPEATS,
@@ -3867,12 +3743,6 @@ test("HTTP per-request token capabilities never bleed across concurrent async re
 });
 
 test("HTTP allow-capability is never inherited by a concurrent deny token across the async yield (issue #1850 r8 ALS non-inheritance)", async () => {
-  // The r7 run() fix guarantees each request observes its OWN caps. The sharper
-  // property: a token whose caps ALLOW the op+namespace (→ 200) interleaved
-  // with deny tokens (→ 403) must NEVER let a deny request inherit the allow
-  // token's capabilities — i.e. in the SAME batch where allow requests returned
-  // 200, NO deny request ever returned 200. Distinct (op, namespace) per token
-  // so the result can only come from each request's own resolved caps.
   const observed: Array<TokenCapabilities | undefined> = [];
   const service = {
     configRef: parseConfig({
@@ -3881,11 +3751,6 @@ test("HTTP allow-capability is never inherited by a concurrent deny token across
       defaultNamespace: "default",
     }),
     memoryBrowse: async () => {
-      // Real wall-clock yield — the LEGITIMATE timer exception: this test
-      // exercises ALS async-scope isolation across CONCURRENT requests, so the
-      // await must produce a genuine overlap window where an enterWith-based
-      // store would read another request's caps. Deterministic fake timers
-      // cannot force that cross-request overlap (mirrors the r7 sibling test).
       await new Promise<void>((resolve) => setTimeout(resolve, 8));
       observed.push(tokenCapabilityStore.getStore());
       return { total: 0, memories: [] };
@@ -3897,7 +3762,6 @@ test("HTTP allow-capability is never inherited by a concurrent deny token across
     service,
     port: 0,
     authTokenEntriesGetter: () => [
-      // ALLOW: op + namespace both permitted → 200.
       {
         token: "allow",
         capabilities: {
@@ -3906,12 +3770,7 @@ test("HTTP allow-capability is never inherited by a concurrent deny token across
           namespaces: ["ns_allow"],
         },
       },
-      // DENY (op-level): empty ops → 403 at the op-gate.
       { token: "deny-all", capabilities: { version: 1, ops: [] } },
-      // DENY (namespace-level): op permitted but scoped to a DIFFERENT
-      // namespace ("ns_other") than the request ("ns_allow") → 403 at the
-      // namespace-gate. The ONLY way this becomes 200 is by inheriting the
-      // allow token's ns_allow cap — exactly the bleed run() prevents.
       {
         token: "deny-ns",
         capabilities: {
@@ -3950,17 +3809,11 @@ test("HTTP allow-capability is never inherited by a concurrent deny token across
       .filter((_, i) => i % 3 === 2)
       .map((r) => r.status);
 
-    // ALLOW requests succeed (200) — the caps DID resolve correctly and the
-    // service read happened under the allow scope.
     assert.ok(
       allowStatuses.every((s) => s === 200),
       `allow token should all be 200: ${JSON.stringify(allowStatuses)}`,
     );
 
-    // NON-INHERITANCE: in the SAME interleaved batch where allow got 200, every
-    // deny request stayed 403 — neither deny token ever inherited the allow
-    // token's capabilities (which would have been 200). Covers BOTH op-level
-    // and namespace-level denial.
     assert.ok(
       denyAllStatuses.every((s) => s === 403),
       `deny-all token must never be 200 (never inherits allow caps): ${JSON.stringify(denyAllStatuses)}`,
@@ -3969,12 +3822,7 @@ test("HTTP allow-capability is never inherited by a concurrent deny token across
       denyNsStatuses.every((s) => s === 403),
       `deny-ns token must never be 200 (never inherits allow namespace): ${JSON.stringify(denyNsStatuses)}`,
     );
-    // Both deny arrays are ALL 403 ⟹ neither contains a 200: in the same
-    // interleaved batch where the allow token returned 200, no deny request
-    // ever inherited the allow token's capabilities.
 
-    // Only allow requests reached the service; the store read after the async
-    // yield carried the allow token's namespace every time — zero deny bleed.
     assert.equal(
       observed.length,
       REPEATS,
@@ -3990,12 +3838,6 @@ test("HTTP allow-capability is never inherited by a concurrent deny token across
 });
 
 test("HTTP chat/message gates the NEW session's namespace — scoped token cannot start a chat in a disallowed namespace (issue #1850 r7)", async () => {
-  // A NEW chat turn (no chatSessionId) previously never hit the effective-
-  // namespace chokepoint, so a namespace-scoped token could start a chat in the
-  // server DEFAULT namespace even when "default" was outside its allow-list.
-  // The new-session path must resolve the effective namespace (the server
-  // default, since the HTTP chat handler forwards no namespace) and fail closed
-  // against the token allow-list — same as the resume path.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-chat-new-ns-"));
   try {
     const service = {
@@ -4024,7 +3866,6 @@ test("HTTP chat/message gates the NEW session's namespace — scoped token canno
       service,
       port: 0,
       authTokenEntriesGetter: () => [
-        // scoped to ns_a (NOT the server default) — must be denied a new chat.
         {
           token: "scoped-ns-a",
           capabilities: {
@@ -4033,7 +3874,6 @@ test("HTTP chat/message gates the NEW session's namespace — scoped token canno
             namespaces: ["ns_a"],
           },
         },
-        // scoped to the server default — may start a new chat there.
         {
           token: "scoped-default",
           capabilities: {
@@ -4056,8 +3896,6 @@ test("HTTP chat/message gates the NEW session's namespace — scoped token canno
         body: JSON.stringify({ message: "hi" }), // no chatSessionId → NEW session
       });
     try {
-      // DISALLOWED: token scoped to ns_a; the new session would land in the
-      // server default ("default"), which is not in ["ns_a"] → 403.
       const denied = await post("scoped-ns-a");
       assert.equal(
         denied.status,
@@ -4065,8 +3903,6 @@ test("HTTP chat/message gates the NEW session's namespace — scoped token canno
         "scoped-to-ns_a must not start a new chat in the default namespace",
       );
 
-      // ALLOWED: token scoped to the server default → gate passes → chat runs
-      // and returns 200 with a reply.
       const allowed = await post("scoped-default");
       assert.equal(
         allowed.status,
@@ -4128,22 +3964,12 @@ test("HTTP recall forwards the connector from the authorized token entry", async
 });
 
 // ---------------------------------------------------------------------------
-// PR #1852: token-rotation race — authorized entry must be reused for provenance
 // ---------------------------------------------------------------------------
 
 test("PR #1852: token rotation between authorization and write does not stamp the wrong connector", async () => {
-  // Race: the dynamic-token authorization resolves an entry (connector A),
-  // then the provenance resolver re-reads the token store. If the store
-  // rotated between the two reads, the OLD code stamped connector B. The
-  // fix caches the matched entry per-request so the provenance comes from
-  // the SAME entry that authorized.
   let getterCalls = 0;
   const entriesGetter = () => {
     getterCalls++;
-    // First call (authorization): token -> "chatgpt".
-    // Subsequent call (provenance in the OLD code): token -> "codex-cli".
-    // With the fix the getter is called only once; the second call never
-    // happens and the cached "chatgpt" entry is reused.
     if (getterCalls <= 1) {
       return [{ token: "race_token", connector: "chatgpt" }];
     }
@@ -4195,15 +4021,11 @@ test("PR #1852: token rotation between authorization and write does not stamp th
       "memory_store must succeed with a valid entry token",
     );
 
-    // The provenance must come from the entry that AUTHORIZED the request
-    // ("chatgpt"), not from the rotated store ("codex-cli").
     assert.equal(
       capturedSourceConnector,
       "chatgpt",
       "sourceConnector must be from the authorized entry, not the rotated store",
     );
-    // The getter must have been called only once — the matched entry is
-    // cached per-request.
     assert.equal(
       getterCalls,
       1,
@@ -4293,10 +4115,6 @@ test("issue #2829: memory_store category aliases canonicalize with a retained sp
 });
 
 test("PR #1852: static operator token has no connector provenance under rotation", async () => {
-  // An operator-supplied static token must never acquire connector provenance,
-  // even when an entries getter is also configured and the static token
-  // appears there under a different connector. This guards the short-circuit
-  // in resolveMatchedEntry: static tokens return { token } (no connector).
   let capturedSourceConnector: string | undefined;
   const service = {
     memoryStore: (req: { sourceConnector?: string }) => {
@@ -4351,9 +4169,6 @@ test("PR #1852: static operator token has no connector provenance under rotation
 });
 
 test("HTTP namespace/writable preflight returns the structured writability result", async () => {
-  // Real config through the pure resolver: the default namespace is writable
-  // for any principal; a foreign namespace with no policy is not. A rejection
-  // is a valid 200 answer (read via `ok`), not an HTTP error.
   const service = {
     configRef: parseConfig({
       memoryDir: "/tmp/remnic-http-preflight-test",
@@ -4531,22 +4346,14 @@ test("HTTP namespace/writable preflight admits write-scoped tokens and rejects r
     return body.ok;
   };
   try {
-    // A token scoped to write ops but NOT the namespace_writable op (e.g. minted
-    // before this endpoint existed) may still run the preflight.
     const writeScoped = await request("write-scoped");
     assert.equal(writeScoped.status, 200);
     assert.equal(await okOf(writeScoped), true);
-    // Config-aware write op: a memory_store-only token is writable for the
-    // explicit store path (?op=memory_store) but not for the automatic observe
-    // path (default), which it cannot perform.
     assert.equal(await okOf(await request("store-only", "memory_store")), true);
     assert.equal(await okOf(await request("store-only")), false);
-    // A token scoped to the diagnostic op ONLY can call the endpoint but cannot
-    // write, so the answer is a definitive not-writable (never a false ok:true).
     const diag = await request("diagnostic-only");
     assert.equal(diag.status, 200);
     assert.equal(await okOf(diag), false);
-    // A read-only token cannot write, so it has nothing to preflight → 403.
     assert.equal((await request("read-only")).status, 403);
     const invalidOp = await request("write-scoped", "memory_stroe");
     assert.equal(invalidOp.status, 400);
@@ -6146,8 +5953,6 @@ test("HTTP memory search forwards a validated ranking mode and trims the namespa
 });
 
 test("HTTP memory search excludes artifacts and tops up to a full page", async () => {
-  // Artifacts rank above real memories. Filtering after the cap would return a
-  // thin page; the search must keep asking until the budget is met.
   const seen: number[] = [];
   const corpus = [
     { path: "artifacts/a1.md", score: 0.99, snippet: "artifact" },
@@ -6211,8 +6016,6 @@ test("HTTP memory search stops topping up when the corpus is exhausted", async (
 });
 
 test("HTTP memory search omits maxResults when the caller named no budget", async () => {
-  // The wire stays exactly as it was for the default request: the backend's
-  // own page size, not a resolved number. Top-up rounds are explicit.
   const seen: Array<number | undefined> = [];
   const { runScopedMemorySearch } =
     await import("./access-memory-search-fanout.js");
@@ -6248,8 +6051,6 @@ test("HTTP memory search omits maxResults when the caller named no budget", asyn
 });
 
 test("HTTP memory search keeps topping up past four excluded pages", async () => {
-  // Eight pages of artifacts ahead of the real memories: a fixed round count
-  // would give up and report a thin page while valid hits sit right behind.
   const corpus = [
     ...Array.from({ length: 40 }, (_, index) => ({
       path: `artifacts/a${index}.md`,
@@ -6288,8 +6089,6 @@ test("HTTP memory search keeps topping up past four excluded pages", async () =>
 });
 
 test("HTTP memory search stops at the candidate ceiling", async () => {
-  // A backend that always returns a full page of excluded hits must not be
-  // asked for an unbounded number of candidates.
   const seen: Array<number | undefined> = [];
   const { runScopedMemorySearch } =
     await import("./access-memory-search-fanout.js");
@@ -6312,9 +6111,6 @@ test("HTTP memory search stops at the candidate ceiling", async () => {
     namespaced: async () => [],
   });
   assert.deepEqual(results, []);
-  // The cap is ABSOLUTE, not a multiple of the budget: a small request whose
-  // hits are all excluded still walks far enough to prove the corpus holds
-  // nothing for it, then stops on the backend-safety bound.
   assert.equal(
     seen.at(-1),
     25_000,
@@ -6324,8 +6120,6 @@ test("HTTP memory search stops at the candidate ceiling", async () => {
 });
 
 test("HTTP memory search scales its ceiling above a large requested budget", async () => {
-  // A fixed 1000 ceiling would stop at or below a 2000-result request, so one
-  // excluded hit in the first page could never be replaced.
   const seen: Array<number | undefined> = [];
   const { runScopedMemorySearch } =
     await import("./access-memory-search-fanout.js");
@@ -6360,9 +6154,6 @@ test("HTTP memory search scales its ceiling above a large requested budget", asy
 });
 
 test("HTTP memory search keeps the backend page size when no limit is named", async () => {
-  // The backend's default page (6) is smaller than the configured cap (8).
-  // Treating the cap as the target made a FULL page look short and reissued
-  // the query, returning 8 where the same request used to return 6.
   const seen: Array<number | undefined> = [];
   const { runScopedMemorySearch } =
     await import("./access-memory-search-fanout.js");
@@ -6390,8 +6181,6 @@ test("HTTP memory search keeps the backend page size when no limit is named", as
 });
 
 test("HTTP memory search still tops up a thinned default page", async () => {
-  // Same shape, but an excluded hit really does shorten the page: the target
-  // is the backend page size, so it tops up to restore it.
   const seen: Array<number | undefined> = [];
   const { runScopedMemorySearch } =
     await import("./access-memory-search-fanout.js");
@@ -6426,9 +6215,6 @@ test("HTTP memory search still tops up a thinned default page", async () => {
 });
 
 test("search keeps archived memories but still excludes the dedicated surfaces", async () => {
-  // The lifecycle reserves archived memories for explicit read/search
-  // surfaces, so a ranked search must return them - while artifacts, activity
-  // digests, and meeting records stay on their own paths.
   const { isSearchExcludedPath, isGenericRecallExcludedPath } =
     await import("./orchestration/generic-recall-paths.js");
   assert.equal(
@@ -6441,10 +6227,8 @@ test("search keeps archived memories but still excludes the dedicated surfaces",
     true,
     "but recall injection still skips them",
   );
-  // Artifacts flow only through the dedicated verbatim path, in BOTH modes.
   assert.equal(isSearchExcludedPath("artifacts/report.md"), true);
   assert.equal(isGenericRecallExcludedPath("artifacts/report.md"), true);
-  // And the wiring uses the search predicate, so an archived hit survives.
   const { runScopedMemorySearch } =
     await import("./access-memory-search-fanout.js");
   const results = await runScopedMemorySearch({
@@ -6470,10 +6254,6 @@ test("search keeps archived memories but still excludes the dedicated surfaces",
 test("a collection-qualified QMD path still hits the dedicated-surface exclusions", async () => {
   const { isSearchExcludedPath } =
     await import("./orchestration/generic-recall-paths.js");
-  // A flat-corpus QMD transport returns `qmd://<collection>/<path>` or
-  // `<collection>/<path>`. The activity predicate is root-aware, so an
-  // un-stripped prefix reads as a NESTED path and the digest leaks into
-  // ranked search.
   const policy = { memoryDir: "/memory", qmdCollection: "memories" };
 
   for (const excluded of [
@@ -6484,8 +6264,6 @@ test("a collection-qualified QMD path still hits the dedicated-surface exclusion
   ]) {
     assert.equal(isSearchExcludedPath(excluded, policy, "qmd"), true, excluded);
   }
-  // A namespaced search rewrites hits to absolute paths beneath the
-  // namespace's own storage root; the digest there must be excluded too.
   assert.equal(
     isSearchExcludedPath(
       "/memory/namespaces/team/activity/2026-08-02.md",
@@ -6504,9 +6282,6 @@ test("a collection-qualified QMD path still hits the dedicated-surface exclusion
     false,
     "and an ordinary nested memory under that root stays searchable",
   );
-  // A collection whose NAME is also a memory category is disambiguated two
-  // ways: a `qmd://` URI states it in the authority, and a bare path is
-  // resolved against the collection the caller actually requested.
   assert.equal(
     isSearchExcludedPath("qmd://facts/activity/2026-08-02.md", policy, "qmd"),
     true,
@@ -6526,8 +6301,6 @@ test("a collection-qualified QMD path still hits the dedicated-surface exclusion
     false,
     "without that, `facts` stays a memory category and the memory is searchable",
   );
-  // A collection this policy does NOT know — a caller-named custom one, or
-  // any collection global search spans — is covered too.
   for (const excluded of [
     "custom/activity/2026-08-02.md",
     "qmd://custom/activity/2026-08-02.md",
@@ -6535,15 +6308,9 @@ test("a collection-qualified QMD path still hits the dedicated-surface exclusion
   ]) {
     assert.equal(isSearchExcludedPath(excluded, policy, "qmd"), true, excluded);
   }
-  // A nested ordinary memory that merely looks like a digest stays searchable,
-  // including under a custom collection, and so does an archived one. A
-  // leading segment naming a memory CATEGORY is never read as a collection.
   for (const kept of [
     "qmd://memories/facts/proj/activity/2026-08-02.md",
     "custom/facts/proj/activity/2026-08-02.md",
-    // The configured collection is stripped ONCE. Removing `projects` too
-    // would leave `activity/<date>.md` and hide an ordinary nested memory
-    // from search and recall alike.
     "memories/projects/activity/2026-08-02.md",
     "qmd://memories/projects/activity/2026-08-02.md",
     "facts/activity/2026-08-02.md",
@@ -6554,10 +6321,6 @@ test("a collection-qualified QMD path still hits the dedicated-surface exclusion
 });
 
 test("search keeps paging while the backend page is full of excluded hits", async () => {
-  // A budget-proportional ceiling made "the excluded paths rank first"
-  // indistinguishable from "there is nothing else": a 1,000-row request whose
-  // first 4,000 hits are artifacts stopped at 4,000 and answered empty while
-  // valid memories sat at rank 4,001.
   const { searchWithGenericExclusion } =
     await import("./access-memory-search-fanout.js");
   const corpus = [
@@ -6615,9 +6378,6 @@ test("search removes excluded paths before private-memory resolution", async () 
 });
 
 test("a budget above the backend cap still gets the rows it asked for", async () => {
-  // The cap protects the backend from an unbounded walk; it must never sit
-  // BELOW an explicit request, or a large search returns a short page for a
-  // count the operation deliberately supports.
   const { searchWithGenericExclusion } =
     await import("./access-memory-search-fanout.js");
   const corpus = [
@@ -6640,24 +6400,13 @@ test("a budget above the backend cap still gets the rows it asked for", async ()
   );
 });
 
-/**
- * Prototype-backed service stub for the write-quota tests: the constructor's
- * surface getters read only `orchestrator.config`, and each test overrides the
- * single member its route dispatches.
- */
 function quotaStubService(): EngramAccessService {
-  // SAFETY: the prototype supplies the untouched service surface; each quota test overrides only the member its route dispatches.
   const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
-  // SAFETY: startup reads only orchestrator.config from the service; an empty config keeps every surface flag false.
   Reflect.set(service, "orchestrator", { config: {} });
   return service;
 }
 
 test("concurrent distinct-payload writes cannot overshoot the write quota (issue #3225 C4)", async () => {
-  // Checking hasCapacity before the operation and calling record after it
-  // left a window where N in-flight writes all pass against the same
-  // committed count. Admission must reserve a slot, so only LIMIT of TOTAL
-  // overlapping writes proceed and the rest get 429.
   const LIMIT = 2;
   const TOTAL = 6;
   let dispatches = 0;
@@ -6668,7 +6417,6 @@ test("concurrent distinct-payload writes cannot overshoot the write quota (issue
     dispatches += 1;
     if (dispatches === 1) firstDispatched.resolve();
     await releaseWrites.promise;
-    // SAFETY: the route serializes this stub result into the HTTP response; the test asserts statuses, not this shape.
     return { ok: true, name: request.name } as never;
   };
   const server = new EngramAccessHttpServer({
@@ -6692,10 +6440,6 @@ test("concurrent distinct-payload writes cannot overshoot the write quota (issue
     const first = post(0);
     await firstDispatched.promise;
     const rest = Array.from({ length: TOTAL - 1 }, (_, index) => post(index + 1));
-    // The first write is admitted and held open inside the service, so every
-    // other request must run its admission check against an unrecorded
-    // window. Loopback arrival needs a bounded grace; the overlap cannot be
-    // driven deterministically because admission is server-internal.
     await new Promise((resolve) => setTimeout(resolve, 50));
     releaseWrites.resolve();
     const responses = await Promise.all([first, ...rest]);
@@ -6717,7 +6461,6 @@ test("a failed write releases its reserved quota slot (issue #3225 C4)", async (
   service.capsuleExport = async (request) => {
     calls += 1;
     if (calls === 1) throw new Error("export backend failed");
-    // SAFETY: the route serializes this stub result into the HTTP response; the test asserts statuses, not this shape.
     return { ok: true, name: request.name } as never;
   };
   const server = new EngramAccessHttpServer({
@@ -6738,9 +6481,6 @@ test("a failed write releases its reserved quota slot (issue #3225 C4)", async (
       body: JSON.stringify({ name }),
     });
   try {
-    // The first export fails in the backend; the slot it reserved at
-    // admission must be released, so the retry is admitted and only then
-    // does the window fill.
     assert.equal((await post("quota-fail-1")).status, 500);
     assert.equal((await post("quota-fail-2")).status, 200);
     assert.equal((await post("quota-fail-3")).status, 429);
@@ -6757,16 +6497,12 @@ test("a replayed observe never 429s and never consumes a second quota slot (issu
     const key = request.idempotencyKey?.trim();
     const cached = key ? stored.get(key) : undefined;
     if (cached) {
-      // SAFETY: the route only forwards this result into the HTTP response and reads its dryRun/idempotencyReplay flags.
       return { ...cached, idempotencyReplay: true } as never;
     }
-    // Mirror the real service contract: the quota hook fires exactly once,
-    // immediately before an actual write commits, never on a replay.
     await hooks?.enforceWriteQuota?.();
     hookCalls += 1;
     const response = { sessionKey: request.sessionKey };
     stored.set(key ?? "", response);
-    // SAFETY: the route only forwards this result into the HTTP response and reads its dryRun/idempotencyReplay flags.
     return response as never;
   };
   const server = new EngramAccessHttpServer({
@@ -6794,12 +6530,9 @@ test("a replayed observe never 429s and never consumes a second quota slot (issu
     assert.equal((await post("quota-replay-1")).status, 202);
     const replay = await post("quota-replay-1");
     assert.equal(replay.status, 202);
-    // SAFETY: our own server serialized this body; the test reads only the idempotencyReplay flag.
     const replayBody = (await replay.json()) as { idempotencyReplay?: boolean };
     assert.equal(replayBody.idempotencyReplay, true);
     assert.equal(hookCalls, 1, "the replay must not re-run the quota hook");
-    // The window still holds exactly the first write's slot: a different
-    // payload is rejected, proving the replay consumed nothing.
     assert.equal((await post("quota-replay-2")).status, 429);
   } finally {
     await server.stop();
@@ -6809,7 +6542,6 @@ test("a replayed observe never 429s and never consumes a second quota slot (issu
 test("a dreams dry run neither 429s nor consumes quota at a full window (#3225 C4)", async () => {
   const service = quotaStubService();
   service.dreamsRun = async (options) => {
-    // SAFETY: the route serializes this stub result into the HTTP response and reads its dryRun flag.
     return { phase: options.phase, dryRun: options.dryRun === true } as never;
   };
   const server = new EngramAccessHttpServer({
@@ -6831,10 +6563,8 @@ test("a dreams dry run neither 429s nor consumes quota at a full window (#3225 C
     });
   try {
     assert.equal((await post({})).status, 200);
-    // The window is full; the dry run must pass and leave the count alone.
     const dry = await post({ dryRun: true });
     assert.equal(dry.status, 200);
-    // SAFETY: our own server serialized this body; the test reads only the dryRun flag.
     const dryBody = (await dry.json()) as { dryRun?: boolean };
     assert.equal(dryBody.dryRun, true);
     assert.equal((await post({})).status, 429);

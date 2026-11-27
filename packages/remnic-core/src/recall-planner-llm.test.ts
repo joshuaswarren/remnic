@@ -10,8 +10,6 @@ import {
 import type { FallbackLlmClient } from "./fallback-llm.js";
 import type { RecallPlanMode } from "./types.js";
 
-// A stub FallbackLlmClient that records the options it was called with and
-// returns a scripted classification (or simulates a failure).
 function stubLlm(opts: {
   available?: boolean;
   capturedOptions?: Array<Record<string, unknown>>;
@@ -29,7 +27,6 @@ function stubLlm(opts: {
       opts.capturedOptions?.push(options);
       if (opts.throwError) throw new Error(opts.throwError);
       if (opts.result === null || opts.result === undefined) return null;
-      // Exercise the real schema so malformed scripted output is caught too.
       const parsed = schema.parse(opts.result);
       return { result: parsed, modelUsed: opts.modelUsed ?? "test/model" };
     },
@@ -46,7 +43,6 @@ test("returns heuristic without calling the LLM when recallPlannerLlmEnabled is 
   assert.equal(captured.length, 0, "LLM must not be contacted when disabled");
   assert.equal(result.source, "heuristic");
   assert.equal(result.fallbackUsed, false);
-  // Memory-seeking question → heuristic "full".
   assert.equal(result.mode, "full");
   assert.equal(result.heuristicMode, "full");
 });
@@ -78,13 +74,11 @@ test("forwards taskModelChain AND recallPlannerModel in gateway mode (provider-a
   await planRecallModeLLM("check status", undefined, config, resolveCapabilities(config), llm, undefined);
 
   assert.equal(captured.length, 1);
-  // recallPlannerModel is tried first (prepended), taskModelChain is the fallback chain.
   assert.equal(captured[0]?.model, "anthropic/claude-haiku-4-5");
   assert.deepEqual(captured[0]?.modelChain, {
     primary: "zai/glm-4.7-flash",
     fallbacks: ["fireworks/x/glm-5p1"],
   });
-  // taskModelChain wins over the agent persona (gotcha #22).
   assert.equal(captured[0]?.agentId, undefined);
   assert.equal(captured[0]?.timeoutMs, config.recallPlannerTimeoutMs);
 });
@@ -115,7 +109,6 @@ test("falls back to heuristic when the LLM throws", async () => {
   assert.equal(result.source, "heuristic-fallback");
   assert.equal(result.fallbackUsed, true);
   assert.match(result.reason, /llm-error:boom/);
-  // "what happened" → heuristic graph_mode.
   assert.equal(result.mode, "graph_mode");
   assert.equal(result.mode, result.heuristicMode);
 });
@@ -132,10 +125,6 @@ test("falls back to heuristic when the LLM returns no parseable result", async (
 });
 
 test("falls back without a network attempt when the chain is empty and the model is bare (default gpt-5.5)", async () => {
-  // The legacy default recallPlannerModel "gpt-5.5" is bare (no provider/),
-  // which FallbackLlmClient cannot resolve — so with no gateway chain there is
-  // nothing routable and the planner must short-circuit to the heuristic
-  // (issue #1367 review on PR #1428), not log an invalid-model warning per call.
   const config = parseConfig({ recallPlannerLlmEnabled: true });
   const captured: Array<Record<string, unknown>> = [];
   const llm = stubLlm({ available: false, capturedOptions: captured, result: { mode: "full" } });
@@ -149,9 +138,6 @@ test("falls back without a network attempt when the chain is empty and the model
 });
 
 test("attempts the call (and falls back) when a provider-qualified model override is set even if the chain is empty", async () => {
-  // A qualified `provider/model` override is genuinely routable, so we attempt
-  // it even when the chain probe reports unavailable, then fall back on a null
-  // response.
   const config = parseConfig({ recallPlannerLlmEnabled: true, recallPlannerModel: "openai/gpt-5.5" });
   const captured: Array<Record<string, unknown>> = [];
   const llm = stubLlm({ available: false, capturedOptions: captured, result: null });
@@ -212,8 +198,6 @@ test("resolveRecallPlannerLlmOptions clamps timeout and sets deterministic decod
 });
 
 test("resolveRecallPlannerLlmOptions drops bare model names but keeps provider-qualified ones", () => {
-  // Bare "gpt-5.5" is unresolvable by FallbackLlmClient → dropped (routing falls
-  // through to the chain); a qualified value is forwarded as the override.
   const bare = resolveRecallPlannerLlmOptions(
     parseConfig({ recallPlannerLlmEnabled: true, recallPlannerModel: "gpt-5.5" }),
   );
@@ -225,15 +209,10 @@ test("resolveRecallPlannerLlmOptions drops bare model names but keeps provider-q
 });
 
 test("caps.recallPlannerLlm is authoritative — disabled caps wins over enabled config flag (one-resolution-per-op #1523)", async () => {
-  // Issue #1523 contract: the capability resolved at the operation entry is
-  // THE gate. Construct a deliberate mismatch: config says enabled, but the
-  // resolved CapabilitySet says disabled. The function must NOT call the LLM.
   const config = parseConfig({ recallPlannerLlmEnabled: true });
   const captured: Array<Record<string, unknown>> = [];
   const llm = stubLlm({ capturedOptions: captured, result: { mode: "full" } });
 
-  // Manually construct caps with recallPlannerLlm: false (simulating a
-  // resolution that disagrees with the raw config — e.g. session toggle off).
   const caps = { ...resolveCapabilities(config), recallPlannerLlm: false } as any;
 
   const result = await planRecallModeLLM("what did we decide?", undefined, config, caps, llm, undefined);

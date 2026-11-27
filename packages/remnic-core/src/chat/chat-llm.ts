@@ -17,10 +17,6 @@
 
 import type { ChatLlmAdapter, ChatLlmMessage, ChatLlmResponse, ChatLlmToolCall, ChatToolSchema } from "./chat-types.js";
 
-// ---------------------------------------------------------------------------
-// Minimal LLM-client interface (duck-typed from FallbackLlmClient and
-// LocalLlmClient — both expose chatCompletion returning {content}|null).
-// ---------------------------------------------------------------------------
 
 interface LlmLikeClient {
   chatCompletion(
@@ -46,17 +42,11 @@ export function createProductionChatLlmAdapter(
       messages: ChatLlmMessage[],
       options: { tools: ChatToolSchema[]; model?: string; signal?: AbortSignal },
     ): Promise<ChatLlmResponse | null> {
-      // Build the tool-calling instruction appended to the system message.
       const toolInstruction = formatToolInstruction(options.tools);
       const mapped = messages.map((m) => {
         if (m.role === "system") {
           return { role: m.role, content: m.content + "\n\n" + toolInstruction };
         }
-        // Normalize tool results to a provider-safe role. The underlying
-        // chat-completion clients do not implement native tool-call envelopes,
-        // so a bare role:"tool" (without tool_call_id) is rejected by
-        // OpenAI/Anthropic/Ollama endpoints. Surface the result as a user
-        // message so the follow-up LLM turn always succeeds (P1).
         if (m.role === "tool") {
           const tag = m.toolCallId ? `[tool:${m.toolCallId}]` : "[tool]";
           return { role: "user", content: `${tag} ${m.content}` };
@@ -112,7 +102,6 @@ function formatToolInstruction(tools: ChatToolSchema[]): string {
  */
 export function parseToolCalls(content: string): ChatLlmToolCall[] {
   const calls: ChatLlmToolCall[] = [];
-  // Match ```json ... ``` blocks and bare JSON objects with "tool" key.
   const patterns = [
     /```json\s*\n([\s\S]*?)\n```/g,
     /```\s*\n([\s\S]*?)\n```/g,
@@ -124,7 +113,6 @@ export function parseToolCalls(content: string): ChatLlmToolCall[] {
       candidates.push(match[1]);
     }
   }
-  // Also try bare JSON lines.
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
     if (trimmed.startsWith("{") && trimmed.includes('"tool"')) {
@@ -137,7 +125,6 @@ export function parseToolCalls(content: string): ChatLlmToolCall[] {
       const parsed = JSON.parse(candidate) as { tool?: string; arguments?: Record<string, unknown> };
       if (typeof parsed.tool === "string" && parsed.tool.length > 0) {
         const args = parsed.arguments ?? {};
-        // De-duplicate: a fenced block and its inner bare line can both match.
         const key = parsed.tool + ":" + JSON.stringify(args);
         if (seen.has(key)) continue;
         seen.add(key);
@@ -154,16 +141,11 @@ export function parseToolCalls(content: string): ChatLlmToolCall[] {
   return calls;
 }
 
-/**
- * Remove tool-call JSON blocks from the content, leaving only prose.
- */
 function stripToolCallJson(content: string, toolCalls: ChatLlmToolCall[]): string {
   if (toolCalls.length === 0) return content;
   let result = content;
-  // Remove fenced blocks.
   result = result.replace(/```json\s*\n[\s\S]*?\n```/g, "");
   result = result.replace(/```\s*\n[\s\S]*?\n```/g, "");
-  // Remove bare JSON tool-call lines.
   result = result
     .split("\n")
     .filter((line) => {
@@ -175,7 +157,6 @@ function stripToolCallJson(content: string, toolCalls: ChatLlmToolCall[]): strin
 }
 
 // ---------------------------------------------------------------------------
-// Stub adapter — for tests (rule 33: production signature, scripted behaviour)
 // ---------------------------------------------------------------------------
 
 /**
@@ -213,7 +194,6 @@ export class StubChatLlmAdapter implements ChatLlmAdapter {
     };
   }
 
-  /** Reset the call index (for test reuse). */
   reset(): void {
     this.callIndex = 0;
   }

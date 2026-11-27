@@ -109,7 +109,6 @@ test("content hash rewrite is idempotent — unchanged records skip the write", 
   assert.equal(second.written, false, "identical record must not rewrite");
   assert.equal(second.contentHash, first.contentHash);
 
-  // A semantic change flips the hash and forces a rewrite.
   const changed = composeMeetingRecord(base(), fused({ attendees: ["Jane", "Sam"] }));
   assert.notEqual(changed.contentHash, record.contentHash);
   const third = await store.saveMeetingRecord(changed);
@@ -165,7 +164,6 @@ test("listing returns days newest-first and ids/summaries by start time", async 
     base({ id: "mtg-2026-03-11-00000003", date: "2026-03-11", startUtc: "2026-03-11T10:00:00.000Z" }),
     fused(),
   );
-  // Insert late before early to prove the sort is by start, not insertion.
   await store.saveMeetingRecord(late);
   await store.saveMeetingRecord(early);
   await store.saveMeetingRecord(otherDay);
@@ -216,9 +214,6 @@ test("a symlinked intermediate day directory is refused for reads and writes", a
 
 test("finding 4 — a symlinked leaf record file is refused for reads and writes", async () => {
   const io = new InMemoryIo();
-  // A pre-existing `<id>.md` symlink (e.g. pointing into facts/) resolves inside
-  // the memory dir, so realpath containment + the dir checks pass — but a
-  // follow would write raw transcript into the recall corpus. Refuse the leaf.
   io.symlinkedDirs.add("/mem/meetings/2026-03-10/mtg-2026-03-10-abcdef01.md");
   const store = new MeetingRecordStore(MEMORY_DIR, io);
   await assert.rejects(

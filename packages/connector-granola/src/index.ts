@@ -89,24 +89,16 @@ export function createGranolaConnector(
         cursor: opts.cursor,
         signal: opts.signal,
       });
-      // The list returns summaries only; each note's transcript/summary/timing
-      // needs a per-note fetch. Fetch sequentially to respect the 5 req/s rate
-      // limit (the client also backs off on 429).
       const conversations: WearableConversation[] = [];
       for (const summary of page.notes) {
         let full: GranolaNote;
         try {
           full = await activeClient.getNote(summary.id, opts.signal);
         } catch (err) {
-          // A note that 404s (deleted / no longer summarized) is gone, not a
-          // backend outage — skip it. Any other failure is real; rethrow so it
-          // reads as a source failure, not a quiet day (AGENTS.md §22).
           if (err instanceof GranolaApiError && err.status === 404) continue;
           throw err;
         }
         const conversation = noteToConversation(full);
-        // Drop a record with no resolvable start rather than emit an empty
-        // startIso that fails downstream parsing silently.
         if (conversation.startIso !== "") conversations.push(conversation);
       }
       return { conversations, nextCursor: page.nextCursor };

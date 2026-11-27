@@ -38,14 +38,6 @@ export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 
 const STARTUP_WARMUP_TIMEOUT_MS = 20_000;
 const STARTUP_WARMUP_RETRY_INTERVAL_MS = 30_000;
-/**
- * Failed warm-up attempts before the init gate opens in degraded mode
- * (issue #2215). The daemon keeps serving recall via fallback retrieval while
- * search warm-up cannot complete (e.g. `qmd` missing from the service PATH),
- * so a permanently-closed gate reports a working service as offline. After
- * this many failed attempts the gate opens with `degraded: true` and warm-up
- * retries continue in the background until they succeed.
- */
 export const STARTUP_DEGRADED_AFTER_ATTEMPTS = 3;
 
 export interface StartupReadinessState {
@@ -237,24 +229,10 @@ export async function completeStartupReadiness(options: {
   }
 }
 
-/** Daemon.log otherwise has no listener marker, so a slow start cannot be split
- *  into "listener late" vs "listener up but requests starved". */
 export function logListenerBound(host: string, port: number): void {
   log.info(`listener bound on ${host}:${port} ${Math.round(process.uptime() * 1000)}ms after process start`);
 }
 
-/**
- * The two levels of the startup search sync (#3518), each deduped so
- * concurrent callers share one in-flight attempt:
- *
- * - `ensureSearchReady`: probe + collection ensure only — what the readiness
- *   warm-up gate waits on. Never runs the corpus-wide index update; the ready
- *   mark must not hold on a reindex.
- * - `ensureStartupSync`: the full startupSearchSync (probe + ensure + corpus
- *   update + warm-up search) — the post-ready retry loop's job. Its success
- *   records `deferredSyncSucceeded`, which is also the flag that disarms the
- *   retry loop, so it is the only place that may write `true`.
- */
 export function createStartupSyncEnsurers(orchestrator: Orchestrator) {
   let startupSyncInFlight: Promise<boolean> | undefined;
   let searchReadyInFlight: Promise<boolean> | undefined;
@@ -276,14 +254,6 @@ export function createStartupSyncEnsurers(orchestrator: Orchestrator) {
 
   const ensureSearchReady = async (signal: AbortSignal): Promise<boolean> => {
     if (orchestrator.deferredSyncSucceeded) return true;
-    // Join an in-flight readiness run first — the dedup must precede any
-    // availability reasoning, because isAvailable() flips inside probe()
-    // BEFORE the collection ensure and noop swap finish (qmd.ts
-    // recordProbeSuccess). A probe-only-true backend is not proof the
-    // collection work completed, so readiness always runs the readiness-level
-    // sync; concurrent full-sync runs share its backend phase inside the
-    // orchestrator rather than blocking this gate on the corpus update
-    // (#3518 second read).
     if (searchReadyInFlight) return searchReadyInFlight;
     const attempt = orchestrator.startupSearchReadySync(signal);
     searchReadyInFlight = attempt;

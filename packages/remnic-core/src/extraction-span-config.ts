@@ -1,12 +1,3 @@
-/**
- * Span-mode extraction config + fact span-ref types (issue #2333 Phase B,
- * bench-gated). Sibling module so config.ts and types.ts stay under their
- * structural ratchets (#1995); types.ts re-exports both.
- *
- * Default "off"; an unrecognized value is REJECTED, never defaulted
- * (checklist #39) — silently ignoring it would run an unbenched extraction
- * contract.
- */
 
 import { z } from "zod";
 import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
@@ -39,7 +30,6 @@ export interface ExtractedFactSpanRef {
 export const EXTRACTION_SPAN_MODES = ["off", "shadow", "on"] as const;
 const extractionSpanBlockSchema = z.object({ spanMode: z.unknown().optional() }).strict();
 
-/** Span + liveness fields for parseConfig. One spread keeps config.ts at the ratchet. */
 export function parseExtractionFields(cfg: Record<string, unknown>) {
   return {
     extraction: parseExtractionSpanConfig(cfg.extraction),

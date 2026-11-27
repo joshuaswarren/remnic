@@ -138,7 +138,6 @@ test("inputs are not mutated", () => {
   assert.deepEqual(annotated, annotatedCopy);
 });
 
-/** A fixture row: the guard's line shape plus the fields the live route reads. */
 type LiveFixtureRow = StateViewLine & {
   score: number;
   supersededAt?: string;

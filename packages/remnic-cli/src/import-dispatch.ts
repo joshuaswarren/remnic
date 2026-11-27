@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
 // `remnic import` command dispatcher (issue #568, slice 1)
-// ---------------------------------------------------------------------------
 //
 // This module is the top-level CLI entry for optional memory importers
 // (ChatGPT, Claude, Gemini, Mem0, Supermemory). Slice 1 wires ONLY the infrastructure —
@@ -9,11 +7,9 @@
 // `remnic import --adapter chatgpt ...` today will therefore surface a clean
 // "optional package not installed" hint rather than a bare MODULE_NOT_FOUND.
 //
-// Flag contract (CLAUDE.md rule 14 — every value flag must reject
 //   `--flag` without a following value; rule 51 — reject invalid input with
 //   a list of valid options instead of silently defaulting):
 //
-//   --adapter <name>       Required. One of the supported optional importers.
 //   --file <path>          Required unless the adapter accepts an API-only
 //                          input (mem0). Expanded via ~.
 //   --dry-run              Parse + transform only; no writes, no API calls.
@@ -152,7 +148,6 @@ export function parseImportArgs(rest: readonly string[]): ImportDispatchArgs {
     );
   }
 
-  // CRITICAL: Extract value-bearing flags FIRST, before consuming boolean
   // flags. If we consumed boolean flags first via splice, then an argv like
   // `--batch-size --dry-run 10` would first collapse to `--batch-size 10`,
   // silently accepting `10` as the batch-size value — violating rule 14's
@@ -187,7 +182,6 @@ export function parseImportArgs(rest: readonly string[]): ImportDispatchArgs {
     rateLimit = validateImportRateLimit(parsed);
   }
 
-  // Boolean flags last: after all value-bearing flags have claimed their
   // adjacent value tokens, any remaining standalone flags are genuine
   // booleans.
   const dryRun = consumeFlag(args, "--dry-run");
@@ -287,7 +281,6 @@ export async function runImportCommand(
     },
   };
 
-  // Dry-run must never boot the orchestrator — callers of
   // getWriteTarget() may construct an Orchestrator instance, which opens
   // cache / watcher handles that are wasted work when writes are skipped.
   // Cursor review on PR #583 flagged the non-lazy version.
@@ -414,7 +407,6 @@ export function parseImportBundleArgs(
   }
   const bundleDir = expandTilde(rawDir);
 
-  // Bundle mode cannot combine with per-adapter flags — reject them loudly
   // rather than silently ignoring (CLAUDE.md rule 51).
   for (const incompatible of ["--adapter", "--file"] as const) {
     if (args.includes(incompatible)) {
@@ -510,7 +502,6 @@ export async function runBundleImportCommand(
       dryRun: args.dryRun,
       ...(args.batchSize !== undefined ? { batchSize: args.batchSize } : {}),
       ...(args.rateLimit !== undefined ? { rateLimit: args.rateLimit } : {}),
-      // The per-file hint wins (e.g. conversations.json → true) but the
       // top-level flag overrides when the user passed it explicitly.
       includeConversations:
         args.includeConversations || entry.includeConversations === true,
@@ -569,7 +560,6 @@ export async function cmdImport(
     return undefined;
   }
 
-  // Slice 7: `--all-from-bundle <dir>` routes to the bundle pipeline
   // instead of single-adapter parse. We detect it BEFORE parseImportArgs
   // because `--adapter` is not required in bundle mode.
   let bundleArgs: ImportBundleArgs | undefined;
@@ -596,7 +586,6 @@ export async function cmdImport(
     }
   }
 
-  // Track whether `getWriteTarget` was actually called so dispose runs after
   // target construction starts, even if the factory rejects before resolving.
   // An install-hint miss (loadAdapter throws) must NOT trigger dispose —
   // there's nothing to dispose and disposing may itself throw, masking the
@@ -634,7 +623,6 @@ export async function cmdImport(
   try {
     if (bundleArgs) {
       const outcome = await runBundleImportCommand(bundleArgs, io);
-      // Signal partial failure to automation. The walk kept going on
       // error (so the user sees every failure in one pass), but the
       // process must exit non-zero when any entry failed so shell
       // pipelines (`remnic import --all-from-bundle ... && ...`) don't
@@ -655,7 +643,6 @@ export async function cmdImport(
     process.exitCode = 1;
     return undefined;
   } finally {
-    // Only dispose when write target construction actually started. Checking
     // `parsed.dryRun` alone would incorrectly dispose after install-hint
     // misses or parse errors that happen BEFORE `getWriteTarget` is called.
     if (materializePromise !== undefined && disposeTarget !== undefined) {

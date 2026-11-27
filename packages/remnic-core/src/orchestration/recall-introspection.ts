@@ -1,18 +1,3 @@
-/**
- * Recall-introspection coordinator — extracted from the orchestrator
- * (issue #1526, seam 21).
- *
- * Owns the recall observability surfaces:
- *   - last-intent / last-graph-recall / last-QMD-recall snapshot
- *     recording, reading, and explain rendering
- *   - console faithfulness distribution
- *   - background direct-answer tier annotation (observation mode, #518)
- *
- * Behavior-preserving move from orchestrator.ts. The orchestrator keeps
- * thin delegating methods; all member access flows back through
- * RecallIntrospectionDeps live accessors/arrows (late-binding rule,
- * seams 18–20).
- */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -320,10 +305,6 @@ export class RecallIntrospectionCoordinator {
       ...snapshot.seeds.map((p) => `- ${p}`),
       `Expanded paths (${snapshot.expandedCount}, showing ${expanded.length}):`,
       ...expanded.map((e) => {
-        // Issue #681 PR 3/3 — surface per-edge confidence in the
-        // graph-explain document. Legacy snapshots without
-        // `edgeConfidence` render as `conf=n/a` so older payloads
-        // remain readable.
         const confLabel =
           typeof e.edgeConfidence === "number" && Number.isFinite(e.edgeConfidence)
             ? e.edgeConfidence.toFixed(2)
@@ -454,10 +435,6 @@ export class RecallIntrospectionCoordinator {
     if (expectedSnapshot === null) return;
     if (expectedSnapshot.plannerMode === "no_recall") return;
 
-    // Resolve the observation namespace set through the SAME ScopePlan resolver
-    // the main recall path uses (#1521). The observe path does NOT throw on an
-    // unreadable override (it falls through to the coding/legacy branches), so
-    // we skip the readability gate the recall path enforces.
     const observationScopePlan = resolveScopePlan({
       config: this.deps.config,
       sessionKey,
@@ -629,8 +606,6 @@ export class RecallIntrospectionCoordinator {
     }
   }
 
-  // Issue #1526 (seam 14): graph-recall snapshot moved to
-  // GraphRecallCoordinator. Thin delegation keeps the private API stable.
   async recordLastGraphRecallSnapshot(options: {
     storage: StorageManager;
     prompt: string;

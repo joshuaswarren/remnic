@@ -438,13 +438,8 @@ export class ConsolidationRunCoordinator {
     log.info("running consolidation pass");
     let merged = 0;
     let invalidated = 0;
-    // Tracks whether any consolidation memory-item action (UPDATE / MERGE /
-    // INVALIDATE) durably rewrote memory state. A consolidation pass that only
-    // mutates memory items (no profile/entity updates) still changes the default
-    // namespace's data, so its catalog `lastWriteAt` must refresh too (NIBOi).
     let memoryItemMutated = false;
 
-    // Flush access tracking buffer first
     if (this.deps.getAccessTrackingBuffer().size > 0) {
       await this.deps.flushAccessTracking();
     }
@@ -472,11 +467,6 @@ export class ConsolidationRunCoordinator {
     const profile = await storage.readProfile();
     const result = await this.deps.getExtraction().consolidate(recent, older, profile);
 
-    // Collect deindex entries from INVALIDATE/MERGE actions and de-index them in
-    // one batch, instead of a full index read-modify-write per memory. The flush
-    // runs in `finally` so memories already invalidated on disk are still
-    // de-indexed if a later iteration throws; it runs exactly once and any loop
-    // error still propagates after it.
     const itemsDeindexBatch: Array<{ path: string; createdAt: string; tags: string[] }> = [];
 
     try {
@@ -605,8 +595,6 @@ export class ConsolidationRunCoordinator {
               }
               memoryItemMutated = true;
               await this.deps.indexPersistedMemory(storage, item.existingId);
-              // updateMemory() only changes content/updated/supersedes/lineage — path, created, and tags
-              // are preserved, so the temporal/tag index entry for the survivor is already correct.
               let didInvalidate: boolean;
               try {
                 didInvalidate = await storage.invalidateMemory(
@@ -667,21 +655,10 @@ export class ConsolidationRunCoordinator {
       });
     }
 
-    // Catalog write touch accounting (issue #1499 sweep): consolidation persists
-    // durable mutations directly to the default-namespace storage, bypassing
-    // the extraction write path. We do NOT touch here — later maintenance steps in
-    // this same function (entity-file merges, expired-commitment / TTL cleanup,
-    // fact archival) can ALSO mutate the namespace on a run with no LLM outputs
-    // (NIjwl). So we accumulate every durable mutation into `memoryItemMutated` and
-    // record ONE consolidated touch AFTER all mutation-producing steps complete,
-    // just before returning (rule #25: touch after the write commits). LLM
-    // profile/entity updates and memory-item actions (UPDATE / MERGE / INVALIDATE)
-    // count here (NIBOi).
     if (result.profileUpdates.length > 0 || result.entityUpdates.length > 0) {
       memoryItemMutated = true;
     }
 
-    // Merge fragmented entity files
     const entitiesMerged = await storage.mergeFragmentedEntities();
     if (entitiesMerged > 0) {
       memoryItemMutated = true;
@@ -695,9 +672,6 @@ export class ConsolidationRunCoordinator {
           5,
         );
         if (synthesized > 0) {
-          // Entity synthesis rewrites entity files — a durable namespace mutation,
-          // so record it for the catalog touch even when it is the only change in
-          // the pass (codex). Otherwise lastWriteAt goes stale.
           memoryItemMutated = true;
           log.info(`refreshed ${synthesized} entity syntheses`);
         }
@@ -706,7 +680,6 @@ export class ConsolidationRunCoordinator {
       }
     }
 
-    // Clean expired commitments
     const deletedCommitments = await storage.cleanExpiredCommitments(
       config.commitmentDecayDays,
     );
@@ -751,7 +724,6 @@ export class ConsolidationRunCoordinator {
       }
     }
 
-    // Clean memories past their TTL (speculative memories auto-expire)
     const deletedTTL = await storage.cleanExpiredTTL();
     if (deletedTTL.length > 0) {
       memoryItemMutated = true;
@@ -773,9 +745,6 @@ export class ConsolidationRunCoordinator {
       try {
         const lightSleepStartedAt = new Date().toISOString();
         const lifecycleCorpus = await storage.readAllMemories();
-        // Lifecycle frontmatter writes count as durable mutations for the catalog
-        // touch below (codex NR-tS), even when no other consolidation step set
-        // memoryItemMutated.
         if ((await this.deps.lifecyclePolicyCoordinator.runLifecyclePolicyPass(lifecycleCorpus, storage)) > 0) {
           memoryItemMutated = true;
         }
@@ -798,13 +767,10 @@ export class ConsolidationRunCoordinator {
 
     try {
       const deepSleepStartedAt = new Date().toISOString();
-      // Tier migrations move/rewrite memory files; count them as durable
-      // mutations for the catalog touch below (codex NThSW).
       const tierMigration = await this.deps.tierMigrationCoordinator.runCycle(storage, "maintenance");
       if (tierMigration.migrated > 0) memoryItemMutated = true;
       allMemories = excludeSupportPassportPrivateMemories(await storage.readAllMemories());
 
-      // Fact archival pass (v6.0) — move old, low-importance, rarely-accessed facts to archive/
       if (resolveRecallEnhancementCapabilities(config).factArchival) {
         const archived = await this.deps.lifecyclePolicyCoordinator.runFactArchival(allMemories);
         if (archived > 0) {
@@ -831,7 +797,6 @@ export class ConsolidationRunCoordinator {
       }
     }
 
-    // Semantic consolidation pass — find similar memories, synthesize canonical versions
     if (resolveConsolidationCapabilities(config).semanticConsolidation) {
       try {
         const stateFilePath = path.join(
@@ -884,7 +849,6 @@ export class ConsolidationRunCoordinator {
               `[semantic-consolidation] archived ${semResult.memoriesArchived} memories during maintenance`,
             );
           }
-          // Only persist last-run timestamp if the run succeeded (had no errors or made progress)
           if (semResult.errors === 0 || semResult.memoriesArchived > 0) {
             const stateDir = path.join(config.memoryDir, "state");
             await mkdir(stateDir, { recursive: true });
@@ -902,12 +866,10 @@ export class ConsolidationRunCoordinator {
       }
     }
 
-    // Auto-consolidate IDENTITY.md if it's getting large
     if (resolveRecallEnhancementCapabilities(config).identity) {
       await this.deps.autoConsolidateIdentity();
     }
 
-    // Auto-consolidate profile.md if it exceeds max lines
     const profileSection = this.deps.recallSectionCoordinator.getRecallSectionEntry("profile");
     const profileConsolidationTriggerLines =
       typeof profileSection?.consolidateTriggerLines === "number"
@@ -935,16 +897,10 @@ export class ConsolidationRunCoordinator {
             profileResult.consolidatedProfile,
           );
           if (outcome === "conflict") {
-            // A concurrent append landed during the LLM call. Committing the
-            // stale rewrite would drop it, so skip; the line cap still trips
-            // next pass, so consolidation retries against the fresh profile.
             log.info(
               "profile.md changed during consolidation — skipping stale rewrite (retries next pass)",
             );
           } else {
-            // Profile consolidation rewrites profile.md — a durable namespace
-            // mutation; record it for the catalog touch even when it is the only
-            // change in the pass (codex). Otherwise lastWriteAt goes stale.
             memoryItemMutated = true;
             log.info(
               `profile.md consolidated: removed ${profileResult.removedCount} items — ${profileResult.summary}`,
@@ -954,12 +910,10 @@ export class ConsolidationRunCoordinator {
       }
     }
 
-    // Memory Summarization (Phase 4A)
     if (resolvePipelineProcessingCapabilities(config).summarization) {
       await this.deps.lifecyclePolicyCoordinator.runSummarization(allMemories);
     }
 
-    // Topic Extraction (Phase 4B)
     if (resolvePipelineProcessingCapabilities(config).topicExtraction) {
       await this.deps.lifecyclePolicyCoordinator.runTopicExtraction(allMemories);
     }
@@ -968,7 +922,6 @@ export class ConsolidationRunCoordinator {
     meta.lastConsolidationAt = new Date().toISOString();
     await storage.saveMeta(meta);
 
-    // Temporal Memory Tree (v8.2) — rebuild nodes from all memories, fail-open
     if (lifecycleCaps.temporalMemoryTree) {
       try {
         const tmtEntries = allMemories
@@ -1030,11 +983,6 @@ export class ConsolidationRunCoordinator {
       }
     }
 
-    // Consolidated catalog write touch — belt-and-suspenders for cleanup-only
-    // passes that mutate the store via delete-only paths (entity merges, TTL
-    // cleanup) without triggering the storage chokepoint's post-write hook.
-    // Gated on memoryItemMutated (set by every durable mutation including cleanup-only passes)
-    // Best-effort and failure-tolerant.
     if (memoryItemMutated) {
       this.deps.getStorageRouter().recordWrite(config.defaultNamespace, storage.dir);
     }

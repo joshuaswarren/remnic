@@ -425,9 +425,6 @@ function snapshotBuilderDeletions(options: {
   includeTranscripts: boolean;
   excludeNodeLocalState?: boolean;
   userExcludeRegexps?: readonly RegExp[];
-  /** Generation dirs omitted by the push enumeration (PR #3148): revisions
-   * for ANY member — including already-absent ones — are suppressed, so a
-   * filtered generation can never be announced as deleted. */
   omittedGenerationDirs?: ReadonlySet<string>;
 }): OfflineSyncDeletionRevision[] | undefined {
   const deletions = normalizeDeletionRevisions(options.deletions, "deletions");
@@ -734,15 +731,11 @@ function shouldExcludePushRelPath(
   userExcludeRegexps?: readonly RegExp[],
 ): boolean {
   if (shouldExcludeRelPath(relPosix, includeTranscripts)) return true;
-  // Issue #1786: node-local runtime state (live sqlite, derived indexes,
-  // per-node governance run logs) is rebuilt by each node, never synced.
   if (matchesOfflineSyncDefaultExclude(relPosix)) return true;
   if (userExcludeRegexps && userExcludeRegexps.some((re) => re.test(relPosix))) return true;
   return false;
 }
 
-// Precompiled once at module load — this check sits on the hot
-// enumeration path for every walked file (Kilo review, PR #1793).
 
 
 /**
@@ -757,10 +750,6 @@ function shouldIgnoreIncomingRuntimePath(relPosix: string): boolean {
   if (isInternalRemnicStatePath(relPosix)) return true;
   const parts = relPosix.split("/");
   const basename = parts[parts.length - 1] ?? "";
-  // Drop Finder metadata before the structural-exclude throw. An older
-  // peer snapshot that still lists `._*` or `.DS_Store` — including a file
-  // nested under a junk directory — must not fail the whole pull; those
-  // paths are never written.
   if (parts.some((part) => isMacOsReplicationJunkBasename(part))) return true;
   return isCanonicalRuntimeStatePath(parts) && basename.includes(".tmp-");
 }
@@ -782,8 +771,6 @@ function canReuseFastBaseFileState(
     return false;
   }
   if (baseCapturedAtMs === null) return false;
-  // Node reports stat times as fractional milliseconds while Date snapshots are
-  // whole milliseconds, so allow only a tiny precision window around capture.
   return st.ctimeMs - baseCapturedAtMs <= OFFLINE_SYNC_FAST_BASE_CTIME_TOLERANCE_MS;
 }
 
@@ -801,9 +788,6 @@ async function readOfflineSyncFileRecord(
   try {
     return await readPresentOfflineSyncFileRecord(options);
   } catch (error) {
-    // Caller already observed the path (readdir/lstat). Digest ENOENT is an
-    // ambiguous race: exporting a silent omission assigns confirmed absence to
-    // every consumer (full snapshot apply + changeset apply). Fail closed.
     if (isNotFoundError(error)) {
       if (embeddingGenerationMembership(options.relPath) !== null) {
         throw new Error(
@@ -817,10 +801,6 @@ async function readOfflineSyncFileRecord(
 }
 
 
-// Pre-stat vanish (readdir then lstat/stat ENOENT) may omit only when nothing
-// can misread the gap: embedding generations travel as one unit (issue #3148),
-// and a base-known file omitted here would fabricate a delete in
-// buildOfflineSyncChangesetFromSnapshot.
 function assertSnapshotVanishIsSafe(relPath: string, base: ReadonlyMap<string, unknown> | undefined): void {
   if (embeddingGenerationMembership(relPath) !== null) {
     throw new Error(`offline sync embedding generation member vanished during snapshot walk: ${relPath}`);
@@ -1108,7 +1088,6 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
       try {
         st = await stat(abs);
       } catch (error) {
-        // Pre-stat vanish after readdir: omit only when assertSnapshotVanishIsSafe allows.
         if (isNotFoundError(error)) {
           assertSnapshotVanishIsSafe(relPosix, base);
           continue;
@@ -1311,11 +1290,6 @@ export async function readOfflineSyncFileContentChunk(options: {
     if (offset > st.size) {
       throw new Error(`offset must be <= file size for ${relPath}`);
     }
-    // Plain files need the whole-file sha256 for the response contract
-    // (x-remnic-file-sha256; peer transports reject chunks without it), but
-    // must stay memory-bounded for large files: the digest is computed by a
-    // streamed hash pass (never buffering the file) and cached by
-    // (path, bytes, mtimeMs) so per-chunk requests after the first are O(1).
     const chunk = await readPlainOfflineSyncFileChunk({
       filePath,
       offset,
@@ -1448,12 +1422,7 @@ export async function buildOfflineSyncChangesetFromSnapshot(options: {
 
   for (const relPath of unionPaths(base, currentMap)) {
     if (excludedPaths.has(relPath)) continue;
-    // Issue #1786: node-local runtime state must never appear in a push-side
-    // changeset — each node rebuilds it from synced records.
     if (shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) continue;
-    // Runtime state is remote-authoritative in offline sync: local edits and
-    // deletes are not pushed; the pull phase restores or removes these files
-    // from the remote snapshot.
     if (shouldPreferIncomingOfflineRuntimeFile(relPath)) continue;
     const baseEntry = base.get(relPath);
     const currentEntry = currentMap.get(relPath);
@@ -1481,7 +1450,6 @@ export async function buildOfflineSyncChangesetFromSnapshot(options: {
       continue;
     }
     if (!currentEntry && baseEntry) {
-      // Census miss is not confirmed delete — recheck disk (transient ENOENT / recreate).
       if (await offlineSyncRegularFilePresent(root, relPath)) continue;
       const mtimeMs = deletionMtimeByPath?.get(relPath);
       changes.push({
@@ -1690,10 +1658,6 @@ export async function applyOfflineSyncSnapshot(options: {
     return requiredBuffer(incomingBuffers, relPath);
   };
 
-  // Embedding generations travel and replace as ONE unit (issue #3148):
-  // atomic replacement, cross-layout marker conversion, whole-generation
-  // removal on tombstones — all extracted to the generation module (issue
-  // #3150) so the changeset path can share it without growing this file.
   const { transactionResults, deferredGenerationDirs } = await applyIncomingEmbeddingGenerations({
     root,
     incomingMap,
@@ -1748,13 +1712,8 @@ export async function applyOfflineSyncSnapshot(options: {
       continue;
     }
 
-    // The generation transaction already published or removed this path and
-    // applied its nextBase bookkeeping above; nothing left to do.
     if (transactionHandled.has(relPath)) continue;
 
-    // A deferral anywhere in a generation defers the WHOLE generation: no
-    // partial replacement in either direction, local files and base entries
-    // stay exactly as they are.
     const membership = embeddingGenerationMembership(relPath);
     if (membership && deferredGenerationDirs.has(membership.shardDir)) {
       if (base) nextBase.set(relPath, base);
@@ -1764,10 +1723,6 @@ export async function applyOfflineSyncSnapshot(options: {
     }
 
     if (incoming) {
-      // The generation marker (PR #3176) is node-local on BOTH sides: an
-      // incoming copy — old or hostile — never overwrites the local file
-      // and never enters the base set. Other default excludes stay
-      // apply-accepted (#1786: first-sync LCM sqlite bootstrapping).
       if (isEmbeddingGenerationMarkerPath(relPath)) {
         nextBase.delete(relPath);
         skipped += 1;
@@ -1784,10 +1739,6 @@ export async function applyOfflineSyncSnapshot(options: {
         skipped += 1;
         continue;
       }
-      // Remote unchanged from the shared base while the local file drifted:
-      // keep the local copy (no content is needed to make that decision).
-      // Members of a replaced generation never reach this branch — the
-      // generation transaction or the deferral guard handled them above.
       if (
         shouldPreferIncomingOfflineRuntimeFile(relPath) &&
         currentEntry && base && incoming.sha256 === base.sha256
@@ -1824,7 +1775,6 @@ export async function applyOfflineSyncSnapshot(options: {
         continue;
       }
       if (!currentEntry && !base) {
-        // Census miss with on-disk file: uncertain local presence, do not overwrite.
         if (await offlineSyncRegularFilePresent(root, relPath)) {
           pendingLocal += 1;
           skipped += 1;
@@ -1863,11 +1813,6 @@ export async function applyOfflineSyncSnapshot(options: {
       continue;
     }
 
-    // Node-local runtime state (#1786): a push-filtered remote snapshot
-    // never carries these paths, so their absence is NOT a delete
-    // instruction. Drop any stale base entry (pre-#1786 state files still
-    // carry them) and leave the local file untouched — deleting a live
-    // sqlite WAL/SHM here would corrupt the local LCM store.
     if (matchesOfflineSyncDefaultExclude(relPath)) {
       nextBase.delete(relPath);
       skipped += 1;
@@ -1882,10 +1827,6 @@ export async function applyOfflineSyncSnapshot(options: {
       shouldPreferIncomingOfflineRuntimeFile(relPath) &&
       membership !== null && omittedGenerationDirs.has(membership.shardDir)
     ) {
-      // The push omitted this whole generation because a filter excluded at
-      // least one member (snapshot.omittedEmbeddingGenerationDirs): absence
-      // is NOT a deletion — keep the local generation and its base entries
-      // until it is pushed unfiltered or deleted with deletion metadata.
       pendingLocal += 1;
       skipped += 1;
       continue;
@@ -1992,9 +1933,6 @@ export async function applyOfflineSyncChangeset(options: {
   let appliedDeletes = 0;
   let skipped = 0;
 
-  // Embedding generations apply as ONE unit through the shared locked
-  // transaction (issue #3150). Deferred generations surface as conflicts so
-  // the push side never checkpoints them as applied.
   const generationRouting = await applyChangesetEmbeddingGenerations({
     root,
     changeset,
@@ -2099,9 +2037,6 @@ export async function applyOfflineSyncChangeset(options: {
     });
   }
 
-  // Generation transactions bypassed the per-file loop; fold their published
-  // and removed members into the partial result map (returnCurrentFiles ===
-  // false consumers) so it reflects the post-apply generation exactly.
   for (const [relPath, state] of generationRouting.writtenStates) currentMap.set(relPath, state);
   for (const relPath of generationRouting.removedPaths) currentMap.delete(relPath);
 
@@ -2137,11 +2072,6 @@ async function verifyRecordContents(
   for (const record of records) {
     if (typeof record.contentBase64 !== "string") {
       if (options.readIncomingFile) {
-        // Explicit INCOMING content source for records whose bytes travel
-        // out-of-band (chunked fetch into the client's private staging
-        // root). Never the local current-state file: the buffer is
-        // digest-verified against the incoming record before anything is
-        // published. null keeps the metadata-only behavior below.
         const incoming = await options.readIncomingFile({
           path: record.path,
           sha256: record.sha256,

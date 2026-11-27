@@ -67,8 +67,6 @@ const AUTH_HTTP_STATUSES = new Set([401, 403]);
 
 export function classifyObserveFailure(err: Error): ObserveFailureClass {
   if (err instanceof RemnicHttpError) {
-    // 503 is server backpressure (capacity admission or not-ready) and 429 a write
-    // quota (observe counts against it); the capture was never executed, so a keyed
     // retry is safe. 401/403 park the queue. Other 4xx responses are semantic
     // rejections, but remain queued so an operator can fix the cause and retry.
     // Unrecognized 5xx responses are ambiguous and use the same stable key.
@@ -79,8 +77,6 @@ export function classifyObserveFailure(err: Error): ObserveFailureClass {
   }
   if (err instanceof RemnicRequestTimeoutError) return "retry-ambiguous";
   if (isTransientNetworkError(err)) return "retry-ambiguous";
-  // Unknown failure shapes are treated as ambiguous: the request may have been
-  // processed, and the stable idempotency key makes a bounded retry safe.
   return "retry-ambiguous";
 }
 
@@ -155,10 +151,6 @@ function parseOutboxEntry(line: string): ObserveOutboxEntry | null {
     return null;
   }
   if (!parsed || Array.isArray(parsed)) return null;
-  // SAFETY: JSON.parse produced a non-null, non-array value; this class is the
-  // only writer of the outbox file, and the checks below reject every shape it
-  // cannot re-serialize and replay (messages/messageHashes arrays, identity
-  // fields present). Anything else is treated as a corrupt line and skipped.
   const entry = parsed as ObserveOutboxEntry;
   if (!Array.isArray(entry.messages) || !Array.isArray(entry.messageHashes)) return null;
   if (!entry.id || !entry.sessionKey || !entry.cwd) return null;

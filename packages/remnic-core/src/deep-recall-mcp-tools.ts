@@ -1,11 +1,3 @@
-/**
- * Deep-recall MCP tool definition (issue #2332) — extracted from
- * access-mcp.ts so the surface file stays at its structural ceiling.
- * Spread back into `this.tools` (`...DEEP_RECALL_MCP_TOOLS`); the
- * migrated-operation mapping spreads into MCP_MIGRATED_OPERATIONS.
- * The `remnic.` canonical alias is minted by withToolAliases at
- * tools/list time (same as meetings).
- */
 
 import type { McpTool } from "./access-mcp.js";
 

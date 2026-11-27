@@ -63,7 +63,6 @@ export interface RemnicPiExtensionOptions extends LoadConfigOptions {
 }
 
 const STATE_CUSTOM_TYPE = "remnic_state";
-/** A retry needs at least this much remaining startup budget to be worth starting. */
 const MCP_TOOLS_LIST_RETRY_FLOOR_MS = 250;
 const MAX_SESSION_STATES = 50;
 const MAX_CONTEXT_CHARS = 12000;
@@ -105,7 +104,6 @@ export function matchRemnicMcpToolName(name: unknown): { serverToolName: string;
   };
 }
 
-/** Breaker lookup tolerant of both catalog shapes (`remnic_recall` <-> `remnic.recall`). */
 function isRecallProducingToolName(serverToolName: string): boolean {
   return (
     RECALL_PRODUCING_TOOL_NAMES[serverToolName] === true ||
@@ -150,11 +148,6 @@ export function resetProcessRecallBreakerForTest(
 export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) {
   const config: RemnicPiConfig = { ...DEFAULT_CONFIG, ...(options.config ?? loadConfig(options)) };
   const client = new RemnicClient(config);
-  // One durable outbox per extension instance (shared across sessions in this
-  // process — the file is process-global, and a single ObserveOutbox instance
-  // serializes its writes). Entries carry their own sessionKey, so a drain
-  // started by any session's successful contact replays every session's
-  // queued captures in queue order.
   const observeOutbox = config.observeEnabled
     ? newObserveOutbox(config)
     : null;
@@ -193,21 +186,10 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       state.startupEpoch += 1;
       state.statusOffline = false;
 
-      // Drain captures queued by a previous process/crash while the daemon
-      // refused work. Runs before the background startup chain so the replay
-      // lands before the first turn's own observe.
       if (observeOutbox) {
-        // One cheap attempt: a dead daemon must not hold session start behind retry and
-        // backoff ladders; whatever stays queued replays on the next successful contact.
         await drainObserveOutboxAtStartup(session, client, config, observeOutbox, state.observedHashes, state.liveObservedReplayKeys, (key) => sessionStates.get(key));
       }
 
-      // Probe health + update the circuit breaker UNCONDITIONALLY so an offline
-      // daemon is marked unreachable even when the status UI is off; otherwise
-      // the namespace preflight and every later hook each burn a full request
-      // budget on a doomed call. The status LABEL stays gated on statusEnabled.
-      // The chain runs in the background (#3273 phase 1); the promise is kept on
-      // session state so first-turn hooks can await it.
       state.startupProbe = attachCodingContextSync(runStartupProbeChain(
         {
           probeHealth: probeDaemonHealth,
@@ -226,11 +208,6 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const { state } = getSessionState(session.sessionKey, sessionStates);
       void maybeSyncSessionCodingContext({ session, state, client, config }); // #3515: re-post on branch/root change
 
-      // On the first before_agent_start, populate the cache using the user's
-      // prompt text so semantic recall produces relevant results.  Once
-      // populated, the cached context is appended to the system prompt on
-      // every turn for KV cache prefix stability (PR #2208).
-      // Join the in-flight startup probe (bounded) so an unreachable daemon is skipped, not recalled.
       const deadline = performance.now() + config.turnRequestTimeoutMs;
       if (!state.recallCompleted && config.recallEnabled && config.authToken) {
         await joinStartupProbe(state, config);
@@ -242,13 +219,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         const recallTimeoutMs = waitForRecall ? remainingMs : config.turnRequestTimeoutMs;
         if (promptText && recallTimeoutMs > 0) {
           state.recallCompleted = true;
-          // Capture the epoch now: a session_start during the in-flight recall
-          // bumps startupEpoch and resets context, so a stale recall must not
-          // overwrite the new epoch's state (#3273 review).
           const recallEpoch = state.startupEpoch;
-          // And sample the reachability generation so a recall that outlives a
-          // newer reachability success cannot stamp a stale unreachable (#3273
-          // review): markUnreachableIfGeneration no-ops once generation moved.
           const reachabilityGeneration = client.reachabilityGenerationToken();
           const recallPromise = (async () => {
             try {
@@ -288,11 +259,6 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         }
       }
 
-      // Inject cached context into the system prompt — byte-identical across
-      // turns so the KV cache prefix is preserved.  This avoids the
-      // system-role message issue: Pi's AgentMessage union does not include
-      // "system", so injecting via the context hook produced an invalid
-      // provider payload that Pi drops (codex review).
       if (!state.cachedContext) return;
       const basePrompt = typeof event.systemPrompt === "string" ? event.systemPrompt : "";
       return {
@@ -305,7 +271,6 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       if (!config.observeEnabled || !isUserMessage(event.message)) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
-      // Observe is a first-turn daemon call gated on isReachable(): join the in-flight probe first.
       await joinStartupProbe(state, config);
       await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox, state, recallTimeoutBreaker, sessionStates);
     });
@@ -340,8 +305,6 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       if (!config.compactionEnabled || !config.authToken) return;
       const preparation = event.preparation ?? {};
-      // omp aborts this hook at ~30s. One deadline covers all three calls and none retries, so a
-      // stalled daemon costs at most turnRequestTimeoutMs here instead of requestTimeoutMs per call.
       const deadline = Date.now() + config.turnRequestTimeoutMs;
       const budget = (): RequestOptions => ({
         timeoutMs: Math.max(1, Math.floor(deadline - Date.now())),
@@ -474,8 +437,6 @@ function registerCommands(
     handler: commandHandler(async (_args, _ctx, session) => {
       if (recallTimeoutBreaker.isTripped()) notifyRecallDisabled(session);
       const health = await client.health();
-      // The daemon responded (any HTTP result), so clear any stale cooldown a
-      // prior timeout left on the shared client (cursor review).
       client.markReachable();
       if (health.ok) await ensureMcpTools();
       session.notify(`Remnic ${health.ok ? "healthy" : "unhealthy"} at ${config.remnicDaemonUrl}`, health.ok ? "success" : "warning");
@@ -580,10 +541,6 @@ async function registerMcpTools(
   appendEntry: AppendEntryFn = (customType, data) => pi.appendEntry(customType, data),
 ): Promise<boolean> {
   let tools: McpTool[] = [];
-  // A transient failure at session start used to silently register zero
-  // tools for the whole session (recall kept working, so the session looked
-  // healthy). Retry once inside the remaining startup budget, and record a
-  // warning state entry when the catalog still cannot be listed.
   const budgetStartedAt = Date.now();
   let listed = false;
   let lastError: unknown;
@@ -592,8 +549,6 @@ async function registerMcpTools(
     if (remaining <= 0) break;
     if (attempt > 0 && remaining < MCP_TOOLS_LIST_RETRY_FLOOR_MS) break;
     try {
-      // Honor the configured budget exactly: the floor only decides whether
-      // a retry may start, never how long a request may take.
       tools = await client.mcpListTools({ timeoutMs: remaining });
       listed = true;
     } catch (err) {
@@ -601,8 +556,6 @@ async function registerMcpTools(
     }
   }
   if (!listed) {
-    // Warn on every terminal failure — including when the first attempt
-    // exhausted the budget and the retry never started.
     const reason = lastError === undefined ? "no attempt completed" : errorMessage(lastError);
     const message =
       `Remnic MCP tools/list failed (${reason}). ` +
@@ -621,8 +574,6 @@ async function registerMcpTools(
   for (const tool of tools) {
     const match = matchRemnicMcpToolName(tool.name);
     if (!match) continue;
-    // A catalog that mixes shapes could map two names onto one Pi-safe name;
-    // register the first occurrence only.
     if (seenPiToolNames.has(match.piToolName)) continue;
     seenPiToolNames.add(match.piToolName);
     if (registered.has(match.piToolName)) continue;
@@ -829,41 +780,20 @@ async function observeMessagesForSession(
   const messages: ObserveMessage[] = [];
   const messageHashes: Array<string | null> = [];
   const pendingHashes = new Set<string>();
-  // Suppress only hashes a drain on THIS daemon would deliver — an entry bound
-  // to another destination never reaches this daemon and must not skip capture here (#3504 review).
   const outboxPending = outbox ? await outbox.pendingHashes(config?.remnicDaemonUrl) : null;
   for (const raw of rawMessages) {
     const message = toObserveMessage(raw);
     if (!message) continue;
     const hash = observedMessageDedupeKey(message, session.sessionKey);
     if (hash && (observedHashes.has(hash) || pendingHashes.has(hash))) continue;
-    // Already durably queued for replay — never re-send it live under a fresh
-    // (different) request identity, or the daemon would ingest it twice.
     if (outboxPending?.has(hash ?? "")) continue;
     if (hash) pendingHashes.add(hash);
     messages.push(message);
     messageHashes.push(hash);
   }
   if (messages.length === 0) return;
-  // Bound oversized raw bodies BEFORE the first send (#3381 item 11): the
-  // daemon dedupes on an idempotency key hashed over the exact body, so the
-  // live body, the persisted outbox entry and its later replay must stay
-  // identical or a lost-response replay ingests twice.
   const sendMessages = boundedReplayMessages(messages, (message, level) => session.notify(message, level));
-  // Circuit breaker: when config is wired (the live Pi handlers always pass
-  // it), skip observe fast while the daemon is known-down so a dead host
-  // doesn't burn the full per-turn budget on every turn (#1626). Shutdown is
-  // the exception — it is the last chance to observe the branch before the
-  // session tears down, so force the attempt even mid-cooldown; a failure
-  // still trips the breaker normally (codex review).
   if (config && !forceAttempt && !client.isReachable()) return;
-  // Live turn hooks are bounded by the per-turn budget to protect the host's
-  // ~30s handler window (#1626). Shutdown is teardown with no such constraint,
-  // so the forced replay uses the general request budget — otherwise a large
-  // unobserved branch would time out exactly when forceAttempt tried to save it
-  // (cursor review).
-  // One replay identity per logical observe: the live attempt, any retry of it and a
-  // later outbox replay all send the same key, so the daemon can dedupe a lost response.
   const replayNonce = randomUUID();
   const observeOptions: ObserveOptions = { replayNonce };
   if (config) observeOptions.timeoutMs = forceAttempt ? config.requestTimeoutMs : config.turnRequestTimeoutMs;
@@ -877,13 +807,8 @@ async function observeMessagesForSession(
         rememberLiveObservedReplayKey(liveObservedReplayKeys, liveReplayKey(message, session.sessionKey));
       }
     }
-    // Successful contact is the drain trigger: replay anything queued while the
-    // daemon was refusing work. It runs in the background with its own error
-    // handling, so it can neither delay this hook nor turn a delivered live turn
-    // into a failed (and re-queued) one.
     if (outbox && config) {
       const drain = startObserveOutboxDrain(session, client, config, outbox, observedHashes, liveObservedReplayKeys, forceAttempt === true, sessionStates && ((key) => sessionStates.get(key)));
-      // Shutdown is the last chance before teardown: wait for one bounded pass (it never rejects).
       if (forceAttempt) await drain;
     }
   } catch (err) {
@@ -901,7 +826,6 @@ async function observeMessagesForSession(
         (message, level) => session.notify(message, level),
       );
     } catch (enqueueErr) {
-      // A lock timeout or write failure must not lose the turn silently.
       session.notify(
         `Remnic observe failed and could not be queued: ${errorMessage(enqueueErr)} (original error: ${errorMessage(err)})`,
         "error",
@@ -979,19 +903,6 @@ function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {
   });
 }
 
-/**
- * Probe the daemon and return the verdict plus the shared-breaker action the
- * startup chain must apply (under its own currency guard). This runs at
- * session_start regardless of `statusEnabled`: the breaker update is a
- * data-path concern (a down daemon must be marked unreachable so the namespace
- * preflight and every later hook fast-skip instead of each burning a full
- * request budget), independent of whether the status UI is shown.
- *
- * A 503 `not_ready` answer is NOT offline (issue #2215): the daemon responded — it is up and
- * serving recall via fallback retrieval while startup search warm-up is still
- * running — so it counts as reachable and renders as "starting" instead of
- * tripping the breaker or claiming the service is down.
- */
 async function probeDaemonHealth(
   client: RemnicClient,
   config: RemnicPiConfig,
@@ -1003,9 +914,6 @@ async function probeDaemonHealth(
     if (err instanceof RemnicHttpError && err.status === 503 && err.code === "not_ready") {
       return { result: "starting", breaker: "reachable" };
     }
-    // Startup just proved the daemon is unreachable, so trip the fast-skip
-    // breaker — otherwise the first live hook spends the full turn budget on a
-    // doomed request before the breaker would trip on its own.
     return { result: "unreachable", breaker: isDaemonUnreachableError(err) ? "unreachable" : "none" };
   }
 }
@@ -1138,16 +1046,7 @@ function trimContext(value: string, budget: number): string {
 export function isDaemonUnreachableError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   if (/Remnic request timed out/.test(err.message)) return true;
-  // Retry-budget exhaustion means transient failures ate the whole per-turn
-  // deadline inside requestWithRetry — the daemon is effectively unreachable
-  // for this turn, so trip the breaker and cool down instead of burning another
-  // full budget on the next hook (codex review). This error only arises from
-  // transient connection failures, never from a semantic HTTP response.
   if (/Remnic request exceeded the \d+ms budget before retry/.test(err.message)) return true;
-  // Multi-chunk observe throws its own budget-exceeded message when the shared
-  // per-turn deadline is exhausted across chunks; that is also an effectively-
-  // unreachable condition for the turn, so trip the breaker and fast-skip
-  // subsequent turns instead of piling on more doomed chunked observes (cursor).
   if (/Remnic observe exceeded the per-turn budget of \d+ms/.test(err.message)) return true;
   return isTransientNetworkError(err);
 }

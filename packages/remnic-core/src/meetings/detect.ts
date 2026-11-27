@@ -1,14 +1,3 @@
-/**
- * Retrospective meeting detection (issue #1900, Phase 4 slice 1).
- *
- * Pure functions over a day's already-ingested signals. A meeting candidate is
- * either (a) an audio conversation overlapping a meeting-app foreground span
- * (`app+audio`), (b) a provider meeting with its own boundaries (`provider`),
- * or (c) a long enough multi-speaker conversation with no app span
- * (`audio`, the phone-call/in-person fallback). App spans with no overlapping
- * audio are NOT meetings (you were watching a recording). Candidates are then
- * merged so a day's meetings never overlap, and each gets a re-run-stable id.
- */
 
 import { createHash } from "node:crypto";
 
@@ -21,7 +10,6 @@ import type {
   MeetingsDetectionInput,
 } from "./types.js";
 
-/** Shipped meeting-app patterns (used by the later activity-span derivation). */
 export const DEFAULT_MEETING_APP_PATTERNS: readonly string[] = [
   "zoom.us",
   "Zoom",
@@ -52,9 +40,6 @@ interface Candidate {
 function ms(iso: string): number {
   if (typeof iso !== "string") return Number.NaN;
   if (!Number.isFinite(Date.parse(iso))) return Number.NaN;
-  // Reject invalid calendar rollovers (e.g. 2026-02-30 → Mar 2) in EITHER `Z`
-  // or explicit-offset form, by validating the wall-clock calendar fields in the
-  // string directly rather than trusting Date.parse's silent normalization.
   const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](?:0\d:[0-5]\d|1[0-3]:[0-5]\d|14:00))$/);
   if (m === null) return Number.NaN;
   const [year, month, day, hour, minute, second] = m.slice(1).map(Number);
@@ -63,7 +48,6 @@ function ms(iso: string): number {
   return Date.parse(iso);
 }
 
-/** Overlap of two half-open [start,end) windows, in milliseconds (0 if disjoint). */
 function overlapMs(aStart: number, aEnd: number, bStart: number, bEnd: number): number {
   const start = Math.max(aStart, bStart);
   const end = Math.min(aEnd, bEnd);
@@ -132,22 +116,16 @@ function buildCandidates(
       continue;
     }
 
-    // Best-overlapping meeting-app span (deterministic: max overlap, then earliest start).
     let bestApp: { span: MeetingAppSpan; overlap: number } | undefined;
     for (const span of appSpans) {
       const spanStart = ms(span.startUtc);
       const spanEnd = ms(span.endUtc);
       if (!isFinitePair(spanStart, spanEnd)) continue;
       const overlap = overlapMs(startMs, endMs, spanStart, spanEnd);
-      // Require genuine overlap for an app+audio pairing, even when the caller
-      // sets minOverlapMinutes to 0 — disjoint windows must not pair.
       if (overlap <= 0 || overlap < minOverlapMs) continue;
       if (bestApp === undefined || overlap > bestApp.overlap) {
         bestApp = { span, overlap };
       } else if (overlap === bestApp.overlap) {
-        // Fully deterministic tie-break so nested/duplicate spans covering the
-        // same window never depend on input order: earliest start, then app
-        // name, then earliest end.
         const bestStart = ms(bestApp.span.startUtc);
         const better =
           spanStart < bestStart ||
@@ -170,7 +148,6 @@ function buildCandidates(
       continue;
     }
 
-    // Audio-only fallback: long enough, ≥ 2 distinct non-wearer speakers.
     if (
       endMs - startMs >= audioOnlyMs &&
       Number.isInteger(window.distinctNonWearerSpeakers) &&
@@ -189,14 +166,12 @@ function buildCandidates(
   return candidates;
 }
 
-/** Detection-source rank for a total, stable candidate ordering. */
 const DETECTION_RANK: Record<MeetingDetectionSource, number> = {
   "app+audio": 0,
   provider: 1,
   audio: 2,
 };
 
-/** Total order over candidates so equal-time spans resolve deterministically. */
 function candidateOrder(a: Candidate, b: Candidate): number {
   return (
     a.startMs - b.startMs ||
@@ -208,11 +183,6 @@ function candidateOrder(a: Candidate, b: Candidate): number {
   );
 }
 
-/**
- * Merge candidates so the day's meetings never overlap. Two candidates merge
- * when they overlap, or when they are within `mergeGapMinutes` and share the
- * same app (rejoin-after-drop). Deterministic via `candidateOrder`.
- */
 function mergeCandidates(candidates: Candidate[], mergeGapMs: number): Candidate[] {
   const sorted = [...candidates].sort(candidateOrder);
   const merged: Candidate[] = [];
@@ -257,15 +227,12 @@ function validateConfig(config: MeetingsDetectionConfig): void {
   assertFiniteNonNegative("mergeGapMinutes", config.mergeGapMinutes);
 }
 
-/** Detect the day's non-overlapping meetings from its audio + app-span signals. */
 export function detectMeetings(
   input: MeetingsDetectionInput,
   config: MeetingsDetectionConfig = DEFAULT_MEETINGS_DETECTION_CONFIG,
 ): DetectedMeeting[] {
   validateConfig(config);
   if (!isValidDay(input.date)) {
-    // The day is embedded verbatim in every meeting id (mtg-<date>-<hash>); a
-    // non-YYYY-MM-DD value would produce malformed ids (e.g. slashes).
     throw new RangeError(`meetings: invalid day "${input.date}"; expected a real YYYY-MM-DD.`);
   }
   const candidates = buildCandidates(input.audioWindows, input.appSpans, config);

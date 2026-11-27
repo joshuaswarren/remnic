@@ -49,7 +49,6 @@ test("dry-run reports expected splits for mixed other/default file and changes n
     const groupKeys = plan.files[0].groups.map((g) => g.sessionKey).sort();
     assert.deepEqual(groupKeys, ["pi-friend:def456", "pi-geek:abc123"]);
 
-    // Nothing moved.
     const before = await readFile(sourcePath, "utf-8");
     assert.equal(before.split("\n").filter(Boolean).length, 3);
     const sessionDir = path.join(memoryDir, "transcripts", "session");
@@ -85,14 +84,11 @@ test("apply is lossless: every entry lands in its session dir, source is emptied
     assert.equal(geekLines.length, 2);
     assert.equal(friendLines.length, 1);
 
-    // Ordering preserved within a session (turn 1 before turn 3).
     assert.ok(geekLines[0].includes('"turnId":"1"'));
     assert.ok(geekLines[1].includes('"turnId":"3"'));
 
-    // Source other/default file removed (no entries retained).
     await assert.rejects(() => readFile(path.join(memoryDir, "transcripts", "other", "default", fileName), "utf-8"));
 
-    // No entries lost: 3 in, 3 out.
     assert.equal(geekLines.length + friendLines.length, 3);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -116,7 +112,6 @@ test("apply is idempotent: a second run finds nothing to migrate and does not du
 
     const geekDir = sessionStoragePaths("pi-geek:abc123").dir;
     const geekContent = await readFile(path.join(memoryDir, "transcripts", geekDir, fileName), "utf-8");
-    // Still exactly 2 lines — no duplication.
     assert.equal(geekContent.split("\n").filter(Boolean).length, 2);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -127,18 +122,15 @@ test("unparseable and legacy-homed lines are retained in the source file", async
   const memoryDir = await makeMemoryDir();
   try {
     const fileName = "2026-06-29.jsonl";
-    // One arbitrary key (movable), one malformed line (retained).
     const lines = [entryLine("pi-geek:abc123", "1", "user"), "{not valid json"];
     await seedMixedOtherDefault(memoryDir, fileName, lines);
 
     const result = await migrateSessionTranscripts({ memoryDir, apply: true });
     assert.equal(result.errors.length, 0);
 
-    // Source retains the malformed line (not deleted).
     const sourceContent = await readFile(path.join(memoryDir, "transcripts", "other", "default", fileName), "utf-8");
     assert.ok(sourceContent.includes("{not valid json"));
 
-    // The movable entry landed in its session dir.
     const geekDir = sessionStoragePaths("pi-geek:abc123").dir;
     const geekContent = await readFile(path.join(memoryDir, "transcripts", geekDir, fileName), "utf-8");
     assert.equal(geekContent.split("\n").filter(Boolean).length, 1);
@@ -165,7 +157,6 @@ test("migration scan picks up pre-existing foo:bar:baz data under old baz/defaul
   const memoryDir = await makeMemoryDir();
   try {
     const fileName = "2026-06-29.jsonl";
-    // OLD build stored foo:bar:baz under baz/default (parts.length >= 3 parser).
     const sourcePath = await seedLegacyParserDir(memoryDir, "baz", "default", fileName, [
       entryLine("foo:bar:baz", "1", "user"),
       entryLine("foo:bar:baz", "2", "assistant"),
@@ -183,10 +174,8 @@ test("migration scan picks up pre-existing foo:bar:baz data under old baz/defaul
     const destContent = await readFile(path.join(memoryDir, "transcripts", destDir, fileName), "utf-8");
     assert.equal(destContent.split("\n").filter(Boolean).length, 2);
 
-    // Source emptied/removed.
     await assert.rejects(() => readFile(sourcePath, "utf-8"));
 
-    // Idempotent: a second run finds nothing.
     const second = await migrateSessionTranscripts({ memoryDir, apply: true });
     assert.equal(second.plan.files.length, 0);
     assert.equal(second.plan.movedEntries, 0);
@@ -199,7 +188,6 @@ test("migration leaves legitimate legacy agent:<id>:main data in place (dest ===
   const memoryDir = await makeMemoryDir();
   try {
     const fileName = "2026-06-29.jsonl";
-    // agent:generalist:main legitimately lives in main/default and must NOT move.
     await seedLegacyParserDir(memoryDir, "main", "default", fileName, [
       entryLine("agent:generalist:main", "1", "user"),
     ]);
@@ -245,13 +233,11 @@ test("migration splits a LEGACY session/<name> dir while leaving real session/<h
     const fileName = "2026-06-29.jsonl";
     const legacyKey = "foo:bar:session:baz";
 
-    // LEGACY: OLD parser homed foo:bar:session:baz under session/baz (non-hash).
     const legacySourcePath = await seedLegacyParserDir(memoryDir, "session", "baz", fileName, [
       entryLine(legacyKey, "1", "user"),
       entryLine(legacyKey, "2", "assistant"),
     ]);
 
-    // CANONICAL: a genuinely-homed session/<hash> dir for a different key.
     const homedKey = "pi-geek:abc123";
     const homedDir = sessionStoragePaths(homedKey).dir; // session/<16hex>
     const [homedType, homedId] = homedDir.split("/");
@@ -261,7 +247,6 @@ test("migration splits a LEGACY session/<name> dir while leaving real session/<h
     ]);
     const homedContentBefore = await readFile(path.join(memoryDir, "transcripts", homedDir, fileName), "utf-8");
 
-    // Plan: only the legacy session/baz dir is a source; session/<hash> is left.
     const plan = await planSessionTranscriptMigration({ memoryDir });
     assert.equal(plan.files.length, 1, "only the legacy session/<name> dir must be a source");
     assert.equal(plan.distinctSessions, 1);
@@ -271,7 +256,6 @@ test("migration splits a LEGACY session/<name> dir while leaving real session/<h
     const result = await migrateSessionTranscripts({ memoryDir, apply: true });
     assert.equal(result.errors.length, 0);
 
-    // Legacy data re-homed to its canonical session/<hash> dir, order preserved.
     const legacyDestDir = sessionStoragePaths(legacyKey).dir;
     assert.notEqual(legacyDestDir, path.join("session", "baz"));
     const legacyDestContent = await readFile(
@@ -283,14 +267,11 @@ test("migration splits a LEGACY session/<name> dir while leaving real session/<h
     assert.ok(legacyDestLines[0].includes('"turnId":"1"'));
     assert.ok(legacyDestLines[1].includes('"turnId":"2"'));
 
-    // Legacy source emptied/removed (lossless move).
     await assert.rejects(() => readFile(legacySourcePath, "utf-8"));
 
-    // The real session/<hash> dir is byte-for-byte untouched.
     const homedContentAfter = await readFile(path.join(memoryDir, "transcripts", homedDir, fileName), "utf-8");
     assert.equal(homedContentAfter, homedContentBefore);
 
-    // Idempotent: a second run finds nothing and does not duplicate.
     const second = await migrateSessionTranscripts({ memoryDir, apply: true });
     assert.equal(second.plan.files.length, 0);
     assert.equal(second.plan.movedEntries, 0);
@@ -310,7 +291,6 @@ test("migration error detail is sanitized (no raw filesystem/stack message leak)
     const fileName = "2026-06-29.jsonl";
     // Arbitrary key routes to transcripts/session/<hash>. Planting a FILE at
     // transcripts/session makes the destination `mkdir` fail with ENOTDIR — a
-    // realistic write-time failure whose raw OS message embeds an absolute path.
     await seedMixedOtherDefault(memoryDir, fileName, [entryLine("pi-geek:abc123", "1", "user")]);
     await writeFile(path.join(memoryDir, "transcripts", "session"), "blocker", "utf-8");
 
@@ -318,13 +298,11 @@ test("migration error detail is sanitized (no raw filesystem/stack message leak)
 
     assert.equal(result.errors.length, 1);
     const message = result.errors[0];
-    // Sanitized: includes the relative source path + the error name/code only.
     assert.ok(
       message.startsWith(`Failed to migrate ${path.join("other", "default", fileName)}`),
       `unexpected error prefix: ${message}`,
     );
     assert.match(message, /\(ENOTDIR\)/);
-    // Must NOT leak the raw OS message or any absolute filesystem path.
     assert.ok(!message.includes(memoryDir), "sanitized error must not leak an absolute fs path");
     assert.ok(
       !/not a directory|open '|write '/i.test(message),

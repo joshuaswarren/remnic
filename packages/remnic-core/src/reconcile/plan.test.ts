@@ -41,7 +41,6 @@ test("converged corpora produce no work and report converged", () => {
 });
 
 test("a bootstrap merge moves unique data both ways and deletes nothing", () => {
-  // The #2150 shape: no common base, both sides hold months the other never saw.
   const plan = planReconciliation([
     {
       namespace: "default",
@@ -86,9 +85,6 @@ test("newest-wins picks the later side by mtime", () => {
 });
 
 test("newest-wins degrades to keeping both when the order is not decidable", () => {
-  // No timestamp on one side, and an exact tie. Either way "newest" is a coin
-  // flip, and a coin flip here discards a fact the other corpus may be alone in
-  // holding — the whole failure #2150 exists to prevent.
   const entries = planNamespaceReconciliation(
     {
       namespace: "default",
@@ -109,11 +105,8 @@ test("a base turns a one-sided change back into an ordinary transfer", () => {
     peer: [file("facts/a.md", "v2-peer"), file("facts/b.md", "v1")],
     base,
   });
-  // Only the peer moved on a.md, only we moved on b.md — neither is a conflict.
   assert.equal(entryFor(entries, "facts/a.md").action, "pull");
   assert.equal(entryFor(entries, "facts/b.md").action, "push");
-  // Both censuses still hold the path, so these are NOT the bootstrap
-  // "one side has never seen it" reasons.
   assert.equal(entryFor(entries, "facts/a.md").reason, "peer_changed");
   assert.equal(entryFor(entries, "facts/b.md").reason, "local_changed");
   assert.equal(entries.filter((e) => e.action === "conflict").length, 0);
@@ -126,8 +119,6 @@ test("a base proves a deletion, and a deletion against a live edit needs an oper
     peer: [file("facts/dropped.md", "v1")],
     base: [file("facts/kept.md", "v1"), file("facts/dropped.md", "v1")],
   });
-  // The peer no longer has kept.md and the base says it had exactly our copy:
-  // that is a real deletion, not a gap. Re-pushing would resurrect it.
   const kept = entryFor(entries, "facts/kept.md");
   assert.equal(kept.action, "conflict");
   assert.equal(kept.reason, "peer_deleted");
@@ -152,8 +143,6 @@ test("a locally tombstoned fact is suppressed on the peer, not pulled back", () 
 });
 
 test("a peer still serving a retracted fact is NOT converged", () => {
-  // Marking it `identical` would let transport skip the whole run on
-  // plan.converged, so the peer would keep serving the retracted fact forever.
   const plan = planReconciliation([
     {
       namespace: "default",
@@ -169,9 +158,6 @@ test("a peer still serving a retracted fact is NOT converged", () => {
 });
 
 test("delete-versus-modify stays a conflict in both directions", () => {
-  // The surviving side edited since the base, so its hash no longer equals the
-  // base. Keying on equality would emit a plain push/pull and silently
-  // resurrect a deliberate deletion.
   const entries = planNamespaceReconciliation({
     namespace: "default",
     local: [file("facts/we-edited.md", "local-v2")],
@@ -232,7 +218,6 @@ test("namespaces are planned independently and reported separately", () => {
     { namespace: "alpha", local: [file("facts/a.md", "x")], peer: [] },
     { namespace: "beta", local: [], peer: [file("facts/a.md", "y")] },
   ]);
-  // Same path in two namespaces must not collapse into one decision.
   assert.equal(plan.entries.length, 2);
   assert.equal(plan.entries.filter((e) => e.namespace === "alpha")[0]?.action, "push");
   assert.equal(plan.entries.filter((e) => e.namespace === "beta")[0]?.action, "pull");
@@ -253,8 +238,6 @@ test("the plan is byte-stable across runs regardless of input order", () => {
     { namespace: "alpha", local: [...local].reverse(), peer: [...peer].reverse() },
     { namespace: "beta", local: [...local].reverse(), peer: [...peer].reverse() },
   ]);
-  // A convergence report an operator diffs between runs is only useful if the
-  // ordering is total (§12) — no incidental readdir order may leak in.
   assert.deepEqual(first.entries, second.entries);
   assert.deepEqual(
     first.entries.map((e) => `${e.namespace}:${e.path}`),
@@ -306,8 +289,6 @@ test("entries carry the hashes a transport needs to verify what it moved", () =>
 });
 
 test("a duplicate path in the streamed local census does not double-count", () => {
-  // The local side is consumed as a stream, so a repeated path must not emit
-  // two entries or reappear as peer-only after the index entry was consumed.
   const entries = planNamespaceReconciliation({
     namespace: "default",
     local: [file("facts/a.md", "same"), file("facts/a.md", "same")],
@@ -330,8 +311,6 @@ test("streaming the local side still reports every peer-only path exactly once",
 });
 
 test("a retracted digest present on BOTH sides is suppressed, not called identical", () => {
-  // Same path, same digest, retracted here. Calling it identical converges the
-  // plan and the peer keeps serving the retracted fact.
   const plan = planReconciliation([
     {
       namespace: "default",
@@ -345,9 +324,6 @@ test("a retracted digest present on BOTH sides is suppressed, not called identic
 });
 
 test("a retracted peer revision cannot win a conflict", () => {
-  // Same path, different content, peer's copy is the retracted one and is
-  // NEWER. Reaching the conflict ladder at all would let newest-wins resurrect
-  // precisely what was retracted.
   const entries = planNamespaceReconciliation(
     {
       namespace: "default",
@@ -392,7 +368,6 @@ test("a path listed twice with different digests is rejected on every census", (
       `${side} census must not silently pick a winner by arrival order`
     );
   }
-  // An exact repeat is unambiguous and stays acceptable.
   assert.doesNotThrow(() =>
     planNamespaceReconciliation({
       namespace: "default",
@@ -407,7 +382,6 @@ test("an unknown conflictPolicy is rejected rather than silently treated as manu
     () =>
       planNamespaceReconciliation(
         { namespace: "default", local: [file("facts/a.md", "l")], peer: [file("facts/a.md", "p")] },
-        // Deserialized config or an untyped JS caller can produce this.
         { conflictPolicy: "newest_wins" as unknown as "newest-wins" }
       ),
     ReconcilePlanInputError
@@ -415,8 +389,6 @@ test("an unknown conflictPolicy is rejected rather than silently treated as manu
 });
 
 test("a retracted LOCAL revision is suppressed, never pushed", () => {
-  // Without this the suppression undoes itself: transport drops the peer copy,
-  // and the next run pushes our surviving retracted copy straight back.
   const entries = planNamespaceReconciliation({
     namespace: "default",
     local: [file("facts/retracted.md", "gone")],
@@ -442,8 +414,6 @@ test("a retracted local revision does not win a conflict either", () => {
 });
 
 test("a census record without a usable digest is rejected", () => {
-  // Two records that both omit sha256 compare equal and would plan `identical`,
-  // converging a corpus that was never actually read.
   for (const bad of [undefined, "", "not-a-digest", 42] as const) {
     assert.throws(
       () =>
@@ -459,8 +429,6 @@ test("a census record without a usable digest is rejected", () => {
 });
 
 test("paths differing only by case are rejected across censuses", () => {
-  // One file on a case-insensitive peer; planning a push AND a pull would let
-  // application order pick the survivor.
   assert.throws(
     () =>
       planNamespaceReconciliation({
@@ -524,8 +492,6 @@ test("suppress names the side holding the retracted revision", () => {
       peer: [file("facts/a.md", "peer-rev")],
       tombstonedFileSha256: [digest(tomb)],
     });
-    // Without this, transport cannot tell which copy to remove and may delete
-    // the live revision instead of the retracted one.
     assert.equal(entryFor(entries, "facts/a.md").suppressSide, expect);
   }
   const both = planNamespaceReconciliation({
@@ -544,7 +510,6 @@ test("a single digest string is rejected instead of being split into characters"
         namespace: "default",
         local: [],
         peer: [file("facts/r.md", "gone")],
-        // Satisfies Iterable<string>; new Set() would make 64 one-char members.
         tombstonedFileSha256: digest("gone") as unknown as string[],
       }),
     /must be a collection of digests, not a single string/
@@ -577,8 +542,6 @@ test("an unsafe census path is rejected before it becomes transfer work", () => 
 });
 
 test("a duplicate record disagreeing only on mtime is rejected", () => {
-  // newest-wins reads that timestamp, so first-arrival-wins would let input
-  // order pick the winner.
   assert.throws(
     () =>
       planNamespaceReconciliation({
@@ -616,8 +579,6 @@ test("the streamed local census rejects an mtime-only duplicate like the indexed
 });
 
 test("newest-wins cannot be flipped by local census ordering", () => {
-  // The duplicate is rejected outright, so neither arrival order can supply
-  // the timestamp that decides the winner.
   for (const order of [
     [file("facts/a.md", "local", 1000), file("facts/a.md", "local", 9000)],
     [file("facts/a.md", "local", 9000), file("facts/a.md", "local", 1000)],
@@ -634,8 +595,6 @@ test("newest-wins cannot be flipped by local census ordering", () => {
 });
 
 test("the same namespace supplied twice is rejected", () => {
-  // Planned independently, one (namespace, path) could draw both push and pull,
-  // and the two entries sort equal so batch order would pick the survivor.
   assert.throws(
     () =>
       planReconciliation([
@@ -709,7 +668,6 @@ test("a non-canonical namespace is rejected so duplicates cannot slip past", () 
     () => planNamespaceReconciliation({ namespace: " team ", local: [], peer: [] }),
     /is not canonical; pass "team"/
   );
-  // The dedup guard would otherwise see two distinct keys for one namespace.
   assert.throws(
     () =>
       planReconciliation([
@@ -721,7 +679,6 @@ test("a non-canonical namespace is rejected so duplicates cannot slip past", () 
 });
 
 test("a null base cursor is rejected rather than read as a bootstrap", () => {
-  // Silently bootstrapping would turn the peer's deletion into a push.
   assert.throws(
     () =>
       planNamespaceReconciliation({
@@ -735,8 +692,6 @@ test("a null base cursor is rejected rather than read as a bootstrap", () => {
 });
 
 test("canonically equivalent Unicode paths are treated as one file", () => {
-  // macOS stores decomposed names and compares canonically, so these are the
-  // same file there; planning a push AND a pull would race them.
   assert.throws(
     () =>
       planNamespaceReconciliation({
@@ -764,9 +719,6 @@ test("an array is not a valid options or input envelope", () => {
 });
 
 test("a peer retraction suppresses our surviving copy instead of pushing it back", () => {
-  // Bootstrap: the peer census simply OMITS what it retracted, so without its
-  // tombstone set this is indistinguishable from "never had it" and we push
-  // the file back, undoing the peer's retraction.
   const entries = planNamespaceReconciliation({
     namespace: "default",
     local: [file("facts/retracted-there.md", "gone"), file("facts/mine.md", "keep")],
@@ -793,8 +745,6 @@ test("the peer tombstone set is validated like our own", () => {
 });
 
 test("Win32-aliasing path segments are rejected", () => {
-  // Windows strips trailing dots and spaces, so `a.md.` and `a.md` are one
-  // file there while the fold key keeps them distinct.
   for (const bad of ["facts/a.md.", "facts/a.md ", "facts/dir./a.md"]) {
     assert.throws(
       () =>
@@ -842,7 +792,6 @@ test("Windows-unstorable and reserved path names are rejected", () => {
       `path ${JSON.stringify(bad)} must be rejected`
     );
   }
-  // A name that merely CONTAINS a reserved word is fine.
   assert.doesNotThrow(() =>
     planNamespaceReconciliation({
       namespace: "default",
@@ -853,8 +802,6 @@ test("Windows-unstorable and reserved path names are rejected", () => {
 });
 
 test("a directionless supersede link is reported as unresolved", () => {
-  // The policy nominally settled it, but with no orderable timestamp the link
-  // direction is an operator call — reporting unresolved: 0 would hide that.
   const entries = planNamespaceReconciliation(
     {
       namespace: "default",
@@ -887,8 +834,6 @@ test("superscript COM and LPT device aliases are rejected", () => {
 });
 
 test("a full caseless fold catches sigma-style aliases", () => {
-  // Unicode-case-insensitive filesystems treat final and medial sigma as one
-  // name; a bare toLowerCase() keeps them distinct.
   assert.throws(
     () =>
       planNamespaceReconciliation({
@@ -901,8 +846,6 @@ test("a full caseless fold catches sigma-style aliases", () => {
 });
 
 test("non-plain objects are not accepted as envelopes", () => {
-  // Each passes typeof === "object" and is not an array, exposes no
-  // conflictPolicy, and would silently run under the default policy.
   for (const bad of [new Date(), new Map(), /re/]) {
     assert.throws(
       () =>
@@ -914,7 +857,6 @@ test("non-plain objects are not accepted as envelopes", () => {
       `options ${Object.prototype.toString.call(bad)}`
     );
   }
-  // A null-prototype record is still a record.
   assert.doesNotThrow(() =>
     planNamespaceReconciliation(
       { namespace: "default", local: [], peer: [] },
@@ -924,7 +866,6 @@ test("non-plain objects are not accepted as envelopes", () => {
 });
 
 test("an empty namespace list still validates its options", () => {
-  // The same call must not pass or fail depending on list length.
   for (const bad of [null, new Date(), { conflictPolicy: "nope" }]) {
     assert.throws(
       () => planReconciliation([], bad as unknown as Record<string, never>),
@@ -964,8 +905,6 @@ test("a malformed tombstone collection raises the planner's error, not a TypeErr
 });
 
 test("an unpaired surrogate path is rejected", () => {
-  // Node encodes it as U+FFFD, so it and a literal U+FFFD path are one file on
-  // disk while comparing as two.
   for (const bad of ["facts/\ud800.md", "facts/\udc00.md"]) {
     assert.throws(
       () =>
@@ -980,7 +919,6 @@ test("an unpaired surrogate path is rejected", () => {
       /unpaired surrogate/
     );
   }
-  // A well-formed pair is fine.
   assert.doesNotThrow(() =>
     planNamespaceReconciliation({
       namespace: "default",
@@ -1001,7 +939,6 @@ test("the base cursor is validated with the same rules as the other censuses", (
       }),
     /base census for namespace default lists facts\/a\.md twice with different digests/
   );
-  // And it still drives the one-sided-change decision it exists for.
   const entries = planNamespaceReconciliation({
     namespace: "default",
     local: [file("facts/a.md", "v1")],
@@ -1013,8 +950,6 @@ test("the base cursor is validated with the same rules as the other censuses", (
 });
 
 test("a namespace with an unpaired surrogate is rejected", () => {
-  // namespaceIdentityToken() encodes through TextEncoder, so this and a
-  // literal U+FFFD namespace are one directory on disk.
   assert.throws(() => planNamespaceReconciliation({ namespace: "\ud800", local: [], peer: [] }), /unpaired surrogate/);
 });
 
@@ -1035,9 +970,6 @@ test("POSIX-origin colon paths are rejected when the PEER platform is win32", ()
 });
 
 test("entry accumulation survives a boot-scale namespace (spread-push regression)", () => {
-  // V8's spread-argument limit sits near 125k; a namespace planning more
-  // entries than that previously died with RangeError: Maximum call stack
-  // size exceeded inside entries.push(...nsEntries).
   const files: ReconcileFileState[] = [];
   for (let i = 0; i < 130_000; i++) {
     files.push({ path: `facts/boot-scale/f-${i}.md`, sha256: digest(`peer-${i}`), mtimeMs: 1000 });

@@ -1,7 +1,3 @@
-/**
- * Regression tests for 5 reviewer findings on the daily briefing module.
- * All fixtures are synthetic — no real user data.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -29,9 +25,6 @@ import type {
 } from "./types.js";
 import type { StorageManager } from "./storage.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Helpers — synthetic fixtures
-// ──────────────────────────────────────────────────────────────────────────
 
 function makeMemory(updated: string): MemoryFile {
   return {
@@ -76,11 +69,9 @@ function makeCalendarEvent(start: string): CalendarEvent {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Finding 1 — window upper bound uses exclusive check (ts < toMs)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("filterMemoriesByWindow: memory at exact window.to is excluded (exclusive upper bound)", () => {
-  // Window: [2026-04-10T00:00:00Z, 2026-04-11T00:00:00Z)
   const window = makeWindow("2026-04-10T00:00:00.000Z", "2026-04-11T00:00:00.000Z");
 
   // A memory timestamped exactly at midnight — must NOT appear in yesterday's window,
@@ -101,7 +92,6 @@ test("filterMemoriesByWindow: memory at window.from (inclusive) is included", ()
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Finding 2 — runBriefingTool removed (verify no public export)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("runBriefingTool is not exported from briefing module", async () => {
@@ -114,13 +104,11 @@ test("runBriefingTool is not exported from briefing module", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Finding 4 — buildRecentEntities respects upper bound (window.to exclusive)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("buildRecentEntities: entity updated after window.to is excluded", () => {
   const window = makeWindow("2026-04-10T00:00:00.000Z", "2026-04-11T00:00:00.000Z");
 
-  // Entity updated today (after window end) — should be excluded from yesterday's briefing.
   const futureEntity = makeEntity("2026-04-11T08:00:00.000Z");
   const inWindowEntity = makeEntity("2026-04-10T15:00:00.000Z");
 
@@ -138,7 +126,6 @@ test("buildRecentEntities: entity updated exactly at window.to is excluded (excl
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Finding 5 — eventFallsOnDate uses UTC date, not raw slice
 // ──────────────────────────────────────────────────────────────────────────
 
 test("eventFallsOnDate: ISO timestamp with negative UTC offset is normalised to UTC date", () => {
@@ -155,7 +142,6 @@ test("eventFallsOnDate: plain UTC ISO timestamp matches target date", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Regression — Bug 3 (#396): invalid event.start must not throw RangeError
 // ──────────────────────────────────────────────────────────────────────────
 
 test("eventFallsOnDate: invalid start string returns false and does not throw", () => {
@@ -175,7 +161,6 @@ test("eventFallsOnDate: empty start string returns false and does not throw", ()
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Finding 2 (#396): ICS floating-time events must not be shifted by server TZ
 // ──────────────────────────────────────────────────────────────────────────
 
 test("eventFallsOnDate: floating time 01:00 (early morning) matches its calendar day", () => {
@@ -210,14 +195,12 @@ test("eventFallsOnDate: floating time 23:00 (late night) matches its calendar da
 });
 
 test("eventFallsOnDate: Z-suffixed UTC time compares against UTC date", () => {
-  // 2026-04-11T01:30:00Z — UTC date is 2026-04-11
   const event = makeCalendarEvent("2026-04-11T01:30:00Z");
   assert.equal(eventFallsOnDate(event, "2026-04-11"), true);
   assert.equal(eventFallsOnDate(event, "2026-04-10"), false);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Finding 4 (#396): superseded/archived memories must not appear in briefing
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeMemoryWithStatus(
@@ -308,7 +291,6 @@ test("filterMemoriesByWindow: active and undefined-status memories within window
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Finding A (#396): pending_review memories must be included in briefings
 // ──────────────────────────────────────────────────────────────────────────
 
 test("filterMemoriesByWindow: pending_review memory within window is included", () => {
@@ -335,7 +317,6 @@ test("filterMemoriesByWindow: archived memory is excluded but pending_review is 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Finding 7 (#396): --format flag must reject invalid values
 // ──────────────────────────────────────────────────────────────────────────
 
 test("validateBriefingFormat: returns null for valid format values", () => {
@@ -360,8 +341,6 @@ test("validateBriefingFormat: returns error string for invalid values like 'jsno
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Finding C (#396): compact timezone offsets (±HHMM) must be treated as
-// offset-aware (not floating) so events land on the correct UTC date.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("eventFallsOnDate: compact negative offset (-0200) is treated as offset-aware", () => {
@@ -379,7 +358,6 @@ test("eventFallsOnDate: compact positive offset (+0530) is treated as offset-awa
 });
 
 test("eventFallsOnDate: compact +0000 is treated as offset-aware (same as Z)", () => {
-  // 2026-04-11T12:00:00+0000 = 2026-04-11T12:00:00Z
   const event = makeCalendarEvent("2026-04-11T12:00:00+0000");
   assert.equal(eventFallsOnDate(event, "2026-04-11"), true, "compact +0000 must match 2026-04-11");
 });
@@ -404,7 +382,6 @@ test("validateBriefingFormat: rejects arbitrary strings", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Finding 1 (#396 new): parseBriefingWindow must reject overflow/huge values
 // ──────────────────────────────────────────────────────────────────────────
 
 test("parseBriefingWindow: rejects hugely large week value that would overflow Date", () => {
@@ -446,7 +423,6 @@ test("parseBriefingWindow: from date is always a valid finite Date for normal in
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// PR #396 Finding 1: eventFallsOnDate — overlapping / multi-day events
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeCalendarEventWithEnd(start: string, end: string): CalendarEvent {
@@ -464,7 +440,6 @@ test("eventFallsOnDate: midnight-crossing event appears on both dates (UTC)", ()
 });
 
 test("eventFallsOnDate: multi-day event appears on every day it spans", () => {
-  // Event from 2026-04-09T00:00:00Z to 2026-04-12T00:00:00Z spans 3 full days.
   const event = makeCalendarEventWithEnd("2026-04-09T00:00:00Z", "2026-04-12T00:00:00Z");
   assert.equal(eventFallsOnDate(event, "2026-04-09"), true, "must appear on day 1");
   assert.equal(eventFallsOnDate(event, "2026-04-10"), true, "must appear on day 2");
@@ -523,7 +498,6 @@ test("eventFallsOnDate: floating span crossing midnight appears on both dates", 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// PR #396 Finding 2: parseIcsEvents — RFC 5545 line unfolding
 // ──────────────────────────────────────────────────────────────────────────
 
 test("parseIcsEvents: folded SUMMARY line (space continuation) is unfolded correctly", () => {
@@ -542,7 +516,6 @@ test("parseIcsEvents: folded SUMMARY line (space continuation) is unfolded corre
     "UID:test-fold-1@synthetic",
     "DTSTART:20260411T100000Z",
     "DTEND:20260411T110000Z",
-    // Content space is at end of first line; continuation space is fold marker.
     "SUMMARY:This is a long summary folded across two physical ",
     " lines by the ICS encoder",
     "END:VEVENT",
@@ -742,7 +715,6 @@ test("parseIcsEvents: TZID midnight event (UTC+1, Europe/London BST) lands on co
 // ──────────────────────────────────────────────────────────────────────────
 
 test("BRIEFING_FOLLOWUP_DEFAULT_MODEL is exported and matches canonical extraction model", () => {
-  // The constant must be a non-empty string.
   assert.ok(
     typeof BRIEFING_FOLLOWUP_DEFAULT_MODEL === "string" && BRIEFING_FOLLOWUP_DEFAULT_MODEL.length > 0,
     "BRIEFING_FOLLOWUP_DEFAULT_MODEL must be a non-empty string",
@@ -866,7 +838,6 @@ test("focusMatchesMemory: raw content match still works alongside slug fix", () 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Round 8 Finding UQZW+UXE5: Midnight end-time HH:MM form must be excluded
 // ──────────────────────────────────────────────────────────────────────────
 
 test("eventFallsOnDate: floating end '2026-04-11T00:00' (HH:MM, no seconds) is day-exclusive", () => {
@@ -904,10 +875,8 @@ test("eventFallsOnDate: floating end '2026-04-11T01:00' (HH:MM, non-midnight) in
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Round 8 Finding UNBW: Model-not-found errors must produce user-friendly message
 // ──────────────────────────────────────────────────────────────────────────
 
-// Minimal StorageManager stub that returns empty arrays (no memories/entities).
 function makeEmptyStorage(): StorageManager {
   return {
     readAllMemories: async () => [],
@@ -984,8 +953,6 @@ test("buildBriefing excludes support passport records from generated context", a
 });
 
 test("buildBriefing: model-not-found 400 error produces user-friendly followupsUnavailableReason", async () => {
-  // Inject a mock generator that throws an error resembling a Responses API
-  // 400 "model does not exist" response.
   const result = await buildBriefing({
     storage: makeEmptyStorage(),
     allowLlm: true,
@@ -1116,7 +1083,6 @@ test("buildChainFollowupGenerator skips parseable non-followup JSON candidates",
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Round 8 Finding UXE4: buildActiveThreads must recompute reason from newer memory
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeMemoryWithCategory(
@@ -1181,7 +1147,6 @@ test("buildActiveThreads: older memory processed first does not win reason when 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Round 8 Finding UXJH: Failing calendar source must suppress calendar section
 // ──────────────────────────────────────────────────────────────────────────
 
 test("buildBriefing: failing calendar source suppresses Today's calendar section in markdown", async () => {
@@ -1216,7 +1181,6 @@ test("buildBriefing: empty calendar (no events) still renders Today's calendar s
     now: new Date("2026-04-11T10:00:00.000Z"),
   });
 
-  // Empty calendar = source responded with [] — section should appear with "no events" placeholder.
   assert.ok(
     result.markdown.includes("Today's calendar"),
     "markdown must include 'Today's calendar' section even when there are no events",
@@ -1224,7 +1188,6 @@ test("buildBriefing: empty calendar (no events) still renders Today's calendar s
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Round 9 Finding UZTO: Validate floating-event end timestamps before range checks
 // ──────────────────────────────────────────────────────────────────────────
 
 test("eventFallsOnDate: floating event with malformed end only appears on its start date", () => {
@@ -1261,7 +1224,6 @@ test("eventFallsOnDate: floating event with malformed end only appears on its st
 });
 
 test("eventFallsOnDate: floating event with empty-string end is treated as single-day", () => {
-  // Edge case: end is present but is an empty string (structurally invalid).
   const event: CalendarEvent = {
     id: "evt-synthetic-empty-end",
     title: "Empty End Event",
@@ -1281,7 +1243,6 @@ test("eventFallsOnDate: floating event with empty-string end is treated as singl
   );
 });
 
-// Round 10 Finding UhLg: Date-only floating end values must enforce [start, end) semantics
 // ──────────────────────────────────────────────────────────────────────────
 
 test("eventFallsOnDate: floating all-day event with date-only end excludes end date ([start, end))", () => {
@@ -1309,8 +1270,6 @@ test("eventFallsOnDate: floating all-day event with date-only end excludes end d
 });
 
 test("eventFallsOnDate: floating multi-day all-day event with date-only end spans [start, end)", () => {
-  // A two-day all-day event: start "2026-04-10", end "2026-04-12"
-  // Should appear on 2026-04-10 and 2026-04-11, but NOT on 2026-04-12.
   const event = makeCalendarEventWithEnd("2026-04-10", "2026-04-12");
 
   assert.equal(
@@ -1340,7 +1299,6 @@ test("eventFallsOnDate: floating multi-day all-day event with date-only end span
   );
 });
 
-// Round 10 Finding UhLh: Impossible end dates (passing regex but not real) must fall back
 // ──────────────────────────────────────────────────────────────────────────
 
 test("eventFallsOnDate: floating event with impossible end date '2026-99-99' is treated as single-day", () => {
@@ -1359,7 +1317,6 @@ test("eventFallsOnDate: floating event with impossible end date '2026-99-99' is 
     false,
     "impossible-end event must NOT bleed into subsequent days",
   );
-  // Verify it does not appear on the auto-corrected future date either.
   assert.equal(
     eventFallsOnDate(event, "2035-03-09"),
     false,
@@ -1383,7 +1340,6 @@ test("eventFallsOnDate: floating event with impossible end date '2026-01-99' is 
   );
 });
 
-// Round 11 Finding PRRT_kwDORJXyws56U7at: Validate time components of floating-event end timestamps
 // ──────────────────────────────────────────────────────────────────────────────────────────────────
 // The regex and date-round-trip checks (UhLh) only cover the YYYY-MM-DD portion.
 // Invalid time fields (hour > 23, minute > 59, second > 59) pass those checks
@@ -1455,8 +1411,6 @@ test("eventFallsOnDate: floating event with bad hour '2026-04-11T25:00:00' is tr
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Round 12 PRRT_kwDORJXyws56U_7O: Validate floating START timestamp before
-// date-slice comparisons (symmetric with end validation added in earlier rounds)
 // ──────────────────────────────────────────────────────────────────────────
 // JavaScript normalizes impossible dates silently: new Date("2026-02-30T10:00")
 // returns a valid Date object pointing to 2026-03-02, so the old
@@ -1539,7 +1493,6 @@ test("eventFallsOnDate: floating event with out-of-range start time '2026-04-11T
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Round 8 P2 Finding 2 (briefing.ts:254): Surface calendar source failures
 // ──────────────────────────────────────────────────────────────────────────
 
 test("buildBriefing: failing calendar source populates calendarSourceErrors in result", async () => {
@@ -1602,7 +1555,6 @@ test("buildBriefing: no calendar source configured produces no calendarSourceErr
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Round 8 P2 Finding 3 (briefing.ts:988): Stable sort for equal-timestamp threads
 // ──────────────────────────────────────────────────────────────────────────
 
 test("buildActiveThreads: threads with identical updatedAt are sorted deterministically by id", () => {
@@ -1674,7 +1626,6 @@ test("buildActiveThreads: primary sort by updatedAt overrides id tiebreaker", ()
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// buildOpenCommitments — non-English content (issue #2198)
 // ──────────────────────────────────────────────────────────────────────────
 function makeCommitmentMemory(overrides: {
   content: string;

@@ -155,7 +155,6 @@ export async function isInsideDirectoryRealpath(
         try {
           target = await realpath(probe);
         } catch {
-          // Dangling symlink inside memoryDir — always unsafe.
           return false;
         }
         const rel = path.relative(resolvedRoot, target);
@@ -175,7 +174,6 @@ export async function isInsideDirectoryRealpath(
     const probe = parts.slice(0, i).join(path.sep) || path.sep;
     try {
       const resolved = await realpath(probe);
-      // Re-join any trailing segments that didn't exist yet.
       const trailing = parts.slice(i).join(path.sep);
       const final = trailing.length > 0 ? path.join(resolved, trailing) : resolved;
       // Now apply the textual containment check against the canonical
@@ -189,7 +187,6 @@ export async function isInsideDirectoryRealpath(
       continue;
     }
   }
-  // Nothing along the path resolvable — treat as outside by default.
   return false;
 }
 
@@ -208,7 +205,6 @@ const NON_ACTIVE_PREFIXES = ["archive/", "state/"];
  * `"archive/x.md"` before the non-active-prefix check.
  */
 function normalizeRelativePath(p: string): string {
-  // Normalize separators, split into segments, then resolve.
   const parts = p.replace(/\\/g, "/").split("/");
   const resolved: string[] = [];
   for (const seg of parts) {
@@ -586,7 +582,6 @@ export async function runConsolidationUndo(options: {
     dedupedPlans.push(p);
   }
 
-  // Dry-run: report what each plan would do.
   if (dryRun) {
     for (const p of dedupedPlans) {
       if (p.kind === "write") {
@@ -617,7 +612,6 @@ export async function runConsolidationUndo(options: {
   let writeFailed = false;
   for (const p of dedupedPlans) {
     if (p.kind === "skip") {
-      // Dedup-generated skip entries and other pre-write skips.
       if (p.restore) result.restores.push(p.restore);
       continue;
     }

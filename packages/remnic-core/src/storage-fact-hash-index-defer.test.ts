@@ -251,7 +251,6 @@ test("deferred fact writes do NO per-fact index saves; a single flush persists a
         assert.equal(await storage.hasFactContentHash(`deferred fact number ${i}`), true);
       }
 
-      // One authoritative batch save (mirrors saveContentHashIndexes) persists
       // the whole superset in a single rewrite.
       saveSpy.mock.resetCalls();
       const index = await (
@@ -265,7 +264,6 @@ test("deferred fact writes do NO per-fact index saves; a single flush persists a
       saveSpy.mock.restore();
     }
 
-    // A fresh session (new StorageManager) sees every hash on disk.
     const reopened = new StorageManager(dir);
     for (let i = 0; i < 10; i += 1) {
       assert.equal(
@@ -300,7 +298,6 @@ test("direct writeMemory('fact') without the flag persists the hash via the LOCK
       reconcileSpy.mock.restore();
     }
 
-    // No batch save was performed by the caller, yet a fresh session still finds
     // the hash — it was flushed at write time (crash-safe).
     const reopened = new StorageManager(dir);
     assert.equal(await reopened.hasFactContentHash("single write fact"), true);
@@ -316,7 +313,6 @@ test("#2016 thread SDzOT: a fact hash added during the authoritative rebuild's c
   // shared index preserves concurrent adds by mutating its `hashes` set in place.
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);
-    // One durable fact so the rebuild has corpus content to scan.
     await storage.writeMemory("fact", "alpha established fact", { source: "extraction" });
 
     const s = storage as unknown as {
@@ -340,7 +336,6 @@ test("#2016 thread SDzOT: a fact hash added during the authoritative rebuild's c
       return res;
     };
 
-    // Force a fresh authoritative rebuild (clear -> scan -> publish).
     s.factHashIndexAuthoritative = null;
     assert.equal(await s.ensureFactHashIndexAuthoritative(), true, "rebuild published");
 
@@ -349,7 +344,6 @@ test("#2016 thread SDzOT: a fact hash added during the authoritative rebuild's c
       true,
       "a fact hash added during the rebuild scan must survive publication (lost under reassign)"
     );
-    // The corpus fact is present too — the in-place repopulate did not drop it.
     assert.equal(await storage.hasFactContentHash("alpha established fact"), true);
   });
 });
@@ -379,7 +373,6 @@ test("#2016 thread PRRT_kwDORJXyws6SEBri: a hash added during rebuildUnderLock's
     };
     idx = new ContentHashIndex(stateDir, () => null, injectingWriteKeyProvider);
 
-    // Publish an authoritative rebuild under the lock; save() runs inside it.
     const published = await idx.rebuildUnderLock(async () => {
       idx.clear();
       idx.addByHash(ContentHashIndex.computeHash("corpus fact one"));
@@ -399,7 +392,6 @@ test("#2016 thread PRRT_kwDORJXyws6SEBri: a hash added during rebuildUnderLock's
       fresh.has(lateContent),
       "a hash added during the locked rebuild save must reach disk (lost under the unconditional clear)"
     );
-    // The rebuilt corpus set survives too — the late-delta handling did not drop it.
     assert.ok(fresh.has("corpus fact one"), "corpus hash one survives the rebuild+reconcile");
     assert.ok(fresh.has("corpus fact two"), "corpus hash two survives the rebuild+reconcile");
     assert.equal(ContentHashIndex.computeHash(lateContent), lateHash);
@@ -414,13 +406,10 @@ test("promotion-style immediate write survives restart even with fact-hashes.rea
   // present — a restart would trust the on-disk index (no rebuild) and MISS the
   // hash, re-creating the promoted fact on the next extraction.
   await withMemoryDir(async (dir) => {
-    // Warm the index authoritative and create the .ready marker (empty backfill).
     const warm = new StorageManager(dir);
     assert.equal(await warm.hasFactContentHash("nothing yet"), false);
-    // Promotion-style write: no deferHashIndexSave → immediate index flush.
     await warm.writeMemory("fact", "promoted profile fact", { source: "extraction" });
 
-    // A fresh session with .ready present trusts the on-disk index (no rebuild).
     const restarted = new StorageManager(dir);
     assert.equal(
       await restarted.hasFactContentHash("promoted profile fact"),
@@ -432,7 +421,6 @@ test("promotion-style immediate write survives restart even with fact-hashes.rea
 
 test("durability: deferred writes with NO batch save are rebuildable from on-disk facts (fail-open)", async () => {
   await withMemoryDir(async (dir) => {
-    // Simulate a crash mid-extraction: facts written with deferHashIndexSave but
     // the process dies before saveContentHashIndexes runs. The fact-hash file is
     // never written, but the fact .md files ARE on disk.
     {
@@ -446,7 +434,6 @@ test("durability: deferred writes with NO batch save are rebuildable from on-dis
       // Intentionally no batch save — the crash window.
     }
 
-    // A new session rebuilds the index authoritatively from the on-disk facts
     // (ensureFactHashIndexAuthoritative), so dedup is correct and no data is lost.
     const recovered = new StorageManager(dir);
     for (let i = 0; i < 5; i += 1) {
@@ -486,7 +473,6 @@ test("concurrent deferred fact writes both land in the index (no lost update)", 
 });
 
 test("#1909 round 11: a deferred write with no batch save is rebuilt from the corpus on restart", async () => {
-  // No fact-hashes.ready marker exists anymore — the fact-hash index is ALWAYS
   // rebuilt from the durable fact corpus on first use per process. So a deferred
   // write that never got flushed (crash before the batch save) is still deduped
   // after restart because the fact .md is on disk and the rebuild includes it.
@@ -497,7 +483,6 @@ test("#1909 round 11: a deferred write with no batch save is rebuilt from the co
       source: "extraction",
       deferHashIndexSave: true,
     });
-    // CRASH: no batch save. Drop the instance.
     assert.equal(existsSync(readyPath), false, "no ready marker is ever written (round 11)");
 
     const restarted = new StorageManager(dir);
@@ -517,7 +502,6 @@ test("#1909 round 11: the fact-hash ready marker is never written (always rebuil
     assert.equal(await storage.hasFactContentHash("a durable fact"), true); // triggers rebuild
     assert.equal(existsSync(readyPath), false, "no ready marker written after a rebuild");
 
-    // A fresh instance rebuilds authoritatively from the corpus and still dedups.
     const restarted = new StorageManager(dir);
     assert.equal(await restarted.hasFactContentHash("a durable fact"), true);
     assert.equal(existsSync(readyPath), false, "still no marker after the restart rebuild");
@@ -525,7 +509,6 @@ test("#1909 round 11: the fact-hash ready marker is never written (always rebuil
 });
 
 test("#1909: saveMergingWithDisk unions with a concurrent writer instead of clobbering", async () => {
-  // Review round 6 finding 2: two independent index instances (two processes)
   // that both snapshot an empty file must not clobber each other on save.
   await withMemoryDir(async (dir) => {
     const stateDir = path.join(dir, "state");
@@ -588,7 +571,6 @@ test("#1909: removing a hash and reconcile-saving drops it from disk (no resurre
     await mid.load();
     assert.ok(mid.has("archived fact body"), "hash is on disk before archival");
 
-    // Archival: remove + reconciling save (the production saveContentHashIndexes path).
     idx.remove("archived fact body");
     await idx.saveMergingWithDisk();
 
@@ -603,7 +585,6 @@ test("#1909: removing a hash and reconcile-saving drops it from disk (no resurre
 });
 
 test("#1909: reconciling removal drops the removed hash AND preserves a concurrent append", async () => {
-  // Review round 8 thread 3: removal and append batches serialize under the same
   // per-file lock and both reconcile with the latest on-disk state — so a removal
   // neither resurrects its own hash nor clobbers a concurrent extraction's append.
   await withMemoryDir(async (dir) => {
@@ -614,18 +595,15 @@ test("#1909: reconciling removal drops the removed hash AND preserves a concurre
     seed.add("to be archived");
     await seed.save();
 
-    // Remover loads {archived} and marks it removed (not yet published).
     const remover = new ContentHashIndex(stateDir);
     await remover.load();
     remover.remove("to be archived");
 
-    // Concurrent appender (another instance) adds a new hash and publishes first.
     const appender = new ContentHashIndex(stateDir);
     await appender.load();
     appender.add("freshly appended");
     await appender.saveMergingWithDisk();
 
-    // Remover reconciles against the now-updated disk: drops its removal, keeps
     // the concurrent append.
     await remover.saveMergingWithDisk();
 
@@ -637,7 +615,6 @@ test("#1909: reconciling removal drops the removed hash AND preserves a concurre
 });
 
 test("#1909: saveMergingWithDisk is a no-op when the index is not dirty (dirty short-circuit)", async () => {
-  // Review round 7 finding 3: a no-fact/deduped run must not re-read+rewrite the
   // whole fact-hashes.txt. An unmutated index skips the O(file) work entirely.
   await withMemoryDir(async (dir) => {
     const stateDir = path.join(dir, "state");
@@ -678,7 +655,6 @@ test("#1909: rebuild indexes ACTIVE cold-tier facts; a demoted fact's hash survi
     StorageManager.clearAllStaticCaches();
     const storage = new StorageManager(dir);
 
-    // Two facts: one stays hot, one is demoted to cold.
     await storage.writeMemory("fact", "hot tier fact stays put", { source: "manual" });
     await storage.writeMemory("fact", "cold tier fact was demoted", { source: "manual" });
 
@@ -693,7 +669,6 @@ test("#1909: rebuild indexes ACTIVE cold-tier facts; a demoted fact's hash survi
     StorageManager.clearAllStaticCaches();
     const reopened = new StorageManager(dir);
 
-    // The cold-demoted fact must be confirmed present in the rebuilt index (this
     // FAILS on a hot-only rebuild), and the hot fact must still be present too.
     assert.equal(
       await reopened.hasFactContentHash("cold tier fact was demoted"),
@@ -708,7 +683,6 @@ test("#1909: rebuild indexes ACTIVE cold-tier facts; a demoted fact's hash survi
   });
 });
 
-// PR #2016: when saveMergingWithDisk cannot acquire the cross-process lock in
 // time, it used to resolve "successfully" while retaining the added hash ONLY
 // in this process's memory — a silent gap. A long-lived peer that already built
 // its authoritative in-memory index would never see the write, and no later
@@ -744,7 +718,6 @@ test("#2016: a lock-timed-out append is NOT silently dropped and eventually pers
     await mkdir(stateDir, { recursive: true });
     const lockPath = path.join(stateDir, "fact-hashes.txt.lock");
 
-    // A peer holds the lock: a fresh, non-stale lock file the acquirer cannot take.
     await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
 
     const idx = new ContentHashIndex(stateDir, undefined, undefined, undefined, {
@@ -761,7 +734,6 @@ test("#2016: a lock-timed-out append is NOT silently dropped and eventually pers
     await idx.saveMergingWithDisk();
     assert.equal(idx.hasPendingReconcileRetry, true, "a durable retry must be armed after the lock timeout");
 
-    // Disk is untouched while the lock is held — proves it did not write unlocked.
     const early = new ContentHashIndex(stateDir);
     await early.load();
     assert.equal(
@@ -769,10 +741,8 @@ test("#2016: a lock-timed-out append is NOT silently dropped and eventually pers
       false,
       "no unlocked publish while the peer holds the lock"
     );
-    // In-memory dedup still works this session (dirty addition retained).
     assert.equal(idx.has("deferred-under-contended-lock"), true, "addition stays live in-memory");
 
-    // The peer releases the lock; the background retry must then land the write.
     await rm(lockPath, { force: true });
     await withRetryLoopAlive(() => idx.whenReconcileRetrySettled());
 
@@ -806,7 +776,6 @@ test("#2016: exhausting retries under a permanently held lock is best-effort, ne
     // durable-.md append into a fatal failure.
     await assert.doesNotReject(idx.saveMergingWithDisk());
 
-    // Let the bounded retry chain run to exhaustion (lock is never released).
     await withRetryLoopAlive(() => idx.whenReconcileRetrySettled());
 
     assert.equal(
@@ -851,7 +820,6 @@ test("#2016: successive lock-timed-out saves do not stack duplicate retries (ree
     await idx.saveMergingWithDisk();
     assert.equal(idx.hasPendingReconcileRetry, true, "still exactly one retry armed (no duplicate/parallel retries)");
 
-    // Release the lock and let the single retry drain BOTH deferred additions in
     // one locked publish.
     await rm(lockPath, { force: true });
     await withRetryLoopAlive(() => idx.whenReconcileRetrySettled());
@@ -863,7 +831,6 @@ test("#2016: successive lock-timed-out saves do not stack duplicate retries (ree
   });
 });
 
-// PR #2016 (startup hash-index rebuild race): ensureFactHashIndexAuthoritative
 // used to run its corpus scan and publish with an UNLOCKED clear→scan→save().
 // A peer process that committed a newer hash to fact-hashes.txt under the
 // per-file lock — or landed a deferred reconcile-retry — in the window between
@@ -898,10 +865,8 @@ test("#2016: rebuildUnderLock refuses to publish while a peer holds the lock (no
   await withMemoryDir(async (dir) => {
     const stateDir = path.join(dir, "state");
     await mkdir(stateDir, { recursive: true });
-    // A peer already committed a hash to disk.
     const peerHash = ContentHashIndex.computeHash("peer-committed-fact");
     await writeFile(path.join(stateDir, "fact-hashes.txt"), `# remnic-content-hash-index:v2\n${peerHash}\n`);
-    // The peer holds the advisory lock (fresh, non-stale, not stale-breakable).
     const lockPath = path.join(stateDir, "fact-hashes.txt.lock");
     await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
 
@@ -925,7 +890,6 @@ test("#2016: rebuildUnderLock refuses to publish while a peer holds the lock (no
     await disk.load();
     assert.ok(disk.has("peer-committed-fact"), "peer's committed hash preserved (not clobbered)");
     assert.equal(disk.has("rebuild-would-clobber"), false, "no unlocked overwrite while the lock is held");
-    // The rebuilder's in-memory index is non-destructive (still the loaded set).
     assert.ok(idx.has("peer-committed-fact"), "loaded set retained in-memory after a deferred rebuild");
   });
 });
@@ -980,7 +944,6 @@ test("#2016: a rebuild serializes with a concurrent locked writer — the peer's
 
 test("#2016: a peer's committed fact survives a fresh-session authoritative rebuild (multi-process)", async () => {
   await withMemoryDir(async (dir) => {
-    // Process A: writes a fact (real .md + committed hash).
     const peer = new StorageManager(dir);
     await peer.writeMemory("fact", "durable multiprocess fact", { source: "extraction" });
 
@@ -1009,7 +972,6 @@ test("#2016: a peer's committed fact survives a fresh-session authoritative rebu
 
 test("#2016 finding 1: a lock-contended miss is verified against the corpus, never a stale-snapshot false miss", async () => {
   await withMemoryDir(async (dir) => {
-    // Process A writes a durable fact (.md corpus + fact-hashes.txt).
     const writer = new StorageManager(dir);
     await writer.writeMemory("fact", "durable fact under contention", { source: "extraction" });
 
@@ -1017,7 +979,6 @@ test("#2016 finding 1: a lock-contended miss is verified against the corpus, nev
     // but keep the durable .md — the corpus is now the only source of truth.
     await rm(path.join(dir, "state", "fact-hashes.txt"), { force: true });
 
-    // A peer holds the rebuild lock so process B cannot become authoritative.
     const lockPath = path.join(dir, "state", "fact-hashes.txt.lock");
     await mkdir(path.dirname(lockPath), { recursive: true });
     await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
@@ -1070,7 +1031,6 @@ test("#2016 finding 2: getAuthoritativeFactHashIndex fails explicitly instead of
       await rm(lockPath, { force: true });
     }
 
-    // Once the lock is free the rebuild publishes and the accessor returns.
     const idx = await storage.getAuthoritativeFactHashIndex();
     assert.ok(idx, "returns the authoritative index after the lock clears");
     assert.equal(await storage.isFactContentHashAuthoritative(), true);
@@ -1158,7 +1118,6 @@ test("#2016 thread SDzOP: a storage fact-hash removal reconciles under the lock,
     await storage.writeMemory("fact", "alpha stays active", { source: "manual" });
     await storage.writeMemory("fact", "beta gets archived", { source: "manual" });
 
-    // Make the shared index authoritative and cached (the production hot path).
     assert.equal(await storage.hasFactContentHash("alpha stays active"), true);
     // Test-only access to storage/index internals: the shape is structurally
     // known and a runtime check would be meaningless here (private members).
@@ -1183,7 +1142,6 @@ test("#2016 thread SDzOP: a storage fact-hash removal reconciles under the lock,
     peer.add("peer concurrent append");
     await peer.saveMergingWithDisk();
 
-    // Re-baseline the cached index freshness fingerprint to the peer-advanced
     // file so ensureFactHashIndexAuthoritative keeps the fast path (no rebuild),
     // isolating the removal's SAVE step — the exact code the reviewer flagged.
     const idxInternals = idx as unknown as {
@@ -1228,7 +1186,6 @@ test("#2016 thread SD7Tj: a hash added while a reconcile save awaits disk is not
     const stateDir = path.join(dir, "state");
     await mkdir(stateDir, { recursive: true });
 
-    // The write-key provider is invoked synchronously at publish's write step —
     // AFTER publish has snapshotted this.added and BEFORE it consumes/clears it.
     // Injecting an add() there deterministically reproduces a concurrent add
     // landing in publish's mid-flight window, with no module mocking.
@@ -1252,7 +1209,6 @@ test("#2016 thread SD7Tj: a hash added while a reconcile save awaits disk is not
 
     await idx.saveMergingWithDisk();
 
-    // The pre-save addition published as expected.
     const afterFirst = new ContentHashIndex(stateDir);
     await afterFirst.load();
     assert.equal(afterFirst.has("added-before-save"), true, "the pre-save addition is on disk");
@@ -1317,13 +1273,11 @@ test("#2016 thread SD-nG: a direct re-add of a hash the local snapshot still hol
     await mkdir(stateDir, { recursive: true });
     const CONTENT = "the reintroduced fact content";
 
-    // Peer A registers the hash and publishes it to the shared on-disk index.
     const peerA = new ContentHashIndex(stateDir);
     await peerA.load();
     peerA.add(CONTENT);
     await peerA.saveMergingWithDisk();
 
-    // Peer B loads the same on-disk index — its in-memory snapshot HOLDS the hash.
     const peerB = new ContentHashIndex(stateDir);
     await peerB.load();
     assert.equal(peerB.has(CONTENT), true, "B loaded the hash from disk");
@@ -1340,7 +1294,6 @@ test("#2016 thread SD-nG: a direct re-add of a hash the local snapshot still hol
     peerB.add(CONTENT);
     await peerB.saveMergingWithDisk();
 
-    // A fresh reader (another peer) must now see the reintroduced hash.
     const reader = new ContentHashIndex(stateDir);
     await reader.load();
     assert.equal(
@@ -1363,13 +1316,11 @@ test("#2016 thread PRRT_kwDORJXyws6SEHve: addByHash re-add of a hash the local s
     await mkdir(stateDir, { recursive: true });
     const hash = ContentHashIndex.computeHash("reactivated-fact-body");
 
-    // Peer A publishes the hash to the shared on-disk index.
     const peerA = new ContentHashIndex(stateDir);
     await peerA.load();
     peerA.addByHash(hash);
     await peerA.saveMergingWithDisk();
 
-    // Peer B loads the same index — its in-memory snapshot HOLDS the hash.
     const peerB = new ContentHashIndex(stateDir);
     await peerB.load();
     assert.equal(peerB.has("reactivated-fact-body"), true, "B loaded the hash from disk");
@@ -1379,7 +1330,6 @@ test("#2016 thread PRRT_kwDORJXyws6SEHve: addByHash re-add of a hash the local s
     peerA.removeByHash(hash);
     await peerA.saveMergingWithDisk();
 
-    // B re-registers the same hash via addByHash (the reactivation path). Pre-fix
     // a no-op; fixed, it records the durable delta.
     peerB.addByHash(hash);
     await peerB.saveMergingWithDisk();
@@ -1395,7 +1345,6 @@ test("#2016 thread PRRT_kwDORJXyws6SEHve: addByHash re-add of a hash the local s
 });
 
 test("#2016 thread PRRT_kwDORJXyws6SEHvh: reactivation drains the deferred reconcile retry inline like writeMemory", async () => {
-  // restoreFactHashAfterApproval -> addActiveFactContentHash used to publish the
   // reintroduced hash with a bare saveMergingWithDisk() and return. On a lock
   // timeout that call DEFERS to an unref'd background retry WITHOUT publishing,
   // so a short-lived caller could exit before the hash reached disk. writeMemory

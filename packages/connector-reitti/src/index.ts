@@ -127,7 +127,6 @@ export function createReittiProvider(options: ReittiProviderOptions): LocationPr
         await client.fetchTimeline({ date, timezone, signal });
         return { ok: true };
       } catch (error) {
-        // A caller-driven abort is cancellation, not provider unavailability.
         if (error instanceof Error && error.name === "AbortError") throw error;
         if (error instanceof ReittiApiError && error.kind === "auth") {
           return {
@@ -162,8 +161,6 @@ export function createReittiProvider(options: ReittiProviderOptions): LocationPr
       }
       const entries = await client.fetchTimeline({ date, timezone, signal: opts.signal });
       const observations = timelineObservations(entries, window);
-      // Empty day vs failure (§22): a valid empty timeline is an explicit
-      // empty result; the visits fallback, when enabled, is a second page.
       if (visitsFallback && observations.length === 0) {
         return { observations, nextCursor: REITTI_VISITS_CURSOR };
       }

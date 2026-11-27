@@ -26,9 +26,6 @@ import { composeMemoryEnvelope, type SealedMemoryEnvelope } from "../write-envel
 import type { MemoryWriteResult } from "../storage.js";
 import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Subcommands
-// ──────────────────────────────────────────────────────────────────────────
 
 export const DECISION_SUBCOMMANDS = [
   "list",
@@ -41,10 +38,6 @@ export type DecisionSubcommand = (typeof DECISION_SUBCOMMANDS)[number];
 
 const SUBCOMMAND_VALUES = DECISION_SUBCOMMANDS as readonly string[];
 
-/**
- * Type guard — narrows an unknown subcommand string to the
- * {@link DecisionSubcommand} union.
- */
 export function isDecisionSubcommand(value: unknown): value is DecisionSubcommand {
   return typeof value === "string" && SUBCOMMAND_VALUES.includes(value);
 }
@@ -59,7 +52,6 @@ export function formatDecisionSubcommands(): string {
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// Surface request / response shapes
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -75,16 +67,13 @@ export interface DecisionSurfaceRequest {
   subcommand: DecisionSubcommand;
   sessionKey?: string;
   namespace?: string;
-  // get / supersede
   id?: string;
-  // record
   title?: string;
   status?: string;
   context?: string;
   decision?: string;
   consequences?: string;
   entityRefs?: string[];
-  // supersede
   supersedesId?: string;
 }
 
@@ -119,7 +108,6 @@ export interface DecisionSurfaceRecord {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Handler — the single implementation behind all three surfaces (rule 22)
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -216,12 +204,6 @@ async function decisionList(
   const records: DecisionSurfaceRecord[] = [];
   for (const m of memories) {
     if (m.frontmatter.category !== "decision") continue;
-    // Exclude lifecycle-retired memories. Any outer frontmatter.status other
-    // than undefined/"active" (archived, superseded, forgotten, rejected,
-    // quarantined, pending_review) means the generic memory lifecycle has
-    // intervened — hide the decision until that resolves. The decision-specific
-    // lifecycle marker lives in structuredAttributes.decisionStatus (review:
-    // hide all non-active outer statuses from decisions).
     const memStatus = m.frontmatter.status;
     if (memStatus && memStatus !== "active") continue;
     const parsed = safeParseDecisionRecord(m.content);
@@ -302,9 +284,6 @@ async function decisionRecord(
   const content = serializeDecisionRecord(record);
   const storage = await ctx.resolveStorage(request);
   const isActive = ACTIVE_DECISION_STATUSES.has(status);
-  // Sealed-envelope write (issue #1989 PR4): operator/API-built decision
-  // record — strict compose; envelope-owned fields ride the envelope, the
-  // status/connector extras stay explicit.
   const decisionEnvelope = composeMemoryEnvelope(
     {
       content,
@@ -317,15 +296,6 @@ async function decisionRecord(
     { source: "coding-decision" },
   );
   const { id: memoryId } = await storage.writeSealedMemory(decisionEnvelope, {
-    // Persist the decision lifecycle in BOTH places so generic
-    // recall/search/maintenance (which read frontmatter.status) and the
-    // decision list/get projection (which reads structuredAttributes) agree:
-    //   - structuredAttributes.decisionStatus is the authoritative decision
-    //     marker, mirrored from the serialized body (one source of truth);
-    //   - frontmatter.status is set to "archived" for inactive decisions
-    //     (rejected/superseded) so the outer memory pipeline excludes them
-    //     from the active corpus exactly like a supersede does (review P2:
-    //     persist inactive decision statuses in frontmatter).
     status: isActive ? undefined : "archived",
   });
   log.info(
@@ -338,8 +308,6 @@ async function decisionSupersede(
   request: DecisionSurfaceRequest,
   ctx: DecisionSurfaceContext,
 ): Promise<DecisionSurfaceResponse> {
-  // The schema advertises `supersedesId` for MCP/HTTP clients that name it
-  // explicitly; treat it as an alias for `id` when `id` is absent (review P2).
   const targetId = request.id?.trim() || request.supersedesId?.trim();
   if (!targetId) {
     ctx.throwInputError(
@@ -365,7 +333,6 @@ async function decisionSupersede(
       `decision record is corrupted and cannot be superseded: ${targetId}`,
     );
   }
-  // Rule 25: write the replacement BEFORE mutating the old record's status.
   const replacement: DecisionRecord = {
     id: "",
     title: request.title.trim(),
@@ -377,10 +344,6 @@ async function decisionSupersede(
     supersedes: targetId,
   };
   const replacementContent = serializeDecisionRecord(replacement);
-  // Sealed-envelope write (issue #1989 PR4): strict — see decisionRecord.
-  // Mirror decisionRecord: persist structuredAttributes.decisionStatus on
-  // the replacement so list/get projection and QMD indexing see the
-  // authoritative marker (review: supersede omits decisionStatus attrs).
   const { id: replacementId, tombstoneBlocked: replacementBlocked } = await storage.writeSealedMemory(
     composeMemoryEnvelope(
       {
@@ -396,28 +359,13 @@ async function decisionSupersede(
     {},
   );
   if (replacementBlocked) {
-    // #1645: the replacement decision matched a tombstone (pending_review).
-    // Don't archive the old record — superseding with a non-active
-    // replacement retires the only active decision. Abort; old stays active.
     ctx.throwInputError(
       `replacement decision was tombstone-blocked (pending_review ${replacementId}) — keeping decision ${targetId} active`,
     );
   }
-  // Mark the old record superseded: set BOTH frontmatter.status (so
-  // recall/search/maintenance exclude it from the active corpus — review P2)
-  // AND structuredAttributes.decisionStatus (the decision-specific lifecycle
-  // marker used by list/get projection). The content body is not mutated.
-  // Rule 25: the replacement is written BEFORE the old record is mutated so
-  // a frontmatter-write failure leaves a harmless duplicate, not a missing
-  // record. Best-effort: log the failure but don't roll back the replacement
-  // (review: cursor partial-write thread).
   try {
     await storage.writeMemoryFrontmatter(oldMemory, {
       status: "archived",
-      // Refresh the updated timestamp so the archive/supersede lifecycle event
-      // and browse/maintenance sort key reflect when the decision was retired,
-      // not when it was originally recorded (review: set updated timestamp when
-      // retiring old decisions).
       updated: new Date().toISOString(),
       structuredAttributes: {
         ...(oldMemory.frontmatter.structuredAttributes ?? {}),
@@ -440,7 +388,6 @@ async function decisionSupersede(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Local helpers
 // ──────────────────────────────────────────────────────────────────────────
 
 function safeParseDecisionRecord(content: string): DecisionRecord | null {

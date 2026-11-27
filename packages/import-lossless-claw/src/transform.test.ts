@@ -174,8 +174,6 @@ describe("resolveSummarySession", () => {
   });
 
   it("returns null when ANY referenced message id is dangling (Codex P2)", () => {
-    // One valid + one missing → reject the whole summary so msg_start/end
-    // can't be silently computed from only the resolved subset.
     const sessionByMessageId = new Map([
       ["m1", "sess-A"],
       // m2 deliberately not in the map
@@ -238,7 +236,6 @@ describe("mapSummary", () => {
       messageSeqs: [1],
       sessionId: "sess-A",
     });
-    // Just confirm it parses as a valid ISO string
     assert.ok(!Number.isNaN(Date.parse(out.created_at)));
   });
 

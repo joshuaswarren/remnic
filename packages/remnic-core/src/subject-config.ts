@@ -1,18 +1,3 @@
-/**
- * Config parsing for the memory-subject runtime knobs (issue #2372).
- *
- * Extracted from config.ts (its structural-ratchet ceiling forbids growth);
- * `parseConfig` spreads `parseSubjectRuntimeConfig(cfg)` into the plugin
- * config literal.
- *
- * Validation posture (Review Prevention Checklist §1/§24/§39): invalid
- * values are REJECTED loudly, never silently reinterpreted — but an omitted
- * key takes the documented default. The deliberate asymmetry from the issue
- * stands: classification defaults OFF while the guard defaults "warn", so
- * enabling classification later immediately yields promotion warnings
- * without a second flag flip, and with classification off, unstamped
- * memories still only warn (never silently promote) at shared targets.
- */
 
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 import {
@@ -27,13 +12,6 @@ export interface SubjectRuntimeConfig {
   promotionCandidates: { minAccessCount: number };
 }
 
-/**
- * Reject a non-object block loudly (rule 51 / §1): a shorthand like
- * `subjectClassification: false` must never normalize silently to `{}`.
- * Returns void so callers read the block through a DIRECT `cfg.<key>`
- * member access — the config-contract parser walker derives nested key
- * paths from those accesses, and a helper return value hides them.
- */
 function assertObjectBlock(value: unknown, key: string, shape: string): void {
   if (value === undefined) return;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {

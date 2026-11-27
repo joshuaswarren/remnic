@@ -1,13 +1,3 @@
-/**
- * Batch migration of remaining access-surface handlers through the boundary
- * (issue #1525 / #1668). Each operation routes MCP/HTTP/CLI dispatch through
- * the shared validation + error-mapping layer in access-boundary.ts.
- *
- * Strict per-tool Zod schemas replace the earlier permissive looseSchema (#1668).
- * Each schema validates known field types; .passthrough() tolerates MCP client
- * context injection (cwd/projectTag/sessionKey) without silent type coercion.
- * The stripNulls preprocessor handles the OpenAI-schema null-for-absent gotcha.
- */
 
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -51,13 +41,7 @@ import { runPreferenceDriftScan } from "./preferences/preference-drift.js";
 import { runGraphEdgeDecayMaintenanceAcrossNamespaces } from "./maintenance/graph-edge-decay.js";
 import { normalizeDreamsStatusWindowHours } from "./maintenance/dreams-ledger.js";
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
 
-// Object.create(null): a plain {} lets a copied own `__proto__` member invoke
-// the prototype setter, so an inherited field could reach the zod parse
-// (issue #3225 B1).
 function stripNulls(data: unknown): unknown {
   if (data !== null && typeof data === "object" && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>;
@@ -75,12 +59,6 @@ function strictSchema<T extends z.ZodRawShape>(shape: T): z.ZodType<Record<strin
   return z.preprocess(stripNulls, z.object(shape).passthrough()) as unknown as z.ZodType<Record<string, unknown>>;
 }
 
-/**
- * stripNulls, but keys listed in `preserve` keep their null values. Used by
- * boundary schemas whose wire contract treats an explicit `null` as a
- * meaningful value (e.g. recall `codingContext: null` clears the session
- * context — it must not be collapsed into "absent").
- */
 function stripNullsExcept(data: unknown, preserve: readonly string[]): unknown {
   if (data !== null && typeof data === "object" && !Array.isArray(data)) {
     const cleaned = Object.create(null);
@@ -107,18 +85,11 @@ function optStrArr(v: unknown): string[] | undefined { return Array.isArray(v) &
 const S = {
   str: z.string().optional(),
   num: z.number().optional(),
-  // Accept numbers and numeric strings (MCP clients sometimes send "7" for 7).
   flexNum: z.union([z.number(), z.string()]).optional(),
   bool: z.boolean().optional(),
   strArr: z.array(z.string()).optional(),
 };
 
-// === RECALL ===
-// Issue #2482: the boundary validates against the SAME canonical zod schema
-// the HTTP transport uses (recallRequestSchema). No parallel field list, no
-// silent defaults — a missing `query` or a bad enum is a 400 at the boundary.
-// `codingContext: null` survives the null-strip (explicit session-context
-// clear); every other null is the MCP null-for-absent idiom.
 defineOperation({
   name: "recall",
   description: "Semantic recall.",
@@ -159,8 +130,6 @@ defineOperation({ name: "recall_xray", description: "X-ray recall.", schema: str
 });
 defineOperation({ name: "recall_why", description: "Diagnose why a query did not recall an expected memory (#3033). Read-only.", schema: strictSchema({ query: S.str, expect: S.str, sessionKey: S.str, namespace: S.str }),
   handler: async (input, ctx) => {
-    // A supplied-but-blank `expect` is a caller mistake: forward it so the
-    // service rejects it, matching the HTTP route's 400 (checklist #39).
     const expect = optStr(input.expect);
     return { result: await ctx.service.recallWhy({ query: defStr(input.query, ""), ...(expect !== undefined ? { expect } : {}), sessionKey: optStr(input.sessionKey), namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal, sourceConnector: ctx.sourceConnector, ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) }) };
   },
@@ -201,23 +170,18 @@ defineOperation({ name: "namespace_writable", description: "Read-only preflight:
   };
 } });
 
-// === WEARABLES ===
 defineOperation({ name: "wearables_status", description: "Wearables status.", schema: strictSchema({ namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.wearablesStatus({ authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }) }) });
 defineOperation({ name: "wearables_sync", description: "Sync wearables.", schema: strictSchema({ source: S.str, date: S.str, days: S.flexNum, forceMemories: S.bool, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => { const summaries = await ctx.service.wearablesSync({ source: optStr(input.source), date: optStr(input.date), days: typeof input.days === "number" ? input.days : typeof input.days === "string" && Number.isFinite(Number(input.days)) ? Number(input.days) : undefined, forceMemories: optBool(input.forceMemories), authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }); return { result: { summaries } }; } });
 defineOperation({ name: "transcript_day", description: "Transcript for a day.", schema: strictSchema({ date: S.str, source: S.str, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => { const d = defStr(input.date, ""); if (d.trim().length === 0) throw new EngramAccessInputError("transcript_day: date is required (YYYY-MM-DD)"); const transcripts = await ctx.service.wearablesTranscriptDay({ date: d, source: optStr(input.source), authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }); return { result: { transcripts } }; } });
 defineOperation({ name: "transcript_search", description: "Search transcripts.", schema: strictSchema({ query: S.str, source: S.str, from: S.str, to: S.str, limit: S.flexNum, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => { const q = defStr(input.query, ""); if (q.trim().length === 0) throw new EngramAccessInputError("transcript_search: query is required"); const results = await ctx.service.wearablesTranscriptSearch({ query: q, source: optStr(input.source), from: optStr(input.from), to: optStr(input.to), limit: typeof input.limit === "number" ? input.limit : typeof input.limit === "string" && Number.isFinite(Number(input.limit)) ? Number(input.limit) : undefined, authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }); return { result: { results } }; } });
 defineOperation({ name: "transcript_memories", description: "Transcript memories.", schema: strictSchema({ source: S.str, date: S.str, limit: S.flexNum, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => { const memories = await ctx.service.wearablesTranscriptMemories({ source: optStr(input.source), date: optStr(input.date), limit: typeof input.limit === "number" ? input.limit : typeof input.limit === "string" && Number.isFinite(Number(input.limit)) ? Number(input.limit) : undefined, authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }); return { result: { memories } }; } });
 
-// === MEETINGS (issue #1900) ===
 defineOperation({ name: "meetings_list", description: "List stored meeting records (all days, or one day).", schema: strictSchema({ date: S.str, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => { const d = optStr(input.date); return { result: await ctx.service.meetingsList(d && d.length > 0 ? d : undefined, { authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }) }; } });
 defineOperation({ name: "meetings_get", description: "Get a stored meeting record by id.", schema: strictSchema({ id: S.str, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.meetingsGet(reqStr(input.id, "id"), { authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }) }) });
 defineOperation({ name: "meetings_build", description: "Detect + fuse + store a day's meetings.", schema: strictSchema({ date: S.str, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.meetingsBuild(reqStr(input.date, "date"), { authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }) }) });
-// === DEEP RECALL (issue #2332) — budgeted REFINE/EXPAND/STOP retrieval ===
 defineOperation({ name: "deep_recall", description: "Budgeted multi-hop deep recall over the anchor graph.", schema: strictSchema({ query: S.str, maxSteps: S.flexNum, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => {
   const q = defStr(input.query, "");
   if (q.trim().length === 0) throw new EngramAccessInputError("deep_recall: query is required");
-  // Strict boundary parse (issue #2915): `"abc"` must NOT silently become the
-  // configured default and `""` must NOT become 0 — both are rejected.
   let maxSteps: number | undefined;
   try {
     maxSteps = parseDeepRecallMaxSteps(input.maxSteps);
@@ -227,7 +191,6 @@ defineOperation({ name: "deep_recall", description: "Budgeted multi-hop deep rec
   return { result: await ctx.service.deepRecall({ query: q, maxSteps, authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey), ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) }) };
 } });
 
-// === ACTION CONFIDENCE + INSPECTOR + CAPSULE ===
 defineOperation({ name: "action_confidence", description: "Action confidence.", schema: strictSchema({ intendedAction: S.str, confidence: S.num, risk: S.str, contextReadiness: S.str, currentContextScopes: S.strArr, userRules: z.array(z.unknown()).optional(), retrievedMemories: z.array(z.unknown()).optional() }), handler: async (input, ctx) => { const req: Record<string, unknown> = {}; if (input.intendedAction !== undefined) req.intendedAction = optStr(input.intendedAction); if (input.confidence !== undefined) req.confidence = optNum(input.confidence); if (input.risk !== undefined) req.risk = optStr(input.risk) as "low" | "medium" | "high" | "irreversible" | "restricted" | undefined; if (input.contextReadiness !== undefined) req.contextReadiness = optStr(input.contextReadiness) as "none" | "partial" | "sufficient" | undefined; if (input.currentContextScopes !== undefined) req.currentContextScopes = optStrArr(input.currentContextScopes); if (input.userRules !== undefined) req.userRules = input.userRules; if (input.retrievedMemories !== undefined) req.retrievedMemories = input.retrievedMemories; return { result: await ctx.service.actionConfidence(req) }; } });
 defineOperation({ name: "chatgpt_memory_inspector", description: "Memory inspector.", schema: strictSchema({ query: S.str, sessionKey: S.str, namespace: S.str, currentContextScopes: S.strArr, allowUnverifiedPreview: S.bool }),
   handler: async (input, ctx) => {
@@ -254,7 +217,6 @@ defineOperation({ name: "capsule_list", description: "List capsules.", schema: s
   return { result: await ctx.service.capsuleList({ namespace: optStr(input.namespace), principal: rp }) };
 } });
 
-// === GOVERNANCE ===
 defineOperation({ name: "memory_governance_run", description: "Run governance.", schema: strictSchema({ namespace: S.str, mode: S.str, recentDays: S.num, maxMemories: S.num, batchSize: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.governanceRun({ namespace: optStr(input.namespace), mode: optStr(input.mode) === "apply" ? "apply" : "shadow", recentDays: optNum(input.recentDays), maxMemories: optNum(input.maxMemories), batchSize: optNum(input.batchSize), authenticatedPrincipal: ctx.authenticatedPrincipal }, ctx.authenticatedPrincipal) }) });
 defineOperation({ name: "entity_synthesis_run", description: "Bulk-drain the entity synthesis queue (issue #2136).", schema: strictSchema({ namespace: S.str, maxEntities: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.entitySynthesisRun({ namespace: optStr(input.namespace), maxEntities: input.maxEntities === undefined ? undefined : (input.maxEntities as number), authenticatedPrincipal: ctx.authenticatedPrincipal }, ctx.authenticatedPrincipal) }) });
 defineOperation({ name: "procedure_mining_run", description: "Run procedure mining.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.procedureMiningRun({ namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }, ctx.authenticatedPrincipal) }) });
@@ -262,12 +224,7 @@ defineOperation({ name: "pattern_reinforcement_run", description: "Run pattern r
 defineOperation({ name: "procedural_stats", description: "Procedural stats.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.procedureStats({ namespace: optStr(input.namespace) }, ctx.authenticatedPrincipal) }) });
 defineOperation({ name: "procedure_library_maintenance", description: "Run procedure library maintenance (issue #2370): shadow-first merge / repair-flag / retire from outcome telemetry. apply=true plus procedural.maintenance.enabled required for writes.", schema: strictSchema({ namespace: S.str, apply: S.bool, dryRun: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.procedureLibraryMaintenance({ namespace: optStr(input.namespace), apply: input.apply === true, dryRun: input.dryRun === true, authenticatedPrincipal: ctx.authenticatedPrincipal }, ctx.authenticatedPrincipal) }) });
 
-// === MEMORY/ENTITY/OBSERVE/LCM ===
 defineOperation({ name: "memory_timeline", description: "Memory timeline.", schema: strictSchema({ memoryId: S.str, namespace: S.str, limit: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.memoryTimeline(optStr(input.memoryId) ?? "", optStr(input.namespace), optNum(input.limit) ?? 200, ctx.authenticatedPrincipal) }) });
-// Issue #2482/#2829: suggestion_submit validates through the canonical
-// suggestionSubmitRequestSchema — the SAME schema the HTTP transport and the
-// MCP wire parse use, category alias transform included. The raw spelling
-// survives on `ctx.rawInput` for the coercion note.
 defineOperation({
   name: "suggestion_submit",
   description: "Submit suggestion.",
@@ -286,9 +243,6 @@ defineOperation({
 });
 defineOperation({ name: "entity_get", description: "Get entity.", schema: strictSchema({ name: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.entityGet(optStr(input.name) ?? "", optStr(input.namespace), ctx.authenticatedPrincipal) }) });
 defineOperation({ name: "review_queue_list", description: "List review queue.", schema: strictSchema({ runId: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.reviewQueue(optStr(input.runId) ?? "", optStr(input.namespace), ctx.authenticatedPrincipal) }) });
-// Issue #2482: observe validates through the canonical observeRequestSchema
-// (same as HTTP/MCP wire validation). Nullable wire fields (parts /
-// sourceFormat) map to undefined for the service's cleaned message form.
 defineOperation({
   name: "observe",
   description: "Observe messages.",
@@ -321,7 +275,6 @@ defineOperation({ name: "lcm_compaction_flush", description: "Flush LCM compacti
 defineOperation({ name: "extraction_force_flush", description: "Force-drain a session extraction buffer.", schema: strictSchema({ sessionKey: S.str, namespace: S.str, cwd: S.str, projectTag: S.str, deadlineMs: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.extractionForceFlush({ sessionKey: optStr(input.sessionKey) ?? "", namespace: optStr(input.namespace), cwd: optStr(input.cwd), projectTag: optStr(input.projectTag), deadlineMs: optNum(input.deadlineMs), authenticatedPrincipal: ctx.authenticatedPrincipal, onCommitted: ctx.hooks?.recordWriteCommit, ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) }) }) });
 defineOperation({ name: "lcm_compaction_record", description: "Record LCM compaction.", schema: strictSchema({ sessionKey: S.str, namespace: S.str, tokensBefore: S.num, tokensAfter: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.lcmCompactionRecord({ sessionKey: optStr(input.sessionKey) ?? "", namespace: optStr(input.namespace), tokensBefore: optNum(input.tokensBefore) ?? 0, tokensAfter: optNum(input.tokensAfter) ?? 0, authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });
 
-// === CONTINUITY/IDENTITY ===
 defineOperation({ name: "continuity_audit_generate", description: "Continuity audit.", fleetWide: true, schema: strictSchema({ period: S.str, key: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.continuityAuditGenerate({ period: optStr(input.period) === "monthly" ? "monthly" : optStr(input.period) === "weekly" ? "weekly" : undefined, key: optStr(input.key) }) }) });
 defineOperation({ name: "continuity_incident_open", description: "Open incident.", schema: strictSchema({ symptom: S.str, namespace: S.str, triggerWindow: S.str, suspectedCause: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.continuityIncidentOpen({ symptom: optStr(input.symptom) ?? "", namespace: optStr(input.namespace), triggerWindow: optStr(input.triggerWindow), suspectedCause: optStr(input.suspectedCause), principal: ctx.authenticatedPrincipal }) }) });
 defineOperation({ name: "continuity_incident_close", description: "Close incident.", schema: strictSchema({ id: S.str, namespace: S.str, fixApplied: S.str, verificationResult: S.str, preventiveRule: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.continuityIncidentClose({ id: optStr(input.id) ?? "", namespace: optStr(input.namespace), fixApplied: optStr(input.fixApplied) ?? "", verificationResult: optStr(input.verificationResult) ?? "", preventiveRule: optStr(input.preventiveRule), principal: ctx.authenticatedPrincipal }) }) });
@@ -332,21 +285,10 @@ defineOperation({ name: "identity_anchor_get", description: "Get identity anchor
 defineOperation({ name: "identity_anchor_update", description: "Update identity anchor.", schema: strictSchema({ namespace: S.str, identityTraits: S.str, communicationPreferences: S.str, operatingPrinciples: S.str, continuityNotes: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.identityAnchorUpdate({ namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal, identityTraits: optStr(input.identityTraits), communicationPreferences: optStr(input.communicationPreferences), operatingPrinciples: optStr(input.operatingPrinciples), continuityNotes: optStr(input.continuityNotes) }) }) });
 defineOperation({ name: "memory_identity", description: "Memory identity.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.memoryIdentity({ namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }) });
 
-// === WORK/SHARED ===
-// SAFETY: optStr yields undefined or a string; workTask rejects any action
-// string outside its union with an input error before touching a store.
 defineOperation({ name: "work_task", description: "Manage work task.", fleetWide: true, schema: strictSchema({ action: S.str, id: S.str, title: S.str, description: S.str, status: S.str, priority: S.str, owner: S.str, assignee: S.str, projectId: S.str, tags: S.strArr, dueAt: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.workTask({ action: (optStr(input.action) as "update" | "list" | "get" | "create" | "delete" | "transition") ?? "list", id: optStr(input.id), title: optStr(input.title), description: optStr(input.description), status: optStr(input.status), priority: optStr(input.priority), owner: optStr(input.owner), assignee: optStr(input.assignee), projectId: optStr(input.projectId), tags: optStrArr(input.tags), dueAt: optStr(input.dueAt) }) }) });
-// SAFETY: optStr yields undefined or a string; workProject rejects any action
-// string outside its union with an input error before touching a store.
 defineOperation({ name: "work_project", description: "Manage work project.", fleetWide: true, schema: strictSchema({ action: S.str, id: S.str, name: S.str, description: S.str, status: S.str, owner: S.str, tags: S.strArr, taskId: S.str, projectId: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.workProject({ action: (optStr(input.action) as "update" | "list" | "get" | "create" | "delete" | "link_task") ?? "list", id: optStr(input.id), name: optStr(input.name), description: optStr(input.description), status: optStr(input.status), owner: optStr(input.owner), tags: optStrArr(input.tags), taskId: optStr(input.taskId), projectId: optStr(input.projectId) }) }) });
-// SAFETY: optStr yields undefined or a string; workBoard rejects any action
 // string outside its union with an input error before touching a store.
 defineOperation({ name: "work_board", description: "Manage work board.", fleetWide: true, schema: strictSchema({ action: S.str, projectId: S.str, snapshotJson: S.str, linkToMemory: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.workBoard({ action: (optStr(input.action) as "export_markdown" | "export_snapshot" | "import_snapshot") ?? "export_markdown", projectId: optStr(input.projectId) ?? "", snapshotJson: optStr(input.snapshotJson) ?? "", linkToMemory: input.linkToMemory === true }) }) });
-// Issue #2920: the envelope controls (authority/expiresAt/supersedes) are
-// parsed by the ONE canonical surface module shared with the OpenClaw tool
-// (write-output-controls.ts); semantics stay in composeWriteEnvelope. A
-// client-supplied principal/namespace is rejected here — identity and
-// scoping are server-resolved (ctx.authenticatedPrincipal).
 defineOperation({
   name: "shared_context_write_output",
   description: "Write shared output.",
@@ -378,7 +320,6 @@ defineOperation({ name: "compounding_promote_candidate", description: "Promote c
 defineOperation({ name: "compression_guidelines_optimize", description: "Optimize guidelines.", fleetWide: true, schema: strictSchema({ dryRun: S.bool, eventLimit: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.compressionGuidelinesOptimize({ dryRun: input.dryRun === true, eventLimit: optNum(input.eventLimit) }) }) });
 defineOperation({ name: "compression_guidelines_activate", description: "Activate guidelines.", fleetWide: true, schema: strictSchema({ expectedContentHash: S.str, expectedGuidelineVersion: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.compressionGuidelinesActivate({ expectedContentHash: optStr(input.expectedContentHash), expectedGuidelineVersion: optNum(input.expectedGuidelineVersion) }) }) });
 
-// === MEMORY DEBUG/GRAPH/FEEDBACK ===
 defineOperation({ name: "memory_profile", description: "Memory profile.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.memoryProfile(optStr(input.namespace), ctx.authenticatedPrincipal) }) });
 defineOperation({ name: "memory_entities_list", description: "List entities.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.memoryEntitiesList(optStr(input.namespace), ctx.authenticatedPrincipal) }) });
 defineOperation({ name: "memory_questions", description: "Memory questions.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.memoryQuestions(optStr(input.namespace), ctx.authenticatedPrincipal) }) });
@@ -399,7 +340,6 @@ defineOperation({
     const rf = optStr(input.format);
     const fe = validateBriefingFormat(rf);
     if (fe) throw new EngramAccessInputError(fe);
-    // SAFETY: validateBriefingFormat rejects every format except json, markdown, or undefined.
     const request: EngramAccessBriefingRequest = {
       since: optStr(input.since), focus: optStr(input.focus), namespace: optStr(input.namespace),
       includeLocation: optBool(input.includeLocation), format: rf as "json" | "markdown" | undefined,
@@ -410,7 +350,6 @@ defineOperation({
   },
 });
 
-// === CONTRADICTION/REVIEW ===
 defineOperation({ name: "review_list", description: "List review pairs.", schema: strictSchema({ filter: S.str, namespace: S.str, limit: S.num }),
   handler: async (input, ctx) => {
     const VF = new Set(["all", "unresolved", "contradicts", "independent", "duplicates", "needs-user"]);
@@ -429,19 +368,6 @@ defineOperation({ name: "review_resolve", description: "Resolve pair.", schema: 
     if (!pid) throw new EngramAccessInputError("pairId is required");
     if (!vb) throw new EngramAccessInputError("verb is required");
     if (!isValidResolutionVerb(vb)) throw new EngramAccessInputError("Invalid verb: " + vb);
-    // Per-token namespace enforcement (issue #1850 round 9): review_resolve
-    // selects its target BY pairId, so the affected namespace comes from the
-    // record — NOT a request param that the MCP-over-HTTP tools/call gate
-    // (toolAcceptsNamespace) already enforces (this tool's schema carries no
-    // `namespace` property). A namespace-scoped bearer must not mutate a
-    // contradiction pair in a namespace outside its allow-list. Load the pair
-    // to learn its namespace, enforce the token's scope via the SAME
-    // effective-namespace chokepoint the HTTP review/resolve route uses
-    // (enforceNamespaceAllowList maps undefined → default, so a scoped token
-    // whose allow-list INCLUDES the default can resolve a legacy pair), and
-    // fail closed BEFORE dispatching the (mutating) resolution. A missing pair
-    // falls through to executeResolution's existing not-found result. No-op for
-    // unrestricted/legacy tokens. Mirrors access-http.ts review/resolve exactly.
     const targetPair = readPair(ctx.service.memoryDir, pid);
     if (targetPair) {
       enforceNamespaceAllowList(
@@ -457,7 +383,6 @@ defineOperation({ name: "contradiction_scan_run", description: "Run scan.", sche
 defineOperation({ name: "preference_drift_scan", description: "Run preference drift scan.", schema: strictSchema({ namespace: S.str, apply: S.bool }), handler: async (input, ctx) => ({ result: await runPreferenceDriftScan({ storage: ctx.service.storageRef, config: ctx.service.configRef, memoryDir: ctx.service.memoryDir, embeddingLookupFactory: ctx.service.embeddingLookupFactoryRef, storageForNamespace: (ns) => ctx.service.getWritableStorageForNamespace(ns ?? undefined, ctx.authenticatedPrincipal), localLlm: ctx.service.localLlmRef, fallbackLlm: ctx.service.fallbackLlmRef, namespace: optStr(input.namespace), apply: input.apply === true }) }) });
 defineOperation({ name: "graph_edge_decay_run", description: "Run edge decay.", fleetWide: true, schema: strictSchema({ dryRun: S.bool }), handler: async (input, ctx) => { const cfg = ctx.service.configRef; if (!cfg.graphEdgeDecayEnabled) return { result: { ranAt: new Date().toISOString(), disabled: true, reason: "graphEdgeDecayEnabled is false" } }; return { result: { results: await runGraphEdgeDecayMaintenanceAcrossNamespaces(ctx.service.memoryDir, { windowMs: cfg.graphEdgeDecayWindowMs, perWindow: cfg.graphEdgeDecayPerWindow, floor: cfg.graphEdgeDecayFloor, visibilityThreshold: cfg.graphEdgeDecayVisibilityThreshold, dryRun: input.dryRun === true, namespacesEnabled: cfg.namespacesEnabled === true, defaultNamespace: cfg.defaultNamespace }) } }; } });
 
-// === SUMMARIZE/PROFILING/PEERS/CONSOLE/DREAMS ===
 defineOperation({ name: "memory_summarize_hourly", description: "Hourly summarize.", fleetWide: true, schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.memorySummarizeHourly() }) });
 defineOperation({ name: "conversation_index_update", description: "Update conv index.", fleetWide: true, schema: strictSchema({ sessionKey: S.str, hours: S.num, embed: S.bool }), handler: async (input, ctx) => { if (input.sessionKey !== undefined && typeof input.sessionKey !== "string") throw new EngramAccessInputError("sessionKey must be a string when provided"); return { result: await ctx.service.conversationIndexUpdate({ sessionKey: optStr(input.sessionKey), hours: optNum(input.hours), embed: optBool(input.embed) }) }; } });
 defineOperation({ name: "profiling_report", description: "Profiling report.", schema: strictSchema({ format: S.str, limit: S.num }), handler: async (input, ctx) => { if (input.format !== undefined && typeof input.format !== "string") throw new EngramAccessInputError("format must be a string when provided"); if (input.limit !== undefined && typeof input.limit !== "number") throw new EngramAccessInputError("limit must be a number when provided"); return { result: await ctx.service.profilingReport({ format: optStr(input.format), limit: optNum(input.limit) }) }; } });
@@ -474,7 +399,6 @@ defineOperation({ name: "dreams_run", description: "Run dreams.", schema: strict
 
 defineOperation({ name: "correction_pending", description: "List pending corrections (HTTP GET).", schema: strictSchema({ namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.correctionListPending({ namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey), principal: ctx.authenticatedPrincipal }) }) });
 
-// === HTTP-ONLY ===
 defineOperation({ name: "offline_sync_snapshot", description: "Offline sync snapshot.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.offlineSyncSnapshot() }) });
 defineOperation({ name: "offline_sync_files", description: "Offline sync files.", schema: strictSchema({ paths: S.strArr, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.offlineSyncFiles({ paths: optStrArr(input.paths) ?? [], namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }) });
 defineOperation({ name: "offline_sync_file_content", description: "Read file content.", schema: strictSchema({ path: S.str, namespace: S.str, offset: S.num, length: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.offlineSyncFileContent({ path: optStr(input.path) ?? "", namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal, offset: optNum(input.offset), length: optNum(input.length) }) }) });

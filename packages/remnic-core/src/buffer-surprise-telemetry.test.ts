@@ -1,18 +1,3 @@
-/**
- * Tests for buffer-surprise telemetry (issue #563 PR 3).
- *
- * Covers two concerns:
- *
- *  1. SmartBuffer emits one `BUFFER_SURPRISE` row per scored turn and
- *     NEVER emits when the probe was not consulted (flag off, non-smart
- *     trigger mode, high signal, or decision was not `keep_buffering`).
- *     Probe returning `null`, throwing, or producing a non-finite score
- *     must NOT write a row.
- *
- *  2. `reportBufferSurpriseDistribution` produces stable summary stats
- *     over the recent window — mean, median, p90, triggered rate — and
- *     returns the empty-distribution shape when no rows are available.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -25,9 +10,6 @@ import type {
   BufferTurn,
 } from "./types.js";
 
-// ---------------------------------------------------------------------------
-// Test doubles
-// ---------------------------------------------------------------------------
 
 class RecordingStorage {
   public saved: BufferState | null = null;
@@ -71,7 +53,6 @@ function fixedScoreProbe(score: number | null): BufferSurpriseProbe {
 }
 
 // ---------------------------------------------------------------------------
-// SmartBuffer emission
 // ---------------------------------------------------------------------------
 
 test("emits one BUFFER_SURPRISE row per scored turn (triggering)", async () => {
@@ -104,8 +85,6 @@ test("emits one BUFFER_SURPRISE row per scored turn (triggering)", async () => {
 });
 
 test("emits BUFFER_SURPRISE row for non-triggering turns too", async () => {
-  // The whole point of telemetry is tuning the threshold from real
-  // distributions, so below-threshold scores must also be recorded.
   const storage = new RecordingStorage(emptyBuffer());
   const config = parseConfig({
     bufferSurpriseTriggerEnabled: true,
@@ -181,8 +160,6 @@ test("does NOT emit when probe returns NaN", async () => {
 });
 
 test("does NOT emit when high-signal path already flushes", async () => {
-  // High-signal decisions short-circuit before the probe is consulted,
-  // so no row must be recorded for them.
   const storage = new RecordingStorage(emptyBuffer());
   const config = parseConfig({
     bufferSurpriseTriggerEnabled: true,
@@ -196,7 +173,6 @@ test("does NOT emit when high-signal path already flushes", async () => {
 });
 
 test("does NOT emit when turn-count path already flushes (extract_batch)", async () => {
-  // Additive invariant: existing batch flush does not consult the probe.
   const storage = new RecordingStorage(emptyBuffer());
   const config = parseConfig({
     bufferSurpriseTriggerEnabled: true,
@@ -207,23 +183,15 @@ test("does NOT emit when turn-count path already flushes (extract_batch)", async
 
   await buffer.addTurn("sess-1", makeTurn("sess-1", "first"));
   await buffer.flushSurpriseTelemetry();
-  // first turn WAS scored (decision was keep_buffering)
   assert.equal(storage.events.length, 1);
 
   const before = storage.events.length;
   await buffer.addTurn("sess-1", makeTurn("sess-1", "second"));
   await buffer.flushSurpriseTelemetry();
-  // second turn flushes via turn-count; probe is not consulted → no new row.
   assert.equal(storage.events.length, before);
 });
 
 test("telemetry writes are serialized in wall-clock order under variable latency", async () => {
-  // Reviewer concern: fire-and-forget appends could settle out of
-  // order on slow filesystems. Simulate this with a storage double
-  // whose append latency decreases with each call via microtask
-  // hops — without serialization, the later appends would land first.
-  // Using microtask chains instead of setTimeout keeps the test
-  // deterministic and does not leak timers into the node:test teardown.
   const order: number[] = [];
   let call = 0;
   class ReorderingStorage {
@@ -233,8 +201,6 @@ test("telemetry writes are serialized in wall-clock order under variable latency
     async saveBuffer() {}
     async appendBufferSurpriseEvents(events: BufferSurpriseEvent[]) {
       const nth = ++call;
-      // First append hops the microtask queue more times than later
-      // ones, mimicking variable latency deterministically.
       const hops = Math.max(1, 6 - nth * 2);
       for (let i = 0; i < hops; i += 1) {
         await Promise.resolve();
@@ -262,8 +228,6 @@ test("telemetry writes are serialized in wall-clock order under variable latency
 });
 
 test("works with legacy StorageManager lacking appendBufferSurpriseEvents", async () => {
-  // The buffer must feature-detect the sink and silently skip when the
-  // host's storage double is on the old surface.
   class LegacyStorage {
     public saved: BufferState | null = null;
     async loadBuffer(): Promise<BufferState> {
@@ -284,19 +248,13 @@ test("works with legacy StorageManager lacking appendBufferSurpriseEvents", asyn
     "sess-1",
     makeTurn("sess-1", "anything"),
   );
-  // Core decision still works — only the telemetry path no-ops.
   assert.equal(decision, "extract_now");
 });
 
 // ---------------------------------------------------------------------------
-// StorageManager read-ledger behavior
 // ---------------------------------------------------------------------------
 
 test("StorageManager.readBufferSurpriseEvents: limit over valid rows, not raw lines", async () => {
-  // A malformed tail row must not hide valid data above it when
-  // `limit: 1` is requested. Simulate an interrupted append by writing
-  // a valid row then a partial one, ask for limit=1, and expect the
-  // valid row back.
   const { mkdtempSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -354,8 +312,6 @@ test("StorageManager.readBufferSurpriseEvents: non-positive limit returns empty"
   );
   const storage = new StorageManager(dir);
 
-  // 0, negative, fractional < 1 all return empty rather than silently
-  // devolving into "entire file".
   for (const limit of [0, -1, 0.5]) {
     const rows = await storage.readBufferSurpriseEvents({ limit });
     assert.equal(rows.length, 0, `limit=${limit} should return empty`);
@@ -406,7 +362,6 @@ test("StorageManager.readBufferSurpriseEvents: sorts by event timestamp before l
 });
 
 // ---------------------------------------------------------------------------
-// reportBufferSurpriseDistribution
 // ---------------------------------------------------------------------------
 
 function syntheticRow(
@@ -453,9 +408,7 @@ test("report: computes mean, median, p90 over recent rows", async () => {
   assert.equal(dist.triggeredCount, 3);
   assert.ok(Math.abs(dist.triggeredRate - 0.5) < 1e-9);
   assert.ok(Math.abs(dist.mean - (0.1 + 0.2 + 0.3 + 0.4 + 0.5 + 0.9) / 6) < 1e-9);
-  // nearest-rank p50 over 6 → rank 3 → 0.3
   assert.equal(dist.median, 0.3);
-  // nearest-rank p90 over 6 → ceil(5.4)=6 → 0.9
   assert.equal(dist.p90, 0.9);
   assert.equal(dist.min, 0.1);
   assert.equal(dist.max, 0.9);
@@ -501,7 +454,6 @@ test("report: `since` filter excludes rows at or before the boundary", async () 
   const dist = await reportBufferSurpriseDistribution(async () => rows, {
     since: "2026-04-20T00:00:00.000Z",
   });
-  // Boundary is exclusive: the exactly-equal row at 00:00:00 is filtered.
   assert.equal(dist.count, 1);
   assert.equal(dist.min, 0.9);
   assert.equal(dist.max, 0.9);
@@ -571,9 +523,6 @@ test("report: single-row ledger reports that row in every percentile", async () 
 });
 
 test("report: non-boolean triggeredFlush is rejected, not coerced", async () => {
-  // A row with `triggeredFlush: "false"` (string) is truthy in
-  // JavaScript. Without strict type-checking, it would be counted as
-  // triggered and silently inflate the rate reported to operators.
   const rows: any[] = [
     syntheticRow(0.5, false),
     {

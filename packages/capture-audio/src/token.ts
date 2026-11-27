@@ -1,10 +1,3 @@
-/**
- * Bearer-token lifecycle. The daemon auto-generates a 256-bit token on
- * first use and stores it 0600; a pre-existing file is re-chmod'd 0600
- * defensively because a world-readable token is a credential leak. The
- * token is REQUIRED on every request when the daemon binds a non-loopback
- * host (see daemon.ts); on loopback it exists but localhost is trusted.
- */
 
 import { Buffer } from "node:buffer";
 import { randomBytes, timingSafeEqual } from "node:crypto";

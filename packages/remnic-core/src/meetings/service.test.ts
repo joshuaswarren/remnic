@@ -61,7 +61,6 @@ function config(overrides: Partial<MeetingsConfig> = {}): MeetingsConfig {
   };
 }
 
-/** A day source that detects one app+audio meeting for DATE. */
 function dayData(): MeetingDayData {
   return {
     detection: {
@@ -137,7 +136,6 @@ test("disabled mode: every entrypoint is a no-op", async () => {
   assert.equal(got.enabled, false);
   assert.equal(got.found, false);
 
-  // requestBuild is a no-op when disabled: flushing must build nothing.
   service.requestBuild(DATE);
   await service.flushBuilds();
   assert.deepEqual(await store.listMeetingDates(), []);
@@ -183,8 +181,6 @@ test("requestBuildForActivitySync rebuilds every touched date, not just the sync
     }),
   };
   const { service, store } = makeService(config(), source);
-  // The sync tick ran today (2026-03-10); a rolling/backfill window also changed
-  // yesterday's activity. Both days must rebuild — not just the tick's local day.
   service.requestBuildForActivitySync("2026-03-10T14:30:00.000Z", "UTC", ["2026-03-09", "2026-03-10"]);
   await service.flushBuilds();
   assert.deepEqual(

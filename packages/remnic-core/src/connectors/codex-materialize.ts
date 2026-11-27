@@ -61,14 +61,8 @@ import {
   type SkillFile,
 } from "./materialize-skills.js";
 
-// ─── Types ─────────────────────────────────────────────────────────────────
 
-/**
- * Input for {@link materializeForNamespace}. Prefer passing pre-loaded
- * `memories` so this module stays I/O-agnostic and trivially testable.
- */
 export interface MaterializeOptions {
-  /** Pre-loaded Remnic memories for this namespace (required). */
   memories: MemoryFile[];
   /** Override `<codex_home>`. Defaults to `$CODEX_HOME` or `~/.codex`. */
   codexHome?: string;
@@ -76,7 +70,6 @@ export interface MaterializeOptions {
   maxSummaryTokens?: number;
   /** Maximum age of rollout_summaries/*.md in days. Default 30. */
   rolloutRetentionDays?: number;
-  /** Per-session rollout summaries to render. */
   rolloutSummaries?: RolloutSummaryInput[];
   /**
    * Projected procedural skill bundles (issue #2369). `undefined` leaves
@@ -91,29 +84,18 @@ export interface MaterializeOptions {
   logger?: { info: (msg: string) => void; warn: (msg: string) => void; debug?: (msg: string) => void };
 }
 
-/** Input describing one Codex rollout summary file. */
 export interface RolloutSummaryInput {
-  /** Stable slug for the file (becomes `<slug>.md`). */
   slug: string;
-  /** Working directory used during the rollout. */
   cwd?: string;
-  /** Path to the raw Codex rollout log, if known. */
   rolloutPath?: string;
-  /** ISO-8601 timestamp of the last update. */
   updatedAt?: string;
-  /** Opaque thread / session id. */
   threadId?: string;
-  /** Markdown body for the recap. */
   body: string;
-  /** Freeform keywords / search hints. */
   keywords?: string[];
 }
 
-/** Result of a materialization run. */
 export interface MaterializeResult {
-  /** Namespace that was materialized. */
   namespace: string;
-  /** `<codex_home>/memories` path this run targeted. */
   memoriesDir: string;
   /** Was anything actually written (vs. skipped / idempotent no-op)? */
   wrote: boolean;
@@ -123,7 +105,6 @@ export interface MaterializeResult {
   skippedIdempotent: boolean;
   /** Files that were written this run (relative to `memoriesDir`). */
   filesWritten: string[];
-  /** Content hash computed for this run. */
   contentHash: string;
 }
 
@@ -141,15 +122,12 @@ interface SentinelFile {
   projected_skills?: string[];
 }
 
-// ─── Constants ─────────────────────────────────────────────────────────────
 
 /** Bump when the on-disk layout or semantics change. */
 export const MATERIALIZE_VERSION = 1;
 
-/** Sentinel file name at the root of the materialized memories dir. */
 export const SENTINEL_FILE = ".remnic-managed";
 
-/** Scratch directory used for atomic renames. */
 export const TMP_DIR = ".remnic-tmp";
 
 /** File names we own. Anything else in the directory is considered user-managed. */
@@ -159,10 +137,8 @@ const OWNED_FILES = new Set<string>([
   "raw_memories.md",
 ]);
 
-/** Sub-directory for per-session rollout recaps. */
 const ROLLOUT_SUBDIR = "rollout_summaries";
 
-// ─── Public entry points ───────────────────────────────────────────────────
 
 /**
  * Materialize a Remnic namespace into Codex's native memory layout.
@@ -184,9 +160,6 @@ export function materializeForNamespace(
   };
   const memoriesDir = resolveCodexMemoriesDir(options.codexHome);
   const now = options.now ?? new Date();
-  // Honor `0` as "no summary budget" — parseConfig already clamps to non-
-  // negative integers, so any provided number is meaningful. Only fall back
-  // to the default when the caller did not provide the option at all.
   const maxSummaryTokens =
     typeof options.maxSummaryTokens === "number" && options.maxSummaryTokens >= 0
       ? options.maxSummaryTokens
@@ -196,23 +169,9 @@ export function materializeForNamespace(
       ? options.rolloutRetentionDays
       : 30;
 
-  // ── Sentinel check ─────────────────────────────────────────────────────
-  // We deliberately do NOT `mkdirSync(memoriesDir)` before reading the
-  // sentinel: creating `~/.codex/memories/` for every user (including ones
-  // who never use Codex) would make Remnic's post-consolidation hook leave
-  // empty opt-in directories behind on disk. Instead we only check whether
-  // the sentinel already exists — if the parent dir doesn't exist, the
-  // sentinel can't exist either and we fall straight through to the skip
-  // path without touching the filesystem. The `mkdirSync` for `memoriesDir`
-  // happens later, only once we know we're actually going to write.
   const sentinelPath = path.join(memoriesDir, SENTINEL_FILE);
   const existingSentinel = readSentinel(sentinelPath);
   if (!existingSentinel) {
-    // Log at `debug` when the entire memories dir doesn't exist — that's
-    // the common "user never opted in" case and should not be noisy.
-    // Keep the `warn` level only when the dir exists but lacks a sentinel,
-    // which is the "user hand-curated layout, don't overwrite" case that
-    // genuinely warrants attention.
     if (fs.existsSync(memoriesDir)) {
       logger.warn(
         `sentinel ${SENTINEL_FILE} missing in ${memoriesDir}; skipping materialization to preserve hand-edits`,
@@ -233,39 +192,14 @@ export function materializeForNamespace(
     };
   }
 
-  // Now that we know the user has opted in (sentinel exists), it's safe to
-  // ensure the memories dir is present. In practice this is almost always a
-  // no-op because the sentinel read above already succeeded, but a defensive
-  // mkdirSync protects against a race where the dir was removed between the
-  // sentinel read and the first write.
   fs.mkdirSync(memoriesDir, { recursive: true });
 
-  // ── Render ─────────────────────────────────────────────────────────────
   const memories = [...options.memories];
-  // Track whether the caller actually supplied a rollout set. `undefined`
-  // means "don't touch rollout_summaries/"; an empty array is still
-  // authoritative and means "we own this dir and it should be empty".
   const rolloutsSupplied = options.rolloutSummaries !== undefined;
   const rolloutSummaries = options.rolloutSummaries ?? [];
 
-  // Prune-before-render: MEMORY.md and memory_summary.md both embed rollout
-  // filenames in their body, so they must only ever see the *retained* set.
-  // Running pruneRollouts after the renderers (as an earlier revision did)
-  // caused MEMORY.md to list `rollout_summaries/<slug>.md` paths for rollouts
-  // that were then pruned and never written — a broken link pointing at a
-  // ghost file. See review feedback on PR #392.
   const retainedRollouts = pruneRollouts(rolloutSummaries, rolloutRetentionDays, now);
 
-  // Deduplicate on sanitized filename. Two different slugs ("Session 1" and
-  // "session!!!1") can sanitize to the same output ("session-1"), which would
-  // otherwise make the first entry's tmp file get overwritten and cause the
-  // later rename step to crash with ENOENT. For each collision slot we keep
-  // the entry with the newest `updatedAt` so an unsorted input (or a caller
-  // that accidentally appends older recaps after newer ones) can't have an
-  // older recap clobber a newer one.
-  // We do this at the retained-input level (not just at the written-file
-  // level) so MEMORY.md's "rollout_summary_files" section lists each slot
-  // exactly once and matches what actually gets written to disk.
   const dedupedRollouts: RolloutSummaryInput[] = [];
   const seenNames = new Map<string, number>();
   const parseTs = (value: string | undefined): number => {
@@ -281,10 +215,6 @@ export function materializeForNamespace(
       dedupedRollouts.push(r);
       continue;
     }
-    // Newest-wins: only replace the existing entry if the incoming one has a
-    // strictly newer timestamp. Ties keep the earlier entry (stable for
-    // unsorted inputs) because overwriting on ties would flip rendering output
-    // for benign call-order changes.
     const existing = dedupedRollouts[existingIdx];
     if (parseTs(r.updatedAt) > parseTs(existing.updatedAt)) {
       dedupedRollouts[existingIdx] = r;
@@ -304,7 +234,6 @@ export function materializeForNamespace(
     rolloutSummaries: dedupedRollouts,
   });
 
-  // Fail fast on schema issues — do not write garbage.
   const validation = validateMemoryMd(memoryMd);
   if (!validation.valid) {
     const reason = validation.errors.join("; ");
@@ -321,11 +250,8 @@ export function materializeForNamespace(
   const destRolloutsDir = path.join(memoriesDir, ROLLOUT_SUBDIR);
   const retainedRolloutNames = new Set(rolloutFiles.map((r) => r.name));
 
-  // Skill bundles (issue #2369) — planning, ownership, and disk layout live in
-  // materialize-skills.ts.
   const skillPlan = planSkillFiles(options.skills, existingSentinel.projected_skills ?? []);
 
-  // ── Idempotence check ──────────────────────────────────────────────────
   const hash = computeContentHash({
     namespace,
     memorySummary,
@@ -336,12 +262,6 @@ export function materializeForNamespace(
   });
 
   if (existingSentinel.content_hash === hash) {
-    // Idempotence early-return is only safe when the managed files we would
-    // have written are still on disk. If a user or external process deleted
-    // `MEMORY.md` / `memory_summary.md` / `raw_memories.md` (or any retained
-    // rollout file) while the sentinel's hash stayed the same, we must fall
-    // through and rewrite — otherwise Codex would be stuck with missing
-    // artifacts until a memory-content change happens to flip the hash.
     const requiredFiles = [
       path.join(memoriesDir, "memory_summary.md"),
       path.join(memoriesDir, "MEMORY.md"),
@@ -375,28 +295,8 @@ export function materializeForNamespace(
   }
 
   // ── Atomic writes ──────────────────────────────────────────────────────
-  // Use a unique, per-run staging sub-directory so two overlapping runs
-  // (e.g. a session-end trigger overlapping with a consolidation post-hook)
-  // can't stomp each other's tmp files mid-rename. The old "fixed TMP_DIR,
-  // wipe-on-entry" layout meant run B would delete run A's staging area out
-  // from under it, causing ENOENT on A's rename loop. Per-run uniqueness
-  // turns the shared dir into an insulated workspace. See review feedback on
-  // PR #392.
   const runTag = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const tmpDir = path.join(memoriesDir, `${TMP_DIR}-${runTag}`);
-  // Opportunistic GC for stale scratch dirs left behind by a previous
-  // crashed run. We only remove entries whose mtime is older than the
-  // stale-threshold below — that way we never delete another in-flight
-  // run's staging area out from under it. The threshold is deliberately
-  // generous (1h) because a healthy materialize completes in milliseconds
-  // and there's no legitimate reason for a live staging dir to be older.
-  //
-  // NB: we compare against `Date.now()` (wall-clock), not against the
-  // injected `options.now`. Tests and deterministic replays commonly
-  // inject a non-current timestamp, but file mtimes on disk are always
-  // wall-clock, so mixing the two would either false-positive delete
-  // fresh dirs (test-time in the past) or false-negative skip stale ones
-  // (test-time in the future).
   const TMP_STALE_MS = 60 * 60 * 1000;
   const wallClockMs = Date.now();
   try {
@@ -439,9 +339,6 @@ export function materializeForNamespace(
     filesWritten.push(skillFileRelPath(skill.slug));
   }
 
-  // Rename into place. Atomic per-file is sufficient — Codex reads each file
-  // independently and tolerates an inconsistent in-between snapshot across
-  // files for the duration of the rename loop (milliseconds).
   for (const rel of ["memory_summary.md", "MEMORY.md", "raw_memories.md"]) {
     const src = path.join(tmpDir, rel);
     const dest = path.join(memoriesDir, rel);
@@ -449,12 +346,6 @@ export function materializeForNamespace(
   }
 
   const safeDestRolloutsDir = ensureSafeManagedSubdir(memoriesDir, destRolloutsDir, ROLLOUT_SUBDIR);
-  // Only garbage-collect rollout files when the caller actually supplied a
-  // `rolloutSummaries` array — otherwise we'd wipe legitimately
-  // user/Codex-created recap files on every session-end run, since those
-  // calls typically omit the rollout set entirely. When rollouts were
-  // supplied (even as an empty array — meaning "we own this dir and it
-  // should be empty"), we clear the stale files we previously owned.
   if (rolloutsSupplied) {
     let existingRollouts: fs.Dirent[];
     try {
@@ -485,7 +376,6 @@ export function materializeForNamespace(
 
   commitSkillFiles(memoriesDir, tmpDir, skillPlan);
 
-  // Update sentinel last so a crash leaves hash mismatched → next run rewrites.
   const sentinel: SentinelFile = {
     version: MATERIALIZE_VERSION,
     namespace,
@@ -539,7 +429,6 @@ export function ensureSentinel(memoriesDir: string, namespace: string, now: Date
   writeSentinelAtomically(sentinelPath, sentinel);
 }
 
-// ─── Rendering ─────────────────────────────────────────────────────────────
 
 interface RenderContext {
   namespace: string;
@@ -717,7 +606,6 @@ export function renderRolloutSummary(input: RolloutSummaryInput): string {
   return lines.join("\n");
 }
 
-// ─── Schema validation ─────────────────────────────────────────────────────
 
 export interface MemoryMdValidation {
   valid: boolean;
@@ -757,8 +645,6 @@ export function validateMemoryMd(content: string): MemoryMdValidation {
     errors.push("at least one `## Task N:` section is required");
   }
 
-  // For every task section, make sure we have rollout_summary_files + keywords
-  // before the next `##` header at the same level.
   const sectionRegex = /^##\s+/u;
   for (let i = 0; i < lines.length; i++) {
     if (!/^##\s+Task\s+\d+:/u.test(lines[i])) continue;
@@ -787,7 +673,6 @@ export function validateMemoryMd(content: string): MemoryMdValidation {
   return { valid: errors.length === 0, errors };
 }
 
-// ─── Helpers ───────────────────────────────────────────────────────────────
 
 function resolveCodexHome(override?: string): string {
   if (override && override.trim().length > 0) {
@@ -841,9 +726,6 @@ function readSentinel(sentinelPath: string): SentinelFile | null {
     ) {
       throw new Error("invalid sentinel schema");
     }
-    // A sentinel written before issue #2369 has no `projected_skills`, which
-    // reads as "nothing projected" — so an unrelated skills/ folder written by
-    // a user or another tool is never treated as ours.
     const projected = Array.isArray(parsed.projected_skills)
       ? parsed.projected_skills.filter((slug): slug is string => typeof slug === "string")
       : [];
@@ -944,13 +826,7 @@ function pruneRollouts(
   retentionDays: number,
   now: Date,
 ): RolloutSummaryInput[] {
-  // Negative retention → "infinite retention" escape hatch. `parseConfig`
-  // clamps the knob to >= 0, so in practice only callers passing a negative
-  // value intentionally get the all-pass behavior.
   if (retentionDays < 0) return rollouts;
-  // retentionDays === 0 → cutoff is exactly `now`, which prunes every
-  // rollout whose `updatedAt` is in the past (i.e. all of them in practice).
-  // This matches the documented semantics of "retain for 0 days".
   const cutoffMs = now.getTime() - retentionDays * 24 * 60 * 60 * 1000;
   return rollouts.filter((r) => {
     if (!r.updatedAt) return true;
@@ -1041,7 +917,6 @@ function computeContentHash(input: {
     hash.update(`\n---rollout:${r.name}---\n`);
     hash.update(r.body);
   }
-  // Sorted by slug so call order cannot flip the hash (§26).
   const sortedSkills = [...input.skillFiles].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   for (const s of sortedSkills) {
     hash.update(`\n---skill:${s.slug}---\n`);
@@ -1050,7 +925,6 @@ function computeContentHash(input: {
   return hash.digest("hex");
 }
 
-// ─── Stat helper for tests / debugging ─────────────────────────────────────
 
 /**
  * Return basic stats about a materialized memories dir. Useful for tests and

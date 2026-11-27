@@ -63,8 +63,6 @@ export function isCalendarDateValid(
  * input failed (e.g. `--since` vs. `--until`).
  */
 export function parseStrictCliDate(value: string, flagName: string): Date {
-  // 1. Shape check: must begin YYYY-MM-DD and use ISO 8601 structure.
-  //    This rejects "12/25/2026", "December 25, 2026", RFC 2822, etc.
   const shape =
     /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(?:Z|([+-])(\d{2}):(\d{2}))?)?$/;
   const match = value.match(shape);
@@ -78,16 +76,12 @@ export function parseStrictCliDate(value: string, flagName: string): Date {
   const month = Number(match[2]);
   const day = Number(match[3]);
 
-  // 2. Structural calendar validation. This rejects Feb 31, Feb 29 in
-  //    non-leap years, Apr 31, etc. regardless of the timezone suffix, so
-  //    "2026-02-31T00:00:00+05:30" is rejected the same way as "2026-02-31Z".
   if (!isCalendarDateValid(year, month, day)) {
     throw new Error(
       `Invalid ${flagName} value "${value}": date components overflow (e.g. month has fewer days). Provide a valid calendar date.`,
     );
   }
 
-  // 3. Optional time-component validation.
   //    JavaScript's Date cannot represent a leap second: `:60` is silently
   //    normalised to `:00` of the following minute, which would make a
   //    "strict" validator return a different timestamp than the user
@@ -104,7 +98,6 @@ export function parseStrictCliDate(value: string, flagName: string): Date {
     }
   }
 
-  // 4. Timezone offset validation.
   //    Date accepts offset hours beyond the real-world UTC offset range and
   //    normalizes impossible offsets into a shifted instant. Reject those
   //    before constructing the Date so the CLI cannot silently apply them.
@@ -122,9 +115,6 @@ export function parseStrictCliDate(value: string, flagName: string): Date {
     }
   }
 
-  // 5. Finally parse via Date for the actual timestamp value. At this point
-  //    we've already validated structure and calendar correctness, so any
-  //    remaining NaN (extremely unlikely) still fails closed.
   const d = new Date(value);
   if (!Number.isFinite(d.getTime())) {
     throw new Error(

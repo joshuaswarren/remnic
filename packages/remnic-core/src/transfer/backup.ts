@@ -34,11 +34,6 @@ export async function backupMemoryDir(opts: BackupOptions): Promise<string> {
   const ts = timestampDirName(new Date());
 
   if (opts.encrypt === true) {
-    // Encrypted backup: produce a single <timestamp>.backup.json.gz.enc file.
-    // We collect the memory directory records manually, gzip them, write a
-    // temp plaintext archive, encrypt it, then remove the plaintext.
-    // Per gotcha #54: write the encrypted file before removing the plaintext
-    // so a crash mid-encrypt cannot destroy the only readable copy.
     const { listFilesRecursive, toPosixRelPath } = await import("./fs-utils.js");
     const { readFile } = await import("node:fs/promises");
 
@@ -67,7 +62,6 @@ export async function backupMemoryDir(opts: BackupOptions): Promise<string> {
     const gz = gzipSync(Buffer.from(JSON.stringify(bundle), "utf-8"));
     await writeFile(tempGzPath, gz);
 
-    // Encrypt and remove plaintext.
     let encPath: string;
     try {
       ({ encPath } = await encryptCapsuleFile({
@@ -114,7 +108,6 @@ async function enforceRetention(outDirAbs: string, retentionDays: number): Promi
   for (const ent of entries) {
     const name = ent.name;
 
-    // --- Plaintext backup directories ---
     // Directory names are ISO8601 with [: .] replaced by "-" to be filesystem-friendly.
     // Example: 2026-02-11T05-06-07-123Z => 2026-02-11T05:06:07.123Z
     if (ent.isDirectory()) {
@@ -130,10 +123,6 @@ async function enforceRetention(outDirAbs: string, retentionDays: number): Promi
       continue;
     }
 
-    // --- Encrypted backup files (.backup.json.gz.enc) ---
-    // Same timestamp pattern in the filename prefix. (Codex P2 / Cursor — the
-    // original sweep skipped non-directory entries, leaving encrypted backups
-    // to accumulate indefinitely when retention is enabled.)
     if (ent.isFile() && name.endsWith(".backup.json.gz.enc")) {
       const m = name.match(
         /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/,

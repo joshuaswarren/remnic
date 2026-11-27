@@ -12,7 +12,6 @@ import { createBatchPromotedCopyProbe, mergeTargetHasPromotedCopies, promoteAndR
 import { buildMergedTargetPromotionPayload, type MergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 
-// Synthetic fixtures only — no real paths, hosts, or memory content.
 const PROMOTED_BODY = "Promoted copy of the billing deploy cadence fact.";
 
 async function makeStorages(): Promise<{
@@ -97,7 +96,6 @@ test("mergeTargetHasPromotedCopies: an unreadable promotion namespace fails safe
 });
 
 test("mergeTargetHasPromotedCopies: a shared copy still blocks when shared-write authorization is revoked", async () => {
-  // The copy was promoted while shared writes were allowed; the profile has
   // since lost that authorization. Current write authorization must not
   // make an existing copy invisible to the scan — the merge is bypassed so
   // the shared copy cannot keep serving the pre-merge body.
@@ -133,7 +131,6 @@ test("mergeTargetHasPromotedCopies: an unauthorized profile target's historical 
       profileId: "synthetic",
       profile: { autoPromote: { targets: ["team-project"] } },
       promotionTargets: [
-        // Authorized NOW: false — the copy was promoted under an older plan.
         { target: "team-project", namespace: "team", authorized: false, reason: "revoked" },
       ],
     } as unknown as ResolvedScopeProfilePlan,
@@ -146,7 +143,6 @@ test("mergeTargetHasPromotedCopies: an unauthorized profile target's historical 
 });
 
 test("mergeTargetHasPromotedCopies: a layer removed from today's autoPromote targets still blocks (finding E)", async () => {
-  // The copy was promoted while the layer was listed in autoPromote.targets;
   // the operator has since removed it. The layer is still a resolved
   // promotionTarget, so historical-copy detection must keep scanning it —
   // today's selection policy must not blind the scan.
@@ -207,7 +203,6 @@ test("createBatchPromotedCopyProbe: one scan per namespace per batch, not per fa
       ],
     } as unknown as ResolvedScopeProfilePlan,
   );
-  // Three judge-approved facts in one batch, each probing the same target:
   // every probe must see the historical copy, and the team corpus scan must
   // have run exactly once (the hit short-circuits before shared).
   for (let factIndex = 0; factIndex < 3; factIndex++) {
@@ -218,18 +213,15 @@ test("createBatchPromotedCopyProbe: one scan per namespace per batch, not per fa
     );
   }
   assert.equal(storageForCalls, 1, "the team namespace scanned once — not once per fact");
-  // A fact with no copy anywhere probes PAST team into shared, once:
   assert.equal(await probe.check(source, "fact-without-copy"), false);
   assert.equal(await probe.check(source, "fact-without-copy"), false);
   assert.equal(storageForCalls, 2, "the shared namespace also scanned once per batch");
-  // A promotion this batch performed must force the next fact to rescan.
   probe.invalidate();
   assert.equal(await probe.check(source, "fact-target"), true);
   assert.equal(storageForCalls, 3, "invalidation drops the cache; the next fact rescans");
 });
 
 test("retireStaleMergedTargetPromotionCopies: a concurrent promotion of the pre-merge body is reconciled to the current copy (round N+7 B)", async () => {
-  // Race being modeled: the pre-mutation promoted-copy probe reported none,
   // another writer promoted the PRE-merge body, and only then did the merge
   // commit and promote the current body. Promotion dedups by content, so
   // without reconciliation both copies stay active across namespaces. The
@@ -247,18 +239,15 @@ test("retireStaleMergedTargetPromotionCopies: a concurrent promotion of the pre-
   const s = await makeStorages();
   const PRE_MERGE_BODY = "Billing service deploys happen on Tuesdays.";
   const MERGED_BODY = "Billing service deploys happen on Tuesdays at 09:00 UTC.";
-  // The committed source record holds the merged body — the canonical
   // record reconciliation re-reads (round N+15 A: always, not only when no
   // promoted body is supplied).
   const target = await s.source.writeMemory("fact", MERGED_BODY, {
     source: "test",
   });
-  // The concurrent writer's copy: same sourceMemoryId, pre-merge body.
   const stale = await s.shared.writeMemory("fact", PRE_MERGE_BODY, {
     source: "test",
     sourceMemoryId: target.id,
   });
-  // The merged-target promotion's copy: same sourceMemoryId, merged body.
   const current = await s.shared.writeMemory("fact", MERGED_BODY, {
     source: "test",
     sourceMemoryId: target.id,
@@ -282,7 +271,6 @@ test("retireStaleMergedTargetPromotionCopies: a concurrent promotion of the pre-
 });
 
 test("retireStaleMergedTargetPromotionCopies: an unreadable canonical record aborts reconciliation — no copy is retired (round N+13 A)", async () => {
-  // No-promotion path: the committed source record is re-read to serve as
   // the canonical body. When that re-read fails transiently, returns nothing,
   // or yields an empty body, there is NO confirmed replacement body to
   // compare against — an empty-string fallback would classify every
@@ -341,7 +329,6 @@ test("retireStaleMergedTargetPromotionCopies: an unreadable canonical record abo
 });
 
 test("former promotion layers still resolvable are scanned: a copy on a layer removed from promotionTargets is detected and reconciled (round N+12 B)", async () => {
-  // The namespace received promoted copies while "userGlobal" was listed in
   // profile.promotionTargets. The operator has since removed the layer from
   // the promotion selection, but it remains resolvable through the plan's
   // layers (readOrder). Historical copies there must stay detectable — and
@@ -354,7 +341,6 @@ test("former promotion layers still resolvable are scanned: a copy on a layer re
   await shared.ensureDirectories();
   const PRE_MERGE_BODY = "Billing service deploys happen on Tuesdays.";
   const MERGED_BODY = "Billing service deploys happen on Tuesdays at 09:00 UTC.";
-  // The committed source record (canonical for reconciliation, N+15 A).
   const target = await source.writeMemory("fact", MERGED_BODY, { source: "test" });
   const stale = await global.writeMemory("fact", PRE_MERGE_BODY, {
     source: "test",
@@ -371,13 +357,10 @@ test("former promotion layers still resolvable are scanned: a copy on a layer re
   const plan = {
     profileId: "synthetic",
     profile: { autoPromote: { targets: [] } },
-    // The layer is GONE from today's promotion targets...
     promotionTargets: [],
-    // ...but still resolvable through the plan's resolved layers.
     layers: [{ id: "userGlobal", namespace: "global" }],
   } as unknown as ResolvedScopeProfilePlan;
   const config = parseConfig({ memoryDir: source.dir, sharedNamespace: "shared" });
-  // Detection: the probe must still find the historical copy there.
   assert.equal(
     await mergeTargetHasPromotedCopies({
       config,
@@ -389,7 +372,6 @@ test("former promotion layers still resolvable are scanned: a copy on a layer re
     true,
     "a copy on a former-but-still-resolvable promotion layer must block the merge",
   );
-  // Reconciliation: after a merge, the stale copy there is superseded.
   const retired = await retireStaleMergedTargetPromotionCopies({
     config,
     getStorageRouter: () => router,
@@ -423,7 +405,6 @@ async function commitWriterMerge(
 }
 
 test("promoteAndReconcileMergedTarget: abandons the cached promotion when the target advanced past it (round N+15 A)", async () => {
-  // Race: writer A built its promotion payload from the committed record,
   // then writer B merged the SAME target again and published its copy
   // before A resumed at the promotion. Promoting A's cached older body
   // would hand reconciliation a stale canonical body that supersedes B's
@@ -440,7 +421,6 @@ test("promoteAndReconcileMergedTarget: abandons the cached promotion when the ta
     provenancePatched: true,
   });
   assert.ok(payload);
-  // Writer B merges the same target again and publishes its newer copy.
   await commitWriterMerge(s.source, target.id, B_MERGED_BODY);
   const bCopy = await s.shared.writeMemory("fact", B_MERGED_BODY, {
     source: "writer-b",
@@ -471,7 +451,6 @@ test("promoteAndReconcileMergedTarget: abandons the cached promotion when the ta
 });
 
 test("promoteAndReconcileMergedTarget: reconciliation canonical is the re-read record, never the cached promoted body (round N+15 A)", async () => {
-  // The residual window: the payload revalidates clean, the promotion
   // writes, and ONLY THEN does writer B commit a newer merge and publish
   // its copy — before A's reconciliation runs. A cached-body canonical
   // would supersede B's current copy; the re-read committed record is the
@@ -497,7 +476,6 @@ test("promoteAndReconcileMergedTarget: reconciliation canonical is the re-read r
         sourceMemoryId: target.id,
       });
       aCopyId = aCopy.id;
-      // Writer B's second merge lands HERE — after the promotion wrote,
       // before reconciliation runs.
       await commitWriterMerge(s.source, target.id, B_MERGED_BODY);
       const bCopy = await s.shared.writeMemory("fact", B_MERGED_BODY, {
@@ -535,7 +513,6 @@ test("promoteAndReconcileMergedTarget: reconciliation canonical is the re-read r
 });
 
 test("promoteAndReconcileMergedTarget: an unreadable payload skips destructive reconciliation (#2807)", async () => {
-  // The payload builder's post-commit reread failed TRANSIENTLY (secure
   // store locked, corpus read I/O error). A null from that path means
   // "payload unknown", not "no promotion warranted" — but the caller
   // conflated both, so reconciliation immediately reread successfully,
@@ -549,7 +526,6 @@ test("promoteAndReconcileMergedTarget: an unreadable payload skips destructive r
     source: "test",
   });
   await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
-  // A concurrent writer published the PRE-merge body after the initial
   // guard — the exact race reconciliation exists to clean up, but ONLY
   // once the no-promotion outcome is confirmed intentional.
   const staleCopy = await s.shared.writeMemory("fact", PRE_MERGE_BODY, {
@@ -612,12 +588,10 @@ test("buildMergedTargetPromotionPayload: an unreadable CAS receipt shard refuses
   const committedRow = await s.source.getMemoryByIdIncludingArchived(target.id);
   assert.ok(committedRow);
   const shardPath = casShardPath(s.source.dir, committedRow.path);
-  // Prove a real standing receipt existed before tearing the shard.
   const shard = JSON.parse(await readFile(shardPath, "utf8")) as { revision?: string };
   assert.ok(shard.revision, "the merge commit minted a standing receipt");
   await writeFile(shardPath, "{corrupt", "utf8");
 
-  // A concurrent writer published the PRE-merge body after the initial
   // guard — reconciliation may retire it ONLY off a confirmed outcome.
   const staleCopy = await s.shared.writeMemory("fact", PRE_MERGE_BODY, {
     source: "writer-b",
@@ -657,7 +631,6 @@ test("buildMergedTargetPromotionPayload: an unreadable CAS receipt shard refuses
 
 test("promoteAndReconcileMergedTarget: a receipt that becomes unreadable before the promotion abandons it (#2813 P1 A)", async () => {
   const s = await makeStorages();
-  // Fresh target, never minted: the payload legitimately carries no token.
   const target = await s.source.writeMemory("fact", A_MERGED_BODY, { source: "test" });
   const { payload } = await buildMergedTargetPromotionPayload(s.source, {
     targetId: target.id,
@@ -666,7 +639,6 @@ test("promoteAndReconcileMergedTarget: a receipt that becomes unreadable before 
   });
   assert.ok(payload);
   assert.equal(payload.committedRevision, undefined, "a genuinely absent receipt builds a tokenless payload");
-  // A torn shard write lands between build and promotion: absence became
   // UNREADABLE, and the old undefined-vs-undefined comparison would have
   // confirmed the cached body anyway.
   const committedRow = await s.source.getMemoryByIdIncludingArchived(target.id);
@@ -733,7 +705,6 @@ test("buildMergedTargetPromotionPayload and promotion refuse when interleaving w
   assert.ok(payload.committedRevision);
   assert.ok(payload.committedDigest);
 
-  // Interleaving writer updates metadata with the SAME body/content:
   assert.ok(await s.source.updateMemoryFrontmatter(target.id, { confidence: 0.95 }));
 
   let promotions = 0;
@@ -824,7 +795,6 @@ test("access flush between merge commit and payload build still promotes (#2870)
 
   assert.equal(await flushAccess(s.source, target.id, 3), 1, "the access flush landed");
 
-  // Prove the interleaving is real: bytes changed, receipt did not re-mint.
   assert.notEqual(await readFile(committed.path, "utf8"), bytesBefore, "the flush rewrote the durable file");
   const receiptAfter = JSON.parse(await readFile(shardPath, "utf8")) as { revision: string };
   assert.equal(receiptAfter.revision, receiptBefore.revision, "an access flush mints no receipt");
@@ -929,7 +899,6 @@ test("a PENDING receipt marker between build and promotion abandons it (#2870)",
   assert.ok(committed);
   const shardPath = casShardPath(s.source.dir, committed.path);
   const relative = path.relative(s.source.dir, committed.path).split(path.sep).join("/");
-  // A pending marker whose expected digest matches nothing: lazy recovery
   // cannot decide it, so the receipt reads UNAVAILABLE and the promotion
   // must refuse rather than confirm against an unknown identity.
   await writeFile(
@@ -962,7 +931,6 @@ test("a legacy shard without a stored semantic fingerprint keeps the conservativ
   await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
   const committed = await s.source.getMemoryByIdIncludingArchived(target.id);
   assert.ok(committed);
-  // Downgrade the shard to its pre-#2870 shape: committed digest, no
   // semantic fingerprint.
   const shardPath = casShardPath(s.source.dir, committed.path);
   const shard = JSON.parse(await readFile(shardPath, "utf8")) as Record<string, unknown>;

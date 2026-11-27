@@ -1,6 +1,3 @@
-/**
- * Deterministic personalization retrieval benchmark over the schema-tier corpus.
- */
 
 import { randomUUID } from "node:crypto";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";

@@ -1,19 +1,9 @@
-/**
- * Payload normalization for all three X sources plus the shared
- * dedupe fingerprint and the record → memory mapping.
- *
- * All parsers are shape-tolerant: X MCP payloads follow the v2 API
- * expansions shape (`data[]` + `includes.users`), local corpora and
- * CLI tools use a variety of field aliases. Every field read is
- * checked; unrecognized shapes yield empty results, never crashes.
- */
 
 import { createHash } from "node:crypto";
 
 import { isXObject } from "./guards.js";
 import type { XMemorySuggestion, XPostRecord, XRecordKind } from "./types.js";
 
-/** Sorts keys recursively so key order never changes the fingerprint. */
 export function stableStringify(value: unknown): string {
   return JSON.stringify(value, (_key, entry) => {
     if (isXObject(entry)) {
@@ -27,7 +17,6 @@ export function stableStringify(value: unknown): string {
   });
 }
 
-/** Identity fingerprint: same post + same content = same memory, regardless of source key order. */
 export function recordFingerprint(record: XPostRecord): string {
   return createHash("sha256")
     .update(
@@ -215,11 +204,6 @@ function postUrl(record: XPostRecord): string {
 
 const QUOTE = '"';
 
-/**
- * Record → memory mapping (issue #2009 §2):
- * - bookmarks → tag `x/bookmark`, category `reference` (carries a URL) or `interest`
- * - own posts → tag `x/post`, category `expression`, higher confidence
- */
 export function suggestionForRecord(record: XPostRecord): XMemorySuggestion {
   const quoted = `${QUOTE}${record.text.slice(0, 280)}${record.text.length > 280 ? "…" : ""}${QUOTE}`;
   const from = record.author?.username !== undefined ? ` from @${record.author.username}` : "";

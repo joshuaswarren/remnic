@@ -8,32 +8,6 @@ import { StorageManager } from "./storage.js";
 import { clearMemoryCache } from "./memory-cache.js";
 import type { ProvenanceSource } from "./types.js";
 
-/**
- * Issue #1575 PR 1 — Claim-level provenance spans: frontmatter schema +
- * storage round-trip.
- *
- * These tests pin the on-disk contract for the `sources` and `provenance`
- * frontmatter fields. They live in the core package (not the root tests/
- * directory) so they co-locate with storage.ts, where the parser/serializer
- * they cover resides — mirroring the `memory-worth-frontmatter.test.ts`
- * precedent (same package, same reason).
- *
- * Scope per PR 1:
- *   - Round-trip: explicit sources + provenance tag survive write → read
- *     intact, including optional offsets and a multi-source fact.
- *   - Legacy memories without the fields read cleanly (no crash) and return
- *     `undefined` (matching the accessCount / mw_* absent-field pattern).
- *   - Corrupt `sources` (string instead of array, entry missing `quote`)
- *     drop on read with the same "drop corrupt rather than poison" contract
- *     as `parseMemoryWorthCounterField`.
- *   - Serialized keys land in canonical order regardless of the in-memory
- *     object's key insertion order (rule 38 — deterministic output).
- *
- * Out of scope (later PRs in issue #1575):
- *   - Extraction prompt + per-fact `quote` output field (PR 2)
- *   - Post-parse validator that locates the quote in turn text (PR 2)
- *   - memory_get / x-ray / `remnic doctor` read surfaces (PR 3)
- */
 
 /**
  * Build a fact file on disk with a bare-bones frontmatter plus arbitrary
@@ -65,15 +39,10 @@ async function writeFactFile(
   const factsDir = path.join((storage as unknown as { baseDir: string }).baseDir, "facts", today);
   await mkdir(factsDir, { recursive: true });
   await writeFile(path.join(factsDir, `${id}.md`), `${lines.join("\n")}\n\n${body}\n`, "utf-8");
-  // This is an out-of-band write (bypasses StorageManager.writeMemory), so it
-  // must invalidate the version-keyed hot-memories cache (issue #1902) — drop
-  // every cache layer for this dir via the exported chokepoint so the next
-  // readAllMemories() rescans disk and sees this file (matches the harness seam).
   clearMemoryCache(storage.dir);
   return id;
 }
 
-/** Resolve the on-disk path of a fact written by `writeFactFile`. */
 function factFilePath(storage: StorageManager, id: string): string {
   const today = new Date().toISOString().slice(0, 10);
   return path.join((storage as unknown as { baseDir: string }).baseDir, "facts", today, `${id}.md`);
@@ -111,9 +80,7 @@ test("round-trip: two sources + provenance tag survive write → readAllMemories
     const sources = written!.frontmatter.sources;
     assert.ok(sources, "sources must round-trip");
     assert.equal(sources!.length, 2, "both sources survive");
-    // First source retains every field, including optional offsets + turnId.
     assert.deepEqual(sources![0], TWO_SOURCES[0]);
-    // Second source (no optional fields) round-trips without inventing any.
     assert.deepEqual(sources![1], TWO_SOURCES[1]);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -168,8 +135,6 @@ test("corrupt sources (string instead of array) drops to undefined on read", asy
     const memories = await storage.readAllMemories();
     const written = memories.find((m) => m.frontmatter.id === id);
     assert.ok(written);
-    // A non-array value must NOT round-trip — it fails safely to undefined
-    // so downstream surfaces aren't poisoned. See parseProvenanceSources.
     assert.equal(written!.frontmatter.sources, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -199,9 +164,6 @@ test("entry missing quote is dropped; sibling valid entry survives", async () =>
   try {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
-    // One entry lacks the required `quote`; the other is well-formed. The
-    // parser must drop the corrupt entry and keep the valid one rather than
-    // poisoning the whole field or silently accepting bad data.
     const rawSources = JSON.stringify([
       { sessionKey: "s", observedAt: "2026-05-03T10:00:00Z" }, // missing quote → dropped
       TWO_SOURCES[0],
@@ -237,7 +199,6 @@ test("entry missing required sessionKey/observedAt is dropped, field undefined w
     const memories = await storage.readAllMemories();
     const written = memories.find((m) => m.frontmatter.id === id);
     assert.ok(written);
-    // No valid entry survives → field is undefined (legacy-equivalent).
     assert.equal(written!.frontmatter.sources, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -269,9 +230,6 @@ test("serialized source keys land in canonical order regardless of insertion ord
     await storage.ensureDirectories();
     const id = await writeFactFile(storage, "Fact whose source object is keyed out of order.");
 
-    // Deliberately build the object with keys in a scrambled order. The
-    // serializer must emit them canonically: sessionKey, turnId, observedAt,
-    // quote, charStart, charEnd (rule 38 — deterministic output).
     const scrambled: ProvenanceSource = {
       charEnd: 9,
       quote: "hello world",
@@ -285,7 +243,6 @@ test("serialized source keys land in canonical order regardless of insertion ord
     const raw = await readFile(factFilePath(storage, id), "utf-8");
     const sourcesLine = raw.split("\n").find((l) => l.startsWith("sources:"));
     assert.ok(sourcesLine, "sources line must be present");
-    // The JSON object's keys must appear in canonical order.
     const keyOrder = sourcesLine!
       .slice("sources:".length)
       .trim()
@@ -299,18 +256,12 @@ test("serialized source keys land in canonical order regardless of insertion ord
 });
 
 test("characterization: legacy frontmatter re-serializes without provenance keys", async () => {
-  // When sources/provenance are absent, the serializer must emit NO
-  // provenance lines so a legacy memory round-trips byte-identical for
-  // these fields (rule 39 — byte-identical when the feature is off /
-  // unused). This is the guard against accidentally emitting empty
-  // `sources: []` or `provenance: none` placeholders.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-char-"));
   try {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
     const id = await writeFactFile(storage, "Untouched legacy fact.");
 
-    // Force a re-serialize by bumping an unrelated field.
     await storage.updateMemoryFrontmatter(id, { accessCount: 1 });
 
     const raw = await readFile(factFilePath(storage, id), "utf-8");
@@ -348,7 +299,6 @@ test("write-path validation drops invalid in-memory sources (review thread 4)", 
     await storage.ensureDirectories();
     const id = await writeFactFile(storage, "Fact with mixed-validity sources.");
 
-    // One valid entry + one missing sessionKey + one missing observedAt.
     await storage.updateMemoryFrontmatter(id, {
       sources: [
         { sessionKey: "s/1", observedAt: "2026-01-01T00:00:00Z", quote: "valid" },
@@ -447,8 +397,6 @@ test("write-path downgrades verified tag when sources field is absent (review ro
     await storage.ensureDirectories();
     const id = await writeFactFile(storage, "Fact whose author set verified but supplied no sources.");
 
-    // verified tag with NO sources field at all — the earlier 3-branch logic
-    // kept the tag here (only all-invalid arrays downgraded).
     await storage.updateMemoryFrontmatter(id, { provenance: "verified" });
 
     const raw = await readFile(factFilePath(storage, id), "utf-8");
@@ -474,8 +422,6 @@ test("write-path downgrades verified tag when sources array is empty (review rou
     await storage.ensureDirectories();
     const id = await writeFactFile(storage, "Fact with verified tag and an empty sources array.");
 
-    // verified tag with sources: [] — fm.sources.length > 0 is false so the
-    // earlier "all-invalid" branch never ran and the tag persisted.
     await storage.updateMemoryFrontmatter(id, { provenance: "verified", sources: [] });
 
     const raw = await readFile(factFilePath(storage, id), "utf-8");
@@ -499,10 +445,6 @@ test("read-path downgrades hand-edited verified tag with no sources line (review
   try {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
-    // Synthesize a hand-edited / imported memory: provenance: verified with
-    // no sources line at all. parseProvenanceTag and parseProvenanceSources
-    // are independent, so without the read-path reconcile this would round-trip
-    // as an ungrounded "verified" fact.
     const id = await writeFactFile(
       storage,
       "Hand-edited memory claiming verification it cannot back.",

@@ -1,19 +1,3 @@
-/**
- * Location auto-sync — in-process periodic day sync (issue #2047).
- *
- * Arms one repeating timer that runs the SAME shared surface runner
- * (`runLocationSync`) as the CLI/MCP/HTTP surfaces over the configured
- * `location.syncDays` window ending yesterday, so late provider uploads are
- * picked up on the next tick. Master default-off: the caller (maintenance
- * scheduler registration) arms this only when `location.enabled` is true and
- * at least one source is enabled; a forced manual sync never bypasses those
- * gates — they live inside the pipeline itself.
- *
- * The timer is unref'd so one-shot CLI processes exit naturally; ticks are
- * serialized (an overlapping tick is skipped, not queued). ponytail: fixed
- * default cadence (daily) with no per-install override — add a
- * location.syncIntervalHours config field if installs need it.
- */
 
 import { log } from "../logger.js";
 import { runLocationSync, type LocationSyncRuns } from "./surfaces.js";

@@ -1,10 +1,3 @@
-/**
- * Lifecycle-ledger maintenance subject for the scenario-matrix harness.
- *
- * Each canonical row runs the real append, rebuild, and read paths. The
- * scenario dimensions are intentionally orthogonal to this append-only
- * subsystem, so the same durable ledger invariant applies to every row.
- */
 import assert from "node:assert/strict";
 import { mkdir, readFile, rm, mkdtemp, writeFile } from "node:fs/promises";
 import path from "node:path";

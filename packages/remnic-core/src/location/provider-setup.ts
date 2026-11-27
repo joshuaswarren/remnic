@@ -1,15 +1,3 @@
-/**
- * Location provider bootstrapping (issue #2047).
- *
- * Core never statically imports a provider package (adapter-isolation test),
- * so every surface calls this before status/check/sync: it registers
- * configured providers from optional packages via computed-specifier dynamic
- * imports, with credentials read from environment variables — tokens never
- * enter config files, errors, or logs. A source whose package or credentials
- * are absent stays unregistered and the pipeline reports
- * `provider-not-registered`; that is a skip reason, never an error (the
- * connector-reitti package's README contract).
- */
 
 import { readEnvVar } from "../runtime/env.js";
 import { log } from "../logger.js";

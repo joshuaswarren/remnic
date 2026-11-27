@@ -1,8 +1,3 @@
-/**
- * Shared-item envelope required-actor parse (issue #1957 leftover).
- *
- * Pure. Empty is allowed (no requirement). Newline is invalid_required.
- */
 
 export type ParseRequiredActorResult =
   | { ok: true; required: string }

@@ -30,7 +30,6 @@ export interface ExtractionTaskExecutionContext {
   drain: ExtractionDrain;
 }
 
-/** Queue options the capture-scope grouping forwards to the coordinator. */
 export interface CaptureScopeGroupQueueOptions {
   deadlineMs?: number;
   abortSignal?: AbortSignal;
@@ -55,7 +54,6 @@ export function queueBufferedCaptureScopeGroups(
   for (const group of groupTurnsByExtractionScope(extractionTurns)) {
     const groupIsAccepted = group.turns.some((turn) => turn.acceptedCapture === true);
     if (!groupIsAccepted) {
-      // Native groups keep their own routing; skipped accepted prefixes require identity clearing.
       void queueBufferedExtraction(group.turns, "trigger_mode", {
         bufferKey,
         clearMatchingTurns: true,
@@ -63,8 +61,6 @@ export function queueBufferedCaptureScopeGroups(
       }).catch((err) => log.error(`native trigger extraction failed: ${err}`));
       continue;
     }
-    // Accepted groups use ONLY their own pins — no fallback to the
-    // triggering observe's scope.
     const { promise: extraction, resolve, reject } = Promise.withResolvers<void>();
     void queueBufferedExtraction(group.turns, "trigger_mode", {
       bufferKey,

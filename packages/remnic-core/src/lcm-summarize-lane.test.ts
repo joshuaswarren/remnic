@@ -20,11 +20,6 @@ interface ChatStub {
   close: () => Promise<void>;
 }
 
-/**
- * Minimal OpenAI-compatible chat stub that records how often it served a
- * completion. Both lanes get one so the test can observe which client the
- * LCM summarize closure actually uses.
- */
 async function startChatStub(label: string): Promise<ChatStub> {
   let hits = 0;
   const server = http.createServer((req, res) => {
@@ -44,7 +39,6 @@ async function startChatStub(label: string): Promise<ChatStub> {
         );
         return;
       }
-      // Model detection / health probes: report a single model per lane.
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ data: [{ id: `${label}-model` }], object: "list" }));
     });

@@ -70,11 +70,6 @@ function requireBetterSqlite3Ctor(require: RuntimeRequire): BetterSqlite3Ctor {
   return ctor;
 }
 
-// Raw, unredacted message — used ONLY for internal classification (detecting a
-// native-binding mismatch). Never returned to a user-facing surface, because it
-// can contain absolute paths. Native-binding markers (better_sqlite3.node,
-// NODE_MODULE_VERSION, "was compiled against a different Node.js version") live
-// in error.message, so message text is sufficient and we never read .stack.
 function rawErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "");
 }
@@ -118,9 +113,6 @@ function* errorChain(error: unknown): Generator<unknown> {
   }
 }
 
-// True when a single error's RAW message carries a native-binding ABI marker.
-// Raw (not displayErrorDetail) so redaction can't strip detection markers
-// (e.g. the loader path containing "better_sqlite3.node").
 function messageHasNativeBindingMarker(error: unknown): boolean {
   const detail = rawErrorMessage(error);
   return (
@@ -133,10 +125,6 @@ function messageHasNativeBindingMarker(error: unknown): boolean {
 }
 
 export function isLikelyBetterSqlite3NativeBindingError(error: unknown): boolean {
-  // Walk the full cause / aggregate chain so a SANITIZED wrapper
-  // (unavailableError) — whose message drops the ABI markers that live on the
-  // original error — is still classified. Inspecting only the top-level message
-  // misses the real mismatch when the failure was wrapped (issue #1848).
   for (const node of errorChain(error)) {
     if (messageHasNativeBindingMarker(node)) return true;
   }
@@ -158,19 +146,6 @@ function unavailableError(error: unknown): Error {
   );
 }
 
-// Sanitized, user-facing error detail. This string becomes the message of the
-// Error thrown by unavailableError(), which propagates to user-facing surfaces
-// (HTTP error bodies, MCP tool errors — access-http.ts / access-mcp.ts return
-// err.message). We must not leak server internals (CodeQL js/stack-trace-exposure):
-//   - error.stack is never read.
-// We deliberately surface only the error's class name and Node error code —
-// never the raw message. Node module-load failures embed absolute server paths
-// directly in error.message (the "Require stack:" block, and unquoted native
-// loader paths that may even contain spaces), which no regex can redact
-// reliably. The error code (MODULE_NOT_FOUND, ERR_DLOPEN_FAILED, …) is a stable,
-// path-free identifier that, together with the native-binding hint, is enough
-// for a user to act on. The full original error stays on the `cause` chain and
-// is logged with its stack elsewhere.
 export function displayErrorDetail(error: unknown): string {
   if (!(error instanceof Error)) return "";
   const code = (error as NodeJS.ErrnoException).code;

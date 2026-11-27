@@ -20,7 +20,6 @@ const STATE_DIR = "state";
 const TRACES_FILE = "traces.json";
 const OPEN_BOX_STATE_FILE = "open-box.json";
 
-// ── Types ─────────────────────────────────────────────────────────────────
 
 export interface BoxFrontmatter {
   id: string;
@@ -86,7 +85,6 @@ interface ExtractionEvent {
   toolsUsed?: string[];
 }
 
-// ── Utility ───────────────────────────────────────────────────────────────
 
 /**
  * Jaccard similarity between two topic arrays.
@@ -170,7 +168,6 @@ function parseTraceIndex(value: unknown): TraceIndex | null {
   };
 }
 
-// ── Frontmatter serialization ──────────────────────────────────────────────
 
 function serializeStringArray(values: string[]): string {
   return JSON.stringify(values);
@@ -252,7 +249,6 @@ export function parseBoxFrontmatter(raw: string): BoxFrontmatter | null {
   };
 }
 
-// ── BoxBuilder ────────────────────────────────────────────────────────────
 
 export class BoxBuilder {
   private baseDir: string;
@@ -295,7 +291,6 @@ export class BoxBuilder {
     return path.join(this.stateDir, TRACES_FILE);
   }
 
-  // ── State persistence ────────────────────────────────────────────────────
 
   private async loadOpenBox(): Promise<void> {
     if (this.stateLoaded) return;
@@ -342,7 +337,6 @@ export class BoxBuilder {
     }
   }
 
-  // ── Core logic ────────────────────────────────────────────────────────────
 
   /**
    * Called after each extraction run.
@@ -362,7 +356,6 @@ export class BoxBuilder {
     const nowMs = now.getTime();
 
     if (this.openBox) {
-      // Check seal conditions
       const lastActivity = new Date(this.openBox.lastActivityAt).getTime();
       const timeGapMs = nowMs - lastActivity;
       const overlap = topicOverlapScore(this.openBox.topics, newTopics);
@@ -372,7 +365,6 @@ export class BoxBuilder {
         this.openBox.memoryIds.length + event.memoryIds.length > this.cfg.boxMaxMemories;
 
       if (tooManyMemories) {
-        // Merge topics and add current batch then seal
         const topicSet = new Set([...this.openBox.topics, ...newTopics]);
         this.openBox.topics = [...topicSet];
         this.openBox.memoryIds.push(...event.memoryIds);
@@ -390,13 +382,10 @@ export class BoxBuilder {
         this.openBox = this.newBox(event, now.toISOString());
         await this.saveOpenBox();
       } else {
-        // Accumulate
         this.openBox.memoryIds.push(...event.memoryIds);
-        // Merge new topics (union)
         const topicSet = new Set([...this.openBox.topics, ...newTopics]);
         this.openBox.topics = [...topicSet];
         this.openBox.lastActivityAt = now.toISOString();
-        // Merge toolsUsed (union)
         if (event.toolsUsed?.length) {
           const toolSet = new Set([...(this.openBox.toolsUsed ?? []), ...event.toolsUsed]);
           this.openBox.toolsUsed = [...toolSet];
@@ -404,9 +393,7 @@ export class BoxBuilder {
         await this.saveOpenBox();
       }
     } else {
-      // No open box — start one
       this.openBox = this.newBox(event, now.toISOString());
-      // If this initial batch already exceeds max, seal immediately
       if (this.openBox.memoryIds.length > this.cfg.boxMaxMemories) {
         await this.sealCurrentUnlocked("max_memories");
       } else {
@@ -481,7 +468,6 @@ export class BoxBuilder {
     return box.id;
   }
 
-  // ── Trace Weaving ─────────────────────────────────────────────────────────
 
   /**
    * Find an existing trace that matches box topics, or create a new trace.
@@ -494,7 +480,6 @@ export class BoxBuilder {
   private async resolveTraceUnlocked(boxId: string, topics: string[]): Promise<string | undefined> {
     const idx = await this.loadTraceIndex();
 
-    // Filter to traces active within the lookback window
     const lookbackMs = this.cfg.traceWeaverLookbackDays * 24 * 60 * 60 * 1000;
     const cutoff = new Date(Date.now() - lookbackMs);
 
@@ -514,13 +499,11 @@ export class BoxBuilder {
     const traceId = bestTraceId ?? makeTraceId(topics);
     const now = new Date().toISOString();
 
-    // Update trace index
     if (!idx.traces[traceId]) idx.traces[traceId] = [];
     idx.traces[traceId].push(boxId);
     idx.boxToTrace[boxId] = traceId;
     idx.traceLastSeen[traceId] = now;
 
-    // Update canonical topics for this trace (merge)
     if (idx.traceTopics[traceId]) {
       const merged = new Set([...idx.traceTopics[traceId], ...topics]);
       idx.traceTopics[traceId] = [...merged];
@@ -531,7 +514,6 @@ export class BoxBuilder {
     return (await this.saveTraceIndex(idx)) ? traceId : undefined;
   }
 
-  // ── Recall ────────────────────────────────────────────────────────────────
 
   /**
    * Read all sealed boxes from the last N days for recall injection.
@@ -547,8 +529,6 @@ export class BoxBuilder {
       return [];
     }
 
-    // Filter day directories by name (YYYY-MM-DD) — skip dirs older than cutoff
-    // without reading a single file from them.
     const recentDirs = topEntries
       .filter((e) => e.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(e.name) && e.name >= cutoffDateStr)
       .map((e) => path.join(this.boxBaseDir, e.name));
@@ -558,7 +538,6 @@ export class BoxBuilder {
       (e) => !e.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(e.name),
     );
 
-    // Read all files in each recent day directory in parallel (per dir)
     const boxes: BoxFrontmatter[] = [];
 
     const readDir = async (dir: string) => {
@@ -584,10 +563,8 @@ export class BoxBuilder {
       }
     };
 
-    // Day dirs in parallel
     await Promise.all(recentDirs.map(readDir));
 
-    // Legacy non-date entries (walk sub-dirs sequentially but read files in parallel)
     for (const e of legacyEntries) {
       const full = path.join(this.boxBaseDir, e.name);
       if (e.isDirectory()) {
@@ -601,7 +578,6 @@ export class BoxBuilder {
       }
     }
 
-    // Sort newest-first so slice(0, N) gives the most recent boxes
     boxes.sort((a, b) => new Date(b.sealedAt).getTime() - new Date(a.sealedAt).getTime());
     return boxes;
   }

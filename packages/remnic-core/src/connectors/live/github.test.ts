@@ -23,9 +23,6 @@ import type { ConnectorCursor } from "./framework.js";
  * repo names. All inputs are obviously synthetic.
  */
 
-// ---------------------------------------------------------------------------
-// Synthetic test data
-// ---------------------------------------------------------------------------
 
 const SYNTHETIC_TOKEN = "ghp_synthetic_token_DO_NOT_USE_0000000000000000";
 const SYNTHETIC_LOGIN = "synthetic-user";
@@ -56,7 +53,6 @@ function makeComment(
 }
 
 // ---------------------------------------------------------------------------
-// Mock fetch builder
 // ---------------------------------------------------------------------------
 
 type HandlerEntry = {
@@ -83,7 +79,6 @@ function makeFetch(handlers: HandlerEntry[]): GitHubFetchFn {
   };
 }
 
-/** Returns an empty array for all API calls. */
 function emptyFetch(): GitHubFetchFn {
   return makeFetch([
     {
@@ -102,7 +97,6 @@ function makeGitHubCursor(watermarks: Record<string, string>): ConnectorCursor {
 }
 
 // ---------------------------------------------------------------------------
-// Config validation
 // ---------------------------------------------------------------------------
 
 test("validateGitHubConfig accepts a minimal valid config", () => {
@@ -247,7 +241,6 @@ test("validateGitHubConfig accepts includeDiscussions: true", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Connector identity
 // ---------------------------------------------------------------------------
 
 test("createGitHubConnector exposes the documented id and display name", () => {
@@ -258,7 +251,6 @@ test("createGitHubConnector exposes the documented id and display name", () => {
 });
 
 // ---------------------------------------------------------------------------
-// No-op when repos is empty
 // ---------------------------------------------------------------------------
 
 test("syncIncremental is a no-op when repos is empty", async () => {
@@ -284,7 +276,6 @@ test("syncIncremental is a no-op when repos is empty", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// First-sync bootstrap
 // ---------------------------------------------------------------------------
 
 test("first sync (cursor=null) seeds watermark and returns no docs", async () => {
@@ -292,12 +283,10 @@ test("first sync (cursor=null) seeds watermark and returns no docs", async () =>
 
   const fetchFn = makeFetch([
     {
-      // issue comments seed
       match: (url) => url.includes("/issues/comments"),
       respond: () => ({ status: 200, data: [comment] }),
     },
     {
-      // PR review comments seed
       match: (url) => url.includes("/pulls/comments"),
       respond: () => ({ status: 200, data: [] }),
     },
@@ -310,7 +299,6 @@ test("first sync (cursor=null) seeds watermark and returns no docs", async () =>
   assert.deepEqual(result.newDocs, []);
   assert.equal(result.nextCursor.kind, GITHUB_CURSOR_KIND);
 
-  // The cursor must record the watermark from the seeded comment.
   const payload = JSON.parse(result.nextCursor.value) as { watermarks: Record<string, string> };
   assert.equal(
     payload.watermarks[`${REPO_A}/issue-comment`],
@@ -328,7 +316,6 @@ test("first sync with empty API responses seeds empty cursor", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Incremental sync: basic happy path
 // ---------------------------------------------------------------------------
 
 test("incremental sync emits ConnectorDocument for matching issue comments", async () => {
@@ -397,7 +384,6 @@ test("incremental sync emits ConnectorDocument for matching PR review comments",
 });
 
 // ---------------------------------------------------------------------------
-// Author filtering
 // ---------------------------------------------------------------------------
 
 test("incremental sync skips comments authored by a different user", async () => {
@@ -427,7 +413,6 @@ test("incremental sync skips comments authored by a different user", async () =>
 });
 
 // ---------------------------------------------------------------------------
-// Empty / too-large bodies
 // ---------------------------------------------------------------------------
 
 test("incremental sync skips comments with empty body", async () => {
@@ -455,7 +440,6 @@ test("incremental sync skips comments with empty body", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Watermark advancement
 // ---------------------------------------------------------------------------
 
 test("incremental sync advances watermark after importing comments", async () => {
@@ -483,19 +467,11 @@ test("incremental sync advances watermark after importing comments", async () =>
   assert.equal(result.newDocs.length, 2);
 
   const payload = JSON.parse(result.nextCursor.value) as { watermarks: Record<string, string> };
-  // Watermark must advance to the latest comment's updated_at.
   assert.equal(payload.watermarks[`${REPO_A}/issue-comment`], "2026-04-26T10:00:00.000Z");
 });
 
 test("incremental sync skips items strictly before the watermark", async () => {
-  // Only comments whose updated_at is STRICTLY before the watermark are
-  // dropped by the filter. A comment AT the watermark second passes through
-  // to the seenIds check (and, if not in seenIds, is ingested). A comment
-  // one second after the watermark is always ingested.
   //
-  // "beforeComment" has a timestamp 1 second before the watermark → skipped.
-  // "atComment" is AT the watermark second and NOT in seenIds → ingested.
-  // "afterComment" is after the watermark → ingested.
   const watermark = "2026-04-25T00:00:01.000Z";
   const beforeComment = makeComment(1, SYNTHETIC_LOGIN, "before", "2026-04-25T00:00:00.000Z");
   const atComment = makeComment(2, SYNTHETIC_LOGIN, "at watermark", watermark);
@@ -514,7 +490,6 @@ test("incremental sync skips items strictly before the watermark", async () => {
 
   const connector = createGitHubConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CONFIG });
-  // Cursor watermark at exactly the "at" second; seenIds is empty.
   const cursor: import("./framework.js").ConnectorCursor = {
     kind: GITHUB_CURSOR_KIND,
     value: JSON.stringify({
@@ -525,9 +500,6 @@ test("incremental sync skips items strictly before the watermark", async () => {
   };
 
   const result = (await connector.syncIncremental({ cursor, config })) as GitHubSyncResult;
-  // beforeComment is strictly before the watermark → skipped.
-  // atComment is AT the watermark and not in seenIds → ingested.
-  // afterComment is after the watermark → ingested.
   assert.equal(result.newDocs.length, 2);
   const ids = result.newDocs.map((d) => d.source.externalId);
   assert.ok(ids.includes(`${REPO_A}/issue-comment/2`), "atComment must be ingested");
@@ -535,7 +507,6 @@ test("incremental sync skips items strictly before the watermark", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Multiple repos
 // ---------------------------------------------------------------------------
 
 test("incremental sync handles multiple repos independently", async () => {
@@ -575,7 +546,6 @@ test("incremental sync handles multiple repos independently", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Discussion comments (opt-in)
 // ---------------------------------------------------------------------------
 
 test("discussion comments are not fetched unless includeDiscussions is true", async () => {
@@ -679,37 +649,29 @@ test("discussion comments are imported from discussion-shaped responses", async 
 });
 
 // ---------------------------------------------------------------------------
-// Error classification
 // ---------------------------------------------------------------------------
 
 test("isTransientGitHubError classifies common error shapes", () => {
-  // Terminal — skip-and-continue.
   assert.equal(isTransientGitHubError({ githubStatus: 404 }), false);
   assert.equal(isTransientGitHubError({ githubStatus: 403 }), false);
   assert.equal(isTransientGitHubError({ githubStatus: 400 }), false);
   assert.equal(isTransientGitHubError({ status: 410 }), false);
-  // Transient — re-throw.
   assert.equal(isTransientGitHubError({ githubStatus: 429 }), true);
   assert.equal(isTransientGitHubError({ githubStatus: 500 }), true);
   assert.equal(isTransientGitHubError({ githubStatus: 503 }), true);
   assert.equal(isTransientGitHubError({ status: 504 }), true);
-  // Network errors.
   assert.equal(isTransientGitHubError({ code: "ECONNRESET" }), true);
   assert.equal(isTransientGitHubError({ code: "ETIMEDOUT" }), true);
   assert.equal(isTransientGitHubError({ code: "ENOTFOUND" }), true);
   assert.equal(isTransientGitHubError({ code: "EAI_AGAIN" }), true);
-  // AbortError.
   assert.equal(isTransientGitHubError({ name: "AbortError" }), true);
-  // Bare Error with no metadata — conservatively transient.
   assert.equal(isTransientGitHubError(new Error("unknown")), true);
-  // Non-objects.
   assert.equal(isTransientGitHubError(null), false);
   assert.equal(isTransientGitHubError(undefined), false);
   assert.equal(isTransientGitHubError("oops"), false);
 });
 
 // ---------------------------------------------------------------------------
-// HTTP error handling
 // ---------------------------------------------------------------------------
 
 test("a 429 on issue comments re-throws (transient) and cursor does NOT advance", async () => {
@@ -757,8 +719,6 @@ test("a 503 on issue comments re-throws (transient)", async () => {
 });
 
 test("a 404 on issue comments is terminal (skip repo resource, continue)", async () => {
-  // Issue comments returns 404 → skipped.
-  // PR review comments returns a valid comment → should still be imported.
   const prComment = makeComment(77, SYNTHETIC_LOGIN, "PR note", "2026-04-26T09:00:00.000Z");
 
   const fetchFn = makeFetch([
@@ -780,7 +740,6 @@ test("a 404 on issue comments is terminal (skip repo resource, continue)", async
   const cursor = makeGitHubCursor({});
 
   const result = (await connector.syncIncremental({ cursor, config })) as GitHubSyncResult;
-  // The 404 should be swallowed (terminal), and the PR comment should be imported.
   assert.equal(result.newDocs.length, 1);
   assert.equal(result.newDocs[0].source.externalId, `${REPO_A}/pr-review-comment/77`);
 });
@@ -811,7 +770,6 @@ test("a 403 on issue comments is terminal (skip, continue to PR comments)", asyn
 });
 
 // ---------------------------------------------------------------------------
-// AbortSignal
 // ---------------------------------------------------------------------------
 
 test("syncIncremental honors abortSignal", async () => {
@@ -840,7 +798,6 @@ test("syncIncremental honors abortSignal", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Cursor validation
 // ---------------------------------------------------------------------------
 
 test("syncIncremental rejects a cursor of an unexpected kind", async () => {
@@ -885,7 +842,6 @@ test("validateConfig is enforced again on every sync pass", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Network-layer transient error
 // ---------------------------------------------------------------------------
 
 test("a network ECONNRESET on issue comments re-throws as transient", async () => {
@@ -904,12 +860,9 @@ test("a network ECONNRESET on issue comments re-throws as transient", async () =
 });
 
 // ---------------------------------------------------------------------------
-// Non-matching author watermark advancement (CLAUDE.md gotcha #44 regression)
 // ---------------------------------------------------------------------------
 
 test("watermark advances for non-matching-author and empty comments so they aren't re-fetched", async () => {
-  // A comment from a different user. The watermark must still advance so we
-  // don't fetch the same item on every subsequent poll.
   const otherComment = makeComment(200, "other-user", "Not mine", "2026-04-26T09:00:00.000Z");
 
   const fetchFn = makeFetch([
@@ -931,18 +884,14 @@ test("watermark advances for non-matching-author and empty comments so they aren
   assert.deepEqual(result.newDocs, []);
   assert.equal(result.skippedOtherAuthor, 1);
 
-  // The watermark must have advanced past the other-author comment so the
-  // next incremental pass skips it via the `since` filter.
   const payload = JSON.parse(result.nextCursor.value) as { watermarks: Record<string, string> };
   assert.equal(payload.watermarks[`${REPO_A}/issue-comment`], "2026-04-26T09:00:00.000Z");
 });
 
 // ---------------------------------------------------------------------------
-// P1 fix: Same-timestamp dedup via seenIds (PRRT_kwDORJXyws59sfBq)
 // ---------------------------------------------------------------------------
 
 test("seenIds are stored in cursor for ingested comments at the watermark second", async () => {
-  // Two comments with the same second-level timestamp. Both are new (above watermark).
   const c1 = makeComment(10, SYNTHETIC_LOGIN, "first comment", "2026-04-26T10:00:00.000Z");
   const c2 = makeComment(11, SYNTHETIC_LOGIN, "second comment", "2026-04-26T10:00:00.500Z");
 
@@ -970,7 +919,6 @@ test("seenIds are stored in cursor for ingested comments at the watermark second
     watermarks: Record<string, string>;
     seenIds: Record<string, string>;
   };
-  // seenIds must contain both ingested comment ids.
   assert.ok(
     `${REPO_A}/issue-comment/10` in payload.seenIds,
     "seenIds must include comment 10",
@@ -982,9 +930,6 @@ test("seenIds are stored in cursor for ingested comments at the watermark second
 });
 
 test("seenIds prevent re-importing same-second comments on the next poll", async () => {
-  // Scenario: c1 was ingested on the previous pass and is recorded in seenIds.
-  // On this poll GitHub re-returns it (inclusive `since=` at the watermark
-  // second). It must be skipped without emitting a new document.
   const ts = "2026-04-26T10:00:00.000Z";
   const c1 = makeComment(10, SYNTHETIC_LOGIN, "already imported", ts);
   const c2 = makeComment(12, SYNTHETIC_LOGIN, "new this poll", "2026-04-26T10:00:01.000Z");
@@ -1002,7 +947,6 @@ test("seenIds prevent re-importing same-second comments on the next poll", async
 
   const connector = createGitHubConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CONFIG });
-  // Cursor encodes the watermark at c1's timestamp AND c1 already in seenIds.
   const cursor: import("./framework.js").ConnectorCursor = {
     kind: GITHUB_CURSOR_KIND,
     value: JSON.stringify({
@@ -1013,14 +957,11 @@ test("seenIds prevent re-importing same-second comments on the next poll", async
   };
 
   const result = (await connector.syncIncremental({ cursor, config })) as GitHubSyncResult;
-  // c1 must be skipped (in seenIds); only c2 should be imported.
   assert.equal(result.newDocs.length, 1);
   assert.equal(result.newDocs[0].source.externalId, `${REPO_A}/issue-comment/12`);
 });
 
 test("seenIds are cleared when the watermark advances past a second boundary", async () => {
-  // Previous cursor has seenIds entries at the old second.
-  // After ingesting c2 which is in a new second, seenIds must be cleared.
   const oldTs = "2026-04-26T10:00:00.000Z";
   const newTs = "2026-04-26T10:00:01.000Z";
   const c1Old = makeComment(10, SYNTHETIC_LOGIN, "old second item", oldTs);
@@ -1039,7 +980,6 @@ test("seenIds are cleared when the watermark advances past a second boundary", a
 
   const connector = createGitHubConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CONFIG });
-  // Cursor: watermark is at oldTs, seenIds contains c1Old's id.
   const cursor: import("./framework.js").ConnectorCursor = {
     kind: GITHUB_CURSOR_KIND,
     value: JSON.stringify({
@@ -1050,7 +990,6 @@ test("seenIds are cleared when the watermark advances past a second boundary", a
   };
 
   const result = (await connector.syncIncremental({ cursor, config })) as GitHubSyncResult;
-  // c1Old is in seenIds → skipped. c2New (above watermark) → imported.
   assert.equal(result.newDocs.length, 1);
   assert.equal(result.newDocs[0].source.externalId, `${REPO_A}/issue-comment/20`);
 
@@ -1058,14 +997,11 @@ test("seenIds are cleared when the watermark advances past a second boundary", a
     watermarks: Record<string, string>;
     seenIds: Record<string, string>;
   };
-  // Watermark must have advanced to the new second.
   assert.equal(payload.watermarks[`${REPO_A}/issue-comment`], newTs);
-  // seenIds for c1Old must be cleared (watermark crossed the second boundary).
   assert.ok(
     !(`${REPO_A}/issue-comment/10` in payload.seenIds),
     "stale seenId from old second must be cleared",
   );
-  // c2New must be in the fresh seenIds.
   assert.ok(
     `${REPO_A}/issue-comment/20` in payload.seenIds,
     "new-second comment must be in seenIds",
@@ -1073,26 +1009,15 @@ test("seenIds are cleared when the watermark advances past a second boundary", a
 });
 
 // ---------------------------------------------------------------------------
-// P1 fix: Skip-aware budget — skipped records don't consume the cap
-// (PRRT_kwDORJXyws59sfBs)
 // ---------------------------------------------------------------------------
 
 test("skipped (wrong-author) records do not consume the per-pass budget", async () => {
-  // Build MAX_ITEMS_PER_PASS wrong-author comments followed by one valid one.
-  // The budget should NOT be exhausted by the skipped ones, so the valid
-  // comment at the end must still be ingested.
   const MAX = 200; // matches MAX_ITEMS_PER_PASS constant
   const skippedComments = Array.from({ length: MAX }, (_, i) =>
     makeComment(1000 + i, "other-user", `not mine ${i}`, `2026-04-26T09:00:${String(i).padStart(2, "0")}.000Z`),
   );
   const validComment = makeComment(9999, SYNTHETIC_LOGIN, "mine", "2026-04-26T09:05:00.000Z");
 
-  // All comments returned on first page (we return MAX+1 items so pagination
-  // doesn't trigger — but since GITHUB_PAGE_SIZE=100 we need to simulate
-  // multiple pages).  Simpler: just return one page with all items (>100),
-  // but since the page-size check caps at 100 we'll use a single page of
-  // exactly the right set. Instead use a simpler approach: return the skipped
-  // comments as 2 pages of 100, then the valid comment on a "short" 3rd page.
   let callCount = 0;
   const issuePages: (typeof skippedComments)[] = [
     skippedComments.slice(0, 100),
@@ -1121,7 +1046,6 @@ test("skipped (wrong-author) records do not consume the per-pass budget", async 
 
   const result = (await connector.syncIncremental({ cursor, config })) as GitHubSyncResult;
 
-  // The valid comment must be imported despite all the skipped ones.
   assert.equal(
     result.newDocs.length,
     1,
@@ -1132,7 +1056,6 @@ test("skipped (wrong-author) records do not consume the per-pass budget", async 
 });
 
 test("skipped (empty-body) records do not consume the per-pass budget", async () => {
-  // 5 empty-body comments followed by 3 valid ones within a budget of 3.
   const emptyComments = Array.from({ length: 5 }, (_, i) =>
     makeComment(200 + i, SYNTHETIC_LOGIN, "", `2026-04-26T09:00:0${i}.000Z`),
   );
@@ -1155,10 +1078,6 @@ test("skipped (empty-body) records do not consume the per-pass budget", async ()
   const config = connector.validateConfig({ ...SYNTHETIC_CONFIG });
   const cursor = makeGitHubCursor({});
 
-  // Use a budget of 3. With the old (buggy) code, the 5 empty comments would
-  // exhaust the budget before reaching the valid ones.
-  // We can't set MAX_ITEMS_PER_PASS directly; instead verify that with the
-  // default budget all 3 valid comments are imported.
   const result = (await connector.syncIncremental({ cursor, config })) as GitHubSyncResult;
 
   assert.equal(result.newDocs.length, 3, "all 3 valid comments must be imported");
@@ -1166,19 +1085,10 @@ test("skipped (empty-body) records do not consume the per-pass budget", async ()
 });
 
 // ---------------------------------------------------------------------------
-// Regression: strict watermark filter (<, not <=) + timestamp-gated seenIds
-// Fixes: Cursor High finding (watermark boundary), Codex P1 finding (seenIds).
 // ---------------------------------------------------------------------------
 
 test("watermark uses strict < so boundary-second comments pass through to seenIds", async () => {
-  // Scenario: The cursor watermark is set to T. On the next poll GitHub's
-  // `since=T` filter re-returns any comment whose updated_at equals T
-  // (GitHub's `since` parameter is inclusive). With the old `<=` filter these
-  // were silently dropped before seenIds could distinguish them. This test
-  // verifies the `<` fix: a comment AT exactly the watermark second that is
-  // NOT in seenIds must be ingested.
   const ts = "2026-04-26T12:00:00.000Z";
-  // commentAtTs is at the exact watermark second but was NOT ingested before.
   const commentAtTs = makeComment(42, SYNTHETIC_LOGIN, "exactly at watermark", ts);
 
   const fetchFn = makeFetch([
@@ -1194,7 +1104,6 @@ test("watermark uses strict < so boundary-second comments pass through to seenId
 
   const connector = createGitHubConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CONFIG });
-  // Cursor watermark is AT ts; seenIds is empty (comment was NOT previously seen).
   const cursor: import("./framework.js").ConnectorCursor = {
     kind: GITHUB_CURSOR_KIND,
     value: JSON.stringify({
@@ -1205,8 +1114,6 @@ test("watermark uses strict < so boundary-second comments pass through to seenId
   };
 
   const result = (await connector.syncIncremental({ cursor, config })) as GitHubSyncResult;
-  // With `<` fix: commentAtTs is NOT before the watermark, NOT in seenIds →
-  // must be ingested. With old `<=` it would have been silently dropped.
   assert.equal(
     result.newDocs.length,
     1,
@@ -1216,13 +1123,8 @@ test("watermark uses strict < so boundary-second comments pass through to seenId
 });
 
 test("seenIds check gates on (id + timestamp), not id alone", async () => {
-  // Scenario: A comment was previously imported at ts1. It is then edited and
-  // re-fetched at ts2 (same id, newer updated_at). With the old `!== undefined`
-  // check the edited version would be silently dropped. With the new
-  // `=== comment.updated_at` check only the exact (id, ts) pair is suppressed.
   const ts1 = "2026-04-26T13:00:00.000Z";
   const ts2 = "2026-04-26T13:00:01.000Z";
-  // Same id as the previously-ingested comment, but updated_at has advanced.
   const editedComment = makeComment(77, SYNTHETIC_LOGIN, "edited body", ts2);
 
   const fetchFn = makeFetch([
@@ -1238,8 +1140,6 @@ test("seenIds check gates on (id + timestamp), not id alone", async () => {
 
   const connector = createGitHubConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CONFIG });
-  // Cursor records id 77 with ts1 in seenIds (the old ingested version).
-  // Watermark is at ts1 so the edited comment (ts2 > ts1) is above it.
   const cursor: import("./framework.js").ConnectorCursor = {
     kind: GITHUB_CURSOR_KIND,
     value: JSON.stringify({
@@ -1250,8 +1150,6 @@ test("seenIds check gates on (id + timestamp), not id alone", async () => {
   };
 
   const result = (await connector.syncIncremental({ cursor, config })) as GitHubSyncResult;
-  // The edited comment (same id, newer ts) must be ingested — seenIds only
-  // suppresses the (id, ts1) pair, not (id, ts2).
   assert.equal(
     result.newDocs.length,
     1,

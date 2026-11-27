@@ -70,8 +70,6 @@ function makeRunner(
       OPENAI_API_KEY: AMBIENT_API_KEY,
       OPENAI_BASE_URL: "https://ambient.example/v1",
     },
-    // Frozen clock: the fake login consumes zero budget, so exec timeout
-    // assertions stay exact.
     now: () => 0,
     runLoginStatus: async (executable, env) => {
       options.loginCalls?.push({ executable, env });
@@ -120,8 +118,6 @@ test("codex-subscription success normalizes through CodexCliFallbackResult", asy
 
     assert.equal(loginCalls.length, 1);
     assert.equal(loginCalls[0]?.executable, "codex-fake");
-    // Ambient OpenAI credentials must not reach the child: the subscription
-    // login — not an API key — has to authenticate the request.
     assert.equal(loginCalls[0]?.env.OPENAI_API_KEY, undefined);
     assert.equal(loginCalls[0]?.env.OPENAI_BASE_URL, undefined);
     assert.equal(loginCalls[0]?.env.CODEX_HOME, "/home/alice/.codex");
@@ -173,8 +169,6 @@ test("codex-subscription exec argv disables web search regardless of transcript 
 
     assert.equal(execCalls.length, 1);
     const request = execCalls[0];
-    // Config-level disable, not a prompt-level request: the web_search tool is
-    // removed from the session, so extraction text cannot cause browsing.
     const webSearchIndex = request.args.indexOf('web_search="disabled"');
     assert.ok(webSearchIndex > 0, "exec argv must carry web_search=\"disabled\"");
     assert.equal(request.args[webSearchIndex - 1], "--config");
@@ -249,7 +243,6 @@ test("unauthenticated login surfaces actionable codex login guidance", async () 
         assert.ok(error instanceof CodexSubscriptionAuthError);
         assert.equal(error.reason, "unauthenticated");
         assert.match(error.message, /codex login/);
-        // Raw login-status output stays out of the surfaced error.
         assert.equal(error.message.includes("private-login-detail"), false);
         return true;
       }
@@ -296,8 +289,6 @@ test("expired or revoked session surfaces reauth guidance and clears the login c
         return true;
       }
     );
-    // The auth failure must invalidate the cached login status so a re-login
-    // is picked up by the very next request.
     await assert.rejects(callCodexCliFallback({}, "gpt-5.6-luna", [{ role: "user", content: "hi" }]));
     assert.equal(loginCalls.length, 2);
     assert.equal(execCalls.length, 2);
@@ -343,7 +334,6 @@ test("caller abort reason is preserved, not reclassified", async () => {
       }
     );
 
-    // Abort without a reason keeps the AbortError contract.
     const bare = new AbortController();
     bare.abort();
     await assert.rejects(
@@ -453,14 +443,11 @@ test("request deadline starts before login and login consumes the same budget", 
       options: { timeoutMs },
     });
 
-  // The shared login subprocess uses the 10s ceiling; this caller still
-  // spends its 5s budget and exec only gets what login left: 5s - 2s.
   await call(5_000);
   assert.deepEqual(loginTimeouts, [10_000]);
   assert.equal(execCalls.length, 1);
   assert.equal(execCalls[0]?.timeoutMs, 3_000);
 
-  // Login outrunning the budget must fail as a timeout without launching exec.
   __codexSubscriptionTestHooks.resetLoginStatusCache();
   clock = 1_000;
   loginDurationMs = 6_000;
@@ -510,7 +497,6 @@ test("clearing the runner seam re-registers the core runner before the next call
     assert.equal(ensureCodexSubscriptionRunnerRegistered(deps), true);
     assert.equal(isCodexCliFallbackRunnerRegistered(), true);
 
-    // A host or test clearing the seam must not strand the built-in provider.
     setCodexCliFallbackRunnerForProcess(undefined);
     assert.equal(isCodexCliFallbackRunnerRegistered(), false);
 
@@ -527,9 +513,6 @@ test("clearing the runner seam re-registers the core runner before the next call
 test("secret straddling the summary cutoff is redacted before bounding", async () => {
   __codexSubscriptionTestHooks.resetLoginStatusCache();
   const secret = ["sk", "live-abcdefgh12345678"].join("-");
-  // Layout: 50 chars | 25-char secret | 479 chars. The 500-char tail window
-  // starts 4 chars INTO the secret, so truncating first would expose
-  // "ive-abcdefgh12345678" with no matchable sk- prefix.
   const runner = makeRunner({
     exec: { status: 7, stderr: `x`.repeat(50) + secret + `y`.repeat(479) },
   });
@@ -552,7 +535,6 @@ test("stdio bounding keeps the tail and redacts secrets straddling the limit", (
   const appendBounded = __codexSubscriptionTestHooks.appendBounded;
   const secret = ["sk", "live-abcdefgh12345678"].join("-");
 
-  // Tail retention: the final error/result chunk survives, early noise drops.
   let buffer = appendBounded("", "early diagnostic noise\n");
   buffer = appendBounded(buffer, "x".repeat(64_000));
   buffer = appendBounded(buffer, "\nfinal: the actual error");
@@ -560,14 +542,11 @@ test("stdio bounding keeps the tail and redacts secrets straddling the limit", (
   assert.ok(buffer.endsWith("final: the actual error"));
   assert.equal(buffer.includes("early diagnostic noise"), false);
 
-  // A secret straddling the STDIO_LIMIT cutoff is redacted whole before the
-  // tail is kept, so no unmatchable fragment survives.
   const straddled = appendBounded("z".repeat(64_000 - 8), `${secret} trailing`);
   assert.equal(straddled.includes(secret), false);
   assert.equal(straddled.includes("ive-abcdefgh12345678"), false);
   assert.ok(straddled.includes("[redacted]"));
 
-  // A secret split across chunk boundaries is still redacted whole.
   const chunked = appendBounded(secret.slice(0, 8), `${secret.slice(8)} tail`);
   assert.equal(chunked.includes(secret), false);
 });
@@ -600,8 +579,6 @@ test("role boundaries are structural: literal [system] text cannot forge a role"
     .split("\n")
     .slice(1)
     .filter((line) => line.length > 0);
-  // Two messages in, exactly two structural lines out: the injected newlines
-  // and [system] marker stay escaped inside the user content string.
   assert.equal(transcriptLines.length, 2);
   assert.deepEqual(
     transcriptLines.map((line) => JSON.parse(line)),
@@ -624,8 +601,6 @@ test("relative executable paths resolve against the original process cwd", async
       [{ role: "user", content: "hi" }],
       {}
     );
-    // The exec child runs with cwd = temp workspace; ./codex-fake must point
-    // at the operator's original cwd, not the scratch dir.
     assert.equal(loginCalls[0]?.executable, path.resolve("codex-fake"));
 
     await callCodexCliFallback(
@@ -648,7 +623,6 @@ test("built-in codex-subscription provider routes through FallbackLlmClient", { 
 
   const restore = setCodexCliFallbackRunnerForProcess(runner);
   try {
-    // A pre-registered runner (host/benchmark) must win; ensure registers nothing.
     assert.equal(ensureCodexSubscriptionRunnerRegistered(), false);
 
     const llm = new FallbackLlmClient({
@@ -672,8 +646,6 @@ test("existing API-key provider config still parses", () => {
   assert.equal(parsed.model, "gpt-5.5");
 });
 
-/** Yield the event loop so synchronously-started fakes register before
- * assertions sample them (no wall-clock sleep). */
 async function flushLoop(turns = 2): Promise<void> {
   for (let i = 0; i < turns; i++) {
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -682,9 +654,6 @@ async function flushLoop(turns = 2): Promise<void> {
   }
 }
 
-/** A runner's child untracks on the child's async exit event, which can
- * land after the runner promise already settled. Poll for the count to
- * clear instead of asserting it immediately (CI load made that flaky). */
 async function waitForCodexChildUntrack(runner: CodexCliFallbackRunner, timeoutMs = 2_000): Promise<void> {
   const waitUntil = Date.now() + timeoutMs;
   while (__codexSubscriptionTestHooks.activeCodexChildCount(runner) !== 0 && Date.now() < waitUntil) {
@@ -715,15 +684,10 @@ test("shared login check: each caller times out on its own budget, without cance
       options: { timeoutMs },
     });
 
-  // Request A starts a 10s-budget login check that stays in flight.
   const slow = call(10_000);
   await flushLoop();
   assert.equal(loginCalls, 1);
 
-  // Request B has a tiny budget: it must reject on ITS deadline while A's
-  // shared check keeps running. Real timer by design: the budget arithmetic
-  // uses the injected fake clock, but the deadline race itself exercises the
-  // provider's actual timer behavior.
   const startedAt = Date.now();
   await assert.rejects(call(120), (error: unknown) => {
     assert.ok(error instanceof CodexSubscriptionTimeoutError);
@@ -733,12 +697,10 @@ test("shared login check: each caller times out on its own budget, without cance
   assert.ok(Date.now() - startedAt < 5_000, "B must not wait for A's full 10s check");
   assert.equal(loginCalls, 1, "B must reuse the in-flight check, not start another");
 
-  // A's check completes and A succeeds — B's timeout did not cancel it.
   loginPending.resolve({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" });
   clock += 1_000;
   assert.equal((await slow).content, "ok");
 
-  // A's success is cached: a third request runs no new login check.
   await call(5_000);
   assert.equal(loginCalls, 1);
 });
@@ -871,15 +833,12 @@ test("caller abort reaches the cold login check: no spawn when pre-aborted, wait
       options,
     });
 
-  // Already-aborted caller: the login check never spawns.
   const pre = new AbortController();
   const preReason = new Error("cancelled before start");
   pre.abort(preReason);
   await assert.rejects(call({ signal: pre.signal }), (error: unknown) => error === preReason);
   assert.equal(loginSignals.length, 0);
 
-  // Abort while the shared check is in flight: the caller keeps its reason
-  // and the login subprocess sees the cancellation.
   const mid = new AbortController();
   const pending = call({ timeoutMs: 60_000, signal: mid.signal });
   await flushLoop();
@@ -890,7 +849,6 @@ test("caller abort reaches the cold login check: no spawn when pre-aborted, wait
   await flushLoop();
   assert.ok(loginSignals[0]?.aborted, "the login subprocess signal must be aborted");
 
-  // The aborted entry is dropped: the next request starts a fresh check.
   const freshController = new AbortController();
   const fresh = call({ signal: freshController.signal });
   await flushLoop();
@@ -950,7 +908,6 @@ test("last waiter out aborts the shared login subprocess; earlier leavers do not
   await flushLoop();
   assert.ok(loginSignals[0].aborted, "the last waiter leaving aborts the login subprocess");
 
-  // The aborted entry is dropped: the next caller starts a fresh check.
   const fresh = call();
   await flushLoop();
   assert.equal(loginCalls, 2);
@@ -981,8 +938,6 @@ test("codex-subscription apiKey and SecretRef are rejected before secret resolut
   await assert.rejects(
     llm.chatCompletion([{ role: "user", content: "remember this" }]),
     (error: unknown) => {
-      // The provider contract error — NOT the generic "could not be resolved
-      // from secret ref" — proves rejection happened before resolution.
       assert.ok(error instanceof CodexSubscriptionConfigError);
       assert.match(error.message, /does not accept apiKey/);
       assert.match(error.message, /codex login/);
@@ -1006,8 +961,6 @@ test("terminal codex-subscription errors survive the fallback chain", { concurre
     runLoginStatus: async () => ({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" }),
     runCodexExec: async (request) => {
       execCalls.push(request);
-      // The first model times out with auth-shaped text in its output; a
-      // later model succeeds — proving the chain still falls through.
       if (request.args.includes("gpt-timeout-model")) {
         return {
           status: 124,
@@ -1036,8 +989,6 @@ test("terminal codex-subscription errors survive the fallback chain", { concurre
     assert.equal(response?.content, "fallback model answer");
     assert.equal(execCalls.length, 2);
 
-    // Sole/last model: the typed timeout must reach the caller instead of a
-    // null response the chain would otherwise swallow.
     const soleLlm = new FallbackLlmClient({
       agents: { defaults: { model: { primary: `${CODEX_SUBSCRIPTION_PROVIDER_ID}/gpt-timeout-model` } } },
     });
@@ -1046,7 +997,6 @@ test("terminal codex-subscription errors survive the fallback chain", { concurre
       assert.equal(error.name, "TimeoutError");
       return true;
     });
-    // Structured parse surfaces the same typed error, not { failureReason: "http_error" }.
     await assert.rejects(
       soleLlm.parseWithSchemaDetailed([{ role: "user", content: "hi" }], { parse: (v) => v }),
       (error: unknown) => {
@@ -1089,7 +1039,6 @@ test(
     __codexSubscriptionTestHooks.resetLoginStatusCache();
     const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-fakebin-"));
     const script = path.join(dir, "codex-fake");
-    // Fake codex binary: prints auth-shaped output, traps SIGTERM, exits 0.
     await writeFile(
       script,
       "#!/bin/sh\ntrap 'exit 0' TERM\necho 'error: 401 unauthorized'\nwhile true; do sleep 0.1; done\n",
@@ -1115,7 +1064,6 @@ test(
           return true;
         }
       );
-      // The detached child group must be untracked after settle — no leak.
       await waitForCodexChildUntrack(runner);
     } finally {
       await rm(dir, { force: true, recursive: true }).catch(() => {});
@@ -1149,11 +1097,8 @@ test("cached login mode is revalidated when the auth home changes on disk", asyn
   try {
     await call();
     assert.equal(loginCalls, 1);
-    // Unchanged auth home within the TTL: cache hit, no new subprocess.
     await call();
     assert.equal(loginCalls, 1);
-    // Another process rewrites the auth store (e.g. switches to an API-key
-    // login): the cached ChatGPT mode must not mask it.
     await writeFile(path.join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"sk-fake"}\n');
     await call();
     assert.equal(loginCalls, 2, "auth-home mutation must invalidate the cached login check");
@@ -1182,9 +1127,6 @@ test("relative HOME and CODEX_HOME resolve against the original process cwd", as
     options: {},
   });
 
-  // The login child and the workspace-cwd exec child must see the SAME
-  // absolute directories, anchored to the daemon's cwd — not whichever cwd
-  // each child happens to run in.
   assert.equal(loginCalls[0]?.env.CODEX_HOME, path.resolve("rel-codex"));
   assert.equal(loginCalls[0]?.env.HOME, path.resolve("rel-home"));
 });
@@ -1372,10 +1314,6 @@ test(
       env: { HOME: "/home/alice", PATH: "/usr/bin:/bin" },
       now: () => 0,
       runLoginStatus: async () => ({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" }),
-      // Real timer by design: the deadline race is wall-clock behavior. The
-      // exec "child" ignores the abort signal (like one already mid-close)
-      // and settles 35ms after its own 475ms budget — past the caller's
-      // 500ms deadline but inside the 25ms settle grace (T=500 -> 25 headroom).
       runCodexExec: (request) => {
         const execTimeoutMs = request.timeoutMs;
         if (execTimeoutMs === undefined) {

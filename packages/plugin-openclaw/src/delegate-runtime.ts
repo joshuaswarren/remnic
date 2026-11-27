@@ -1,26 +1,3 @@
-/**
- * Delegate bridge runtime (issue #2120).
- *
- * When bridge mode is `delegate`, the plugin does NOT construct the embedded
- * orchestrator. Instead it backs the core memory loop with the standalone
- * daemon's HTTP API — the same surface the Claude Code / Codex hooks and the
- * pi extension already use:
- *
- *   - memory injection    → POST /engram/v1/recall (before_prompt_build)
- *   - turn capture        → POST /engram/v1/observe (agent_end, last turn)
- *   - compaction/reset    → POST /engram/v1/lcm/compaction/flush
- *
- * Delegate also registers the host memory-capability surface (prompt builder,
- * runtime, flush plan, public artifacts) and a support-passport model
- * service. Those still call the daemon; this file does not start a second
- * orchestrator.
- *
- * Still embedded-only: tool and CLI registration, heartbeat/dreams surfaces,
- * hourly summary crons. The daemon already exposes the tool surface over
- * HTTP/MCP. That keeps a co-located gateway from running a second
- * orchestrator over the daemon's memory corpus (double maintenance crons,
- * duplicate extraction load, shared SQLite contention).
- */
 
 
 import path from "node:path";
@@ -149,7 +126,6 @@ export interface DelegateHookApi extends DelegateCapabilityApi {
     handler: (event: Record<string, unknown>, ctx: Record<string, unknown>) => unknown,
     opts?: { timeoutMs?: number },
   ): void;
-  // Method syntax (bivariant params) so the real OpenClaw api — whose
   // builder parameter is a wider SDK union — remains assignable.
   registerMemoryPromptSection?(builder: (params: { sessionKey?: string }) => string[] | null): void;
   registerTool?(tool: Record<string, unknown>, opts?: { name?: string }): void;
@@ -218,16 +194,13 @@ export function registerDelegateRuntime(
     }
   }
 
-  // Session-scoped cache of precomputed recall lines, mirroring the embedded
   // pre-compute-then-consume contract: the recall hook fills it, the
   // synchronous section builder consumes (and evicts) it, and the capability's
   // prompt builder only peeks so the two cannot double-consume. Declared
   // outside the injection gate so the capability can be registered either way.
   const promptLinesBySession = new Map<string, string[]>();
-  // Embedded zero-limit contract: recallBudgetChars === 0 disables injection.
   const promptInjectionEnabled = options.allowPromptInjection && options.recallBudgetChars !== 0;
   const useSectionBuilder = typeof api.registerMemoryPromptSection === "function";
-  // Only a SECTION-builder host (registerMemoryPromptSection, OpenClaw 1.x)
   // gets the pre-compute-then-consume contract: its builder runs after this
   // hook and injects the cached lines. OpenClaw 2.0 removed that API — the
   // capability's synchronous promptBuilder is read during host prompt
@@ -236,13 +209,11 @@ export function registerDelegateRuntime(
   // hosts the hook returns the injection itself.
   const cachePromptLines = useSectionBuilder;
 
-  // Capability searches and explicit tool reads scope through the SAME
   // per-session binding history the hooks use (the non-explicit branch of
   // sessionNamespaceFrom): the host hands the runtime a sessionKey but no
   // event/ctx to read an explicit namespace from, so the remembered binding —
   // else the registration-wide fallback — is the correct scope.
   const resolveSearchNamespace = async (sessionKey: unknown): Promise<string | undefined> => {
-    // A non-STRING key from the untyped host must not reach the binding
     // store: its `encodeURIComponent` would coerce `123` to `"123"` and the
     // search would inherit the binding of a distinct, string-keyed session —
     // another tenant's namespace whenever the delegate token can read both.
@@ -253,7 +224,6 @@ export function registerDelegateRuntime(
     }
     return namespace.trim() || undefined;
   };
-  // Passive (slot not owned) still serves the explicit tools, like embedded:
   // the capability is BUILT for their search manager and scope resolver but
   // never registered with the host, which keeps the memory slot untouched.
   const capabilityOptions: DelegateCapabilityOptions = {
@@ -261,13 +231,11 @@ export function registerDelegateRuntime(
     target,
     namespace,
     resolveSearchNamespace,
-    // The daemon's own namespace-aware probe, so a substituted default is
     // proven usable before the first search rather than 403-ing on it.
     verifyNamespaceAuthorization: async (candidate, timeoutMs, operations) => {
       const probe = await probeDelegateAuthorization(
         target,
         candidate,
-        // What the caller is about to do. A token that grants recall/observe/
         // flush but not memory_search must not have those rejected locally.
         (operations as readonly DelegateAuthorizationOperation[] | undefined) ??
           DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS,
@@ -279,7 +247,6 @@ export function registerDelegateRuntime(
     workspaceDir: options.capability.workspaceDir,
     agentIds: options.capability.agentIds,
     allowPromptInjection: promptInjectionEnabled,
-    // Peek only. The section builder's own builder function owns eviction,
     // and on hosts without one (OpenClaw 2.0) the hook never caches — it
     // injects directly — so this can never double-inject behind the hook.
     readPromptLines: (sessionKey) => promptLinesBySession.get(sessionKey) ?? null,
@@ -312,7 +279,6 @@ export function registerDelegateRuntime(
     );
     return;
   }
-  // Detached observe POSTs, per session (see `agent_end`). A flush for the
   // same session waits behind them so a turn is buffered before it is flushed.
   const observeChains = new Map<string, Promise<void>>();
   /** Session -> token owning its deferred flush (see the flush handler). */
@@ -330,18 +296,15 @@ export function registerDelegateRuntime(
       { prompt: string; lines: string[]; degradation?: RecallContextDegradation } | undefined
     > => {
       const sessionKey = sessionKeyFrom(event, ctx);
-      // Evict BEFORE the short-query exit: a turn whose prompt construction
       // aborted leaves lines behind, and returning early without clearing
       // would inject the PREVIOUS query's memory into this prompt.
       if (cachePromptLines) promptLinesBySession.delete(sessionKey);
       if (query.length < 5) return undefined;
-      // The host abandons this hook at `hookTimeoutMs`, so namespace
       // resolution and the recall POST share ONE deadline rather than each
       // taking its own full timeout and together overrunning it.
       const promptDeadline = Date.now() + Math.min(options.hookTimeoutMs, options.recallTimeoutMs);
       const promptRemaining = (): number => promptDeadline - Date.now();
       try {
-        // Sessions keyed as spawned subagents skip unsolicited recall: the
         // hook payload exposes no deeper isolation discriminator, and
         // injecting distilled memory behind the host's back defeats
         // fresh-eyes isolation (issue #3142). Upstream classifies these
@@ -383,13 +346,11 @@ export function registerDelegateRuntime(
               query,
               sessionKey,
               mode: "auto",
-              // The daemon clamps its outer deadline to this (issue #3499):
               // a recall cannot outlive the hook budget the host gave us.
               deadlineMs: promptDeadline,
               ...(cwd ? { cwd } : {}),
               ...(options.projectTag ? { projectTag: options.projectTag } : {}),
             },
-            // ONE deadline for the whole hook: health resolution followed by
             // a full-timeout recall could otherwise run past `hookTimeoutMs`
             // and have the host abandon it with nothing injected.
             (explicit) =>
@@ -424,7 +385,6 @@ export function registerDelegateRuntime(
       const recalled = await recallContext(recallQueryFrom(event, options.cleanUserMessage), event, ctx);
       if (!recalled) return undefined;
       if (cachePromptLines) {
-        // A registered section builder injects; the hook only pre-computes.
         // Returning injection fields here too would double-inject.
         promptLinesBySession.set(sessionKeyFrom(event, ctx), recalled.lines);
         return undefined;
@@ -439,7 +399,6 @@ export function registerDelegateRuntime(
       (event, ctx) => recallHandler(event, ctx),
       { timeoutMs: options.hookTimeoutMs },
     );
-    // No `registerMemoryPromptPreparation`: that OpenClaw 2.0 step runs BEFORE
     // `before_prompt_build` and is handed only session/agent ids — never the
     // `runtime.agent.session.namespace` this turn binds — so on a rebinding
     // turn it could only recall the PREVIOUS scope into the new one. The hook
@@ -454,7 +413,6 @@ export function registerDelegateRuntime(
         },
         { id: "remnic-delegate-memory", label: "Remnic Memory Context (delegate)" },
       );
-      // OpenClaw 1.x-only seam; bound to a local so ClawHub's static
       // `api.register*(` scan does not flag this guarded call on 2.0 hosts.
       const registerSection = api.registerMemoryPromptSection;
       registerSection.call(api, memoryBuildFn);
@@ -468,7 +426,6 @@ export function registerDelegateRuntime(
   api.on("agent_end", async (event, ctx) => {
     if (event.success !== true || !Array.isArray(event.messages)) return;
     if (event.messages.length === 0) return;
-    // Mirror the embedded heartbeat gate: heartbeat-triggered turns are
     // operational chatter, not user memory.
     if (
       options.gateHeartbeatTurns &&
@@ -498,7 +455,6 @@ export function registerDelegateRuntime(
     const cwd = cwdFrom(event, ctx, options.cwd);
     let scopedNamespace: string | undefined;
     try {
-      // Awaited: the binding store is local, and the session's namespace must
       // be durable before the next hook on this session reads it.
       scopedNamespace = await sessionNamespaceFrom(
         sessionKey,
@@ -511,7 +467,6 @@ export function registerDelegateRuntime(
       log.warn(`delegate observe failed: ${String(err)}`);
       return;
     }
-    // The daemon call is DETACHED from the hook. A daemon that accepts the
     // connection and never answers would otherwise hold the host's agent_end
     // for the whole observe timeout on every turn; the turn capture is not
     // worth that, and its result feeds nothing the host waits for. Per-session
@@ -607,7 +562,6 @@ export function registerDelegateRuntime(
   ): Promise<boolean> => {
     try {
       const deadline = Date.now() + options.flushTimeoutMs;
-      // The floor of 1 keeps a doomed POST from being sent with a zero timeout
       // (which some clients read as "no timeout"), but it must not disguise a
       // spent deadline from callers that can legitimately SKIP work.
       const remainingTimeout = (): number => Math.max(1, deadline - Date.now());
@@ -617,7 +571,6 @@ export function registerDelegateRuntime(
         log.warn("delegate flush skipped: lifecycle event has malformed session key");
         return false;
       }
-      // The session's last turns may still be on their way to the daemon
       // (`agent_end` detaches the observe POST). Flushing ahead of them leaves
       // them buffered, but the drain cannot spend more than half the lifecycle
       // budget or the flush has nothing left — so when the QUEUE outlasts the
@@ -632,7 +585,6 @@ export function registerDelegateRuntime(
           drainDeadline.promise.then(() => false),
         ]);
         clearTimeout(timer);
-        // One follow-up per session, draining the whole queue — the ended
         // generation's late turns AND anything observed after the hook, since
         // the daemon buffers per session and abandoning the follow-up would
         // strand the ended generation until a lifecycle event that may never
@@ -640,7 +592,6 @@ export function registerDelegateRuntime(
         // turns is not. It flushes off a scope-neutral event, so namespaces
         // come from the bindings, not this event's captured metadata.
         if (!drained && !followUpFlushSessions.has(sessionKey)) {
-              // Ownership is a TOKEN, not mere presence: the release below precedes
           // the flush, that flush can install a successor, and an
           // unconditional clear would stack a second overlapping drain.
           const followUp = {};
@@ -652,7 +603,6 @@ export function registerDelegateRuntime(
           };
           void pendingObserve
             .then(async () => {
-              // ponytail: 8 rounds is the ceiling on ONE follow-up — a session
               // observing turns faster than they drain must not hold this
               // callback open forever.
               for (let round = 0; round < 8; round += 1) {
@@ -660,7 +610,6 @@ export function registerDelegateRuntime(
                 if (queued === undefined) break;
                 await queued;
               }
-              // Released BEFORE the flush: when the queue outlasted those
               // rounds, that flush's drain must be free to chain the NEXT
               // follow-up or the remainder stays buffered past `session_end`.
               // Each successor pays a full drain window, so a busy session is
@@ -679,7 +628,6 @@ export function registerDelegateRuntime(
         namespace,
         namespaceBindings,
       );
-      // BEFORE the transcript flush, so the host's durable notes and the
       // transcript reach the daemon in the order they were produced. A failure
       // here must not abort the flush that follows.
       try {
@@ -688,11 +636,9 @@ export function registerDelegateRuntime(
           serviceId: options.serviceId,
           workspaceDir: cwdFrom(event, ctx, options.capability.workspaceDir),
           sessionKey,
-          // The session's CURRENT binding, which is the last entry of the
           // ordered history — `namespaces[0]` is where it started, so a
           // rebound session would file new notes under the previous tenant.
           namespace: namespaces.at(-1),
-          // Re-read per chunk, not captured once: several posts must share
           // the flush's remaining budget rather than each taking it whole.
           remainingTimeoutMs: remainingBudget,
         });
@@ -705,7 +651,6 @@ export function registerDelegateRuntime(
           options.serviceId,
           "/engram/v1/lcm/compaction/flush",
           await withNamespace(sessionNamespace, { sessionKey }, (explicit) =>
-            // Inside the flush's SHARED deadline: a health probe started here
             // with its own full timeout would overrun the hook.
             capability.resolveScopedNamespace(explicit, remainingBudget(), [
               "lcm_compaction_flush",
@@ -722,7 +667,6 @@ export function registerDelegateRuntime(
             outcome.value.flushed === true,
         );
       };
-      // The probe is an OPTIMIZATION (one batched request instead of N), so it
       // gets at most half of what is left: a cold `/engram/v1/capabilities`
       // stalling out must not hand the fallback flush a spent deadline.
       if (namespaces.length <= 1 || (await supportsBatchFlush(Math.max(1, Math.floor(remainingBudget() / 2))))) {
@@ -730,7 +674,6 @@ export function registerDelegateRuntime(
           const response = await flushNamespace(namespaces[0]);
           return response !== null && response.flushed === true;
         }
-        // Each entry goes through the SAME resolver as the singular flush and
         // every other delegate call, so a batch cannot widen scope where a
         // one-at-a-time flush would refuse. The RESOLVED list is what the
         // daemon echoes, so it is also what the response is validated against.
@@ -747,7 +690,6 @@ export function registerDelegateRuntime(
             options.serviceId,
             "/engram/v1/lcm/compaction/flush",
             { sessionKey, namespaces: requestNamespaces },
-            // Half of what is left, like the support probe: the batch is an
             // optimization whose failure path is `flushIndividually`, and one
             // that stalled having spent everything would leave those singular
             // flushes the 1ms floor and buffer the turns anyway.
@@ -850,33 +792,23 @@ export interface MaybeRegisterDelegateOptions {
 function activeDelegateAuthorizationOperations(
   options: MaybeRegisterDelegateOptions,
 ): readonly DelegateAuthorizationOperation[] {
-  // `recall` is exercised only when prompt injection is on; observe, flush,
   // and the capability's memory_search always are. Filter by name rather than
   // slicing so reordering the list cannot silently drop the wrong operation.
   return options.allowPromptInjection && options.recallBudgetChars !== 0
     ? DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS
     : DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS.filter((operation) => operation !== "recall");
 }
-// Mirrors the embedded runtime's per-api hook dedup (globalThis HOOK_APIS
 // WeakSet), scoped per serviceId: a migration install can register BOTH the
 // canonical and legacy plugin ids against the same api object, and each
 // service must get its own binding exactly once (double-register of one
 // service would double-fire every handler).
 const delegateHookApiServices = new WeakMap<object, Set<string>>();
-// Service registration can span distinct OpenClaw api objects. Keep the active
 // service IDs process-scoped so migration callbacks see sibling registrations.
 const delegateActiveServiceIds = new Set<string>();
-// Apis that previously fell back to embedded because the daemon was down. A
 // later register() on the SAME api must NOT switch to delegate — the embedded
 // hooks from the fallback are still bound (OpenClaw exposes no unregister), so
 // switching would stack both memory paths (double recall/observe/flush).
 const delegateEmbeddedFallbackApis = new WeakSet<object>();
-/**
- * Apis where SOME service has bound delegate hooks. The canonical and legacy
- * plugin IDs register separately against one api, and those hooks serve every
- * session on it — so once delegate is established the sibling must reuse it
- * rather than bind an embedded runtime alongside.
- */
 const delegateBoundApis = new WeakSet<object>();
 const delegateAuthorizationPreflightServices = new WeakMap<object, Set<string>>();
 
@@ -918,7 +850,6 @@ export function maybeRegisterDelegateRuntime(
     },
   },
 ): boolean {
-  // BEFORE any health-dependent resolution: if this service already has
   // delegate hooks on this api, they are still attached (OpenClaw exposes no
   // unregister). Re-probing could resolve `embedded` on a transient daemon
   // failure, and returning false would then stack embedded hooks on top of
@@ -930,7 +861,6 @@ export function maybeRegisterDelegateRuntime(
     );
     return true;
   }
-  // BEFORE any health-dependent resolution. The result is already irrevocably
   // embedded on this api, so running `auto`'s synchronous endpoint walk first
   // would let a stalling endpoint block every reload and sibling registration
   // for the full configured timeout to reach a foregone conclusion.
@@ -943,7 +873,6 @@ export function maybeRegisterDelegateRuntime(
   let bridge: BridgeConfig;
   let bridgeHealthTimeoutMs: number;
   try {
-    // Parsed BEFORE mode resolution: `auto` probes the daemon inside
     // resolveBridgeMode and must honor the configured timeout.
     bridgeHealthTimeoutMs = parseOpenClawBridgeConfig({
       bridgeHealthTimeoutMs: options.bridgeHealthTimeoutMs,
@@ -955,18 +884,15 @@ export function maybeRegisterDelegateRuntime(
         log.info(`[${options.serviceId}] bridge mode auto: staying embedded — ${reason}`),
     });
   } catch (err) {
-    // An invalid bridgeMode or health timeout (config typo or bad env
     // override) must not abort the whole plugin registration — reject LOUDLY,
     // then run embedded so the deployment keeps its memory loop (AGENTS.md §4:
     // side effects must not crash the main flow).
-    //
     const wantedDelegate = requestedDelegate(options.configBridgeMode);
     log.error(
       wantedDelegate
         ? `${String(err)} — falling back to the embedded runtime`
         : `${String(err)} — the deployment is embedded, so this only affects delegate mode`,
     );
-    // Returning `false` has the caller bind the embedded runtime on this api,
     // and OpenClaw exposes no unregister — so the api is irrevocably embedded
     // whatever the deployment MEANT. Recording that is what stops a later
     // register() (value corrected, or bridgeMode flipped to delegate) from
@@ -978,7 +904,6 @@ export function maybeRegisterDelegateRuntime(
     return false;
   }
   if (bridge.mode !== "delegate") {
-    // A SIBLING service (canonical + legacy plugin IDs register separately
     // against one api) may already have delegate hooks bound here, and those
     // serve every session on it. Reporting embedded now would have the caller
     // bind an embedded runtime BESIDE them — two memory paths over one corpus,
@@ -991,11 +916,9 @@ export function maybeRegisterDelegateRuntime(
       );
       return true;
     }
-    // The caller will bind embedded hooks on this api (unless passive, which
     // binds nothing and must not poison a later delegate registration).
     // Record active registers so a later reload that flips to delegate on the
     // SAME api stays embedded instead of stacking both memory paths.
-    //
     // This is deliberate for `auto` too. Once embedded hooks are bound there is
     // no way to take them off — OpenClaw exposes no unregister — so adopting
     // delegate on a later register() of the same api would run BOTH memory
@@ -1014,20 +937,17 @@ export function maybeRegisterDelegateRuntime(
     }
     return false;
   }
-  // register() is synchronous, so the preflight uses the bridge's
   // worker-backed sync health check. `auto` already proved the daemon healthy
   // as part of its corpus-identity probe, so re-checking would let one
   // registration spend twice `bridgeHealthTimeoutMs` — which the config
   // documents as the TOTAL preflight budget. Only the explicit `delegate`
   // path, which has probed nothing yet, pays for the liveness request.
   if (!bridge.healthVerified) {
-    // The configured interface address is tried only after loopback refuses:
     // a daemon bound to exactly that address answers no loopback dial.
     const hosts =
       bridge.daemonHostFallback === undefined
         ? [bridge.daemonHost]
         : [bridge.daemonHost, bridge.daemonHostFallback];
-    // ONE preflight budget across both dials, as the auto walk already does:
     // a loopback that accepts and stalls must not let the fallback spend the
     // documented total again.
     const preflightDeadline = Date.now() + bridgeHealthTimeoutMs;
@@ -1052,7 +972,6 @@ export function maybeRegisterDelegateRuntime(
       bridge = { ...bridge, daemonHost: healthyHost };
     }
     if (healthyHost === undefined) {
-      // Same sibling rule as the embedded-resolution branch: when delegate hooks
       // are already bound on this api by the canonical/legacy counterpart, a
       // transient probe failure here must not hand the caller an embedded
       // runtime to stack beside them.
@@ -1063,7 +982,6 @@ export function maybeRegisterDelegateRuntime(
         );
         return true;
       }
-      // Record the fallback so a later register() on the same api does not switch
       // to delegate and stack memory paths on top of the embedded hooks just bound.
       delegateEmbeddedFallbackApis.add(api);
       log.error(
@@ -1073,19 +991,16 @@ export function maybeRegisterDelegateRuntime(
       return false;
     }
   }
-  // Passive mode attaches no hooks — recording it as bound would make a later
   // ACTIVE register() on the same api skip both delegate and embedded paths.
   if (!options.passive) {
     (boundServices ?? delegateHookApiServices.set(api, new Set()).get(api))?.add(
       options.serviceId,
     );
     delegateActiveServiceIds.add(options.serviceId);
-    // Delegate is now the api's established mode, so a sibling service
     // registering later reuses these hooks instead of binding embedded ones
     // beside them. Passive registrations bind nothing and must not claim it.
     delegateBoundApis.add(api);
   }
-  // Embedded toggle-store parity: same primary path (per-service plugin state)
   // and optional bundled active-memory secondary read.
   const toggleStore = options.sessionTogglesEnabled
     ? createFileToggleStore(

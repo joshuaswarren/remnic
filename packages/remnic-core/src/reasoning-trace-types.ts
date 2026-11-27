@@ -1,26 +1,15 @@
-/**
- * Reasoning-trace memory structural types (issue #564).
- *
- * Captures stored solution chains / chain-of-thought the user walked through
- * to solve a problem. Traces have an ordered list of steps, a final answer,
- * and an optional observed outcome.
- */
 
 export interface ReasoningTraceStep {
-  /** 1-based ordinal within the trace. */
   order: number;
-  /** Human-readable description of what happened at this step. */
   description: string;
 }
 
 export interface ReasoningTraceStructuredData {
   steps: ReasoningTraceStep[];
   finalAnswer: string;
-  /** Optional confirmation of how the answer played out in practice. */
   observedOutcome?: string;
 }
 
-/** Normalize loose extraction JSON into ReasoningTraceStep records. */
 export function normalizeReasoningTraceSteps(raw: unknown): ReasoningTraceStep[] {
   if (!Array.isArray(raw)) return [];
   const out: ReasoningTraceStep[] = [];
@@ -63,10 +52,6 @@ export function normalizeReasoningTrace(raw: unknown): ReasoningTraceStructuredD
       : typeof o.final_answer === "string"
       ? (o.final_answer as string).trim()
       : "";
-  // Prompts describe reasoning_trace as requiring ≥2 ordered steps + a final
-  // answer. Rejecting one-step payloads here keeps the category semantically
-  // distinct from ordinary `decision` facts and prevents malformed traces
-  // from sneaking through loose local/direct extraction JSON.
   if (steps.length < 2 || finalAnswer.length === 0) return null;
   const observedRaw =
     typeof o.observedOutcome === "string"
@@ -158,9 +143,6 @@ export function parseReasoningTraceFromBody(content: string): ReasoningTraceStru
     });
   }
 
-  // Honor the >=2 ordered-steps invariant enforced everywhere else in the
-  // pipeline (prompts, normalizer, schema). A single-step manually-edited
-  // or corrupt file should not round-trip back in as a reasoning_trace.
   if (steps.length < 2) return null;
 
   const finalStart = (finalMatch.index ?? 0) + finalMatch[0].length;
@@ -190,24 +172,11 @@ export function parseReasoningTraceFromBody(content: string): ReasoningTraceStru
   return { steps, finalAnswer, observedOutcome };
 }
 
-/**
- * Heuristic detector for whether a user message contains a chain-of-thought /
- * solution trace that should be extracted. This is intentionally conservative:
- * we require at least two explicitly-ordered steps and some form of final
- * answer / resolution. Used by the extraction pipeline to decide whether to
- * even consider emitting a reasoning_trace fact, so false positives are more
- * costly than false negatives.
- */
 export function looksLikeReasoningTrace(message: string): boolean {
   if (typeof message !== "string") return false;
   const text = message.trim();
   if (text.length < 80) return false;
 
-  // Count lines that carry at least one step marker, not the total number of
-  // marker matches. Summing across multiple regexes can let a single line
-  // contribute two "steps" (e.g. "Step 1: First,…" matches both patterns),
-  // which weakens the "false positives > false negatives" bias. Per-line
-  // counting keeps the gate symmetric with real step structure.
   const stepMarkerRes = [
     /\bstep\s+\d+\s*[:.\-]/i,
     /^\s*\d+[.)]\s+\S/,
@@ -223,9 +192,6 @@ export function looksLikeReasoningTrace(message: string): boolean {
   }
   if (stepCount < 2) return false;
 
-  // Final-answer / resolution marker. Split into two checks so the trailing
-  // `\b` on the word-final alternatives doesn't accidentally require a word
-  // character after `answer:` / `result:` (both end in a non-word `:`).
   const wordFinalMarker =
     /\b(final answer|so the answer|therefore|conclusion|in the end|ended up|picked|chose)\b/i;
   const colonMarker = /\b(answer:|result:)/i;

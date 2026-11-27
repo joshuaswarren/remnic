@@ -25,7 +25,6 @@ export class ClaudeCodeMemoryExtensionPublisher implements MemoryExtensionPublis
   };
 
   async resolveExtensionRoot(): Promise<string> {
-    // Claude Code does not have an extension directory yet.
     return "";
   }
 

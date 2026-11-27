@@ -1,20 +1,3 @@
-/**
- * Conversation index coordinator — extracted from the orchestrator (issue #1526).
- *
- * Owns the conversation-index subsystem: semantic recall over past
- * conversations, plus the build / update / rebuild / inspect / health
- * lifecycle of the on-disk chunk store and its pluggable search backend
- * (qmd or faiss). Behavior-preserving move from orchestrator.ts — no logic
- * changes; the orchestrator constructs one instance and keeps thin
- * delegating methods so existing call sites and tests that exercise the
- * private API continue to work.
- *
- * The backend and transcript are read through getters (not captured at
- * construction) so that post-construction reassignment of the orchestrator's
- * live fields — exercised by the conversation-index integration tests and by
- * backend swap-in at deferred-init time — is honored. This mirrors the
- * TierMigrationCoordinator accessor pattern.
- */
 
 import { readdir } from "node:fs/promises";
 import path from "node:path";
@@ -34,13 +17,6 @@ import type { ConversationSearchResult } from "../conversation-index/search.js";
 import type { TranscriptManager } from "../transcript.js";
 import type { PluginConfig } from "../types.js";
 
-/**
- * Coordinator for the conversation-index subsystem.
- *
- * Holds the per-session last-update timestamps (previously an orchestrator
- * field) and delegates chunk building / persistence / embedding to the
- * configured backend.
- */
 export class ConversationIndexCoordinator {
   private readonly config: PluginConfig;
   private readonly originAuthorityEnabled: boolean;
@@ -74,7 +50,6 @@ export class ConversationIndexCoordinator {
     return [];
   }
 
-  /** Render conversation-recall search hits as a budgeted markdown section. */
   formatRecallSection(
     results: ConversationSearchResult[],
     maxChars: number,
@@ -103,7 +78,6 @@ export class ConversationIndexCoordinator {
     return used > 0 ? lines.join("\n") : null;
   }
 
-  /** Recursively count `.md` chunk documents under a directory. */
   async countChunkDocs(dir: string): Promise<number> {
     try {
       const entries = await readdir(dir, { withFileTypes: true });
@@ -124,7 +98,6 @@ export class ConversationIndexCoordinator {
     }
   }
 
-  /** Read recent transcript entries and chunk them for indexing. */
   async buildChunks(
     sessionKey?: string,
     hours: number = 24,

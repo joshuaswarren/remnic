@@ -1,10 +1,3 @@
-/**
- * Unit coverage for offline-sync-upload-staging.ts (issue #3164): the real
- * on-disk staging layout under a temp archive root — content-keyed spools,
- * chunk offset contiguity, crash debris reclamation, symlink defenses, and
- * the mid-flight reset a second writer performs at offset 0. These functions
- * are also the write path for remote-authoritative runtime state (#3165).
- */
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -49,7 +42,6 @@ function uploadsDir(abs: string): string {
   return path.join(abs, SYNC_INTERNAL_DIR, "uploads");
 }
 
-/** Drive an upload the way applyOfflineSyncFileContentChunk does, with a fixed chunk size. */
 async function stagedUpload(options: {
   root: SafeArchiveRoot;
   abs: string;

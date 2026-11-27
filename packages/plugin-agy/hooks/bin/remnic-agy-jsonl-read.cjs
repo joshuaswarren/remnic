@@ -1,6 +1,5 @@
 "use strict";
 
-// Bounded read for agy JSONL transcripts (#3454 CodeRabbit): one descriptor,
 // never more than maxBytes + 1 bytes returned. fs.readSync may return short of
 // the request before EOF (network filesystems), so loop until a read returns
 // zero or the buffer is full. The caller rejects when the result exceeds

@@ -58,15 +58,6 @@ function enoent(): NodeJS.ErrnoException {
   return err;
 }
 
-/**
- * Inline fake of the engine-layer `MeetingMemoryGenerator` SEAM (issue #1900).
- * The deterministic engine depends ONLY on this interface — never on the
- * memory-gen module — so the engine's build tests assert SEAM behavior with a
- * recording fake: it captures the `{ built, removedIds, unchangedIds, updatedIds }`
- * handed to it and returns a canned `MeetingMemoryOutcome`. Real memory-generation
- * behavior (episode/fact idempotency, trust-gating, retract-on-delete,
- * off/review/smart) is exercised in the surface slice against the concrete generator.
- */
 interface RecordedSeamCall {
   built: readonly MeetingRecord[];
   removedIds: readonly string[];
@@ -82,8 +73,6 @@ class FakeMemoryGenerator implements MeetingMemoryGenerator {
   }
 }
 
-/** Seam fake whose `onRecordsBuilt` REJECTS — to prove the builder isolates a
- *  generator failure the way it isolates a reindex-hook failure. */
 class ThrowingMemoryGenerator implements MeetingMemoryGenerator {
   async onRecordsBuilt(): Promise<MeetingMemoryOutcome> {
     throw new Error("secret episode extractor stack trace");
@@ -212,7 +201,6 @@ test("full — app+audio with activity fuses transcript and screen context", asy
   assert.match(raw!, /## Screen context/);
   assert.match(raw!, /Preview: Q3-roadmap\.pdf/);
 
-  // Re-build with the same data is idempotent (nothing rewritten).
   const again = await b.buildDay(DATE);
   assert.equal(again.built, 0);
   assert.equal(again.skipped, 1);
@@ -264,7 +252,6 @@ test("rebuild reconciles stale same-day records whose meeting no longer detects"
   const START2 = "2026-03-10T16:00:00.000Z";
   const END2 = "2026-03-10T17:00:00.000Z";
 
-  // First build: a single meeting in the 14:00 window.
   const firstData: MeetingDayData = {
     detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
     conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
@@ -274,8 +261,6 @@ test("rebuild reconciles stale same-day records whose meeting no longer detects"
   const staleId = firstSummary.meetings[0]!.id;
   assert.deepEqual(await store.listMeetingIds(DATE), [staleId]);
 
-  // Second build of the SAME day: the meeting moved to a different window, so a
-  // different stable id is produced. The old record must be reconciled away.
   const secondData: MeetingDayData = {
     detection: {
       date: DATE,
@@ -303,9 +288,6 @@ test("rebuild preserves the id of an overlapping shifted-start meeting", async (
   const firstSummary = await new MeetingsBuilder({ source: fixedSource(first), store, config: cfg }).buildDay(DATE);
   const originalId = firstSummary.meetings[0]!.id;
 
-  // A resync shifts the start by 5 min (richer audio boundary) → the detector
-  // mints a NEW start-anchored id, but the window still overlaps the stored
-  // record, so the builder must ADOPT the original id, not delete + recreate.
   const shiftedStart = "2026-03-10T14:05:00.000Z";
   const second: MeetingDayData = {
     detection: { date: DATE, appSpans: [appSpan("Zoom", shiftedStart, END)], audioWindows: [audioWin("desktop", shiftedStart, END)] },
@@ -337,7 +319,6 @@ test("reindex hook fires only when records change", async () => {
   assert.equal(first.built, 1);
   assert.equal(calls.length, 1, "reindex fires after new records are written");
   assert.equal(calls[0]?.built, 1);
-  // Idempotent rebuild: nothing changed → hook must NOT fire again.
   const second = await builder.buildDay(DATE);
   assert.equal(second.built, 0);
   assert.equal(second.removed.length, 0);
@@ -358,11 +339,8 @@ test("finding 3 — a rejecting reindex hook is isolated with a SANITIZED warnin
   });
   const summary = await builder.buildDay(DATE);
   assert.equal(summary.built, 1, "records persist even though reindex threw");
-  // The warning is surfaced (the CLI prints it) but must NOT leak the raw error
-  // message — that internal detail goes to the logs, not stdout.
   assert.match(summary.reindexWarning ?? "", /reindex hook failed after records were persisted/);
   assert.doesNotMatch(summary.reindexWarning ?? "", /qmd|ECONNREFUSED|9999/i, "raw internal error text must not reach the surfaced warning");
-  // The record was still written to the store.
   assert.equal((await store.listMeetingIds(DATE)).length, 1);
 });
 
@@ -386,10 +364,6 @@ test("finding 6 — a marginally-overlapping different meeting does not adopt a 
   const firstSummary = await new MeetingsBuilder({ source: fixedSource(first), store, config: cfg }).buildDay(DATE);
   const staleId = firstSummary.meetings[0]!.id;
 
-  // A genuinely DIFFERENT meeting [14:55,16:00): 5 min overlap of a >= 60 min
-  // shorter window (not substantial), a different app AND source (no identity
-  // signal). It must NOT adopt the stored id and overwrite the other meeting's
-  // record — old is removed, new gets a fresh id.
   const OVERLAP_START = "2026-03-10T14:55:00.000Z";
   const LATER_END = "2026-03-10T16:00:00.000Z";
   const second: MeetingDayData = {
@@ -433,7 +407,6 @@ test("seam — the memory generator receives built records + removed ids and its
   assert.equal(gen.calls[0]?.built.length, 1, "the built records are handed to the generator");
   assert.equal(gen.calls[0]?.built[0]?.id, summary.meetings[0]?.id, "the same record ids flow through the seam");
   assert.deepEqual(gen.calls[0]?.removedIds, [], "no records were removed on a first build");
-  // The generator's returned counts fold verbatim into the day summary.
   assert.deepEqual(summary.episodes, { written: 1, skipped: 0 });
   assert.deepEqual(summary.facts, { llmInvoked: true, active: 2, review: 0, dropped: 0, skipped: 0, summariesWritten: 1 });
 });
@@ -478,9 +451,6 @@ test("seam — removed record ids are forwarded to the generator on a reconcilin
   const firstSummary = await new MeetingsBuilder({ source: fixedSource(first), store, config: cfg }).buildDay(DATE);
   const staleId = firstSummary.meetings[0]!.id;
 
-  // A non-overlapping later meeting replaces the first → the stale record is
-  // reconciled away, and its id must reach the generator so it can retire the
-  // removed meeting's memories.
   const LATER_START = "2026-03-10T16:00:00.000Z";
   const LATER_END = "2026-03-10T17:00:00.000Z";
   const second: MeetingDayData = {
@@ -501,7 +471,6 @@ test("seam — outcome.reindexNeeded fires the reindex hook even when no record 
     conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
   };
   const cfg = config();
-  // Seed the record so the second build leaves it unchanged (built == 0).
   await new MeetingsBuilder({ source: fixedSource(data), store, config: cfg }).buildDay(DATE);
 
   const calls: MeetingsDayBuildSummary[] = [];
@@ -546,9 +515,6 @@ test("finding 2 — a rejecting memory generator is isolated: records persist + 
     detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
     conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
   };
-  // The record-store writes complete BEFORE the generator runs, so a generator
-  // rejection must not lose them or fail the build — mirror the reindex-hook
-  // isolation. ThrowingMemoryGenerator throws a message with internal detail.
   const summary = await new MeetingsBuilder({
     source: fixedSource(data),
     store,
@@ -573,11 +539,6 @@ test("finding 4 — marginal overlap with a matching app+source still does NOT a
   const firstSummary = await new MeetingsBuilder({ source: fixedSource(first), store, config: cfg }).buildDay(DATE);
   const staleId = firstSummary.meetings[0]!.id;
 
-  // A genuinely DIFFERENT later meeting [14:55,16:00): only ~5 min overlap of a
-  // >= 60 min shorter window (~8%, marginal), but the SAME app (Zoom) AND the
-  // SAME transcript source (desktop) as the stored one. The coarse app/source
-  // identity signals must NOT license adopting the stale id across this thin
-  // sliver — the stale meeting is removed and the new one gets a fresh id.
   const OVERLAP_START = "2026-03-10T14:55:00.000Z";
   const LATER_END = "2026-03-10T16:00:00.000Z";
   const second: MeetingDayData = {
@@ -620,10 +581,6 @@ test("finding 5 — the seam forwards updatedIds when a record keeps its id but 
   assert.deepEqual(firstGen.calls[0]?.updatedIds, [], "a brand-new record is not an update");
   assert.deepEqual(firstGen.calls[0]?.unchangedIds, [], "a brand-new record is not unchanged");
 
-  // A resync shifts the start 5 min: the window overlaps substantially so the id
-  // is ADOPTED (kept), but the record content (window) changed, so it is rewritten
-  // under the SAME id. That id must reach the generator as an UPDATE so it can
-  // retract + regenerate the now-stale episode/summary memories.
   const shiftedStart = "2026-03-10T14:05:00.000Z";
   const second: MeetingDayData = {
     detection: { date: DATE, appSpans: [appSpan("Zoom", shiftedStart, END)], audioWindows: [audioWin("desktop", shiftedStart, END)] },
@@ -649,9 +606,6 @@ test("finding 6 — the seam forwards unchangedIds for an idempotent rebuild", a
   const id = firstSummary.meetings[0]!.id;
   assert.deepEqual(firstGen.calls[0]?.unchangedIds, [], "the first write is not unchanged");
 
-  // Second build with identical inputs: the record's contentHash is identical, so
-  // nothing is rewritten and the id is forwarded as UNCHANGED — the generator must
-  // skip all episode/summary work (no LLM re-run, no duplicate memories).
   const gen = new FakeMemoryGenerator({ reindexNeeded: false, warnings: [] });
   const secondSummary = await new MeetingsBuilder({ source: fixedSource(data), store, config: cfg, memoryGenerator: gen }).buildDay(DATE);
   assert.equal(secondSummary.built, 0, "nothing was rewritten on the idempotent rebuild");

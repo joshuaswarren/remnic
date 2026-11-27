@@ -53,16 +53,10 @@ export function registerTrainingExportAdapter(adapter: TrainingExportAdapter): v
   adapters.set(key, adapter);
 }
 
-/**
- * Retrieve a registered adapter by name, or `undefined` if not found.
- */
 export function getTrainingExportAdapter(name: string): TrainingExportAdapter | undefined {
   return adapters.get(name.trim());
 }
 
-/**
- * List the names of all registered adapters.
- */
 export function listTrainingExportAdapters(): string[] {
   return [...adapters.keys()];
 }

@@ -28,14 +28,6 @@ function asFsError(err: Error): FsError {
   return err;
 }
 
-/**
- * Case-independent, collision-free file name for a buffer key: the lowercase
- * hex SHA-256 of the key under a fixed prefix. Hex has no case and no path
- * characters, so `Session-A` and `session-a` get different names even on
- * case-insensitive filesystems, every key (short or long) lives in the same
- * naming domain, and the key itself is stored inside the file (loading never
- * inverts the hash).
- */
 export function bufferSessionFileName(key: string): string {
   return `s-${createHash("sha256").update(key).digest("hex")}.json`;
 }
@@ -57,7 +49,6 @@ export function legacyStateToEntries(state: BufferState): Map<string, BufferEntr
   return entries;
 }
 
-/** What a per-session file contains once parsed (written only by this module). */
 interface SessionFileBody {
   key?: string;
   turns?: BufferTurn[];
@@ -84,16 +75,6 @@ function entryFromBody(body: SessionFileBody): { key: string; entry: BufferEntry
   return { key: String(body.key), entry };
 }
 
-/**
- * One file per buffer session under `<stateDir>/buffer/`, so the observe hot
- * path persists only the session that changed. All writes happen under
- * SmartBuffer's serialized mutation chain (one writer per process).
- *
- * Sessions claimed by `remnic buffer drain` (see buffer-drain-claims.ts) are
- * owned by the drain: `save` hands the in-memory entry INTO the claim
- * (identity-deduped merge) instead of writing a session file, so a live
- * buffer owner can never resurrect claimed turns.
- */
 export class BufferSessionFiles {
   private dirVerified = false;
   private readonly claimsStore: BufferDrainClaims;
@@ -105,12 +86,10 @@ export class BufferSessionFiles {
     this.claimsStore = new BufferDrainClaims(stateDir, io);
   }
 
-  /** The drain-claim store for this state dir (CLI scan + claim ops). */
   get claims(): BufferDrainClaims {
     return this.claimsStore;
   }
 
-  /** Sync gate check: is this session claimed by a buffer drain? */
   isClaimed(key: string): boolean {
     return this.claimsStore.isClaimed(key);
   }
@@ -165,7 +144,6 @@ export class BufferSessionFiles {
     }
   }
 
-  /** Persist observe-buffer idempotency metadata (production storage path). */
   async saveAdmissionIdempotency(state: BufferState): Promise<void> {
     const keys = state.admissionIdempotency;
     if (!keys || Object.keys(keys).length === 0) {
@@ -185,12 +163,6 @@ export class BufferSessionFiles {
     );
   }
 
-  /**
-   * Refuse a symlinked buffer directory: following it would send buffered
-   * conversation data (and deletions) outside the memory root. One lstat of
-   * one directory, cached after it passes, so the observe path pays nothing
-   * per write; the cache is dropped on any failure.
-   */
   private async assertDirSafe(): Promise<void> {
     if (this.dirVerified) return;
     let stat: Stats | null = null;
@@ -205,22 +177,10 @@ export class BufferSessionFiles {
     this.dirVerified = stat !== null;
   }
 
-  /** Persist ONE session atomically. Compact JSON: machine-read state, and
-   * pretty-printing a large buffer costs CPU and bytes on every observe.
-   * A drain-claimed session is handed over instead (see class doc). */
   async save(key: string, entry: BufferEntryState): Promise<BufferSessionSaveOutcome> {
     if (this.isClaimed(key)) {
-      // Consume the tombstone ONLY when the drain finished (acked: extracted
-      // turns recorded, nothing pending, no lease). Partial `drained` just
-      // means chunks completed — the drainer may still be running, and
-      // releasing here would unlink its claim and turn its later writes into
-      // no-ops.
       if (await this.claimsStore.isDrained(key)) {
         const drained = await this.claimsStore.drainedTurns(key);
-        // The drain finished this session: the claim is a tombstone. Write
-        // the owner's fresh remainder back as a session file (the drained
-        // turns are subtracted here too, so a caller that did not subtract
-        // them cannot resurrect them) and release the tombstone.
         const fresh: BufferEntryState = { ...entry, turns: subtractBufferTurns(entry.turns, drained.turns) };
         if (entry.retainedTurns && entry.retainedTurns.length > 0) {
           fresh.retainedTurns = subtractBufferTurns(entry.retainedTurns, drained.retainedTurns);
@@ -253,7 +213,6 @@ export class BufferSessionFiles {
     await this.assertDirSafe();
     try {
       const dirents = await readdir(this.dir, { withFileTypes: true });
-      // Regular files only: a symlink inside the directory is never followed.
       return dirents.filter((d) => d.isFile() && d.name.endsWith(".json")).map((d) => d.name);
     } catch (err) {
       if (err instanceof Error && isMissing(asFsError(err))) return [];
@@ -261,8 +220,6 @@ export class BufferSessionFiles {
     }
   }
 
-  /** Read every per-session file. Corrupt files are skipped (and logged) so
-   * one bad file cannot nuke the other sessions' buffered turns. */
   private async readAll(): Promise<{ entries: Map<string, BufferEntryState>; fileCount: number }> {
     const names = await this.listFiles();
     const entries = new Map<string, BufferEntryState>();
@@ -277,8 +234,6 @@ export class BufferSessionFiles {
         }
         entries.set(parsed.key, parsed.entry);
       } catch (err) {
-        // A locked store or a wrong key is not a corrupt file: reading it as empty would let
-        // later saves replace the real encrypted session.
         if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
         log.warn(`buffer: skipping unreadable per-session buffer file ${name}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -314,12 +269,6 @@ export class BufferSessionFiles {
     }
   }
 
-  /**
-   * Load the whole buffer, migrating a legacy buffer.json once. A per-session
-   * file that parsed wins over the legacy snapshot (a crash mid-migration
-   * leaves exactly that pair); legacy entries without a usable file are
-   * written out, then the legacy file is retired. Both steps are idempotent.
-   */
   async load(): Promise<BufferState> {
     const { entries, fileCount } = await this.readAll();
     const legacy = await this.readLegacy(fileCount > 0);
@@ -348,12 +297,6 @@ export class BufferSessionFiles {
     };
   }
 
-  /**
-   * Reconcile the files with a WHOLE buffer state: write every entry, then
-   * delete files for keys no longer present. Writes first, deletes last: a
-   * crash leaves stale extra files (removed by the next reconcile) but never
-   * loses sessions the state says exist. Not on the observe hot path.
-   */
   async reconcile(state: BufferState): Promise<void> {
     const entries = legacyStateToEntries(state);
     const existing = await this.listFiles();

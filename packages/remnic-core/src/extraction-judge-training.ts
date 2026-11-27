@@ -82,8 +82,6 @@ function expandTilde(p: string): string {
 
 export function resolveTrainingDir(options: JudgeTrainingOptions): string {
   if (options.directory && options.directory.length > 0) {
-    // Expand `~` / `$HOME` in the override so operators can write the
-    // config as the user sees it (CLAUDE.md gotcha 17).
     return expandTilde(options.directory);
   }
   return path.join(homedir(), ".remnic", "judge-training");
@@ -168,7 +166,6 @@ export async function readJudgeTrainingPairs(
   const rows: JudgeTrainingPair[] = [];
   let malformed = 0;
   const resolvedDir = await realpath(dir);
-  // Sort so reads are deterministic across platforms.
   entries.sort();
   for (const name of entries) {
     if (!name.endsWith(".jsonl")) continue;

@@ -45,7 +45,6 @@ export interface ChunkProcessorDeps {
   assembler: ConversationAssembler;
   /** Resolve the STT model path; called per speech chunk and may throw when absent. */
   resolveModel: () => string;
-  /** Transcribe one WAV chunk into raw segments. */
   transcribe: (input: ChunkTranscribeInput) => Promise<TranscribedSegment[]>;
   /** Delete the raw WAV under retention once the chunk is durably persisted. */
   cleanupRawAudio: (event: ChunkEvent) => Promise<void>;
@@ -65,21 +64,12 @@ export interface ChunkProcessorDeps {
   diarizer?: SpeakerClusterer;
   /** Cross-channel dedup window in ms; defaults to the dedup module's tolerance. */
   dedupWindowMs?: number;
-  /**
-   * Bounded reorder window in ms for cross-channel arrival skew (issue
-   * #2145). A transcribed chunk is HELD until the newest observed chunk end
-   * is this far past its own end, then released oldest-first, so a delayed
-   * system chunk is assembled into the conversation it temporally belongs to
-   * rather than joined to a later mic chunk's. 0 (the default here, so
-   * existing callers are unchanged) releases every chunk on arrival.
-   */
   reorderWindowMs?: number;
   /** Reports a per-chunk failure; the chain keeps running afterwards. */
   onError?: (error: Error, event: ChunkEvent) => void;
 }
 
 export interface ChunkProcessor {
-  /** onChunk seam for `NativeRunnerOptions`. Never throws; failures route to `onError`. */
   enqueue(event: ChunkEvent): void;
   /** Resolve once the serialized chain has settled all enqueued chunks. */
   drain(): Promise<void>;
@@ -89,20 +79,6 @@ export interface ChunkProcessor {
 
 export { MAX_BUFFERED_CHUNKS, QUARANTINE_AFTER_FAILURES } from "./buffer-policy.js";
 
-/**
- * Stable chunk identity derived purely from the WAV path. Because it never
- * depends on a freshly-generated conversation id, the same chunk yields the
- * same idempotency key across process restarts.
- */
-/**
- * Stable per-segment idempotency key.
- *
- * Derived from the segment's CONTENT — its bounds and text — not its position.
- * An index is not an identity: a retranscription that changes segment
- * boundaries, or inserts a segment before a partially committed prefix, would
- * bind an existing key to different audio (issue #2145). Content survives
- * both, so a key always means the same bytes.
- */
 export function segmentStableKey(chunkId: string, segment: { startUtc: string; endUtc: string; text: string }): string {
   const digest = createHash("sha1")
     .update(`${segment.startUtc}\u0000${segment.endUtc}\u0000${segment.text}`)
@@ -111,14 +87,6 @@ export function segmentStableKey(chunkId: string, segment: { startUtc: string; e
   return `${chunkId}:h${digest}`;
 }
 
-/**
- * Marker key describing a chunk's WHOLE transcript.
- *
- * A segment count is too weak a manifest: a replay that returns the same
- * number of DIFFERENT segments would match it and let a partially applied
- * chunk be marked complete with mixed content. Hashing every segment key
- * catches both a shortened and a changed transcript (issue #2145).
- */
 export function transcriptManifestHash(
   chunkId: string,
   segments: readonly { startUtc: string; endUtc: string; text: string }[],
@@ -129,7 +97,6 @@ export function transcriptManifestHash(
     .slice(0, 16);
 }
 
-/** Fixed, indexed key holding a chunk's transcript manifest hash. */
 export function transcriptManifestKey(chunkId: string): string {
   return `${chunkId}:manifest`;
 }
@@ -146,7 +113,6 @@ interface BufferedChunk {
   built: Array<{ seg: AssemblySegment; raw: TranscribedSegment }>;
   /** Earliest segment start, or the chunk's own start when it is silent. */
   startMs: number;
-  /** Latest segment end, never earlier than the chunk's own end. */
   endMs: number;
   /**
    * Whether this chunk's transcript manifest is durably recorded. A chunk is
@@ -254,7 +220,6 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   // conversation that started after it. Chunks are held here until the newest
   // observed chunk end is `reorderWindowMs` past their own end, then released
   // oldest-first, so the assembler always sees a chronological stream.
-  //
   // A HELD chunk is not marked complete and keeps its WAV, so a crash before
   // release replays it from the raw audio — the same durability contract as
   // an untranscribed chunk.
@@ -575,7 +540,6 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // that each belong to ONE chunk and ONE conversation. The runs are already
     // in chronological order, so a conversation is only finalized once the
     // stream has truly moved past it.
-    //
     // Already-applied segments are dropped BEFORE the assembler sees them.
     // They live in a durable conversation already, so re-adding them would
     // either duplicate in-memory state or — if the assembler were rewound to

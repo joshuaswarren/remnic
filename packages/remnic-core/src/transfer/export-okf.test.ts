@@ -169,8 +169,6 @@ test("--namespace cannot escape the namespace root", async () => {
   const outDir = path.join(await mkdtemp(path.join(os.tmpdir(), "remnic-okf-nsout-")), "bundle");
   try {
     await seedStore(memoryDir);
-    // A raw path.join on the operator value used to resolve outside
-    // <memoryDir>/namespaces and export an arbitrary tree.
     for (const namespace of ["../../..", "../sibling", path.resolve(memoryDir)]) {
       await assert.rejects(
         () => exportOkfBundle({ memoryDir, namespace, outDir }),
@@ -204,8 +202,6 @@ test("a leftover backup directory does not block a forced export", async () => {
   try {
     await seedStore(memoryDir);
     await exportOkfBundle({ memoryDir, outDir });
-    // Simulate a crash between the two publish renames, or any directory a
-    // user happens to own at the old fixed backup path.
     const stale = `${outDir}.okf-prev`;
     await mkdir(stale, { recursive: true });
     await writeFile(path.join(stale, "keep.md"), "stale\n", "utf8");

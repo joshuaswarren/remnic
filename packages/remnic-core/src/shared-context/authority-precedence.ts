@@ -15,9 +15,7 @@ export { SHARED_AUTHORITIES as SHARED_AUTHORITY_CLASSES };
 export type { SharedAuthority as SharedAuthorityClass };
 
 export interface ResolveSharedAuthorityInput {
-  /** Raw authority value from an item's envelope, if any. */
   authority?: unknown;
-  /** Explicit opt-in required before "binding" is honored. */
   allowBinding?: boolean;
 }
 
@@ -33,29 +31,16 @@ function isKnownAuthority(value: string): value is SharedAuthority {
 
 
 export function resolveSharedAuthority(input: ResolveSharedAuthorityInput): SharedAuthority {
-  // Read the security switch ONCE. A getter (or a Proxy) can return undefined
-  // during validation and true at the decision, which would let binding
-  // through without a validated opt-in.
   const allowBinding = input.allowBinding;
   if (allowBinding !== undefined && typeof allowBinding !== "boolean") {
-    // The flag is the security switch, so a truthy string or number must
-    // not enable binding: reject it instead of coercing.
     throw new TypeError(
       `resolveSharedAuthority: allowBinding must be a boolean when supplied, got ${typeof allowBinding}`,
     );
   }
   const authority = input.authority;
-  // Absent (missing key, undefined, null) and present-but-invalid both land
-  // on informational — the least-privileged class — so an unmarked or
-  // malformed legacy item can never be treated as binding. Validate the
-  // exact value: no trim, no case-fold, because " binding" and "BINDING"
-  // are unrecognized data, not normalized matches for a known class.
   if (typeof authority !== "string") return "informational";
   if (!isKnownAuthority(authority)) return "informational";
   if (authority === "binding" && allowBinding !== true) {
-    // Downgrade rather than throw: a legacy item already carrying "binding"
-    // is stored data, not a caller bug, so it resolves to the highest class
-    // that does not require the explicit opt-in.
     return "advisory";
   }
   return authority;

@@ -384,7 +384,6 @@ export async function runExtractionAttack(
       });
     }
 
-    // Choose the next query.
     const next = chooseNextQuery({
       entropy,
       entropyThreshold,
@@ -585,7 +584,6 @@ function chooseNextQuery(args: {
     }
   }
 
-  // Explore: entropy is high. Pick any token we have not issued yet from
   // the belief map (which already contains every seed-vocabulary term
   // merged with observed hit tokens — no separate seed fallback is
   // needed because seeds are always a subset of the belief map).

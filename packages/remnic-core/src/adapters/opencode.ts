@@ -23,7 +23,6 @@ export class OpenCodeAdapter implements EngramAdapter {
     const clientName = context.clientInfo?.name?.toLowerCase() ?? "";
     if (clientName.includes("opencode")) return true;
 
-    // Fallback: User-Agent header ("opencode/<version>")
     const ua = headerValue(context.headers, "user-agent");
     if (ua && ua.toLowerCase().startsWith("opencode/")) return true;
 

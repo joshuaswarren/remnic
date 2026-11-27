@@ -7,12 +7,6 @@ import {
   type AccessSetupCapabilitySet,
 } from "./capabilities.js";
 
-/**
- * Parity tests for the access-setup capability set (issue #1566 Cluster B).
- *
- * Every access-setup capability field must project from its `<field>Enabled`
- * config flag, and the default-off semantics for both flags must be preserved.
- */
 
 const ACCESS_FIELD_TO_FLAG: Record<keyof AccessSetupCapabilitySet, string> = {
   recallCrossNamespaceBudget: "recallCrossNamespaceBudgetEnabled",

@@ -1,59 +1,3 @@
-/**
- * Capsule and backup archive encryption helpers (issue #690 PR 4/4).
- *
- * This module sits between the capsule export/import pipeline and the
- * secure-store primitives (PR 1/4 cipher + PR 2/4 keyring). It handles:
- *
- *   - Wrapping a raw `.capsule.json.gz` payload in an AES-256-GCM sealed
- *     envelope with a small plaintext header so auto-detection works without
- *     decryption.
- *   - Symmetrically: reading that header, decrypting the payload, and
- *     returning the original `.capsule.json.gz` bytes.
- *   - The same encrypt/decrypt helpers are re-used by the backup pipeline
- *     (`backup --encrypt`).
- *
- * On-disk format for an encrypted archive (format v2, issue #690 PR 4/4)
- * -------------------------------------------------------------------------
- * The encrypted file uses the extension `.capsule.json.gz.enc` and starts
- * with a small ASCII header terminated by a NUL byte so the MIME type can
- * be determined cheaply:
- *
- *   "REMNIC-ENC\x00"   (11 bytes, magic + NUL sentinel)
- *   UINT8               format version (2 — see version history below)
- *   UINT16LE            kdf_len: byte length of the KDF params JSON blob
- *   <kdf_len bytes>     compact JSON: { algorithm, params, salt }
- *   <seal envelope>     rest of file: AES-256-GCM sealed envelope (cipher.ts)
- *
- * The magic string is chosen to be:
- *   - ASCII-safe (no UTF-8 confusion)
- *   - obviously non-JSON (won't parse as a JSON object)
- *   - obviously non-gzip (gzip magic is 0x1f 0x8b; 'R' is 0x52)
- *
- * The sealed envelope format is documented in `cipher.ts`:
- *   [VERSION:1][SALT:16][IV:12][AUTHTAG:16][CIPHERTEXT:...]
- *
- * The original gzip bytes are the ciphertext. There is no additional
- * framing inside the ciphertext; decryption yields the original `.gz`
- * bytes verbatim.
- *
- * AAD
- * ---
- * The file's basename (without the `.enc` suffix, as a UTF-8 buffer) is
- * bound as AAD so the sealed envelope is tied to its filename. Renaming an
- * encrypted capsule file causes auth-tag failure on open. This prevents a
- * replay where an attacker substitutes one user's encrypted capsule for
- * another's. Callers MUST supply the same basename on encrypt and decrypt.
- *
- * Cross-machine restore (Codex P1 / #690)
- * ----------------------------------------
- * Format v2 embeds the KDF params (algorithm + params + salt)
- * in the archive header as a compact JSON blob. Any machine that knows the
- * original passphrase can parse this blob and re-derive the exact same
- * 256-bit AES key using the documented algorithm + params + salt — no
- * out-of-band key material or access to the source machine's secure-store
- * header is required. The keyring (in-memory unlocked key) is still used on
- * the decrypt path when available (faster; avoids a re-derivation round).
- */
 
 import { open as openFileHandle, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -69,34 +13,16 @@ import {
   type ScryptParams,
 } from "../secure-store/kdf.js";
 
-// ---------------------------------------------------------------------------
-// On-disk magic
-// ---------------------------------------------------------------------------
 
-/** ASCII magic + NUL sentinel — 11 bytes total. */
 const MAGIC = Buffer.from("REMNIC-ENC\x00", "ascii");
 
-/**
- * Current format version byte.
- *
- * Version history:
- *   1 — original format: MAGIC(11) + VERSION(1) + ENVELOPE(...)
- *   2 — adds KDF params section for cross-machine re-derivation:
- *         MAGIC(11) + VERSION(1) + KDF_LEN(2, LE uint16) + KDF_JSON(variable) + ENVELOPE(...)
- *       The KDF_JSON blob carries the algorithm, params, and salt so any machine
- *       that knows the original passphrase can re-derive the archive key without
- *       access to the source machine's secure-store keyring. (Codex P1 / #690)
- */
 const FORMAT_VERSION = 2;
 
-/** Format v1 minimum size: magic (11) + version (1) + envelope header (45). */
 const MIN_ENC_SIZE_V1 = MAGIC.length + 1 + 45; // 45 = cipher.ts ENVELOPE_HEADER_SIZE
 
-/** Minimum size for magic + version + KDF length field. */
 const MIN_ENC_SIZE = MAGIC.length + 1 + 2; // used only for header detection
 
 // ---------------------------------------------------------------------------
-// Public surface
 // ---------------------------------------------------------------------------
 
 export interface EncryptCapsuleOptions {
@@ -211,25 +137,15 @@ export async function encryptCapsuleFile(
   const encPath = opts.outPath ?? `${opts.sourceGzPath}.enc`;
   const key = getKeyOrThrow(opts.memoryDir, "encrypt capsule");
 
-  // Read the source payload.
   const plaintext = await readFile(opts.sourceGzPath);
 
-  // Bind the output filename (without .enc) as AAD so the envelope is
-  // tied to its destination path (Codex P1: replay prevention).
   const basename = path.basename(encPath);
   const aad = Buffer.from(basename, "utf-8");
 
-  // Load the secure-store header to extract KDF params + canonical salt.
-  // The KDF params are embedded in the archive (format v2) so the archive
-  // is self-contained for cross-machine restore: the recipient re-derives
-  // the same key from their passphrase + the embedded params without
-  // needing access to the source machine's keyring. (Codex P1 / #690)
   const kdfSection = await loadKdfSection(opts.memoryDir);
 
   const envelope = seal(key, kdfSection.salt, plaintext, { aad });
 
-  // Assemble the encrypted file (format v2):
-  //   MAGIC(11) + VERSION(1) + KDF_LEN(2 LE) + KDF_JSON(variable) + ENVELOPE(...)
   const versionBuf = Buffer.alloc(1);
   versionBuf.writeUInt8(FORMAT_VERSION, 0);
 
@@ -265,7 +181,6 @@ export async function decryptCapsuleFile(
 
   const buf = await readFile(opts.encPath);
 
-  // Magic check.
   if (buf.length < MIN_ENC_SIZE_V1) {
     throw new Error(
       `decryptCapsuleFile: file too short to be an encrypted capsule: ${opts.encPath}`,
@@ -277,7 +192,6 @@ export async function decryptCapsuleFile(
     );
   }
 
-  // Version check.
   const version = buf.readUInt8(MAGIC.length);
   if (version !== 1 && version !== 2) {
     throw new Error(
@@ -286,7 +200,6 @@ export async function decryptCapsuleFile(
     );
   }
 
-  // Resolve the decryption key and the envelope offset.
   const { key, envelopeOffset } = resolveKeyAndOffset(
     buf,
     version,
@@ -296,10 +209,8 @@ export async function decryptCapsuleFile(
     opts.passphrase,
   );
 
-  // The sealed envelope starts at `envelopeOffset`.
   const envelope = buf.subarray(envelopeOffset);
 
-  // Reconstruct AAD from the basename of the enc file (same as encrypt).
   const basename = path.basename(opts.encPath);
   const aad = Buffer.from(basename, "utf-8");
 
@@ -384,7 +295,6 @@ export async function decryptCapsuleFileInMemory(
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
 /**
@@ -447,13 +357,6 @@ async function loadKdfSection(memoryDir: string): Promise<KdfSection> {
   return { json, salt };
 }
 
-/**
- * Retrieve the master key for `memoryDir` from the in-memory keyring, or
- * throw a clear actionable error if the store is locked or not initialized.
- *
- * Rule 51: never silently default when the user's intent is clear but the
- * precondition (unlocked keyring) is not met.
- */
 function getKeyOrThrow(memoryDir: string | undefined, action: string): Buffer {
   if (!memoryDir) {
     throw new Error(
@@ -473,22 +376,6 @@ function getKeyOrThrow(memoryDir: string | undefined, action: string): Buffer {
   return key;
 }
 
-/**
- * Resolve the decryption key and the byte offset of the sealed envelope
- * within `buf`, handling both format v1 (no KDF section) and format v2
- * (embedded KDF params for cross-machine restore).
- *
- * For v2 archives: a caller-supplied passphrase is derived against the
- * embedded KDF section for cross-machine restore. Without a passphrase, the
- * keyring is used as the fast local path.
- *
- * The KDF-params section serves two roles:
- *   1. Documents what algorithm was used so cross-machine tooling knows
- *      what to invoke.
- *   2. Provides the required `algorithm + params + salt` triple for
- *      passphrase-based re-derivation without needing the source machine's
- *      secure-store header. (Codex P1 / #690)
- */
 function resolveKeyAndOffset(
   buf: Buffer,
   version: number,
@@ -498,12 +385,10 @@ function resolveKeyAndOffset(
   passphrase?: string,
 ): { key: Buffer; envelopeOffset: number } {
   if (version === 1) {
-    // v1: envelope starts immediately after magic (11) + version (1).
     const key = getKeyOrThrow(memoryDir, "decrypt capsule");
     return { key, envelopeOffset: MAGIC.length + 1 };
   }
 
-  // v2: KDF_LEN(2 LE) + KDF_JSON(KDF_LEN bytes) + envelope.
   const kdfLenOffset = MAGIC.length + 1; // after magic + version
   if (buf.length < kdfLenOffset + 2) {
     throw new Error(

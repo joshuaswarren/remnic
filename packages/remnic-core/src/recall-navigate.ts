@@ -1,12 +1,3 @@
-/**
- * Recall navigation helpers (issue #1956 first slice).
- *
- * Pure expand/traverse over disclosure levels and typed links. No LLM, no IO.
- * Surfaces (MCP/HTTP/CLI) and parseConfig wiring wait for a later PR —
- * config.ts is at its fileSizeGrandfather ceiling.
- *
- * Budget 0 is off (unavailable). Empty means the step ran and found nothing.
- */
 import {
   RECALL_DISCLOSURE_LEVELS,
   type RecallDisclosure,

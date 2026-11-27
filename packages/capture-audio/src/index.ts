@@ -1,12 +1,3 @@
-/**
- * @remnic/capture-audio — desktop audio capture foundation (checklist
- * item 1 of issue #1897): strict daemon config, a SQLite spool, replay
- * ingestion, an authenticated loopback HTTP API, and the CLI.
- *
- * Native capture, VAD, STT, diarization, the wearable connector, and the
- * core registry entry land in later checklist items and are intentionally
- * absent here.
- */
 
 export { CAPTURE_AUDIO_VERSION, DEFAULT_HOST, DEFAULT_PORT, SPOOL_SCHEMA_VERSION } from "./constants.js";
 export { CaptureConfigError, CaptureInputError } from "./errors.js";

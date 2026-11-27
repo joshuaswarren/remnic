@@ -244,13 +244,8 @@ test("commitTokenEntry replaces the prior chatgpt entry so re-linking rotates th
 test("entries snapshot is coherent with validation: mint and revoke take effect immediately", async () => {
   const { dir, tokensPath } = await makeTempTokenPath();
   try {
-    // Warm the cache so a stale snapshot WOULD be observable if mutation
-    // failed to invalidate it.
     assert.deepEqual([...getAllValidTokenEntriesCached(tokensPath)], []);
 
-    // Mint-then-use: the fresh token resolves with its connector in the
-    // SAME snapshot call that validates it — no window where the token is
-    // valid but its identity is unknown.
     const minted = generateToken("chatgpt", tokensPath);
     const afterMint = getAllValidTokenEntriesCached(tokensPath);
     const found = afterMint.find((entry) => entry.token === minted.token);
@@ -258,7 +253,6 @@ test("entries snapshot is coherent with validation: mint and revoke take effect 
     assert.equal(found.connector, "chatgpt");
     assert.deepEqual(getAllValidTokensCached(tokensPath), [minted.token]);
 
-    // Revoke-then-use: the token disappears from the snapshot immediately.
     assert.equal(revokeToken("chatgpt", tokensPath), true);
     assert.deepEqual([...getAllValidTokenEntriesCached(tokensPath)], []);
     assert.deepEqual(getAllValidTokensCached(tokensPath), []);

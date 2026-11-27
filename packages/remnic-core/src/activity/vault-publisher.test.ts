@@ -8,11 +8,6 @@ import { publishVaultNote, setVaultPublisherTestHooks } from "./vault-publisher.
 
 const DATE = "2026-08-21";
 
-/**
- * Fixture daily note shaped like a real vault user's: frontmatter, human
- * sections, a foreign agent's owned section, and a Remnic marker pair.
- * Synthetic data only (public repo).
- */
 const NOTE = [
   "---",
   "tags: daily-notes",
@@ -154,10 +149,6 @@ test("a symlink inside the vault pointing outside is refused before any write", 
 test("a crossed pair AFTER a valid pair still refuses the whole note", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // The valid standup pair comes first, so a scan that stops at the first
-  // closed region never sees the crossed timeline/weekly pair below it.
-  // `applyManagedRegion` would then pair the timeline start with the LAST
-  // timeline end and delete every byte in between.
   const note = [
     "<!-- remnic:standup:start -->",
     "standup body",
@@ -225,11 +216,6 @@ test("frontmatter updates only match top-level keys, never nested user metadata"
 test("nested start markers (start:A, start:B, end:A, end:B) refuse the whole note", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // Marker order start:timeline, start:standup, end:timeline, end:standup.
-  // A scan that only looks for a mismatched END accepts end:timeline as a
-  // valid close and never sees the orphaned end:standup, so
-  // `applyManagedRegion` pairs start:timeline with end:timeline and deletes
-  // the standup start marker plus every user byte between them.
   const note = [
     "<!-- remnic:timeline:start -->",
     "stale recap",
@@ -253,7 +239,6 @@ test("nested start markers (start:A, start:B, end:A, end:B) refuse the whole not
   assert.match(status.results[0]?.reason ?? "", /nested_start:timeline:standup/);
   const after = readFileSync(notePath, "utf8");
   assert.equal(after, note, "every byte of the note is preserved");
-  // Each intervening byte the crossed replacement would have eaten.
   assert.ok(after.includes("<!-- remnic:standup:start -->"), "inner start marker survives");
   assert.ok(after.includes("standup body the user wrote"), "inner region body survives");
   assert.ok(after.includes("user content between the ends"), "text between the ends survives");
@@ -282,11 +267,6 @@ test("an orphan end marker with no open region refuses the whole note", () => {
 test("colon-bearing marker names cannot delete the user bytes between a malformed pair", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // Marker order start:Work:Timeline, end:Other:Section, end:Work:Timeline.
-  // A scanner that captures the name with `[^:]+?` sees NO markers here, so
-  // the malformed sequence passes, and `applyManagedRegion` — which pairs by
-  // literal `indexOf` — pairs the start with the LAST end and deletes the
-  // orphan end marker plus every user byte between them.
   const note = [
     "<!-- remnic:Work:Timeline:start -->",
     "stale recap",
@@ -297,7 +277,6 @@ test("colon-bearing marker names cannot delete the user bytes between a malforme
   ].join("\n");
   writeFileSync(notePath, note, "utf8");
 
-  // A colon-bearing section name is refused before the note is opened.
   assert.throws(
     () =>
       publishVaultNote({
@@ -310,8 +289,6 @@ test("colon-bearing marker names cannot delete the user bytes between a malforme
   );
   assert.equal(readFileSync(notePath, "utf8"), note, "every byte of the note is preserved");
 
-  // The note's own colon-bearing markers are still parsed and still refuse it,
-  // even when the configured section name is legal.
   writeFileSync(
     notePath,
     `${note}<!-- remnic:timeline:start -->\nstale\n<!-- remnic:timeline:end -->\n`,
@@ -355,9 +332,6 @@ test("a marker line with no parseable name refuses the whole note", () => {
 test("heading strategy ignores a heading inside a fenced code block", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // The only `## Timeline` line lives inside a fenced example. A scanner
-  // without fence state accepts it as the owned heading and replaces the rest
-  // of the code block plus the human text after it, through EOF.
   const note = [
     "# Daily",
     "",
@@ -392,10 +366,6 @@ test("heading strategy ignores a heading inside a fenced code block", () => {
 test("a fenced heading does not terminate the owned section early", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // The owned `## Timeline` body contains a fenced `## Notes`, and the real
-  // `## Notes` follows the fence. A scanner without fence state ends the
-  // owned section at the FENCED heading, so the replacement lands mid-fence
-  // and leaves an unterminated code block plus an orphaned fence tail.
   const note = [
     "## Timeline",
     "stale recap",
@@ -422,8 +392,6 @@ test("a fenced heading does not terminate the owned section early", () => {
 
   assert.equal(status.results[0]?.outcome, "updated");
   const after = readFileSync(notePath, "utf8");
-  // The whole fenced block sat inside the region Remnic owns, so it is
-  // replaced as one unit; the human content after the real heading is intact.
   assert.equal(after, ["## Timeline", "fresh recap", "## Notes", "", "human paragraph", ""].join("\n"));
   assert.ok(!after.includes("```"), "no unterminated fence is left behind");
   assert.ok(after.includes("human paragraph"), "content after the real heading survives");
@@ -432,9 +400,6 @@ test("a fenced heading does not terminate the owned section early", () => {
 test("heading strategy republish is idempotent when the recap has its own headings", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // The persisted journal recap begins with `# Journal` and carries `##`
-  // sections. Untouched, those headings terminate the managed region on
-  // the next publish, so every republish leaves the previous copy behind.
   const note = [
     "# Daily",
     "",
@@ -483,9 +448,6 @@ test("heading strategy republish is idempotent when the recap has its own headin
 test("a 1-3 space indented heading is a real boundary and survives byte-for-byte", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // CommonMark permits 1-3 columns before the hashes, so `   ## Human Notes`
-  // terminates the owned section; a fourth column is an indented code block,
-  // which is owned content of the recap and replaced with it.
   const note = [
     "## Timeline",
     "stale recap",
@@ -536,7 +498,6 @@ test("createMissingNotes creates the confined nested parent hierarchy for a new 
 
 test("a `..`-prefixed in-vault name publishes; real parent traversal still refuses", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
-  // `..notes` is a literal directory name, not the parent directory.
   const notesDir = path.join(vault, "..notes");
   mkdirSync(notesDir);
   const notePath = path.join(notesDir, `${DATE}.md`);
@@ -587,9 +548,6 @@ test("an escaping noteTemplate refuses and creates no directories", () => {
 test("marker strategy ignores a marker pair inside a fenced code block", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // The fenced example carries a complete `timeline` pair BEFORE the real
-  // region. A scanner without fence state pairs the fenced markers first
-  // and replaces the example's contents while reporting a successful publish.
   const fencedExample = [
     "```markdown",
     "## How to publish",
@@ -633,10 +591,6 @@ test("marker strategy ignores a marker pair inside a fenced code block", () => {
 test("marker strategy ignores a marker pair inside a four-space-indented code block", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // The indented example carries a complete `timeline` pair BEFORE the real
-  // region. A scanner that trims a row before classifying it erases the
-  // indentation, pairs the example's markers first, and replaces the
-  // example's contents while reporting a successful publish (issue #1985).
   const indentedExample = [
     "    <!-- remnic:timeline:start -->",
     "    replace this sample text to see it work",
@@ -677,8 +631,6 @@ test("marker strategy ignores a marker pair inside a four-space-indented code bl
 test("marker strategy ignores a marker pair inside a tab-indented code block", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // One tab is a full four-column indent (CommonMark tab handling), so the
-  // tab-indented example is code exactly like the four-space variant.
   const indentedExample = [
     "\t<!-- remnic:timeline:start -->",
     "\treplace this sample text to see it work",
@@ -713,11 +665,6 @@ test("marker strategy ignores a marker pair inside a tab-indented code block", (
 test("a marker pair indented under a list item is skipped, not published", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // CommonMark measures indentation relative to the containing block, so a
-  // marker indented under a list item CAN be live content rather than code.
-  // Distinguishing that needs full list tracking; this fix classifies any
-  // indent >= 4 as code instead. The ambiguity resolves to "skip": a refused
-  // publish is recoverable, an overwritten region is not.
   const note = [
     "- morning routine",
     "",
@@ -743,9 +690,6 @@ test("a marker pair indented under a list item is skipped, not published", () =>
 test("insertUnderHeading never inserts into a fenced heading", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);
-  // The only `## Timeline` heading lives inside a fenced example. An
-  // insertion scanner without fence state treats it as the target and
-  // writes a live managed region into the user's code block.
   const note = [
     "# Daily",
     "",
@@ -819,13 +763,10 @@ test("a partial publish writes only the applied section's properties and surface
     propertiesMode: "frontmatter",
     sections: [
       { name: "timeline", content: "fresh recap", properties: { focus_minutes: "120" } },
-      // No `remnic:standup` marker pair exists in the fixture note.
       { name: "standup", content: "standup body", properties: { standup_items: "3" } },
     ],
   });
 
-  // The omission is surfaced: the file-level outcome is `updated` for the
-  // applied section AND a `skipped` row names the section that did not land.
   assert.equal(status.counts.updated, 1);
   assert.equal(status.counts.skipped, 1);
   const skippedRow = status.results.find((row) => row.outcome === "skipped");
@@ -839,12 +780,8 @@ test("a partial publish writes only the applied section's properties and surface
 
 test("a concurrent editor save between read and rename aborts the publish and keeps the user's bytes", () => {
   const { vault, notePath } = makeVault();
-  // The editor's autosave touches only human text OUTSIDE the managed region.
   const editorSaved = NOTE.replace("trailing human text", "trailing human text (editor autosave)");
 
-  // Simulate Obsidian's autosave landing inside the publish's read→render→
-  // replace window: the hook runs after the note was read and rendered but
-  // before the pre-replace verification inside writeAtomic.
   setVaultPublisherTestHooks({
     beforeReplaceVerify: (dest) => {
       if (path.resolve(dest) === path.resolve(notePath)) {
@@ -865,14 +802,11 @@ test("a concurrent editor save between read and rename aborts the publish and ke
     assert.equal(status.counts.updated, 0);
     assert.equal(status.counts.error, 1);
 
-    // The concurrent edit survives byte-for-byte — including the stale
-    // managed region: refusal keeps the user's bytes, it does not merge.
     const after = readFileSync(notePath, "utf8");
     assert.equal(after, editorSaved);
     assert.match(after, /editor autosave/);
     assert.doesNotMatch(after, /card-a/);
 
-    // The aborted replace leaves no temp litter next to the note.
     const litter = readdirSync(path.dirname(notePath)).filter((name) => name.includes(".remnic-vault-"));
     assert.deepEqual(litter, []);
   } finally {
@@ -880,8 +814,6 @@ test("a concurrent editor save between read and rename aborts the publish and ke
   }
 });
 
-// ── Input-boundary regressions (issue #2917) ────────────────────────────
-// Every rejection below must fire before any file byte is read or written.
 
 test("a whitespace-padded section name is rejected, not silently trimmed (#2917)", () => {
   const { vault, notePath } = makeVault();
@@ -902,8 +834,6 @@ test("a whitespace-padded section name is rejected, not silently trimmed (#2917)
 test("a heading-strategy section name that cannot round-trip through the heading parser is rejected (#2917)", () => {
   const { vault, notePath } = makeVault();
   const before = readFileSync(notePath, "utf8");
-  // `## Timeline #` parses back as `Timeline` (closing hash sequence), so
-  // the region could never be matched on any publish.
   assert.throws(
     () =>
       publishVaultNote({
@@ -979,7 +909,6 @@ test("a valid list property publishes as a flow list in frontmatter (#2917)", ()
 test("frontmatter property totals are bounded across sections (#2917)", () => {
   const { vault, notePath } = makeVault();
   const before = readFileSync(notePath, "utf8");
-  // Each value is under the per-scalar cap; the SUM crosses the total.
   const big = "v".repeat(200);
   const properties = Object.fromEntries(
     Array.from({ length: 12 }, (_, i) => [`k${i}`, big]),

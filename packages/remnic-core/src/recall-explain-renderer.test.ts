@@ -29,7 +29,6 @@ function legacySnapshot(
   };
 }
 
-// ─── parseRecallExplainFormat ────────────────────────────────────────────
 
 test("parseRecallExplainFormat accepts the original text+json formats", () => {
   assert.equal(parseRecallExplainFormat("text"), "text");
@@ -53,7 +52,6 @@ test("parseRecallExplainFormat defaults to text when absent", () => {
   assert.equal(parseRecallExplainFormat(null), "text");
 });
 
-// ─── backward compatibility: text + json unchanged ───────────────────────
 
 test("renderRecallExplain text output is unchanged from pre-#570 behavior", () => {
   const out = renderRecallExplain(legacySnapshot(), "text");
@@ -61,8 +59,6 @@ test("renderRecallExplain text output is unchanged from pre-#570 behavior", () =
   assert.ok(out.includes("session: sess-42"));
   assert.ok(out.includes("source: hot_qmd"));
   assert.ok(out.includes("memories: mem-1, mem-2"));
-  // The tier-explain section is absent because legacy snapshot has
-  // no tierExplain field populated.
   assert.ok(out.includes("tier-explain: (not populated"));
 });
 
@@ -75,17 +71,12 @@ test("renderRecallExplain json output is unchanged JSON shape", () => {
   assert.deepEqual(parsed.memoryIds, ["mem-1", "mem-2"]);
 });
 
-// ─── markdown delegation ─────────────────────────────────────────────────
 
 test("renderRecallExplain markdown delegates to the shared X-ray renderer", () => {
   const out = renderRecallExplain(legacySnapshot(), "markdown");
-  // X-ray markdown always opens with an H1.
   assert.ok(out.startsWith("# Recall X-ray"));
-  // Session + namespace from the legacy snapshot round-trip into the
-  // markdown table.
   assert.ok(out.includes("| Session | `sess-42` |"));
   assert.ok(out.includes("| Namespace | `workspace-a` |"));
-  // Memory ids become H3 result sections.
   assert.ok(out.includes("### 1. `mem-1` — served-by=hybrid"));
   assert.ok(out.includes("### 2. `mem-2` — served-by=hybrid"));
 });
@@ -95,7 +86,6 @@ test("renderRecallExplain markdown handles null snapshot via the renderer's plac
   assert.equal(out, "# Recall X-ray\n\n_No X-ray snapshot captured._");
 });
 
-// ─── toRecallXraySnapshotFromLegacy adapter ──────────────────────────────
 
 test("toRecallXraySnapshotFromLegacy returns null for a null input", () => {
   assert.equal(toRecallXraySnapshotFromLegacy(null), null);
@@ -123,9 +113,6 @@ test("toRecallXraySnapshotFromLegacy copes with malformed recordedAt", () => {
 });
 
 test("toRecallXraySnapshotFromLegacy propagates snapshot.source to servedBy", () => {
-  // Codex P2 + Cursor Medium on #605: every converted result used to
-  // be stamped with `servedBy: "hybrid"`, misattributing legacy
-  // snapshots from a non-hybrid source (notably `recent_scan`).
   const recent = toRecallXraySnapshotFromLegacy(
     legacySnapshot({ source: "recent_scan" }),
   );

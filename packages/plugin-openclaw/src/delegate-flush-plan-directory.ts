@@ -104,14 +104,9 @@ export async function pinSnapshotDirectory(
   try {
     handle = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   } catch {
-    // ELOOP means a symlink was swapped in between the lstat and the open;
-    // ENOENT and ENOTDIR mean the directory went away under us. All refuse.
     return { kind: "unstable" };
   }
   try {
-    // The handle now pins an inode. Confirm it is the inode the walk checked:
-    // a swap already in place fails the lstat compare, and one reverted after
-    // the open fails the descriptor compare below.
     const opened = await handle.stat();
     const after = await lstat(directory);
     if (
@@ -125,9 +120,6 @@ export async function pinSnapshotDirectory(
       return { kind: "unstable" };
     }
 
-    // Prove the descriptor directory actually resolves to the pinned inode
-    // before trusting it for writes: a host without procfs mounted must fall
-    // back to path-based I/O rather than write to a path that means nothing.
     const pinnedDirectory = path.join(descriptorRoot, String(handle.fd));
     let anchored: Stats;
     try {

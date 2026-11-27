@@ -819,7 +819,6 @@ describe("TombstoneStore — revocation supersedes tombstone", () => {
       rawContent: "Server is down.",
     });
     await store.revoke(tombId, "user_correction");
-    // New store instance over the same file → must reproduce the revoked state.
     const store2 = new TombstoneStore(filePath, "default", opts, io);
     await store2.load();
     assert.equal(
@@ -859,9 +858,6 @@ describe("TombstoneStore — rebuild identity preservation (issue #2367)", () =>
     assert.ok(entry);
     assert.equal(entry.contentHash, computeHash(body));
     assert.equal(entry.currentContentHashAlias, undefined);
-    // The body stays blocked; the shared empty-skeleton key is NOT indexed,
-    // so unrelated CJK bodies (and empty-content writes) are not blocked
-    // through it.
     assert.equal(
       env.store.lookup({ namespace: "default", contentHash: computeHash(body) })?.matchedTier,
       "exact",
@@ -904,7 +900,6 @@ describe("TombstoneStore — rebuild identity preservation (issue #2367)", () =>
     assert.ok(entry);
     assert.equal(entry.contentHash, explicitHash);
     assert.equal(entry.currentContentHashAlias, computeHash(body));
-    // The explicit identity and the body are both blocked.
     assert.equal(
       env.store.lookup({ namespace: "default", contentHash: explicitHash })?.matchedTier,
       "exact",
@@ -956,8 +951,6 @@ describe("TombstoneStore — rebuild identity preservation (issue #2367)", () =>
     ]);
     const entry = env.store.snapshot().find((e) => e.kind === "tombstone");
     assert.ok(entry);
-    // Pure-ASCII body: legacy and current normalizers agree, so the legacy
-    // hash equals the current hash and there is nothing to preserve.
     assert.equal(entry.contentHash, computeHash(body));
     assert.equal(entry.currentContentHashAlias, undefined);
   });
@@ -990,7 +983,6 @@ describe("TombstoneStore — rebuild equivalence", () => {
     assert.equal(d1?.matchedTier, "exact");
     assert.equal(d2?.matchedTier, "keyed");
 
-    // Delete the JSONL, rebuild from the same corpus via a fresh store → identical decisions.
     await rm(path.join(env.dir, "state", "tombstones.jsonl"), { force: true });
     const env2 = await makeStore("default");
     await env2.store.rebuild(retired);
@@ -1133,9 +1125,6 @@ describe("TombstoneStore — enabled gate (rule 30)", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Cross-process tombstone write lock (issue #1639)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * A read-merge-write file io that simulates the secure-store append path
@@ -1156,8 +1145,6 @@ function makeReadMergeWriteIo() {
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       }
-      // Yield so two concurrent read-merge-write appends observably overlap
-      // when the cross-process lock is absent.
       await new Promise<void>((resolve) => setImmediate(resolve));
       await writeFile(p, existing + c, "utf8");
     },
@@ -1230,24 +1217,20 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
       });
     }
 
-    // Two genuinely concurrent processes contending on the same lockfile.
     await Promise.all([runWorker(0), runWorker(1)]);
 
     const raw = await readFile(path.join(dir, "tombstones.jsonl"), "utf8");
     const fileLines = raw.split("\n").filter((l) => l.trim().length > 0);
-    // No lost entries: every line parses and the total is exactly 2 × N.
     assert.equal(fileLines.length, entriesPerWorker * 2);
     for (const line of fileLines) {
       assert.doesNotThrow(() => JSON.parse(line));
     }
-    // Every worker entry is present (none dropped by a lost write).
     const sourceIds = new Set(fileLines.map((l) => JSON.parse(l).sourceMemoryId));
     for (let w = 0; w < 2; w += 1) {
       for (let i = 0; i < entriesPerWorker; i += 1) {
         assert.ok(sourceIds.has(`w${w}-f${i}`), `missing w${w}-f${i} — lost write`);
       }
     }
-    // The advisory lockfile is released after the run (no lingering lock).
     await rm(path.join(dir, "tombstones.lock"), { force: true });
   });
 
@@ -1255,14 +1238,12 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "tomb-stale-lock-"));
     const filePath = path.join(dir, "tombstones.jsonl");
     const lockPath = path.join(dir, "tombstones.lock");
-    // Seed a lockfile written by a (now-crashed) holder: <pid> <uuid> <iso>.
     await mkdir(dir, { recursive: true });
     await writeFile(
       lockPath,
       `${process.pid} 00000000-0000-0000-0000-000000000000 2000-01-01T00:00:00.000Z\n`,
       "utf8",
     );
-    // Make it older than staleMs so the next acquire breaks it.
     const old = new Date(Date.now() - 120_000);
     await utimes(lockPath, old, old);
 
@@ -1272,7 +1253,6 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
       { enabled: true, semanticMatch: false, semanticThreshold: 0.9, hashContent: computeHash, normalizeText: normalizeContent, lockStaleMs: 1_000 },
       makeReadMergeWriteIo(),
     );
-    // The append must break the stale lock, acquire a fresh one, and succeed.
     const id = await store.appendTombstone({
       reason: "correction",
       createdBy: "user_correction",
@@ -1280,11 +1260,9 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
       rawContent: "Recovered from a stale lock.",
     });
     assert.match(id, /^tomb-/);
-    // The tombstone landed durably.
     const raw = await readFile(filePath, "utf8");
     const lines2 = raw.split("\n").filter((l) => l.trim().length > 0);
     assert.equal(lines2.length, 1);
-    // Our fresh lock was released on completion (the stale one was broken).
     await rm(lockPath, { force: true });
   });
 
@@ -1384,16 +1362,11 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
   });
 
   it("rebuild preserves a peer's revocation appended before rebuild acquired the lock (cursor/codex #1639)", async () => {
-    // Regression for the rebuild race: rebuild must re-read the log under the
-    // lock (ensureFreshAgainstDisk) before computing its payload, otherwise a
-    // revocation a peer wrote while rebuild waited for the lock is dropped and
-    // the retired fact silently un-revokes (resurrection).
     const dir = await mkdtemp(path.join(tmpdir(), "tomb-rebuild-race-"));
     const filePath = path.join(dir, "tombstones.jsonl");
     const moduleUrl = new URL("./tombstones.ts", import.meta.url).href;
     const opts = { enabled: true, semanticMatch: false, semanticThreshold: 0.9, hashContent: computeHash, normalizeText: normalizeContent };
     const io = makeReadMergeWriteIo();
-    // Store A writes tombstone-1, then goes stale (never sees the peer write).
     const storeA = new TombstoneStore(filePath, "default", opts, io);
     const t1 = await storeA.appendTombstone({
       reason: "correction",
@@ -1401,10 +1374,6 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
       sourceMemoryId: "fact-rebuild-1",
       rawContent: "The DB is MySQL.",
     });
-    // A real peer process revokes t1. Its append callback runs only after the
-    // peer holds the advisory write lock, so LOCK_HELD is a deterministic
-    // handshake: store A starts rebuilding while the peer still owns the
-    // lock, then RELEASE lets the peer durably append before A can acquire it.
     const workerSource = [
       "(async () => {",
       "const { TombstoneStore } = await import(process.argv[1]);",
@@ -1475,12 +1444,6 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
     });
 
     await peerLockHeld;
-    // Store A rebuilds from a retired-memory corpus that reconstructs t1.
-    // Without the under-lock re-read, A computes existingRevocations from its
-    // stale index (empty), overwrites the file with [rebuilt-t1], and the
-    // revocation is LOST — t1 is active again (resurrection). With the fix,
-    // ensureFreshAgainstDisk reloads the revocation under the lock and rebuild
-    // preserves it.
     const rebuild = storeA.rebuild([
       {
         memoryId: "fact-rebuild-1",
@@ -1492,15 +1455,12 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
     ]);
     peer.stdin.end("RELEASE\n");
     await Promise.all([rebuild, peerCompleted]);
-    // The rebuilt file must still contain the revocation (the retired fact
-    // stays revoked, not silently un-revoked by the rebuild).
     const raw = await readFile(filePath, "utf8");
     const rebuiltLines = raw.split("\n").filter((l) => l.trim().length > 0);
     const hasRevocation = rebuiltLines.some((l) => {
       try { return JSON.parse(l).kind === "revocation"; } catch { return false; }
     });
     assert.ok(hasRevocation, "rebuild dropped the peer's revocation — resurrection risk");
-    // And the rebuilt store A must report the fact as revoked (lookup returns null).
     await storeA.load();
     assert.equal(
       storeA.lookup({ namespace: "default", contentHash: computeHash("The DB is MySQL.") }),
@@ -1533,7 +1493,6 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
     await store.load();
     const raw = await readFile(filePath, "utf8");
     const lines3 = raw.split("\n").filter((l) => l.trim().length > 0);
-    // No lost writes despite the read-merge-write io + concurrent appends.
     assert.equal(lines3.length, contents.length);
     assert.equal(store.stats().count, contents.length);
     await rm(path.join(dir, "tombstones.lock"), { force: true });

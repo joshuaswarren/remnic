@@ -351,9 +351,6 @@ test("a disconnected MCP recall queued on the budget lock never starts and does 
     ): Promise<T>;
   };
   lockHost.recallSemaphores = new Map();
-  // limit=1 preserves the exact pre-#1906 serialization this test exercises:
-  // the second recall queues behind the first, and an abort while queued now
-  // rejects it immediately (before the holder releases).
   lockHost.orchestrator = { config: { recallMaxConcurrentPerPrincipal: 1 } };
 
   const service = {

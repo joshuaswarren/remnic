@@ -1141,9 +1141,6 @@ test("1659-3: UTF-16 offsets produce correct byte spans for multibyte content", 
   const fn = result.ir.symbols.find((s) => s.name === "hello");
   assert.ok(fn, "should find hello function");
   if (!fn) return;
-  // The function keyword starts after "// café comment\n".
-  // "// " = 3 bytes, "café" = 5 bytes, " comment" = 8 bytes, "\n" = 1 byte = 17 bytes total prefix.
-  // So "function hello..." starts at byte offset 17.
   assert.equal(
     fn.span.startByte, 17,
     `hello startByte should be 17 (byte offset), got ${fn.span.startByte}`,
@@ -1161,7 +1158,6 @@ test("1659-3b: buildUtf16ToByteOffsetMap maps BOTH surrogate code units to the p
   // startByte (cursor #1659 review: 'Surrogate UTF-16 index maps wrong').
   const content = "a𝕏b"; // idx 0='a', 1=high surrogate, 2=low surrogate, 3='b'
   const map = buildUtf16ToByteOffsetMap(content);
-  // byte layout: 'a'=1B, '𝕏'=4B, 'b'=1B → 0,1,5,6
   assert.equal(map[0], 0, "'a' starts at byte 0");
   assert.equal(map[1], 1, "high surrogate (pair start) at byte 1");
   assert.equal(map[2], 1, "low surrogate must map to the PAIR start (byte 1), not past it");

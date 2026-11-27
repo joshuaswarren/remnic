@@ -33,8 +33,6 @@ export function registerSharedContextTools(
       description:
         "Write an agent work product into the shared-context directory (v4.0). Other agents can read these files to coordinate without explicit message passing.",
       parameters: Type.Object({
-        // Provenance is server-derived from the host runtime agent; a
-        // mismatching value here is rejected, never used as the origin.
         agentId: Type.String({ description: "Agent ID producing this output; must match this host's runtime agent id when the host exposes one." }),
         title: Type.String({ description: "Short title for the output." }),
         content: Type.String({ description: "Markdown content to write." }),

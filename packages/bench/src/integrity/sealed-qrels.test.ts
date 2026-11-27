@@ -46,7 +46,6 @@ test("parseSealedQrels rejects tampered envelopes via sealHash mismatch", () => 
   const key = randomBytes(32);
   const artifact = buildArtifact("canary", { t: ["a"] }, key);
   const serialized = JSON.parse(serializeSealedQrels(artifact)) as SealedQrelsArtifact;
-  // Modify the envelope ciphertext but keep the old sealHash.
   serialized.envelope = {
     ...serialized.envelope,
     ciphertext: Buffer.from("tampered-bytes").toString("base64"),

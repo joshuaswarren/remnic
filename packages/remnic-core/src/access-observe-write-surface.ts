@@ -1,14 +1,3 @@
-/**
- * Access observe/write surface (extracted from access-service.ts;
- * god-file decomposition, #1526 playbook: verbatim move + live selfDeps
- * wiring).
- *
- * Owns the write-side and operational surfaces of the access layer:
- *   - runObserve (turn ingestion incl. idempotency + scope resolution)
- *   - memoryStore / suggestionSubmit / memoryActionApply
- *   - work-layer task/project/board surfaces
- *   - briefing and QMD health (global + per-namespace)
- */
 
 import { createHash } from "node:crypto";
 import {
@@ -73,15 +62,6 @@ export interface AccessObserveWriteSurfaceDeps {
     idempotencyKey?: string;
     requestFingerprint: unknown;
     skip?: boolean;
-    /**
-     * Invoked exactly once, immediately before an ACTUAL (non-replay, non-skip)
-     * write is committed — atomically with the idempotency miss determination.
-     * The HTTP surface uses this to enforce the write rate limit against the
-     * real write/miss (and the real resolved namespace), so a namespace-divergent
-     * idempotency peek can never let a fresh write skip the quota check (#1434
-     * Codex review). It is NOT called on dryRun (skip) or replay, preserving the
-     * replay-bypasses-a-full-window behavior.
-     */
     beforeExecute?: () => void | Promise<void>;
     execute: () => Promise<T>;
   }): Promise<T>;
@@ -168,14 +148,6 @@ export class AccessObserveWriteSurface {
     return this.quarantineStoreInstance;
   }
 
-  /**
-   * Dead-letter a write the namespace ACL just rejected (issue #1888). Only
-   * acts on {@link NamespaceNotWritableError}; other input errors pass through
-   * untouched. Parking is best-effort — a quarantine failure is logged and
-   * swallowed so it never masks or replaces the original loud rejection, which
-   * the caller re-throws. The ACL placement is unchanged; the payload simply
-   * stops being destroyed.
-   */
   private async parkRejectedWrite(err: unknown, operation: QuarantineOperation, payload: unknown): Promise<void> {
     if (!(err instanceof NamespaceNotWritableError)) return;
     try {
@@ -426,10 +398,6 @@ export class AccessObserveWriteSurface {
       throw new EngramAccessInputError(`invalid briefing window: ${token}`);
     }
 
-    // Validate focus: only treat undefined / empty strings as "no filter".
-    // Anything else that parses to null (e.g. "project:", "topic:") is malformed
-    // and must be rejected so a templating miss never silently broadens the
-    // briefing from a targeted project view to all memories.
     const rawFocus = typeof request.focus === "string" ? request.focus.trim() : "";
     let focus = null;
     if (rawFocus.length > 0) {
@@ -439,11 +407,6 @@ export class AccessObserveWriteSurface {
       }
     }
 
-    // Reject unsupported format values explicitly.  Programmatic callers that
-    // bypass CLI/MCP pre-validation (which already use validateBriefingFormat)
-    // could otherwise send a typo like "jsno" and silently receive a response
-    // in the default format, masking the client bug and breaking format-dependent
-    // automation.  Only undefined / absent format falls through to the default.
     const SUPPORTED_FORMATS = ["markdown", "json"] as const;
     if (typeof request.format === "string" && !(SUPPORTED_FORMATS as readonly string[]).includes(request.format)) {
       throw new EngramAccessInputError(
@@ -462,7 +425,6 @@ export class AccessObserveWriteSurface {
       ? new FileCalendarSource(config.briefing.calendarSource)
       : undefined;
 
-    // Storage acquisition and the briefing body share one request budget.
     const result = await withBriefingDeadline(async (signal) => {
       const storage = await this.deps.orchestrator.getStorage(namespace);
       return buildWithBriefingLocation(request.includeLocation, storage.dir, window.from.toISOString(), config.location, () => buildBriefing({
@@ -476,10 +438,6 @@ export class AccessObserveWriteSurface {
         openaiApiKey: config.openaiApiKey,
         openaiBaseUrl: config.openaiBaseUrl,
         model: config.model,
-        // Without a direct OpenAI key, route follow-ups through the configured
-        // LLM chain (gateway model source or local LLM) — same fallback every
-        // other LLM feature uses. A configured key keeps its precedence so
-        // existing deployments are unchanged.
         followupGenerator: config.openaiApiKey ? undefined : this.deps.orchestrator.briefingChainFollowupGenerator,
         abortSignal: signal,
       }));
@@ -505,11 +463,6 @@ export class AccessObserveWriteSurface {
     try {
       namespace = await this.deps.resolveCodingScopedWriteNamespace(canonical);
     } catch (err) {
-      // A dry run is a no-persist validation, and a replay re-submit sets
-      // suppressQuarantine so a still-unwritable target propagates instead of
-      // re-parking (issue #1888): never dead-letter either. Park the FULL
-      // request (rawCategory included) so quarantine replay can re-report the
-      // alias coercion (Codex review, PR #2826).
       if (request.dryRun !== true && request.suppressQuarantine !== true) {
         await this.parkRejectedWrite(err, "memory_store", request);
       }
@@ -534,17 +487,7 @@ export class AccessObserveWriteSurface {
         }, categoryCoercion);
       }
       const result = await persistExplicitCapture(this.deps.orchestrator, candidate, "memory_store");
-      // Seed the session's coding binding ONLY after a real write commits, and
-      // only when the namespace came from project scoping (no explicit
-      // namespace). This mirrors recall's maybeAttachCodingContext so a LATER
-      // bare recall/write on the same session is scoped to the same project —
-      // but never binds the session on a dryRun, replay/conflict, quota
-      // rejection, or an explicit-namespace write (which bypasses the overlay),
-      // since those don't reach this point or aren't project-scoped (Codex review).
       await this.deps.attachCodingContextAfterScopedWrite(canonical);
-      // #1645 (review thread yG-): a tombstone-blocked capture is pending_review
-      // (no active copy) — report it as queued_for_review so the HTTP/MCP caller
-      // doesn't read it as a successfully stored active memory.
       const blocked = result.tombstoneBlocked === true && result.duplicateOf === undefined;
       const response = reapplyCategoryCoercion<EngramAccessWriteResponse>({
         schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
@@ -566,10 +509,6 @@ export class AccessObserveWriteSurface {
     const response = await this.deps.handleIdempotentWrite({
       operation: "memory_store",
       idempotencyKey: canonical.idempotencyKey,
-      // Shared builder (issue #1989 PR3): byte-parity with the historical
-      // inline literal is asserted by access-fingerprint-parity.test.ts.
-      // Fingerprints the CANONICAL category, so `fact` and an alias spelling
-      // under one idempotency key are the same request (#2829).
       requestFingerprint: buildAccessWriteRequestFingerprint({
         schemaVersion,
         namespace,
@@ -586,7 +525,6 @@ export class AccessObserveWriteSurface {
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
-    // #2780 fix B: rewrite a replayed coercion note from THIS request's raw category.
     return reapplyCategoryCoercion(response, categoryCoercion);
   }
 
@@ -600,10 +538,6 @@ export class AccessObserveWriteSurface {
     try {
       namespace = await this.deps.resolveCodingScopedWriteNamespace(canonical);
     } catch (err) {
-      // A dry run never persists, and a replay re-submit sets suppressQuarantine
-      // so a still-unwritable target propagates instead of re-parking (#1888).
-      // Park the FULL request (rawCategory included) so quarantine replay can
-      // re-report the alias coercion.
       if (request.dryRun !== true && request.suppressQuarantine !== true) {
         await this.parkRejectedWrite(err, "suggestion_submit", request);
       }
@@ -633,9 +567,6 @@ export class AccessObserveWriteSurface {
         "suggestion_submit",
         new Error(canonical.sourceReason?.trim() || "submitted via engram suggestion_submit")
       );
-      // Seed the session binding only after a real, project-scoped submit commits
-      // (mirrors memory_store / recall; skips dryRun, replay, quota-reject, and
-      // explicit-namespace writes — Codex review).
       await this.deps.attachCodingContextAfterScopedWrite(canonical);
       const response = reapplyCategoryCoercion<EngramAccessWriteResponse>({
         schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
@@ -657,9 +588,6 @@ export class AccessObserveWriteSurface {
     const response = await this.deps.handleIdempotentWrite({
       operation: "suggestion_submit",
       idempotencyKey: canonical.idempotencyKey,
-      // Shared builder (issue #1989 PR3): byte-parity with the historical
-      // inline literal is asserted by access-fingerprint-parity.test.ts.
-      // Fingerprints the CANONICAL category (#2829).
       requestFingerprint: buildAccessWriteRequestFingerprint({
         schemaVersion,
         namespace,
@@ -676,7 +604,6 @@ export class AccessObserveWriteSurface {
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
-    // #2780 fix B: rewrite a replayed coercion note from THIS request's raw category.
     return reapplyCategoryCoercion(response, categoryCoercion);
   }
 
@@ -696,27 +623,10 @@ export class AccessObserveWriteSurface {
       }
     }
 
-    // 1. Resolve the FULL effective scope plan BEFORE any session mutation
-    //    (Codex P2 / Cursor "orphan context after overlay auth"). The plan is
-    //    read-only and re-runs the SAME authorization as
-    //    memory_store/suggestion_submit (rule 39): the explicit-namespace check
-    //    AND the coding-overlay self-base `canWriteNamespace` check both run
-    //    here. Because `maybeAttachCodingContext` has NOT run yet, the plan's
-    //    overlay resolves from the per-call `cwd`/`projectTag` fallback
-    //    (`resolveCodingContextFromOptions`) — identical to the context that
-    //    would be attached — so the scope is the same either way. Running the
-    //    plan first means an `observe` that ultimately throws on a non-writable
-    //    self base leaves NO coding context bound to the session, matching how
-    //    `memory_store` resolves its full scoped write namespace before any
-    //    session mutation.
     const observePreparation = this.pendingObserveExtractions.reserve(
       request.sessionKey,
       pendingObserveScopeHint(request)
     );
-    // Noncontent stage timing for slow/failed observes: durations only, logged
-    // in the `access-observe-failed` line (always) and `access-observe-slow`
-    // (successes at or above the slow threshold). Never message content,
-    // session keys, namespaces or principals.
     const stageTimer = createObserveStageTimer();
     const timed = stageTimer.timed.bind(stageTimer);
     try {
@@ -724,8 +634,6 @@ export class AccessObserveWriteSurface {
       try {
         scope = await timed("scope", () => this.deps.resolveMemoryScopePlan(request));
       } catch (err) {
-        // A replay re-submit sets suppressQuarantine so a still-unwritable target
-        // propagates instead of re-parking (#1888); observe has no dryRun path.
         if (request.suppressQuarantine !== true) {
           await this.parkRejectedWrite(err, "observe", request);
         }
@@ -734,32 +642,11 @@ export class AccessObserveWriteSurface {
       const writeNamespace = scope.writeNamespace;
       observePreparation.setScope(scope.principal, writeNamespace);
 
-      // Backward-compatible BASE writable namespace (pre-#1495 response semantics)
-      // for the legacy `namespace` response field. DERIVED from the already-resolved
-      // scope plan — NOT a second writable-namespace resolution call
-      // call (#1505 thread jvO). The fresh call re-authorized `undefined ⇒
-      // config.defaultNamespace` a SECOND time; under a restrictive default-namespace
-      // write policy that re-auth could REJECT an otherwise valid project-scoped
-      // observe whose effective self/project write target the scope plan already
-      // authorized (the same target memory_store/suggestion_submit accept). Worse,
-      // that post-plan rejection fired AFTER `resolveMemoryScopePlan` may have seeded
-      // the coding context, leaving an orphaned session binding behind. The plan is
-      // the single authorization point (rule 22 / 39); the legacy field must reuse it
-      // and never re-authorize. Pre-#1495 semantics were exactly
-      // the writable-namespace resolver (overlay-agnostic): the explicit
-      // namespace when supplied, else `config.defaultNamespace` for user-project
-      // coding overlays. Hosted scope-profile layers such as `teamProject` report
-      // their effective profile write namespace because there is no legacy
-      // overlay-compatible base namespace for those writes.
       const namespace = this.deps.legacyResponseNamespaceForScope(scope);
       const shouldWriteObjectiveState =
         resolveObjectiveStateCapabilities(this.deps.orchestrator.config).objectiveStateMemory === true &&
         resolveObjectiveStateCapabilities(this.deps.orchestrator.config).objectiveStateSnapshotWrites === true;
 
-      // 2. Auto-resolve coding context from cwd/projectTag so a LATER bare recall
-      //    on the same session is project-scoped (rule 42: same namespace layer as
-      //    recall). Done AFTER the scope plan authorized the write, so a rejected
-      //    request never leaves orphaned context on the session.
       await timed("context", () =>
         this.deps.maybeAttachCodingContext(request.sessionKey, {
           cwd: request.cwd,
@@ -768,22 +655,10 @@ export class AccessObserveWriteSurface {
         })
       );
 
-      // Prefix sessionKey with the EFFECTIVE write namespace for LCM archival so
-      // observed turns are scoped to the same namespace project-scoped recall
-      // reads. The SAME `lcmSessionKeyForNamespace` helper is used by the
-      // orchestrator recall readers and by compaction flush/record, so the LCM
-      // write key and every read/flush key agree (#1495, rule 42). Only prefixes
-      // when the namespace diverges from the default store; a single-store
-      // deployment keeps the raw sessionKey unchanged.
       const lcmSessionKey =
         lcmSessionKeyForNamespace(writeNamespace, request.sessionKey, this.deps.orchestrator.config.defaultNamespace) ??
         request.sessionKey;
 
-      // 4. Objective-state snapshots → the scope plan's objective-state namespace.
-      //    For explicit-namespace and coding-overlay writes this equals
-      //    writeNamespace; for an IMPLICIT write it is the principal SELF base
-      //    (#928 contract, already auth-checked inside the scope plan), not the
-      //    general default-store write namespace.
       if (shouldWriteObjectiveState) {
         await timed("objective", () =>
           recordObserveObjectiveState(
@@ -795,17 +670,10 @@ export class AccessObserveWriteSurface {
         );
       }
 
-      // 5. LCM archival → effective write namespace.
-      // The archival append is durable before this returns: the queue holds
-      // only a session reference, and summary DAGs are built in the
-      // background, so the caller is never blocked on inference.
       const lcmArchived = await timed("lcm-accept", () =>
         archiveObservedTurns(this.deps.orchestrator.lcmEngine, lcmSessionKey, request.messages),
       );
 
-      // 5b. Transcript persistence → the per-session transcript store the
-      // hourly summarizer reads (issue #2783). Best-effort: a transcript
-      // failure must not fail the observe.
       const transcriptPersisted = resolvePresentationCapabilities(this.deps.orchestrator.config).transcript
         ? await timed("transcript", () =>
             this.observeTranscriptPersister.persist(
@@ -817,21 +685,10 @@ export class AccessObserveWriteSurface {
           )
         : false;
 
-      // 6. Extraction/replay → effective write namespace for STORAGE, ORIGINAL
-      //    sessionKey for IDENTITY (provenance + threading).
       let extractionQueued = false;
       if (request.skipExtraction !== true) {
         const turns = request.messages.map((m) => ({
           source: "openclaw" as const,
-          // Identity-vs-routing separation (#1505 thread 1, cursor): extraction
-          // derives the provenance principal via `resolvePrincipal(turn.sessionKey)`
-          // and threads `turn.sessionKey` into conversation threading. Feeding the
-          // namespace-PREFIXED `lcmSessionKey` here mis-derived the principal to
-          // `default` (a `<ns>:<key>` string matches no prefix/map rule and fails
-          // the `agent:` heuristic). Pass the ORIGINAL sessionKey so identity is
-          // correct; storage routing is pinned separately via
-          // writeNamespaceOverride below, and the authenticated principal is pinned
-          // via principalOverride.
           sessionKey: request.sessionKey,
           role: m.role,
           content: m.content,
@@ -841,32 +698,12 @@ export class AccessObserveWriteSurface {
           timestamp: new Date().toISOString(),
           ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
         }));
-        // Pin extraction STORAGE to the effective namespace rather than letting the
-        // orchestrator re-derive one from the session key + coding overlay — that
-        // re-derivation would have to reparse identity and could miss the overlay
-        // (the #1495 drift). Passing writeNamespaceOverride makes the extraction
-        // target deterministic and identical to LCM/objective-state (rule 39).
-        //
-        // #3251: ALWAYS pin the already-resolved writeNamespace — including
-        // when namespaces are OFF (where the resolved value IS the collapsed
-        // default store). Accepted captures need an original actual storage
-        // target so a later namespaces-ON restart cannot retarget them to a
-        // newly-active principal/project namespace.
         const writeNamespaceOverride = writeNamespace;
-        // Pin provenance PRINCIPAL to the scope plan's resolved principal (#1505
-        // thread 1). The scope plan already applied auth precedence
-        // (authenticatedPrincipal/principalOverride > resolvePrincipal(original
-        // sessionKey)), so this is the same identity the surface authorized — never
-        // a `default` fallback parsed from a prefixed key. Omitted when no principal
-        // resolved (namespaces-disabled / unauthenticated single-store), preserving
-        // existing behavior.
         const principalOverride =
           typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined;
-        // Acceptance waits for durable capture; cancellation only stops extraction.
         const observeAbortController = new AbortController();
         const preparationCancelled = observePreparation.isCancelled();
         if (preparationCancelled) {
-          // Preserve capture even when its preparation was cancelled.
           observeAbortController.abort(abortError("observe preparation cancelled"));
         }
         const trackedExtractionKey = this.pendingObserveExtractions.key(request.sessionKey, scope.principal, writeNamespace);
@@ -876,7 +713,6 @@ export class AccessObserveWriteSurface {
           writeNamespaceOverride,
           principalOverride,
           scopeProfileWritePlan: scope.scopeProfilePlan,
-          // Re-authorize current policy against the original project binding.
           codingContext: this.deps.orchestrator.getCodingContextForSession(request.sessionKey) ?? undefined,
           abortSignal: observeAbortController.signal,
         };
@@ -892,7 +728,6 @@ export class AccessObserveWriteSurface {
         if (request.authenticatedPrincipal !== undefined && request.authenticatedPrincipal.trim().length > 0) {
           ingestOptions.sessionOwnerPrincipal = request.authenticatedPrincipal.trim();
         }
-        // Track every job immediately, but don't retain cancelled preparation barriers.
         if (!preparationCancelled) {
           ingestOptions.onExtractionQueued = (extraction: Promise<void>) => {
             extraction.catch((err) => {
@@ -933,7 +768,6 @@ export class AccessObserveWriteSurface {
         transcriptPersisted,
       };
     } catch (err) {
-      // Failed requests always get phase attribution (noncontent), regardless of duration.
       stageTimer.logFailed(request.messages.length);
       throw err;
     } finally {

@@ -94,7 +94,6 @@ async function main(): Promise<void> {
   const storage = new StorageManager(rootDir);
   try {
     await storage.ensureDirectories();
-    // Warm/complete the entity migration so the tick job measures steady state.
     await storage.ensureDirectories();
 
     const results: JobResult[] = [];

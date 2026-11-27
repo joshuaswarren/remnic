@@ -21,7 +21,6 @@ import type { WearablesService } from "./wearables/service.js";
  * their actions dispatch into the runner (which calls the wearables service).
  */
 
-/** Recording commander stand-in: records the command tree + action callbacks. */
 class RecCmd implements CliCommand {
   readonly children = new Map<string, RecCmd>();
   readonly options: string[] = [];
@@ -62,13 +61,6 @@ class RecProgram implements CliProgram {
   }
 }
 
-/**
- * Deterministic orchestrator stub. registerCli only reads `config.*` while
- * building the command tree (feature flags gate subcommand registration;
- * memoryDir is an option default), so every accessed field returns a real
- * primitive — no Proxy ever reaches a string/number call site. The wearables
- * forwarder is the only action that touches the stub, via getWearablesService.
- */
 function makeOrchestratorStub(
   service: WearablesService,
 ): Parameters<typeof registerCli>[1] {
@@ -95,7 +87,6 @@ function makeOrchestratorStub(
   >[1];
 }
 
-/** Spy service recording fuseDay/fusedConversations dispatch. */
 function spyService(): WearablesService & {
   calls: Array<[string, string]>;
 } {
@@ -139,7 +130,6 @@ function buildRegisteredTree(): {
 
 test("wearablesCmd registers fuse and fused subcommands (#1849)", () => {
   const { wearables } = buildRegisteredTree();
-  // fuse/fused must be present alongside the previously-registered forwarders.
   const subcommands = [...wearables.children.keys()];
   for (const expected of [
     "status",

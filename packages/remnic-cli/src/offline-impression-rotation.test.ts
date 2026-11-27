@@ -6,9 +6,6 @@ import test from "node:test";
 
 import { pickOfflineConfigRecord, resolveOfflineImpressionRotation } from "./offline-impression-rotation.js";
 
-// A value a hostile/typo'd config might put where a rotation number belongs. It
-// stands in for an operator secret (API key) that parseConfig would otherwise
-// stringify verbatim into its thrown error message.
 const SECRET = "sk-super-secret-api-key-0000";
 
 test("resolves the writer's configured rotation bounds from a valid config (#2033)", async () => {
@@ -29,8 +26,6 @@ test("resolves the writer's configured rotation bounds from a valid config (#203
 test("falls back to the writer defaults (not rotation-off) when the config is absent (#2033)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-rotation-missing-"));
   const rotation = resolveOfflineImpressionRotation(path.join(dir, "does-not-exist.json"));
-  // The writer default is 32 MiB; 0 would silently disable rotation during a
-  // pre-sync drain, the exact regression #2033 guards against.
   assert.equal(rotation.impressionsRotateBytes, 32 * 1024 * 1024);
   assert.ok(rotation.impressionsRotateKeep >= 1, "keep must floor at 1");
 });
@@ -38,9 +33,6 @@ test("falls back to the writer defaults (not rotation-off) when the config is ab
 test("a config validation failure is redacted - and the coercion warning is suppressed - so the raw value never leaks (#2033)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-rotation-validation-"));
   const configPath = path.join(dir, "config.json");
-  // A string where an integer is expected makes parseConfig throw a message that
-  // embeds the offending value verbatim (`got "<value>"`), and - with no logger
-  // installed - console.warn the same raw value from its numeric coercion path.
   await writeFile(configPath, JSON.stringify({ recallImpressionsRotateBytes: SECRET }), "utf-8");
 
   const originalWarn = console.warn;
@@ -62,8 +54,6 @@ test("a config validation failure is redacted - and the coercion warning is supp
   } finally {
     console.warn = originalWarn;
   }
-  // The redacted parse suppresses parseConfig's own coercion diagnostic, so the
-  // raw value never reaches stderr even though a warning would otherwise fire.
   assert.ok(
     !warnMessages.some((m) => m.includes(SECRET)),
     "the raw config value must not leak through a console.warn coercion diagnostic",
@@ -73,8 +63,6 @@ test("a config validation failure is redacted - and the coercion warning is supp
 test("an unparseable-JSON config is redacted to a generic error, never the raw bytes (#2033)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-rotation-badjson-"));
   const configPath = path.join(dir, "config.json");
-  // Invalid JSON (trailing comma) whose bytes embed a secret. Node's JSON.parse
-  // error quotes surrounding input, so the raw message can leak the secret.
   await writeFile(configPath, `{ "apiKey": "${SECRET}", }`, "utf-8");
 
   assert.throws(
@@ -91,9 +79,6 @@ test("an unparseable-JSON config is redacted to a generic error, never the raw b
 test("an UNRELATED invalid config field does not abort rotation resolution and never leaks (#2033)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-rotation-unrelated-"));
   const configPath = path.join(dir, "config.json");
-  // A field offline never consumes (`correction.maxAffected`) with an invalid,
-  // secret-bearing value. Full parseConfig would THROW on it; the offline path
-  // must drop it and still resolve rotation from valid offline keys.
   await writeFile(
     configPath,
     JSON.stringify({

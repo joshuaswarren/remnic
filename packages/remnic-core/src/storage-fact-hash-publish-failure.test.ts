@@ -18,7 +18,6 @@ async function withMemoryDir(run: (dir: string) => Promise<void>): Promise<void>
   }
 }
 
-/** Hold the fact-hash index lock the way a peer mid-publish does; returns the release. */
 async function holdIndexLock(dir: string): Promise<() => Promise<void>> {
   const lockPath = path.join(dir, "state", "fact-hashes.txt.lock");
   await mkdir(path.dirname(lockPath), { recursive: true });

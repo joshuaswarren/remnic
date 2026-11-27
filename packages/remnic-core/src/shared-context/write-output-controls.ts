@@ -1,17 +1,3 @@
-/**
- * Canonical client-input parse for shared-context write-output envelope
- * controls (issue #2920).
- *
- * One module feeds BOTH documented surfaces — the Access MCP
- * `shared_context_write_output` operation and the OpenClaw
- * `shared_context_write_output` tool — so surface policy can never drift.
- * This layer owns only what is a SURFACE concern: field type/shape and the
- * rejection of client-supplied identity. Semantic validation (authority
- * allow-list, the binding gate, strict ISO instants, the future/TTL expiry
- * policy, id shape) stays in `composeWriteEnvelope`, the single write-side
- * gate every path already routes through — there is no in-process bypass
- * with looser rules than the tool surfaces.
- */
 
 export interface SharedWriteOutputControls {
   authority?: string;
@@ -21,7 +7,6 @@ export interface SharedWriteOutputControls {
 
 const CONTROL_FIELDS = ["authority", "expiresAt", "supersedes"] as const;
 
-/** Server-resolved fields a caller must never supply (issue #2920). */
 const SERVER_RESOLVED_FIELDS = ["principal", "namespace"] as const;
 
 /**

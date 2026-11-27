@@ -1,11 +1,3 @@
-/**
- * Memory-projection rebuild subject for the scenario-matrix harness
- * (issue #2119). Each canonical row runs the REAL rebuild path — memory scan,
- * sqlite build, atomic install, rebuiltAt meta — plus the scheduled-rebuild
- * wrapper's freshness short-circuit. The matrix dimensions are orthogonal to
- * this rebuild-only subsystem, so the same durable projection invariant
- * applies to every row.
- */
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -63,8 +55,6 @@ const subject: LifecycleSubject<MemoryProjectionState> = {
   },
 
   async invariants(state): Promise<void> {
-    // The on-disk rebuiltAt meta is the scheduled rebuild's cross-process
-    // freshness signal (daemon restart / operator CLI both rely on it).
     const rebuiltAt = readProjectionRebuiltAt(state.memoryDir);
     assert.ok(rebuiltAt, "rebuiltAt meta written by the rebuild");
     assert.ok(Number.isFinite(Date.parse(rebuiltAt)), "rebuiltAt parses as a timestamp");

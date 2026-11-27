@@ -8,24 +8,17 @@ import type { FallbackLlmOptions, FallbackLlmResponse } from "./fallback-llm.js"
 import { LocalLlmClient } from "./local-llm.js";
 import type { LocalLlmChatCompletionOptions, LocalLlmChatCompletionResult } from "./local-llm-helpers.js";
 
-// Regression for cursor review on #1425: the extraction judge must route gateway
-// fallback calls through the SAME precedence as ExtractionEngine.withGatewayAgent
-// — taskModelChain wins over gatewayAgentId — so judge-gated extractions use the
-// configured task chain instead of silently using the persona/default chain.
 
 function captureLlm(captured: Array<Record<string, unknown>>): FallbackLlmClient {
   return {
     isAvailable: () => true,
     chatCompletion: async (_messages: unknown, options: Record<string, unknown>) => {
       captured.push(options);
-      // A parseable batch verdict so the judge doesn't error after the call.
       return { content: JSON.stringify([{ index: 0, durable: true, reason: "ok" }]) };
     },
   } as unknown as FallbackLlmClient;
 }
 
-// "preference" is not auto-approved (only "correction"/"principle" are), so a
-// non-critical preference candidate reaches the LLM path.
 const candidate = { text: "user prefers dark mode", category: "preference", confidence: 0.5 };
 
 test("judge forwards taskModelChain to the fallback LLM in gateway mode", async () => {
@@ -59,7 +52,6 @@ test("judge falls back to gatewayAgentId when no taskModelChain is set", async (
 
 type ChatOptions = LocalLlmChatCompletionOptions;
 
-/** A real FallbackLlmClient whose gateway call is replaced: records the options the judge passes. */
 class RecordingFallbackLlm extends FallbackLlmClient {
   constructor(private readonly sink: FallbackLlmOptions[]) {
     super();
@@ -78,7 +70,6 @@ class RecordingFallbackLlm extends FallbackLlmClient {
   }
 }
 
-/** A real LocalLlmClient whose network call is replaced: records the options the judge passes. */
 class RecordingLocalLlm extends LocalLlmClient {
   constructor(
     private readonly sink: ChatOptions[],
@@ -103,9 +94,6 @@ interface ExampleVerdict {
   durable?: boolean;
 }
 
-// Regression (Studio 2026-10-29): the judge hardcoded timeoutMs: 1500 while the
-// deployed local model needs tens of seconds — 94 straight aborts, 0 completions.
-// The timeout must come from config so operators can set one the model can meet.
 
 test("judge forwards the configured timeout to the local LLM call", async () => {
   const config = parseConfig({ extractionJudgeTimeoutMs: 45_000 });
@@ -118,14 +106,6 @@ test("judge forwards the configured timeout to the local LLM call", async () => 
   assert.equal(captured[0]?.timeoutMs, 45_000);
 });
 
-// ---------------------------------------------------------------------------
-// Compact verdict request (PR 3264 follow-up): the judge asks for a minimal
-// `[{"index":N,"kind":"accept|reject|defer"}]` reply with a batch-scaled
-// completion budget (24 tokens per candidate, up to 2048) instead of a flat 2048. The big budget let
-// a verbose 59-305s reply hide inside the old 150s timeout; the compact one
-// measures 2.1-2.5 s per call on a small fast judge model (13-22 s, 41 s
-// verbose on the big shared core model), inside the 20s default.
-// ---------------------------------------------------------------------------
 
 function captureLocal(captured: ChatOptions[], content?: string): LocalLlmClient {
   return new RecordingLocalLlm(captured, content ?? JSON.stringify([{ index: 0, kind: "reject" }]));
@@ -291,9 +271,6 @@ test("judge treats a single verdict object as one verdict at its index, not the 
 });
 
 // ---------------------------------------------------------------------------
-// Judge model override: extractionJudgeModel must reach the LLM call options
-// (options.model) on both the local and fallback paths, and stay absent when
-// unset so routing keeps the default model.
 // ---------------------------------------------------------------------------
 
 test("judge forwards extractionJudgeModel to the local LLM options", async () => {

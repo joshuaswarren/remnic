@@ -103,17 +103,11 @@ interface RingSlot {
   counts: Record<BufferIngressOutcome, BufferIngressOutcomeCount>;
 }
 
-/** Test-visible view of a per-entry digest memo: digest set only. The validity
- * refs (WeakRefs over entry arrays) stay private; tests assert rebuild
- * identity through the map plus the observable counts, never the refs. */
 export interface BufferIngressMemoView {
   digests: Set<string>;
 }
 
 interface EntryDigestMemo {
-  // WeakRefs: after clearAfterExtraction replaces the entry arrays, the old
-  // arrays must not stay reachable through the memo. Deref-compare keeps the
-  // validity check exact without retaining evicted turn content.
   turnsRef: WeakRef<BufferTurn[]>;
   retainedRef: WeakRef<BufferTurn[]> | undefined;
   digests: Set<string>;
@@ -132,7 +126,6 @@ export class BufferIngressCounters {
 
   constructor(
     private readonly now: () => number = Date.now,
-    /** Test seam: the disabled control proves counting does not touch the buffer. */
     private readonly enabled = true,
   ) {}
 
@@ -172,13 +165,11 @@ export class BufferIngressCounters {
     return null;
   }
 
-  /** Count a refused ERROR for `throw` sites; the error propagates unchanged. */
   refuseThrow(turn: BufferTurn, error: Error): Error {
     this.refuseOne(turn);
     return error;
   }
 
-  /** Count a WHOLE-BATCH refusal (every offered turn is dropped). */
   refuseAll(offered: readonly { turn: BufferTurn }[]): null {
     for (const { turn } of offered) this.refuseOne(turn);
     return null;
@@ -230,7 +221,6 @@ export class BufferIngressCounters {
     this.totals[outcome].chars += chars;
   }
 
-  /** ONE aggregate line per hour, at roll time, describing the ending hour. */
   private logHourBucket(hourStartMs: number): void {
     const slot = this.ring[(hourStartMs / HOUR_MS) % RING_SLOTS];
     if (slot === null || slot.hourStartMs !== hourStartMs) return;
@@ -244,14 +234,7 @@ export class BufferIngressCounters {
   private memoFor(entry: BufferEntryState): EntryDigestMemo {
     const retained = entry.retainedTurns;
     const memo = this.memos.get(entry);
-    // Rebuild bound to the digest cap: a restored entry can hold more unique
-    // turns than DUPLICATE_DIGEST_CAP, so keep the most recent turns (FIFO
-    // order, matching the steady-state path) — inserting all of them would
-    // leave the set permanently above the cap.
-    // Reuse only when both sides agree on presence AND identity: a memo built
-    // with a retained array requires a live identical array now (a collected
-    // WeakRef must never read as "absent"); a memo built without one requires
-    // none now.
+
     const retainedMatch =
       memo?.retainedRef === undefined
         ? memo !== undefined && retained === undefined

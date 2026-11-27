@@ -20,17 +20,10 @@ import { parseWhyCliOptions } from "./recall-why-cli.js";
 import { buildXraySnapshot, type RecallXrayResult, type RecallXraySnapshot } from "./recall-xray.js";
 import type { MemoryStatus, RecallPlanMode } from "./types.js";
 
-// ─── fixtures ─────────────────────────────────────────────────────────────
-//
-// A synthetic store whose memories are each engineered to be dropped at a
-// DIFFERENT pipeline stage. All content is invented for this test.
 
 interface FixtureMemory extends RecallWhyMemoryRef {
-  /** When set, the memory reaches capture and the pipeline rejected it here. */
   rejectedBy?: string;
-  /** When true, the memory survives filtering but is cut by the cap. */
   capEvicted?: boolean;
-  /** When true, the memory survives every stage. */
   recalled?: boolean;
 }
 
@@ -58,8 +51,6 @@ const FIXTURES: FixtureMemory[] = [
   },
   {
     memoryId: "fact-excluded-0004",
-    // `artifacts/` is served by its own surface and is excluded from generic
-    // recall by `isGenericRecallExcludedPath`.
     path: "artifacts/report-0004.md",
     status: "active",
     namespace: "team-alpha",
@@ -103,11 +94,6 @@ function xrayResult(memory: FixtureMemory): RecallXrayResult {
   };
 }
 
-/**
- * Snapshot shaped exactly as the real capture would be for this fixture set:
- * `results` is everything captured, `headroomResults` is what survived the
- * policy filters, `appliedResults` is what survived the final cap.
- */
 function fixtureSnapshot(): RecallXraySnapshot {
   const captured = FIXTURES.filter((m) => m.recalled === true || m.capEvicted === true || m.rejectedBy !== undefined);
   const survived = captured.filter((m) => m.rejectedBy === undefined);
@@ -144,7 +130,6 @@ function makeDeps(overrides: DepsOverrides = {}): RecallWhyDeps {
     plannerMode: (prompt) => overrides.plannerMode ?? planRecallMode(prompt),
     scopedNamespaces: RECALL_NAMESPACES,
     namespacesEnabled: overrides.namespacesEnabled ?? true,
-    // The real predicate, bound with no policy — `artifacts/` is excluded.
     isExcludedPath: (memoryPath) => memoryPath.startsWith("artifacts/"),
     findExpected: async (expect) =>
       FIXTURES.find((m) => m.memoryId === expect) ??
@@ -177,7 +162,6 @@ test("the real recall is replayed exactly once, never re-implemented", async () 
   assert.equal(invocations, 1, "one diagnosis must cost exactly one recall");
 });
 
-// ─── --expect names the correct stage, per engineered drop cause ───────────
 
 test("a memory that survived every stage reports as recalled", async () => {
   const report = await expectVerdict("fact-recalled-0001");
@@ -220,8 +204,6 @@ test("a memory outside the recall namespaces is dropped at policy-filter", async
 });
 
 test("namespace scope is not applied when namespaces are disabled", async () => {
-  // Same fixture, namespaces off: the namespace gate must not fire, so the
-  // memory falls through to the stale-index verdict instead.
   const report = await expectVerdict("fact-otherns-0005", { namespacesEnabled: false });
   assert.notEqual(report.expectation?.reason, "namespace-scope");
   assert.equal(report.expectation?.reason, "not-a-candidate");
@@ -249,7 +231,6 @@ test("a memory that passes every filter but never reached retrieval blames the i
 });
 
 test("planner mode no_recall is attributed to retrieval, ahead of any policy filter", async () => {
-  // The REAL planner classifies a bare acknowledgement as no_recall.
   assert.equal(planRecallMode("ok"), "no_recall");
   const report = await explainRecallMiss("ok", {
     deps: makeDeps({ outcome: { ok: true, snapshot: null } }),
@@ -259,13 +240,10 @@ test("planner mode no_recall is attributed to retrieval, ahead of any policy fil
   assert.equal(report.expectation?.stage, "retrieval");
   assert.equal(report.expectation?.reason, "planner-mode");
   assert.match(report.expectation?.detail ?? "", /no_recall/);
-  // The planner gates retrieval, so it outranks the status filter this
-  // memory would also have failed.
   assert.notEqual(report.expectation?.reason, "status-filter");
 });
 
 test("planner mode minimal is attributed to retrieval after the policy filters", async () => {
-  // The REAL planner classifies a short operational directive as minimal.
   assert.equal(planRecallMode("check the deploy"), "minimal");
   const report = await explainRecallMiss("check the deploy", {
     deps: makeDeps({ outcome: { ok: true, snapshot: null } }),
@@ -275,8 +253,6 @@ test("planner mode minimal is attributed to retrieval after the policy filters",
   assert.equal(report.expectation?.stage, "retrieval");
   assert.equal(report.expectation?.reason, "planner-mode");
   assert.match(report.expectation?.detail ?? "", /minimal/);
-  // A minimal-mode report annotates the retrieval stage rather than
-  // silently reporting a full-headroom run.
   const retrieval = report.stages.find((s) => s.stage === "retrieval");
   assert.match(retrieval?.reason ?? "", /minimal/);
 });
@@ -295,7 +271,6 @@ test("--expect accepts a substring, not only a full id", async () => {
   assert.equal(report.expectation?.reason, "status-filter");
 });
 
-// ─── backend failure is never an empty pipeline (checklist #22) ────────────
 
 test("a backend outage reports backend_unavailable, not zero candidates", async () => {
   const report = await explainRecallMiss(FULL_QUERY, {
@@ -315,9 +290,6 @@ test("a backend outage reports backend_unavailable, not zero candidates", async 
   });
   assert.equal(report.expectation?.reason, "backend-unavailable");
   assert.equal(report.expectation?.stage, "retrieval");
-  // Only the retrieval stage is reported. No downstream stage ran, so none
-  // may claim it "considered 0" — that is exactly the empty-vs-failed
-  // conflation this asserts against.
   assert.deepEqual(
     report.stages.map((s) => s.stage),
     ["retrieval"]
@@ -335,7 +307,6 @@ test("an honest empty recall stays ok:true and is not reported as an outage", as
   assert.deepEqual(report.recalledMemoryIds, []);
 });
 
-// ─── stage records ────────────────────────────────────────────────────────
 
 test("stages are reported in contract order with real per-stage counts", async () => {
   const report = await explainRecallMiss(FULL_QUERY, { deps: makeDeps() });
@@ -344,7 +315,6 @@ test("stages are reported in contract order with real per-stage counts", async (
     [...RECALL_WHY_STAGES]
   );
   const byStage = new Map(report.stages.map((s) => [s.stage, s]));
-  // 3 captured (recalled + cap-evicted + rejected), 1 rejected by policy.
   assert.equal(byStage.get("retrieval")?.considered, 3);
   assert.equal(byStage.get("policy-filter")?.considered, 3);
   assert.equal(byStage.get("policy-filter")?.admitted, 2);
@@ -368,8 +338,6 @@ test("drops are attributed to the stage that dropped them", async () => {
 });
 
 test("cap drops are sorted by (memoryId, path), not by capture order", async () => {
-  // Fed in DESCENDING id order: a report that echoed capture order would
-  // fail this, and a comparator that never returns 0 would be unstable.
   const evicted = ["fact-zzz-0003", "fact-mmm-0002", "fact-aaa-0001"].map((memoryId) => ({
     memoryId,
     path: `facts/2026-01-02/${memoryId}.md`,
@@ -396,7 +364,6 @@ test("cap drops are sorted by (memoryId, path), not by capture order", async () 
   assert.deepEqual(first.stages, second.stages);
 });
 
-// ─── input validation (checklists #1, #39, #45) ────────────────────────────
 
 test("an empty or whitespace-only query is rejected, never silently defaulted", async () => {
   for (const bad of ["", "   ", "\t\n"]) {
@@ -413,9 +380,6 @@ test("a whitespace-only --expect is rejected rather than treated as absent", asy
 });
 
 test("a non-finite appliedResultLimit cannot leak into the report", async () => {
-  // A corrupt upstream value must clamp to 0, never surface as NaN. The
-  // spread is fully typed — `appliedResultLimit` is a `number`, and NaN is
-  // a number — so no cast is needed to plant it.
   const snapshot: RecallXraySnapshot = {
     ...fixtureSnapshot(),
     appliedResultLimit: Number.NaN,
@@ -427,7 +391,6 @@ test("a non-finite appliedResultLimit cannot leak into the report", async () => 
   assert.equal(Number.isFinite(report.appliedResultLimit), true);
 });
 
-// ─── renderer + CLI parsing ───────────────────────────────────────────────
 
 test("the markdown renderer names the drop stage and the remediation", async () => {
   const report = await expectVerdict("fact-superseded-0002");
@@ -486,7 +449,6 @@ test("an inherited option is never read as a supplied flag", () => {
   assert.deepEqual(parseWhyCliOptions("q", inherited), { query: "q", format: "markdown" });
 });
 
-// ─── status coverage is exhaustive (checklist #41) ─────────────────────────
 
 test("only the active status survives the status gate", async () => {
   const statuses: MemoryStatus[] = ["pending_review", "rejected", "quarantined", "superseded", "archived"];

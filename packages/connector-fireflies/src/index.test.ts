@@ -89,7 +89,6 @@ test("fetchConversations normalizes transcripts through the shared shape", async
     assert.equal(page.conversations[0]?.id, "m-1");
     assert.equal(page.conversations[0]?.source, "fireflies");
     assert.equal(page.conversations[0]?.segments[0]?.text, "Hello");
-    // A single partial page ends the day.
     assert.equal(page.nextCursor, null);
   } finally {
     globalThis.fetch = originalFetch;
@@ -126,7 +125,6 @@ test("missing API key surfaces an actionable error at call time, not constructio
     settings: settings({ apiKey: undefined }),
     timezone: "UTC",
   });
-  // Construction did not throw; the call does, with the actionable message.
   await assert.rejects(
     connector.fetchConversations({ date: "2026-03-10", timezone: "UTC" }),
     (err: unknown) => {

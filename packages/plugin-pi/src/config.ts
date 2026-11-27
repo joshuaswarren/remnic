@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import path from "node:path";
 
-// Leaf submodule (not the `@remnic/core` barrel) so the omp pre-bundle's
 // `bun build` does not pull the rest of core — including the LanceDB native
 // asset — into the extension bundle. See PR #1641.
 import { expandTildePath } from "@remnic/core/utils/path";
@@ -57,24 +56,8 @@ export interface RemnicPiConfig {
    * retrying is harmless (issue #1602).
    */
   observeMaxRetries: number;
-  /**
-   * File backing the durable observe outbox (capacity refusals and ambiguous
-   * failures queue here until the daemon accepts them). Empty/undefined
-   * resolves to `<pi agent home>/remnic/observe-outbox.jsonl`.
-   */
   observeOutboxPath?: string;
-  /**
-   * The durable observe outbox's in-memory spill threshold: entries beyond
-   * this bound spill to disk segments, so raising it delays the spill rather
-   * than increasing total retention. Size it for memory and disk alike; the
-   * default 5000 rides out a long daemon outage without spilling early.
-   */
   observeOutboxMaxEntries?: number;
-  /**
-   * Cooldown base for the daemon-reachability circuit breaker. When observe/
-   * recall fails on a timeout or connection error, subsequent turns skip fast
-   * for an exponentially growing window starting at this value (issue #1626).
-   */
   daemonCooldownMs: number;
   /**
    * Number of explicit recall timeout errors in the last {@link recallTimeoutWindow}
@@ -106,21 +89,12 @@ export const DEFAULT_CONFIG: RemnicPiConfig = {
   statusEnabled: true,
   requestTimeoutMs: 60000,
   startupRequestTimeoutMs: 1000,
-  // Default 20 s is comfortably under the Pi/omp 30 s handler budget (#1626).
   turnRequestTimeoutMs: 20000,
   firstTurnRecallBudgetMs: 0,
-  // Default 100 KiB leaves headroom under the daemon's 128 KiB default (#1600).
   observeMaxBytes: 102400,
   observeMaxRetries: 2,
-  // Durable outbox capacity: the daemon refuses captures while its extraction
-  // buffer is full, and every refusal queues here. The outbox never evicts:
-  // entries beyond the bound spill to disk segments, and the only loss path
-  // is an enqueue throw when a spill write fails. 200 spilled too early
-  // during the 2026-11-22 fleet outage; 5000 keeps the hot file small.
   observeOutboxMaxEntries: 5000,
-  // Base cooldown for the circuit breaker; doubles on consecutive failures (#1626).
   daemonCooldownMs: 5000,
-  // Recall-timeout circuit breaker: 7 timeouts in the last 10 recall calls pause recall for a 5 minute cooldown.
   recallTimeoutThreshold: 7,
   recallTimeoutWindow: 10,
 };
@@ -233,12 +207,6 @@ function coerceRecallMode(value: unknown): RemnicPiConfig["recallMode"] {
 }
 
 const PRINCIPAL_MAX_CHARS = 128;
-/**
- * Client-side mirror of the daemon's trusted-header contract, tightened to
- * printable ASCII because fetch `Headers` carries a ByteString: a value like
- * `writer-α` would throw inside Headers.set on every request (#3461 review).
- * No whitespace, control chars, path separators, or `..`.
- */
 function isSendablePrincipal(value: string): boolean {
   if (value.length === 0 || value.length > PRINCIPAL_MAX_CHARS) return false;
   if (/[\s\/\\]|\.{2}/.test(value)) return false;
@@ -297,7 +265,6 @@ function trimTrailingSlashes(value: string): string {
 
 export function resolveConfigPath(options: LoadConfigOptions = {}): string {
   const env = options.env ?? process.env;
-  // REMNIC_PI_CONFIG keeps precedence for upstream Pi; REMNIC_OMP_CONFIG lets an
   // omp (oh-my-pi) direct load (`omp -e npm:@remnic/plugin-pi`) point the shared
   // runtime module at its own config without an explicit configPath. Connector
   // installs always pass an explicit configPath, so this only affects direct loads.
@@ -321,7 +288,6 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
   const envPrincipal = coerceOptionalString(env.REMNIC_PI_PRINCIPAL, "REMNIC_PI_PRINCIPAL");
   const explicitPrincipal = filePrincipal ?? envPrincipal;
   const derivedPrincipal = explicitPrincipal === undefined ? deriveWriterPrincipal(env) : undefined;
-  // Validate the winner only: a bad explicit value is a config error; a bad
   // derived value just means this process cannot self-label, so it degrades
   // to unset rather than breaking pane startup (#3461 review).
   const principal =
@@ -337,7 +303,6 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     60_000,
     "requestTimeoutMs",
   );
-  // When turnRequestTimeoutMs is not explicitly set, derive it from the
   // configured requestTimeoutMs (capped at the default turn budget) so an
   // existing install that lowered requestTimeoutMs below 20s keeps its tighter
   // per-turn budget instead of being silently raised back to 20s (codex review).

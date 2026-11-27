@@ -79,7 +79,6 @@ test("installService writes the unit, creating its directory; force guards an ex
       }),
     CaptureConfigError,
   );
-  // --force overwrites without throwing.
   assert.doesNotThrow(() =>
     installService({
       platform: "linux",

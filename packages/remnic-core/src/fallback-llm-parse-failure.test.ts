@@ -1,11 +1,3 @@
-/**
- * Distinct structured-parse failure classes (issue #2968).
- *
- * HTTP 200 empty, invalid JSON, schema-invalid JSON, HTTP errors, and the
- * abort/timeout race must not collapse into one reason. Fingerprints stay
- * retryable because these map to provider_retryable / parse_empty, which the
- * extraction-run coordinator never marks processed.
- */
 import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";

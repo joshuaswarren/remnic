@@ -45,8 +45,6 @@ const DENIED_SCOPE_REASONS: ReadonlySet<string> = new Set([
   // The resolved profile has no writable layer: the same current-policy
   // refusal family, surfaced from inside the shared runExtraction gate.
   "scope_profile_no_writable_layer",
-  // captureMode=explicit: ordinary buffered conversation turns never create
-  // memories; only deliberately accepted captures drain.
   "capture_mode_explicit",
 ]);
 
@@ -108,7 +106,6 @@ export class ClaimBufferStorage implements BufferStorage {
   }
 
   async saveBuffer(state: BufferState): Promise<void> {
-    // Whole-state fallback (the claim covers one session): persist the entry.
     const entry = state.entries?.[this.key];
     await this.writeProgress(entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 });
   }
@@ -123,7 +120,6 @@ export class ClaimBufferStorage implements BufferStorage {
 
   private async writeProgress(entry: BufferEntryState): Promise<void> {
     await this.claims.writeEntry(this.key, this.ownerId, entry, this.seen);
-    // Copy the lists: the buffer keeps mutating its own arrays after a save.
     this.seen = { ...entry, turns: [...entry.turns], retainedTurns: entry.retainedTurns ? [...entry.retainedTurns] : undefined };
   }
 
@@ -234,10 +230,6 @@ function assembleOutcome(
   return outcome;
 }
 
-/** Ack an EMPTY claim. The ack verdict is the truth: live ingress can merge
- *  between the empty read and the ack — a not_empty ack means pending work
- *  exists; reload it, release OUR lease, report deferred, never a false
- *  drained. */
 async function ackEmptyClaim(
   claims: BufferDrainClaims,
   key: string,
@@ -278,9 +270,6 @@ function startLeaseHeartbeat(
           if (state === "lost") abort.abort(new Error(`buffer drain: lease lost for session ${key}`));
         })
         .catch((err: Error) => {
-          // A heartbeat that cannot be renewed is a lease that cannot be held:
-          // stop this run cleanly at the next chunk boundary (the next run
-          // resumes it).
           abort.abort(new Error(`buffer drain: lease heartbeat failed for session ${key}: ${describeError(err)}`));
         });
     },
@@ -303,8 +292,6 @@ function buildClaimExecution(
   const coordinator = new TurnIngestionCoordinator(selfDeps<TurnIngestionDeps>(orchestrator));
   const config = orchestrator.config;
   const ingestionDeps = selfDeps<TurnIngestionDeps>(orchestrator);
-  // No-drop: a repeatedly failing chunk stays in the claim as durable
-  // retryable backlog — never side-filed, never counted as processed.
   const executionDrain = new ExtractionDrain(
     {
       config: {
@@ -314,11 +301,6 @@ function buildClaimExecution(
         extractionChunkDropAfterFailures: config.extractionChunkDropAfterFailures,
       },
       extractionWindowBudgetChars: () => ingestionDeps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY,
-      // Render-exact chunk sizing: the model clamp bounds the CONVERSATION
-      // (truncateLocalExtractionConversation), so measure exactly that —
-      // with the SAME source-classification gate extract() applies when it
-      // prepends the connector header (header margin included when the
-      // engine would render it).
       measureRenderedTurns: (turns) => {
         const sourceConnector = resolveMemoryLifecycleCapabilities(config).extractionScopeClassification
           ? resolveSourceConnector(turns)
@@ -347,8 +329,6 @@ function planOptionForGroup(group: ExtractionScopeGroup): GroupPlanOption {
   return {};
 }
 
-/** captureMode=explicit: ordinary buffered conversation turns never create
- *  memories — only deliberately accepted captures drain. */
 function explicitModeDenied(group: ExtractionScopeGroup, config: PluginConfig): boolean {
   return shouldSkipImplicitExtraction(config) && !group.turns.some((turn) => turn.acceptedCapture === true);
 }
@@ -398,10 +378,6 @@ async function drainScopeGroups(
       done = true;
       settleGate.resolve({ cause, result });
     };
-    // Settlement and callback EXIT are tracked separately: the lease is
-    // released only after BOTH the queued closure settled and fully exited
-    // (an abort settles through its listener while the closure may still be
-    // persisting).
     const exited = Promise.withResolvers<void>();
     void ctx.coordinator
       .queueBufferedExtraction(group.turns, "trigger_mode", {
@@ -411,8 +387,6 @@ async function drainScopeGroups(
         skipDedupeCheck: true,
         skipCharThreshold: true,
         skipUserTurnThreshold: true,
-        // Automatic background work yields to fail-closed foreground flushes
-        // (preemptRunning), same as the live trigger path.
         preemptable: true,
         abortSignal: ctx.signal,
         writeNamespaceOverride: group.writeNamespaceOverride,
@@ -426,9 +400,6 @@ async function drainScopeGroups(
     const [verdict] = await Promise.all([settleGate.promise, exited.promise]);
     const settled = verdict;
     if (settled.cause !== undefined) {
-      // SAFETY: settle captures whatever the queued closure rejected with;
-      // every drain rejection site throws Error values, and a rejection is
-      // always a DrainExtractionError in this path.
       groupError = settled.cause as Error;
       break;
     }
@@ -567,17 +538,11 @@ async function runClaimDrain(
   options: BufferDrainRunnerOptions,
   heartbeat: NodeJS.Timeout
 ): Promise<DrainSessionOutcome> {
-  // Reconcile only identities recorded as durably extracted under this
-  // owner's claim lease. The claim lock is released before entering the live
-  // buffer mutation queue, preserving the buffer→claim lock order used by
-  // concurrent ingress saves.
   const reconcileDrainedTurns = async (): Promise<void> => {
     const drained = await ctx.claims.drainedTurnsForOwner(ctx.key, ctx.ownerId);
     if (drained !== null) await ctx.orchestrator.buffer.save({ key: ctx.key, drained });
   };
 
-  // An emptied claim acks here: the ack verdict is the truth (drained), or
-  // live ingress merged between the read and the ack — deferred, source kept.
   if (ctx.turns.length === 0) {
     await reconcileDrainedTurns();
     const outcome = await ackEmptyClaim(ctx.claims, ctx.key, ctx.ownerId, ctx.turnsAtStart);
@@ -586,8 +551,6 @@ async function runClaimDrain(
   }
   const { groupOutcomes, groupError } = await drainScopeGroups(ctx);
   await reconcileDrainedTurns();
-  // Heartbeat cleared on EVERY exit path: a rejected drain must not keep
-  // renewing the lease forever (cleared in the caller's finally).
   const remaining = await ctx.claims.load(ctx.key);
   const { status, reason, turnsRemaining } = await settleDrainVerdict(
     ctx.claims,
@@ -612,7 +575,6 @@ async function runClaimDrain(
 export class BufferDrainRunner {
   constructor(private readonly orchestrator: Orchestrator) {}
 
-  /** The claim store of this orchestrator's memory root. */
   get claims(): BufferDrainClaims {
     return this.orchestrator.storage.bufferDrainClaims();
   }
@@ -629,7 +591,6 @@ export class BufferDrainRunner {
     const { claim, turnsAtStart } = claimed;
     options.onEvent?.({ type: "session_started", key, turns: turnsAtStart });
 
-    // Take the lease unless this drainer already holds it.
     const busy = await adoptLease(claims, key, options.ownerId, leaseMs);
     if (busy !== null) {
       const outcome = busy;
@@ -637,8 +598,6 @@ export class BufferDrainRunner {
       return outcome;
     }
 
-    // The claim is the buffer for this run: every successful chunk is removed
-    // from it, so a kill leaves exactly the un-extracted turns.
     const { claimBuffer, coordinator, executionDrain } = buildClaimExecution(
       this.orchestrator,
       claims,
@@ -648,11 +607,8 @@ export class BufferDrainRunner {
     );
     await claimBuffer.load();
 
-    // The claim's turns (retained first, like the live buffer's order).
     const turns = [...(claim.entry.retainedTurns ?? []), ...claim.entry.turns];
 
-    // A lost lease means another drainer took the claim: stop instead of
-    // writing progress into a claim this run no longer owns.
     const abort = new AbortController();
     const signal = drainAbortSignal(options.signal, abort);
     const heartbeat = startLeaseHeartbeat(claims, key, options.ownerId, leaseMs, abort);

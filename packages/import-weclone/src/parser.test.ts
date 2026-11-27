@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
 // Tests — WeClone export parser
-// ---------------------------------------------------------------------------
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -59,7 +57,6 @@ describe("parseWeCloneExport", () => {
     ];
     const result = parseWeCloneExport(input);
     assert.equal(result.turns.length, 2);
-    // Default platform is telegram when not specified
     assert.equal(result.metadata.source, "weclone-telegram");
   });
 
@@ -309,7 +306,6 @@ describe("parseWeCloneExport", () => {
       ],
     };
     const result = parseWeCloneExport(input);
-    // WeCloneImportTurn extends ImportTurn with messageId
     const turns = result.turns as Array<{ messageId?: string; replyToId?: string }>;
     assert.equal(turns[0].messageId, "msg-001");
     assert.equal(turns[1].messageId, "msg-002");
@@ -326,7 +322,6 @@ describe("parseWeCloneExport", () => {
       ],
     };
     const result = parseWeCloneExport(input);
-    // "Alice" is the self-sender (first message); Aidan and Craig are other humans
     assert.equal(result.turns[0].role, "user");
     assert.equal(result.turns[1].role, "other");
     assert.equal(result.turns[2].role, "other");
@@ -357,7 +352,6 @@ describe("parseWeCloneExport", () => {
   });
 
   it("skips bot-like senders when inferring default selfSender", () => {
-    // The first message is from a bot.  Inferring `selfSender` from the
     // first sender would mislabel the bot as `user` and demote the human
     // to `other`.  The parser should pick the first non-bot sender.
     const input = {
@@ -369,7 +363,6 @@ describe("parseWeCloneExport", () => {
       ],
     };
     const result = parseWeCloneExport(input);
-    // Alice is the human -> user; the bot turns -> assistant
     const bot = result.turns.filter((t) => t.participantId === "ChatGPT Bot");
     const human = result.turns.find((t) => t.participantId === "Alice");
     assert.equal(human?.role, "user");
@@ -396,7 +389,6 @@ describe("parseWeCloneExport", () => {
   });
 
   it("falls back to first valid sender when every sender looks bot-like", () => {
-    // Pathological case: every sender matches bot heuristics.  We still
     // need SOMEONE to be `user` so downstream extraction has a
     // first-person perspective; picking the first valid sender is the
     // least-bad default.

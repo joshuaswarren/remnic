@@ -5,9 +5,7 @@ import type { RecallXraySnapshot } from "@remnic/core";
 
 import { extractXrayRawArgs, runXrayCommand } from "./index.js";
 
-// ---------------------------------------------------------------------------
 // Fixtures
-// ---------------------------------------------------------------------------
 
 function minimalSnapshot(): RecallXraySnapshot {
   return {
@@ -161,7 +159,6 @@ describe("runXrayCommand", () => {
 
   it("fail-fast: validation errors throw before recallXray is called (Codex P2 on #643)", async () => {
     const { io, mock } = makeIo(() => ({ snapshotFound: false }));
-    // All four failure modes must short-circuit BEFORE the recall IO
     // fires, so `cmdXray`'s fail-fast guard (which calls the same
     // validators ahead of orchestrator bootstrap) is protected by
     // parity with this test.
@@ -272,7 +269,6 @@ describe("runXrayCommand", () => {
     assert.equal(mock.stdoutLines.length, 0);
     assert.equal(mock.writeFileCalls.length, 1);
     assert.equal(mock.writeFileCalls[0].filePath, "/tmp/xray-out.md");
-    // Markdown output uses an H1 header per the renderer contract.
     assert.ok(mock.writeFileCalls[0].data.startsWith("# Recall X-ray"));
   });
 

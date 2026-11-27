@@ -48,7 +48,6 @@ export async function runQuarantineReplay(
     process.exitCode = 2;
     return;
   }
-  // Only --namespace/--principal (value flags) and --json (parsed upstream) are allowed.
   const valued = new Set(["--namespace", "--principal"]);
   const bad = rest.filter((a, i) => (a.startsWith("--") ? a !== "--json" && !valued.has(a) : !valued.has(rest[i - 1])));
   if (bad.length > 0) {
@@ -61,8 +60,6 @@ export async function runQuarantineReplay(
   initLogger();
   let orchestrator: Orchestrator | undefined;
   try {
-    // Resolve + read config inside the boundary so a throw (bad path or invalid
-    // JSON) fails cleanly (exit 2) rather than propagating to the global handler.
     const configPath = resolveConfigPath();
     const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
     const config = parseConfig(resolveRemnicConfigRecord(raw));
@@ -70,9 +67,6 @@ export async function runQuarantineReplay(
     await orchestrator.initialize();
     await orchestrator.deferredReady;
     const service = new EngramAccessService(orchestrator);
-    // Open the store on the SAME resolved memoryDir the orchestrator dead-letters
-    // into (config.memoryDir), so replay reads/removes the exact tree writes were
-    // parked in — never a divergent resolveMemoryDir() result.
     const store = new WriteQuarantineStore(config.memoryDir);
     const result = await replayQuarantine({
       store,
@@ -89,7 +83,6 @@ export async function runQuarantineReplay(
       },
     });
     console.log(renderReplayResult(result, targetNamespace, format));
-    // A failed re-submit OR a failed deletion is a non-clean outcome.
     if (result.failures.length > 0 || result.deleteFailures.length > 0) process.exitCode = 1;
   } catch {
     process.stderr.write("quarantine replay: unable to replay quarantine store\n");

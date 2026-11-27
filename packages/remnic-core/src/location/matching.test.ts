@@ -76,8 +76,6 @@ test("locationTagSlug: the collapse keeps edges single-dash, so the trim is comp
   // This is the invariant the single-character edge strips depend on: the
   // /[^a-z0-9]+/ collapse cannot leave two dashes at an edge. Relax or reorder
   // the collapse and the strips silently stop being complete, so assert the
-  // OUTPUT contract directly rather than timing something the collapse has
-  // already bounded.
   const adversarial = [
     "-".repeat(5_000),
     "a" + "-".repeat(5_000) + "b",

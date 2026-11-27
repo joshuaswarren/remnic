@@ -1,26 +1,3 @@
-/**
- * Per-language symbol extractors for the tier-1 languages.
- *
- * Each tier-1 language has a `LanguageExtractor` providing tree-sitter query
- * strings. The `emit.ts` module compiles these against the loaded grammar,
- * runs them against the root node, and walks captures into FileIR.
- *
- * Query capture conventions (fixed across all languages):
- *
- *   Definitions — every definition pattern captures:
- *     @def.<kind>  the definition node (span = [startIndex, endIndex))
- *     @name        the identifier node whose .text is the symbol name
- *     <kind> ∈ function | method | class | interface | enum | type | module
- *
- *   Imports — every import pattern captures:
- *     @__import.stmt  the import-statement node (grouping key)
- *     @import.module  the module specifier text (cleaned in emit.ts)
- *     @import.name    zero or more imported-name identifiers
- *
- *   Exports — @export.name
- *   Call sites — @call.callee
- *   Routes — @route.verb + @route.path + @route.handler
- */
 import type { CodingGraphLanguage } from "@remnic/core";
 
 export type DefKind = "function" | "method" | "class" | "interface" | "enum" | "type" | "module";
@@ -33,9 +10,6 @@ export interface LanguageExtractor {
   readonly routesQuery: string;
 }
 
-// ===========================================================================
-// JS family (JavaScript, TypeScript, TSX) — shared definition + call patterns.
-// ===========================================================================
 
 const JS_FAMILY_DEFINITIONS = `
 (function_declaration name: (identifier) @name) @def.function
@@ -98,8 +72,6 @@ const TS_EXPORTS = `
 `.trim();
 
 // JavaScript exports — class names use identifier (no type_identifier in JS grammar).
-// Includes CommonJS export patterns (module.exports / exports.X) so
-// Node/CommonJS public APIs are not marked unexported.
 const JS_EXPORTS = `
 (export_statement declaration: (function_declaration name: (identifier) @export.name))
 (export_statement declaration: (class_declaration name: (identifier) @export.name))
@@ -162,7 +134,6 @@ const JS_ROUTES = `
 `.trim();
 
 // ===========================================================================
-// Per-language extractors.
 // ===========================================================================
 
 const TYPESCRIPT_EXTRACTOR: LanguageExtractor = {
@@ -477,7 +448,6 @@ const BASH_EXTRACTOR: LanguageExtractor = {
 };
 
 // ===========================================================================
-// Registry — single source of truth.
 // ===========================================================================
 
 export const EXTRACTORS: Record<CodingGraphLanguage, LanguageExtractor> = {

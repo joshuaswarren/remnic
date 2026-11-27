@@ -1,21 +1,3 @@
-/**
- * Integration test: full round-trip through a memoryDir fixture.
- *
- * Writes synthetic markdown memories, runs the full pipeline
- * (convertMemoriesToRecords → synthesizeTrainingPairs → sweepPii →
- * wecloneExportAdapter.formatRecords), and validates that the produced
- * JSON is Alpaca-shaped and contains the expected content.
- *
- * This test validates:
- *   - The WeClone adapter registers itself on import (side-effect).
- *   - `getTrainingExportAdapter("weclone")` returns the same adapter.
- *   - End-to-end CLI-equivalent flow matches issue #459's expected output.
- *   - Date filtering and confidence filtering are honoured at each step.
- *   - PII sweep runs and the final JSON never contains the raw PII tokens.
- *
- * Kept intentionally dependency-light: uses only Node built-ins and the
- * public API surface that @remnic/cli also exercises.
- */
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -28,7 +10,6 @@ import {
   getTrainingExportAdapter,
 } from "@remnic/core";
 
-// Side-effect import registers the adapter with the core registry.
 import {
   ensureWecloneExportAdapterRegistered,
   synthesizeTrainingPairs,
@@ -77,7 +58,6 @@ describe("@remnic/export-weclone — end-to-end integration", () => {
   before(async () => {
     tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weclone-int-"));
 
-    // --- Synthetic fixture covering all template categories ---
     await writeSyntheticMemory(tmpDir, "facts", "coffee.md", {
       id: "mem-001",
       category: "preference",
@@ -99,14 +79,12 @@ describe("@remnic/export-weclone — end-to-end integration", () => {
       tags: ["database"],
       content: "Chose PostgreSQL over MySQL for its JSONB support.",
     });
-    // Low-confidence memory that must be filtered out by --min-confidence
     await writeSyntheticMemory(tmpDir, "facts", "lowconf.md", {
       id: "mem-004",
       category: "fact",
       confidence: 0.4,
       content: "Unverified claim that should not reach the dataset.",
     });
-    // PII-bearing memory to exercise the final sweep
     await writeSyntheticMemory(tmpDir, "facts", "pii.md", {
       id: "mem-005",
       category: "fact",
@@ -120,7 +98,6 @@ describe("@remnic/export-weclone — end-to-end integration", () => {
   });
 
   it("registers the weclone adapter via side-effect import", () => {
-    // The side-effect in index.ts has already fired; a second call is a no-op.
     ensureWecloneExportAdapterRegistered();
     const looked = getTrainingExportAdapter("weclone");
     assert.ok(looked, "weclone adapter must be registered");
@@ -147,9 +124,6 @@ describe("@remnic/export-weclone — end-to-end integration", () => {
       minConfidence: 0.7,
     });
 
-    // Low-confidence memory must be filtered; three of four high-confidence
-    // memories + the PII memory (all >= 0.7) should survive. The decision
-    // memory lives under corrections/ to prove that subdir is scanned too.
     const ids = records.map((r) => r.sourceIds?.[0]).sort();
     assert.deepEqual(ids, ["mem-001", "mem-002", "mem-003", "mem-005"]);
 
@@ -169,7 +143,6 @@ describe("@remnic/export-weclone — end-to-end integration", () => {
       );
     }
 
-    // The final JSON must not contain raw PII anywhere.
     assert.doesNotMatch(
       json,
       /alice@example\.test/,
@@ -186,19 +159,15 @@ describe("@remnic/export-weclone — end-to-end integration", () => {
 
     assert.equal(pairs.length, raw.length);
 
-    // The preference record (mem-001) should now surface a preference-style
-    // question pulled from the (food, coffee) tags.
     const coffeePair = pairs.find((p) => p.sourceIds?.[0] === "mem-001");
     assert.ok(coffeePair, "expected mem-001 to survive synthesis");
     assert.match(coffeePair!.instruction.toLowerCase(), /like|preference|favorite/);
     assert.match(coffeePair!.instruction.toLowerCase(), /food, coffee/);
 
-    // The skill record (mem-002) should surface an expertise-style prompt.
     const skillPair = pairs.find((p) => p.sourceIds?.[0] === "mem-002");
     assert.ok(skillPair);
     assert.match(skillPair!.instruction.toLowerCase(), /tell|know|explain/);
 
-    // Alpaca serialization must succeed after synthesis as well.
     const json = wecloneExportAdapter.formatRecords(pairs);
     const parsed = JSON.parse(json) as Array<{ instruction: string }>;
     assert.equal(parsed.length, pairs.length);
@@ -224,7 +193,6 @@ describe("@remnic/export-weclone — end-to-end integration", () => {
   });
 
   it("honours since/until date filters end-to-end", async () => {
-    // Write a memory from outside the window into the existing fixture.
     await writeSyntheticMemory(tmpDir, "facts", "old.md", {
       id: "mem-old",
       category: "fact",

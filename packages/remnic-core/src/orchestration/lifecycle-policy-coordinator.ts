@@ -1,26 +1,3 @@
-/**
- * Lifecycle-policy coordinator — extracted from the orchestrator
- * (issue #1526, seam 6).
- *
- * Owns the deterministic memory-lifecycle pipeline: heat/decay scoring
- * (`runLifecyclePolicyPass`), fact archival (`runFactArchival`),
- * summarization (`runSummarization`), and topic extraction
- * (`runTopicExtraction`). Also owns the action-outcome prior builder
- * (`buildLifecycleActionPriors` / `actionOutcomePriorDelta`) that feeds
- * the lifecycle transition decider.
- *
- * The orchestrator constructs one instance and delegates the internal
- * entrypoints to it. The public wrapper (`runLifecyclePolicyNow`)
- * remains on the orchestrator as a thin pass-through. Storage is the
- * orchestrator's stable `this.storage` (or a per-namespace override
- * passed via options); the extraction engine, embedding-fallback, and
- * content-hash callbacks arrive as deps so the orchestrator keeps
- * ownership of gateway routing and cross-subsystem persistence.
- *
- * Behavior-preserving move from orchestrator.ts. No logic changes — the
- * orchestrator keeps thin delegating methods so existing call sites
- * and tests that exercise the public API continue to work.
- */
 
 import {
   decideLifecycleTransition,
@@ -52,31 +29,21 @@ import { excludeSupportPassportPrivateMemories } from "../support-passport/card-
 import { runSeedGraduationPass } from "../lifecycle/seed-graduation.js";
 import type { RecallHandleHistoryStore } from "../recall-state.js";
 
-/** Dependencies injected by the orchestrator. All stable references or
- *  live accessors. */
 export interface LifecyclePolicyCoordinatorDeps {
   config: PluginConfig;
-  /** Live accessor: the orchestrator's storage manager (stable post-ctor). */
   getStorage: () => StorageManager;
-  /** The extraction engine — used for summarization. */
   extraction: ExtractionEngine;
-  /** The embedding-fallback manager used for index cleanup on archival. */
   embeddingFallback: EmbeddingFallback;
-  /** Effective lifecycle thresholds (promote/stale/archive). Delegated to
-   *  the orchestrator which owns runtime-policy-values overlay. */
   getEffectiveLifecycleThresholds: () => {
     promoteHeatThreshold: number;
     staleDecayThreshold: number;
     archiveDecayThreshold: number;
   };
-  /** Remove a memory's content-hash entry from the storage-scoped index.
-   *  Delegated to the orchestrator which owns the per-storage index map. */
   removeContentHashForMemory: (
     targetStorage: StorageManager,
     memory: MemoryFile,
     context: string,
   ) => Promise<void>;
-  /** Persist all dirty content-hash indexes to disk. */
   saveContentHashIndexes: () => Promise<void>;
   /** Recall-handle ring used to suppress quoted-back echo during seed graduation. */
   getHandleHistory?: () => RecallHandleHistoryStore;
@@ -273,8 +240,6 @@ export class LifecyclePolicyCoordinator {
       );
     }
 
-    // Report how many memories had frontmatter rewritten so callers can record a
-    // catalog write touch for lifecycle-only passes (codex NR-tS).
     if (!lifecycleCaps.lifecycleMetrics) return updatedCount;
 
     const total = evaluatedCount;
@@ -372,8 +337,6 @@ export class LifecyclePolicyCoordinator {
               tags: memory.frontmatter.tags ?? [],
             });
           }
-          // Remove from the same storage-scoped content-hash index since it is
-          // no longer in hot search.
           await this.deps.removeContentHashForMemory(
             storage,
             memory,
@@ -389,7 +352,6 @@ export class LifecyclePolicyCoordinator {
       }
     }
 
-    // Save hash indexes if we removed any entries.
     if (archivedCount > 0) {
       await this.deps.saveContentHashIndexes().catch((err) =>
         log.warn(`content-hash index save failed during archival: ${err}`),
@@ -403,14 +365,10 @@ export class LifecyclePolicyCoordinator {
   // Summarization (Phase 4A)
   // -------------------------------------------------------------------------
 
-  /**
-   * Run memory summarization if memory count exceeds threshold (Phase 4A).
-   */
   async runSummarization(
     allMemories: MemoryFile[],
   ): Promise<void> {
     const storage = this.deps.getStorage();
-    // Only active memories count toward the threshold
     const activeMemories = allMemories.filter(
       (m) => isActiveMemoryStatus(m.frontmatter.status),
     );
@@ -423,7 +381,6 @@ export class LifecyclePolicyCoordinator {
       `memory count (${activeMemories.length}) exceeds threshold (${this.config.summarizationTriggerCount}) — running summarization`,
     );
 
-    // Sort by creation date, oldest first
     const sorted = activeMemories.sort(
       (a, b) =>
         new Date(a.frontmatter.created).getTime() -
@@ -431,21 +388,16 @@ export class LifecyclePolicyCoordinator {
     );
 
     // Keep recent memories, with explicit zero handling so `slice(-0)` does not
-    // accidentally keep every memory out of the summarization candidate set.
     const recentToKeep = Math.max(0, this.config.summarizationRecentToKeep);
     const toSummarize = recentToKeep > 0 ? sorted.slice(0, -recentToKeep) : sorted;
 
-    // Filter candidates for summarization
     const candidates = toSummarize.filter((m) => {
-      // Skip if protected by entity reference
       if (m.frontmatter.entityRef) return false;
 
-      // Skip if protected by tag
       const protectedTags = this.config.summarizationProtectedTags;
       if (m.frontmatter.tags.some((t) => protectedTags.includes(t)))
         return false;
 
-      // Skip if importance is above threshold
       const importance = m.frontmatter.importance?.score ?? 0.5;
       if (importance >= this.config.summarizationImportanceThreshold)
         return false;
@@ -460,7 +412,6 @@ export class LifecyclePolicyCoordinator {
       return;
     }
 
-    // Summarize in batches of 50
     const batchSize = 50;
     for (let i = 0; i < candidates.length; i += batchSize) {
       const batch = candidates.slice(i, i + batchSize);
@@ -474,7 +425,6 @@ export class LifecyclePolicyCoordinator {
       const result = await this.deps.extraction.summarizeMemories(batchData);
       if (!result) continue;
 
-      // Create summary
       const summary: MemorySummary = {
         id: `summary-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         createdAt: new Date().toISOString(),
@@ -488,17 +438,12 @@ export class LifecyclePolicyCoordinator {
 
       await storage.writeSummary(summary);
 
-      // Archive source memories
       const archived = await storage.archiveMemories(
         batch.map((m) => m.frontmatter.id),
         summary.id,
       );
 
       // Catalog write touch (issue #1499 sweep): summarization writes a durable
-      // summary and then rewrites source-memory archive status, bypassing the
-      // extraction write path. Record the touch after both mutations complete so
-      // `lastWriteAt` covers the final archived-state write.
-      // #1522: catalog touch handled at the storage chokepoint.
 
       log.info(
         `created summary ${summary.id} from ${batch.length} memories, archived ${archived}`,
@@ -510,14 +455,10 @@ export class LifecyclePolicyCoordinator {
   // Topic extraction (Phase 4B)
   // -------------------------------------------------------------------------
 
-  /**
-   * Run topic extraction on all memories (Phase 4B).
-   */
   async runTopicExtraction(
     allMemories: MemoryFile[],
   ): Promise<void> {
     const storage = this.deps.getStorage();
-    // Only extract from active memories
     const activeMemories = allMemories.filter(
       (m) => isActiveMemoryStatus(m.frontmatter.status),
     );

@@ -4,7 +4,6 @@ import type { BackgroundGenerationConfig } from "./background-generation-config.
 import { readEnvVar } from "./runtime/env.js";
 import { parseTaskLlmConfig } from "./task-llm-config.js";
 export interface LocalLlmConfig {
-  // Local LLM Provider (v2.1)
   localLlmEnabled: boolean;
   localLlmUrl: string;
   localLlmModel: string;

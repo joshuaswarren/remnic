@@ -1,6 +1,3 @@
-/**
- * Shared types for @remnic/connector-x.
- */
 
 export type XRecordKind = "bookmark" | "own_post";
 
@@ -22,7 +19,6 @@ export interface XProvenance {
   fetchedAt: string;
 }
 
-/** Normalized record, the common currency every source emits. */
 export interface XPostRecord {
   postId: string;
   kind: XRecordKind;
@@ -39,7 +35,6 @@ export interface XPostRecord {
   provenance?: XProvenance;
 }
 
-/** The memory a record maps to, before trust gating. */
 export interface XMemorySuggestion {
   record: XPostRecord;
   tags: string[];
@@ -47,7 +42,6 @@ export interface XMemorySuggestion {
   entityRef?: string;
   confidence: number;
   postUrl: string;
-  /** Composed memory sentence. */
   content: string;
 }
 
@@ -81,7 +75,6 @@ export interface XSourceFetchContext {
   signal?: AbortSignal;
 }
 
-/** Budget enforcement shared by the sync loop and the MCP source. */
 export interface XBudgetRuntime {
   canRead(): { ok: true } | { ok: false; reason: string; detail?: string };
   noteRead(): void;

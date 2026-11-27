@@ -8,21 +8,9 @@ export interface WriteDirChoice {
   channelDir: string;
 }
 
-/**
- * Remembers which storage directory a session's appends were verified to own,
- * so only a session's first append in a process pays the directory ownership
- * check (a full read of every daily file). The key holds the session key as a
- * digest so caller-chosen keys cannot inflate memory; the map is an LRU.
- *
- * The remembered choice is not re-derived from the bytes. A file edited on
- * disk behind the process is noticed on the session's first append after a
- * restart or after an append error ({@link forget}), not on every append.
- */
 export class WriteDirMemo {
   private readonly entries = new Map<string, WriteDirChoice>();
-  /** Bumped by every invalidation; a choice that was pending across one is not remembered. */
   private generation = 0;
-  /** Tail of the queue of memo-miss runs, per primary directory. */
   private readonly lanes = new Map<string, Promise<void>>();
 
   constructor(private readonly maxEntries: number = DEFAULT_WRITE_DIR_MEMO_ENTRIES) {
@@ -31,12 +19,10 @@ export class WriteDirMemo {
     }
   }
 
-  /** Primary directories with a first append queued or running; empty when idle. */
   get pendingLanes(): number {
     return this.lanes.size;
   }
 
-  /** The remembered choice for the session, else the result of `choose` (remembered when it resolves). */
   async resolve(root: string, sessionKey: string, choose: () => Promise<WriteDirChoice>): Promise<WriteDirChoice> {
     const key = this.keyFor(root, sessionKey);
     const hit = this.entries.get(key);
@@ -79,7 +65,6 @@ export class WriteDirMemo {
     }
   }
 
-  /** Run a file removal, then drop every remembered directory: the removal may have emptied one that another session can now claim. */
   async removing<T>(remove: () => Promise<T>): Promise<T> {
     try {
       return await remove();

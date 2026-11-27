@@ -35,8 +35,6 @@ export async function runExportOkfBinaryCommand(rest: string[]): Promise<void> {
       const rawConfig = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
       config = parseConfig(resolveRemnicConfigRecord(rawConfig));
     } catch {
-      // parseConfig error strings can embed raw config values (including
-      // resolved secrets), so this path must only emit fixed text.
       console.error("export-okf: failed to load config");
       console.error("  config values are never printed; inspect the file directly");
       process.exitCode = 1;

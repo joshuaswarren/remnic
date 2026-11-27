@@ -166,8 +166,6 @@ test("inputs are not mutated", () => {
   ]);
 });
 
-// Review: the contract said bad stored data is skipped, but a nullish
-// targetId threw before the skip checks could run.
 test("a nullish or non-string targetId is skipped, never thrown", () => {
   const result = selectTraverseNeighbors({
     links: [
@@ -181,8 +179,6 @@ test("a nullish or non-string targetId is skipped, never thrown", () => {
   assert.deepEqual(result.neighbors, [{ targetId: "m-real", linkType: "supports" }]);
 });
 
-// A padded id is malformed, not a variant of the trimmed id: trimming would
-// guess at an identity, so the row is skipped.
 test("a whitespace-padded targetId is skipped rather than trimmed", () => {
   const result = selectTraverseNeighbors({
     links: [
@@ -194,8 +190,6 @@ test("a whitespace-padded targetId is skipped rather than trimmed", () => {
   assert.deepEqual(result.neighbors, [{ targetId: "m-2", linkType: "supports" }]);
 });
 
-// Review: dedup ran before sorting, so input order decided which relation
-// survived for a doubly-linked target. Sorting first fixes the survivor.
 test("a target under two relations keeps the smallest linkType regardless of input order", () => {
   const a = { targetId: "m-1", linkType: "supports" };
   const b = { targetId: "m-1", linkType: "contradicts" };
@@ -220,8 +214,6 @@ test("sort-then-dedup also decides which target survives a tight limit", () => {
 });
 
 
-// Round 2: the persisted MemoryLinkType values are real neighbors, not
-// unknown rows to drop. The selector gets them from the widened parser.
 test("persisted link types survive an unfiltered traversal", () => {
   const result = selectTraverseNeighbors({
     links: [

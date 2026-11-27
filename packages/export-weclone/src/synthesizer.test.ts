@@ -256,7 +256,6 @@ describe("synthesizeTrainingPairs", () => {
     const pairs = synthesizeTrainingPairs(records);
 
     assert.ok(pairs.length >= 1);
-    // Default templates use "Tell me about" / "What can you share about"
     const q = pairs[0].instruction.toLowerCase();
     assert.ok(
       q.includes("tell") || q.includes("share"),
@@ -272,7 +271,6 @@ describe("synthesizeTrainingPairs", () => {
         output: "Something happened.",
       }),
     ];
-    // category is undefined by default in makeRecord
 
     const pairs = synthesizeTrainingPairs(records);
 
@@ -296,7 +294,6 @@ describe("synthesizeTrainingPairs", () => {
     const pairs = synthesizeTrainingPairs(records);
 
     assert.ok(pairs.length >= 1);
-    // The question should contain "food, cooking" from the tags
     const q = pairs[0].instruction.toLowerCase();
     assert.ok(
       q.includes("food, cooking"),
@@ -348,7 +345,6 @@ describe("synthesizeTrainingPairs", () => {
     const pairs = synthesizeTrainingPairs(records, { maxPairsPerRecord: 3 });
     assert.equal(pairs.length, 3);
 
-    // Each pair should have a different question
     const questions = pairs.map((p) => p.instruction);
     const unique = new Set(questions);
     assert.equal(unique.size, 3, "all 3 questions should be distinct");
@@ -443,21 +439,18 @@ describe("synthesizeTrainingPairs", () => {
     const pairs = synthesizeTrainingPairs(records);
     assert.equal(pairs.length, 3);
 
-    // First record: preference -> "like"/"preference"/"favorite"
     const q0 = pairs[0].instruction.toLowerCase();
     assert.ok(
       q0.includes("like") || q0.includes("preference") || q0.includes("favorite"),
       `expected preference question, got: "${pairs[0].instruction}"`,
     );
 
-    // Second record: correction -> "think"/"feel"/"opinion"
     const q1 = pairs[1].instruction.toLowerCase();
     assert.ok(
       q1.includes("think") || q1.includes("feel") || q1.includes("opinion"),
       `expected opinion question, got: "${pairs[1].instruction}"`,
     );
 
-    // Third record: fact -> "tell"/"know"/"explain"
     const q2 = pairs[2].instruction.toLowerCase();
     assert.ok(
       q2.includes("tell") || q2.includes("know") || q2.includes("explain"),
@@ -482,8 +475,6 @@ describe("synthesizeTrainingPairs", () => {
   });
 
   it("handles instruction with many nested open-parens without slowdown (CodeQL ReDoS fix)", () => {
-    // Regression: /\(([^)]+)\)/ causes O(n^2) backtracking on inputs
-    // with many '((' because [^)] matches '('. Fixed to /\(([^()]+)\)/.
     const malicious = "(" + "(".repeat(5000);
     const records = [
       makeRecord({
@@ -498,12 +489,10 @@ describe("synthesizeTrainingPairs", () => {
     const elapsed = performance.now() - start;
 
     assert.ok(pairs.length >= 1);
-    // No parenthesized content found, so topic should be "this"
     assert.ok(
       pairs[0].instruction.toLowerCase().includes("this"),
       `expected fallback topic 'this', got: "${pairs[0].instruction}"`,
     );
-    // Must complete in under 50ms (was 600ms+ before the fix at n=10000)
     assert.ok(
       elapsed < 50,
       `regex should be O(n), took ${elapsed.toFixed(1)}ms`,
@@ -511,10 +500,6 @@ describe("synthesizeTrainingPairs", () => {
   });
 
   it("does not produce generic 'this' questions when tags are available", () => {
-    // Regression test: the old bug had parseCategory(record.instruction) which
-    // always fell back to subTopic="this" because instructions are natural
-    // language, not category paths. Now we use record.category for template
-    // selection and extract tags from instruction for the topic.
     const records = [
       makeRecord({
         instruction: "Recall a user preference (food, cooking)",
@@ -526,7 +511,6 @@ describe("synthesizeTrainingPairs", () => {
     const pairs = synthesizeTrainingPairs(records);
 
     assert.ok(pairs.length >= 1);
-    // The question should NOT be "What kind of this do you like?"
     assert.ok(
       !pairs[0].instruction.includes("{topic}"),
       "template variable should be replaced",

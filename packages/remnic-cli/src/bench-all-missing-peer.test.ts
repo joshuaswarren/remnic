@@ -7,7 +7,6 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-// PR #2835 review follow-up: `remnic bench run --all` without the optional
 // @remnic/bench peer used to expand to an empty selection and exit with the
 // misleading "no runnable benchmarks are available for --all" catalogue
 // message — before the per-benchmark loop could emit its install hint. The

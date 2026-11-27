@@ -65,7 +65,6 @@ test("GET /v1/snapshots serves a keyset-paged local day", async () => {
   const page = (await res.json()) as { snapshots: Array<Record<string, unknown>>; nextCursor: string | null };
   assert.deepEqual(page.snapshots.map((s) => s.text), ["one", "two"]);
   assert.ok(page.nextCursor);
-  // Wire shape: app/windowTitle/text/textSource/contentHash present, no null browserUrl key.
   assert.equal(page.snapshots[0].textSource, "ax");
   assert.equal(typeof page.snapshots[0].contentHash, "string");
   assert.ok(!("browserUrl" in page.snapshots[0]), "null browserUrl omitted from the wire");

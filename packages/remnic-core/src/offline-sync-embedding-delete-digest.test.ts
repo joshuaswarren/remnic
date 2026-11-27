@@ -7,8 +7,6 @@ import test from "node:test";
 import { withEmbeddingGenerationLock } from "./embedding-generation-lock.js";
 import { advanceEmbeddingGenerationMarker, embeddingGenerationMembership } from "./offline-sync-embedding-generation.js";
 
-// Issue #3182 review: a peer can publish a newer shard while converge waits
-// for the generation lock; the stale pre-lock digest must not delete it.
 test("a stale-digest deletion is rejected under the generation lock", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-3182-delete-digest-"));
   t.after(() => rm(root, { recursive: true, force: true }));

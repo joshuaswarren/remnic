@@ -44,14 +44,12 @@ export type EmbeddingIndexFile = {
 
 export type EmbeddingIndexIdentity = Pick<EmbeddingIndexFile, "provider" | "model">;
 
-/** Outcome of reading one managed index file (legacy or shard). */
 export type ManagedIndexRead =
   | { outcome: "ok"; file: EmbeddingIndexFile }
   | { outcome: "absent" }
   | { outcome: "foreign" }
   | { outcome: "unreadable"; reason: string };
 
-/** Which generation owns the index right now. */
 export type IndexLayout = "empty" | "legacy" | "sharded";
 
 /**
@@ -163,20 +161,10 @@ function shardFileName(shardIndex: number): string {
   return `shard-${String(shardIndex).padStart(4, "0")}.json`;
 }
 
-/**
- * Fixed transaction backup path for identity replacements. A fixed (not
- * per-process) name is what makes the rename gap recoverable: whatever
- * process restarts after a crash finds the demoted former generation here
- * and rolls it back into place.
- */
 function replacementBackupPath(shardDir: string): string {
   return path.join(path.dirname(shardDir), "embeddings.pre-replace.tmp");
 }
 
-/**
- * Stable FNV-1a shard assignment: an entry always hashes to the same shard,
- * so an update or removal never needs a manifest to find its file.
- */
 export function shardIndexOf(memoryId: string, shardCount: number): number {
   let hash = 0x811c9dc5;
   for (let i = 0; i < memoryId.length; i++) {
@@ -240,9 +228,6 @@ export function parseEmbeddingIndexDocument(raw: string): ManagedIndexRead {
   ) {
     return { outcome: "foreign" };
   }
-  // An unsupported identity must fail closed like any other malformed
-  // document: recall cannot serve it and mutations must not adopt it as
-  // authoritative (issue #3148, round 6).
   if (
     (parsed as Partial<EmbeddingIndexFile>).provider !== "openai" &&
     (parsed as Partial<EmbeddingIndexFile>).provider !== "local" &&
@@ -402,18 +387,7 @@ export class EmbeddingIndexFileStore {
    * merges again.
    */
   async detectLayout(): Promise<IndexLayout> {
-    // An interrupted identity replacement leaves the published directory
-    // absent with the fixed transaction backup still on disk (the publish
-    // rename never completed). Report SHARDED for that gap: the backup holds
-    // the authoritative generation, so neither the legacy file nor a fresh
-    // index may win, and reads fail open to empty until the mutation queue
-    // performs the rollback. The rollback itself only ever runs inside
-    // persist() — a write — so read paths never race an in-flight
-    // replacement with a recovery rename (issue #3148 review).
     try {
-      // lstat, NOT stat: a symlinked generation directory must be rejected
-      // outright — following it would read or write OUTSIDE the state
-      // directory through the link (codex PRRT_kwDORJXyws6mZ72r).
       const info = await lstat(this.shardDir);
       if (info.isSymbolicLink()) {
         throw new EmbeddingIndexStorageError(
@@ -424,8 +398,6 @@ export class EmbeddingIndexFileStore {
     } catch (err) {
       if (err instanceof EmbeddingIndexStorageError) throw err;
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        // The pointer exists but cannot be stat'ed — fail towards the
-        // published generation so its readers surface the I/O error.
         log.warn(`embedding index: shard dir stat failed (${err instanceof Error ? err.message : String(err)}); assuming sharded layout`);
         return "sharded";
       }
@@ -434,10 +406,6 @@ export class EmbeddingIndexFileStore {
     }
   }
 
-  /**
-   * Roll the fixed transaction backup back into the published position.
-   * Returns true when a rollback happened.
-   */
   private async replacementBackupExists(): Promise<boolean> {
     const backupPath = replacementBackupPath(this.shardDir);
     try {
@@ -445,21 +413,12 @@ export class EmbeddingIndexFileStore {
       return true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
-      // An unreadable backup must not be silently treated as absent —
-      // that would permit the legacy fallback over a generation we cannot
-      // inspect (issue #3148 review, round 1).
       throw new EmbeddingIndexStorageError(
         `cannot stat embedding index replacement backup ${backupPath}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
 
-  /**
-   * The fixed transaction backup is a path with well-known semantics; a
-   * planted symlink must never be restored into the published position (it
-   * would point the generation outside the memory dir) nor removed through
-   * as if it were the former generation. Symlinks are rejected outright.
-   */
   private async assertBackupNotSymlink(backupPath: string): Promise<void> {
     const info = await lstat(backupPath).catch((err) => {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -482,11 +441,6 @@ export class EmbeddingIndexFileStore {
    * recovery instead of leaving every search reloading forever.
    */
   async recoverIfInterrupted(fence?: EmbeddingGenerationFence): Promise<boolean> {
-    // Only the rename gap (published directory absent) is recoverable. When
-    // the directory is present - including after a crash that followed a
-    // successful publish - the generation on disk is already authoritative
-    // and renaming the backup onto it would fail with EEXIST (issue #3148
-    // review, round 2).
     try {
       await stat(this.shardDir);
       return false;
@@ -499,7 +453,6 @@ export class EmbeddingIndexFileStore {
     const backupPath = replacementBackupPath(this.shardDir);
     if (!(await this.replacementBackupExists())) return false;
     await this.assertBackupNotSymlink(backupPath);
-    // The rollback rename is destructive: reassert lock ownership first.
     await fence?.();
     await rename(backupPath, this.shardDir);
     await this.writeGenerationMarker(randomUUID());
@@ -525,15 +478,10 @@ export class EmbeddingIndexFileStore {
     }
   }
 
-  /** Barrier first half: strict, so bytes can never change under a stable stamp. */
   private async beginGenerationMarker(): Promise<void> {
     await writeGenerationMarkerInFlight(generationMarkerPath(path.dirname(this.shardDir)));
   }
 
-  /**
-   * Barrier second half: written after the last content write. Best-effort;
-   * the in-flight fallback semantics live in the shared marker module.
-   */
   private async completeGenerationMarker(): Promise<void> {
     await writeGenerationMarkerComplete(generationMarkerPath(path.dirname(this.shardDir)));
   }
@@ -556,23 +504,10 @@ export class EmbeddingIndexFileStore {
     }
   }
 
-  /**
-   * Warm-cache stamp. A completed generation marker alone would freeze the
-   * stamp for a pre-marker writer in a rolling deployment (it publishes
-   * shard/index changes without updating the marker), so the marker is
-   * combined with the watched path's stat: the marker keeps consecutive
-   * publications distinct on coarse-tick filesystems, the stat keeps
-   * legacy writers visible. In-flight never repeats, forcing revalidation
-   * until a publication completes. Stores never published through this
-   * module keep the plain stat stamp — a directory stat alone aliases
-   * consecutive publications on coarse-tick filesystems and across inode
-   * reuse.
-   */
   async identityStamp(): Promise<string> {
     const layout = await this.detectLayout();
     if (layout === "sharded") {
       const info = await lstat(this.shardDir).catch((err) => {
-        // SAFETY: only the errno code is inspected; any other rejection shape rethrows uninterpreted.
         if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw new EmbeddingIndexStorageError(
           `cannot stat embedding index shard directory ${this.shardDir}: ${err instanceof Error ? err.message : String(err)}`,
@@ -580,9 +515,6 @@ export class EmbeddingIndexFileStore {
       });
       if (!info) return "rename-gap";
       const marker = await this.readGenerationMarker();
-      // An in-flight marker must never produce a repeatable stamp: a probe
-      // that cached one (completion write failed) must revalidate on every
-      // later probe until a publication completes.
       if (marker) {
         if (marker === GENERATION_MARKER_IN_FLIGHT) return `gen:${randomUUID()}`;
         return `gen:${marker}:${info.ino}:${info.mtimeMs}`;
@@ -591,7 +523,6 @@ export class EmbeddingIndexFileStore {
     }
     if (layout === "legacy") {
       const info = await stat(this.indexPath).catch((err) => {
-        // SAFETY: only the errno code is inspected; any other rejection shape rethrows uninterpreted.
         if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw new EmbeddingIndexStorageError(
           `cannot stat embedding index file ${this.indexPath}: ${err instanceof Error ? err.message : String(err)}`,
@@ -612,8 +543,6 @@ export class EmbeddingIndexFileStore {
   async identityFromDisk(): Promise<EmbeddingIndexIdentity | null> {
     const layout = await this.detectLayout();
     if (layout === "sharded") {
-      // Shard files are bounded by the per-file budget, so the identity
-      // probe never reads a ceiling-sized string.
       for (const name of await this.readShardNames()) {
         const read = await this.readFileAt(path.join(this.shardDir, name));
         if (read.outcome === "ok") {
@@ -669,8 +598,6 @@ export class EmbeddingIndexFileStore {
       const shardIdentity = { provider: read.file.provider, model: read.file.model };
       if (!identity) identity = shardIdentity;
       if (!sameIndexIdentity(shardIdentity, identity)) {
-        // A partial rewrite from this map would silently drop the foreign
-        // shard's entries, so even recall must not serve this generation.
         throw new EmbeddingIndexStorageError(
           `refusing to continue from mixed-identity embedding index generation: ${name} is ${shardIdentity.provider}/${shardIdentity.model} but the generation identity is ${identity.provider}/${identity.model}; files preserved in place`,
         );
@@ -690,13 +617,6 @@ export class EmbeddingIndexFileStore {
    * and is reported through the returned outcome (mutation paths fail
    * closed on it; read-only paths fail open and record the reason).
    */
-  /**
-   * Read/mutation boundary for any generation member or the legacy marker
-   * (codex PRRT_kwDORJXyws6mZ72r): a symlinked member is rejected outright
-   * and its real target must stay inside the canonical state directory —
-   * following a planted link would read or write outside the memory root.
-   * Runs BEFORE the secure IO so storage-backed reads are covered too.
-   */
   private async assertGenerationFileNotSymlinked(filePath: string): Promise<void> {
     const info = await lstat(filePath).catch((err) => {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -705,10 +625,6 @@ export class EmbeddingIndexFileStore {
       );
     });
     const stateDir = path.dirname(this.shardDir);
-    // Containment must be checked even when the member itself is a regular
-    // file: a SYMLINKED GENERATION DIRECTORY lets reads through to whatever
-    // path the link resolves to — a regular file in a linked dir is still
-    // outside the memory root and must be rejected.
     const real = await realpath(filePath).catch(() => null);
     if (real) {
       const scope = await realpath(stateDir).catch(() => stateDir);
@@ -735,14 +651,6 @@ export class EmbeddingIndexFileStore {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "absent" };
       return { outcome: "unreadable", reason: `stat failed: ${err instanceof Error ? err.message : String(err)}` };
     }
-    // Reads are gated by the HARD single-string ceiling only — NOT by the
-    // soft write budget — so a legacy index from an older version sitting
-    // between the two still loads and migrates (issue #3146). Byte size is
-    // only a conservative bound for UTF-8 (bytes ≥ chars): at or below it a
-    // readFile is guaranteed materializable; past it the file MAY still be
-    // readable as a string, but refusing is the safe side. An over-ceiling
-    // file is preserved in place; the caller decides fail-open (recall) or
-    // fail-closed (mutation).
     if (size > hardLimit) {
       return {
         outcome: "unreadable",
@@ -767,10 +675,6 @@ export class EmbeddingIndexFileStore {
         .sort();
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-      // The published generation exists but cannot be enumerated. Treating
-      // it as empty would let a mutation overwrite shards it never saw, so
-      // this must propagate — strict mutation fails closed, recall fails
-      // open at its boundary (issue #3146 review).
       throw new EmbeddingIndexStorageError(
         `cannot enumerate embedding index shard directory ${this.shardDir}: ${err instanceof Error ? `${err.message} (${(err as NodeJS.ErrnoException).code ?? "unknown"})` : String(err)}`,
       );
@@ -791,16 +695,12 @@ export class EmbeddingIndexFileStore {
     opts: {
       touchedIds?: readonly string[];
       memoryId?: string;
-      /** Reasserts mutation-lock ownership immediately before each destructive write (after serialization). */
       fence?: EmbeddingGenerationFence;
     } = {},
   ): Promise<void> {
     const stateDir = path.dirname(this.indexPath);
     await mkdir(stateDir, { recursive: true });
     await this.cleanForeignStagingDirs();
-    // NOTE: interrupted-replacement recovery runs in the mutation wrapper
-    // (EmbeddingFallback.enqueueIndexMutation) BEFORE this method, so the
-    // caller's index already reflects the restored generation.
 
     const groups = shardEntriesForIndex(index);
 
@@ -808,17 +708,8 @@ export class EmbeddingIndexFileStore {
 
     if (layout === "sharded") {
       const limit = resolveIndexFileCharLimit();
-      // An identity change on a published generation (a sharded host index
-      // replaced by a fallback provider, or a host-model change) must
-      // publish a COMPLETE replacement: the dirty-shard fast path would
-      // rewrite only the touched shard under the new identity and leave the
-      // former identity's shards in place — a mixed generation that every
-      // later load rejects (codex P1, PR #3148).
       const diskIdentity = await this.identityFromDisk();
       if (groups.size === 0) {
-        // An empty directory has no transport-visible deletion evidence.
-        // Publish a valid empty shard so a peer without a shared base also
-        // replaces its stale generation rather than preserving old vectors.
         groups.set(0, {});
         await this.publishReplacementGeneration(index, groups, limit, opts.fence);
         return;
@@ -833,8 +724,6 @@ export class EmbeddingIndexFileStore {
       const dirtyShards = opts.touchedIds?.length
         ? new Set(opts.touchedIds.map((id) => shardIndexOf(id, SHARD_COUNT)))
         : null;
-      // Serialize every touched shard BEFORE writing anything so a capacity
-      // failure cannot leave a partial rewrite.
       const targets = dirtyShards ? [...dirtyShards] : [...groups.keys()];
       const payloads = targets
         .filter((shardIndex) => groups.has(shardIndex))
@@ -842,8 +731,6 @@ export class EmbeddingIndexFileStore {
           shardIndex,
           body: serializeEmbeddingShard(index, shardIndex, groups.get(shardIndex)!, limit),
         }));
-      // Serialization is done: reassert lock ownership immediately before
-      // the destructive live-generation writes.
       await opts.fence?.();
       await this.beginGenerationMarker();
       await opts.fence?.();
@@ -853,8 +740,6 @@ export class EmbeddingIndexFileStore {
           payload.body,
         );
       }
-      // A dirty shard with no remaining entries (its last entry was just
-      // removed) must be removed from disk, not silently skipped.
       for (const shardIndex of targets) {
         if (!groups.has(shardIndex)) {
           await rm(path.join(this.shardDir, shardFileName(shardIndex)), { force: true });
@@ -873,8 +758,6 @@ export class EmbeddingIndexFileStore {
     }
     const limit = resolveIndexFileCharLimit();
     if (whole !== null && whole.length <= limit) {
-      // Serialized above: reassert lock ownership immediately before the
-      // destructive atomic write.
       await opts.fence?.();
       await this.beginGenerationMarker();
       await opts.fence?.();
@@ -883,9 +766,6 @@ export class EmbeddingIndexFileStore {
       return;
     }
 
-    // One-way migration. Until the publish rename, the legacy file stays
-    // authoritative; afterwards the published directory is the only
-    // generation and the legacy file is demoted to a recovery artifact.
     const stagingDir = path.join(
       stateDir,
       `embeddings.staging.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -893,7 +773,6 @@ export class EmbeddingIndexFileStore {
     await mkdir(stagingDir, { recursive: true });
     try {
       await this.stageShardSet(stagingDir, index, groups, limit);
-      // Atomic publish: the directory appearing IS the layout marker.
       await this.publishSwappedGeneration(stagingDir, opts.fence);
     } catch (err) {
       await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
@@ -974,14 +853,6 @@ export class EmbeddingIndexFileStore {
     const backupPath = replacementBackupPath(this.shardDir);
     await this.assertBackupNotSymlink(backupPath);
     await rm(backupPath, { recursive: true, force: true });
-    // Remove by publishing an EMPTY staged directory through the SAME swap
-    // state machine as every other publication: rename is atomic, so the
-    // former generation moves whole into the fixed backup and back — a
-    // partially-deleted generation can never be exposed. The empty
-    // published directory stays the one-way layout marker, so a stray
-    // legacy file can never become authoritative after removal. The
-    // demoted backup's post-commit cleanup is non-fatal (existing
-    // publishSwappedGeneration semantics).
     await mkdir(path.dirname(this.shardDir), { recursive: true });
     const emptyStaging = await mkdtemp(
       path.join(path.dirname(this.shardDir), "embeddings.staging.tmp-empty-"),
@@ -1006,21 +877,11 @@ export class EmbeddingIndexFileStore {
    * swap state machine. Staging-dir cleanup stays with the caller.
    */
   async publishSwappedGeneration(stagingDir: string, fence?: EmbeddingGenerationFence): Promise<void> {
-    // The replacement is published: the backup is obsolete disk. A cleanup
-    // failure is non-fatal (the next replacement removes it) but must stay
-    // visible.
     const backupPath = replacementBackupPath(this.shardDir);
     await this.assertBackupNotSymlink(backupPath);
-    // Cheap ownership check before the destructive backup cleanup: a peer
-    // stale-break would otherwise see the backup vanish under it before we
-    // even reach the live renames (Kilo PRRT_kwDORJXyws6mZ8i5).
     await fence?.();
     await rm(backupPath, { recursive: true, force: true });
-    // Second ownership check immediately before the live renames: any
-    // delay between the cleanup and the rename still allows a stale-break,
-    // and publishing now would clobber the peer's write.
     await fence?.();
-    // Publication barrier: in-flight before the renames, final at commit.
     await this.beginGenerationMarker();
     await fence?.();
     let demoted = false;
@@ -1162,9 +1023,6 @@ export class EmbeddingIndexFileStore {
       }
       if (patch.lastReadRecovery !== undefined) next.lastReadRecovery = patch.lastReadRecovery;
       if (patch.lastSuccessAt !== undefined) next.lastSuccessAt = patch.lastSuccessAt;
-      // The status file is ALWAYS plain (non-secret diagnostics: failure
-      // strings and counts only). It bypasses the secure io so console_state
-      // keeps reading it on locked stores and failure counts never reset.
       await mkdir(path.dirname(this.statusPath), { recursive: true });
       await this.writeAtomicFile(this.statusPath, JSON.stringify(next), { bypassSecureIo: true });
     } catch (err) {

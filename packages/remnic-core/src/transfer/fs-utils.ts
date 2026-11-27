@@ -84,7 +84,6 @@ export async function fileExists(filePath: string): Promise<boolean> {
 
 export function toPosixRelPath(absPath: string, rootDir: string): string {
   const rel = path.relative(rootDir, absPath);
-  // normalize to posix for portability across platforms
   return rel.split(path.sep).join("/");
 }
 
@@ -233,15 +232,6 @@ export async function writeSafeArchiveTarget(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Shared path-safety helpers (used by capsule-import, capsule-merge, and
-// capsule-fork).
-//
-// These helpers are security-critical (path-traversal and symlink-bypass
-// guards), so any future fix must apply uniformly. The `errorPrefix` and
-// `argName` arguments let each caller surface module-specific error messages
-// ("importCapsule:" vs "mergeCapsule:" vs "forkCapsule:") without forking the
-// implementation.
 // ---------------------------------------------------------------------------
 
 /**

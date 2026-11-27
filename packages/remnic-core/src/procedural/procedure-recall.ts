@@ -1,7 +1,3 @@
-/**
- * Intent-gated recall for active procedure memories (issue #519).
- * Session-end experience episodes (issue #2979) compete here after promotion.
- */
 
 import type { MemoryFile, PluginConfig } from "../types.js";
 import type { StorageManager } from "../storage.js";
@@ -83,10 +79,6 @@ export async function buildProcedureRecallSection(
       typeof config.procedural.recallMaxProcedures === "number" &&
         Number.isFinite(config.procedural.recallMaxProcedures)
         ? Math.floor(config.procedural.recallMaxProcedures)
-        // Safer-by-default fallback (issue #567 PR 3/5): must match
-        // config.ts's canonical default (2). Cursor review on PR #607:
-        // divergent fallbacks silently regressed the safer cap whenever
-        // the config value was missing or non-finite at this call site.
         : 2,
     ),
   );
@@ -114,9 +106,6 @@ export async function buildProcedureRecallSection(
     }
   }
 
-  // #1955: procedure bodies are model-visible instructions by nature — an
-  // untrusted-origin procedure must render inside the data-only authority
-  // fence like every other recall surface.
   const security = resolveSecurityCapabilities(config);
   const blocks = scored.map(({ m, score }) => {
     const id = m.frontmatter.id;

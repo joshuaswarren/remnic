@@ -1,8 +1,3 @@
-/**
- * OKF conformance config (issue #1946). Parsed off the raw `okf` config
- * block; mirrors the meetings/wearables parse-module seam so config.ts
- * stays a thin caller.
- */
 import { coerceBooleanLike } from "../connectors/coerce.js";
 
 export interface OkfConfig {

@@ -30,9 +30,6 @@ const SummarySnapshotSchema = z.object({
 
 type SummarySnapshot = z.infer<typeof SummarySnapshotSchema>;
 
-// Lock timings for the cross-process summary-snapshot file lock. These are
-// passed straight through to the shared `withHeldFileLock` utility (issue
-// #1524 adoption); the previous bespoke lock used the same numbers.
 const summarySnapshotLockTimeoutMs = 5_000;
 const summarySnapshotLockStaleMs = 30_000;
 const summarySnapshotLockHeartbeatMs = Math.max(
@@ -135,38 +132,13 @@ export async function writeSummarySnapshot(
   await writeFile(filePath, JSON.stringify(payload, null, 2), "utf-8");
 }
 
-// ── Concurrency primitives (issue #1524 adoption) ─────────────────────────
-//
-// Summary-snapshot upserts were previously guarded by TWO bespoke serializers:
-//   1. an in-process `summarySnapshotUpserts` map keyed by sessionKey that
-//      chained each upsert off the prior one's release (mirroring
-//      `serializeMutations`), and
-//   2. an on-disk `withExclusiveSummarySnapshotFileLock` that re-implemented
-//      `open(path, "wx")` acquire, mtime heartbeat, stale-break, and
-//      ownership-checked release.
-// Both now delegate to the shared utility so there is ONE home for each
-// primitive (`serializeMutations` for in-process, `withHeldFileLock` for
-// cross-process). The behavior contract is preserved:
-//   - in-process upserts for the SAME sessionKey are strictly serialized
-//     (read-merge-write cannot interleave);
-//   - a cross-process holder blocks up to `summarySnapshotLockTimeoutMs`, then
-//     the upsert FAILS (a snapshot is advisory; we never race a read-merge-write
-//     unlocked). To preserve this strictness on top of a best-effort utility,
-//     the work callback throws when `acquired === false`.
 
 async function withSummarySnapshotLock<T>(
   memoryDir: string,
   sessionKey: string,
   work: () => Promise<T>,
 ): Promise<T> {
-  // In-process serialization (one upsert per sessionKey at a time). The
-  // serializer recovers from rejection, so a failed upsert never poisons the
-  // next one — matching the previous chain's `.then(noop, noop)` recovery.
   return serializeMutations(`summary-snapshot:${sessionKey}`, () =>
-    // Cross-process mutex via the shared utility. The lock path, stale
-    // threshold, bounded wait, and heartbeat cadence all flow through; the
-    // utility's replacement-safe stale break (NG7Bg) and ownership-checked
-    // release are stronger than the bare `unlink` this module used before.
     withHeldFileLock(
       summarySnapshotLockPath(memoryDir, sessionKey),
       {
@@ -175,16 +147,6 @@ async function withSummarySnapshotLock<T>(
         heartbeatMs: summarySnapshotLockHeartbeatMs,
       },
       async (acquired) => {
-        // Strict-fail when the lock could not be acquired: the upsert is a
-        // read-merge-write, so a best-effort unlocked run would clobber a
-        // concurrent writer. The utility's `acquired === false` covers BOTH a
-        // genuine contention timeout AND a filesystem acquire failure (lock-dir
-        // mkdir/open/permission errors — the advisory lock is best-effort, so
-        // the util degrades rather than throwing). The bespoke lock this
-        // replaced propagated fs errors verbatim and reserved the timeout
-        // message for contention; we no longer claim "timed out" for an fs
-        // failure (cursor Low 25143f4f) — the message names both causes so
-        // upstream fail-open (runHourly) is unchanged but debugging is honest.
         if (!acquired) {
           throw new Error(
             "could not acquire summary snapshot lock (contention timeout or filesystem error)",

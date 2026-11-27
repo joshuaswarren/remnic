@@ -108,7 +108,6 @@ test("call site outside any symbol span is skipped and counted", () => {
     symbols: [
       { kind: "function", name: "format", qualifiedName: "format", span: span(50, 100) },
     ],
-    // Top-level call before the first symbol.
     callSites: [{ calleeNameCandidates: ["format"], span: span(0, 8) }],
   });
   const result = deriveHeuristicEdges([ir]);
@@ -137,7 +136,6 @@ test("ambiguous same-file name is skipped conservatively and counted", () => {
     path: "main.ts",
     symbols: [
       { kind: "function", name: "run", qualifiedName: "run", span: span(0, 50) },
-      // Same bare name at a different span (e.g. overload-style duplicate).
       { kind: "function", name: "format", qualifiedName: "a.format", span: span(60, 100) },
       { kind: "function", name: "format", qualifiedName: "b.format", span: span(110, 150) },
     ],
@@ -271,7 +269,6 @@ test("a caller's own nested declaration is visible to it", () => {
       { kind: "function", name: "outer", qualifiedName: "outer", span: span(0, 100) },
       { kind: "function", name: "helper", qualifiedName: "outer.helper", span: span(10, 40) },
     ],
-    // Call inside outer but outside helper.
     callSites: [{ calleeNameCandidates: ["helper"], span: span(60, 68) }],
   });
   const result = deriveHeuristicEdges([ir]);
@@ -359,12 +356,10 @@ test("aliased imports bind by local name and emit the exported dst (codex review
         span: span(0, 29),
       },
     ],
-    // Call site uses the LOCAL alias...
     callSites: [{ calleeNameCandidates: ["salute"], span: span(60, 68) }],
   });
   const result = deriveHeuristicEdges([ir]);
   assert.equal(firstFile(result).edges.length, 1);
-  // ...but the edge's dst is the EXPORTED name in the target file.
   assert.equal(firstFile(result).edges[0]?.dstQualifiedName, "greet");
   assert.equal(firstFile(result).edges[0]?.dstPathHint, "main");
 });
@@ -458,7 +453,6 @@ test("a bare call inside a method never binds a sibling method (codex review rou
       { kind: "method", name: "helper", qualifiedName: "C.helper", span: span(110, 190) },
       { kind: "function", name: "helper", qualifiedName: "helper", span: span(210, 260) },
     ],
-    // bare helper() inside C.run — this.helper() would be memberAccess.
     callSites: [{ calleeNameCandidates: ["helper"], span: span(40, 48) }],
   });
   const result = deriveHeuristicEdges([ir]);
@@ -493,7 +487,6 @@ test("absent bindings falls back to importedNames; explicit [] binds nothing (ro
     ],
     callSites: [{ calleeNameCandidates: ["greet"], span: span(60, 67) }],
   };
-  // Absent field (pre-bindings emitter / hand-built IR) -> fallback binds.
   const absent = deriveHeuristicEdges([
     fileIR({ ...base, imports: [{ module: "./main", importedNames: ["greet"], span: span(0, 29) }] }),
   ]);
@@ -544,7 +537,6 @@ test("implicit-this languages bind sibling methods on bare calls (codex review r
       { kind: "method", name: "run", qualifiedName: "C.run", span: span(10, 100) },
       { kind: "method", name: "helper", qualifiedName: "C.helper", span: span(110, 190) },
     ],
-    // Java: helper() inside run() legally targets the sibling method.
     callSites: [{ calleeNameCandidates: ["helper"], span: span(40, 48) }],
   });
   const result = deriveHeuristicEdges([ir]);
@@ -577,12 +569,9 @@ test("function-local imports bind only within their enclosing symbol (codex revi
       { kind: "function", name: "setup", qualifiedName: "setup", span: span(0, 100) },
       { kind: "function", name: "run", qualifiedName: "run", span: span(110, 200) },
     ],
-    // from .dep import helper INSIDE setup's span.
     imports: [{ module: ".dep", importedNames: ["helper"], span: span(10, 40) }],
     callSites: [
-      // Inside setup: binds.
       { calleeNameCandidates: ["helper"], span: span(60, 66) },
-      // Inside sibling run: must NOT bind.
       { calleeNameCandidates: ["helper"], span: span(140, 146) },
     ],
   });

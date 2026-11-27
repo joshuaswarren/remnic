@@ -13,18 +13,6 @@ import { RECENT_SKEW_MS, mapLimited, readLinesSince, readNewestFromFiles } from 
 
 type DirectorySessionStatus = "missing" | "empty" | "matches" | "occupied";
 
-/**
- * De-duplicate JSONL lines collected across multiple read-back candidate
- * directories. A partially-applied migration (issue #1496) can leave the SAME
- * raw row in both the primary `session/<hash>` tree and a legacy read-back dir
- * (`other/default` or an old `parts.length >= 3` directory) when the source was
- * copied but not yet trimmed. Without this guard, `readRecent`, `readToolUse`,
- * footprint estimation, and the summarizer fetch would return that row twice
- * (cursor review on PR #1504). The exact raw JSONL line is the stable identity:
- * the migration preserves byte content per session, so a copied-but-not-trimmed
- * row is byte-identical in both locations. Returns `true` the first time a line
- * is seen, `false` for every subsequent duplicate.
- */
 function makeRawLineDeduper(): (rawLine: string) => boolean {
   const seen = new Set<string>();
   return (rawLine: string): boolean => {
@@ -51,8 +39,6 @@ export function utcDayRange(date: string): { start: string; end: string } {
   const start = `${date}T00:00:00Z`;
   const startMs = Date.parse(start);
   if (Number.isNaN(startMs)) {
-    // Malformed date: preserve the pre-existing "empty range" behavior (an
-    // unparseable bound makes `readRange` match nothing) rather than throwing.
     return { start, end: start };
   }
   const next = new Date(startMs);
@@ -86,10 +72,8 @@ export class TranscriptManager {
     }
   >();
   private ownershipDigests = new JsonlOwnershipDigestCache();
-  /** Per-session verified write dir: only a session's first append pays the directory ownership read. */
   private writeDirs = new WriteDirMemo();
 
-  /** Default checkpoint TTL in hours */
   private static readonly DEFAULT_CHECKPOINT_TTL_HOURS = 24;
 
   constructor(config: PluginConfig) {
@@ -126,7 +110,6 @@ export class TranscriptManager {
   } {
     const paths = sessionStoragePaths(sessionKey);
 
-    // Daily rotation: transcripts/{channelType}/{channelId}/YYYY-MM-DD.jsonl
     const today = new Date().toISOString().slice(0, 10);
 
     return {
@@ -140,9 +123,6 @@ export class TranscriptManager {
     };
   }
 
-  /**
-   * Initialize the transcript manager by ensuring directories exist.
-   */
   async initialize(): Promise<void> {
     await mkdir(this.transcriptsDir, { recursive: true });
     await mkdir(this.stateDir, { recursive: true });
@@ -373,8 +353,6 @@ export class TranscriptManager {
         readbackDirs,
       );
       const out: Array<{ timestamp: string; sessionKey: string; tool: string }> = [];
-      // Dedup identical raw rows that a partially-applied migration may have left
-      // in both the primary dir and a read-back dir (issue #1496, cursor review).
       const keepRawLine = makeRawLineDeduper();
       for (const file of files) {
         const raw = await readFile(file.path, "utf-8");
@@ -539,7 +517,6 @@ export class TranscriptManager {
     try {
       const { dir, file, channelType, alternateDir, legacyDir } = this.getTranscriptPath(entry.sessionKey);
 
-      // Skip if this channel type is in the skip list
       if (this.config.transcriptSkipChannelTypes.includes(channelType)) {
         return;
       }
@@ -550,7 +527,6 @@ export class TranscriptManager {
         );
         const filePath = await resolveSafeStoragePath(this.transcriptsDir, writeDir, file);
 
-        // Ensure channel directory exists
         await mkdir(channelDir, { recursive: true });
 
         const line = JSON.stringify(entry) + "\n";
@@ -572,21 +548,17 @@ export class TranscriptManager {
    */
   private async getAllTranscriptFiles(): Promise<string[]> {
     const isJsonl = (name: string): boolean => name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(name);
-    // Directory doesn't exist or is unreadable: skip it.
     const top = await readdir(this.transcriptsDir, { withFileTypes: true }).catch(() => []);
     const perTop = await Promise.all(top.map(async (entry): Promise<string[]> => {
       // Legacy flat file - still include for backward compatibility
       if (!entry.isDirectory()) return entry.isFile() && isJsonl(entry.name) ? [entry.name] : [];
-      // A channel type directory (discord, slack, cron, main, etc.)
       const channelTypeDir = path.join(this.transcriptsDir, entry.name);
       const children = await readdir(channelTypeDir, { withFileTypes: true }).catch(() => []);
       const perChild = await mapLimited(children, async (child): Promise<string[]> => {
         if (child.isDirectory()) {
-          // A channel ID directory - contains daily transcript files
           const channelFiles = await readdir(path.join(channelTypeDir, child.name)).catch(() => []);
           return channelFiles.filter(isJsonl).map((file) => path.join(entry.name, child.name, file));
         }
-        // Legacy: channel type dir contains .jsonl files directly
         return child.isFile() && isJsonl(child.name) ? [path.join(entry.name, child.name)] : [];
       });
       return perChild.flat();
@@ -610,21 +582,11 @@ export class TranscriptManager {
     const end = new Date(endTime);
     const entries: TranscriptEntry[] = [];
 
-    // When a sessionKey is given, a partially-applied #1496 migration can leave
-    // the SAME raw row in both the primary `session/<hash>` dir and a read-back
-    // dir (`other/default` or an old `parts.length >= 3` dir). `readRange` scans
-    // EVERY transcript file, so it would append that row once per directory.
-    // Dedup by exact raw line to give the same exact-once guarantee `readRecent`
-    // / `readToolUse` / the summarizer fetch already provide (cursor review on
-    // PR #1504). Only applied for the session-scoped path so unfiltered range
-    // scans (each file already enumerated once) keep their existing behavior.
     const keepRawLine = sessionKey ? makeRawLineDeduper() : undefined;
 
     try {
-      // Get all transcript files from the hierarchical structure
       const transcriptFiles = (await this.getAllTranscriptFiles()).filter((f) => !isDailyFileDatedBefore(f, skipFilesDatedBefore));
 
-      // Read each relevant file
       for (const relativePath of transcriptFiles) {
         const filePath = path.join(this.transcriptsDir, relativePath);
         try {
@@ -637,16 +599,13 @@ export class TranscriptManager {
               const entry = JSON.parse(line) as TranscriptEntry;
               const entryTime = new Date(entry.timestamp);
 
-              // Check if entry is within time range (half-open: exclusive end)
               if (entryTime >= start && entryTime < end) {
-                // Filter by sessionKey if provided
                 if (!sessionKey || entry.sessionKey === sessionKey) {
                   if (keepRawLine && !keepRawLine(line)) continue;
                   entries.push(entry);
                 }
               }
             } catch {
-              // Skip malformed lines
               log.debug(`skipped malformed transcript line in ${relativePath}`);
             }
           }
@@ -655,7 +614,6 @@ export class TranscriptManager {
         }
       }
 
-      // Sort by timestamp
       entries.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
       log.debug(`read ${entries.length} transcript entries from ${transcriptFiles.length} file(s)`);
@@ -678,14 +636,6 @@ export class TranscriptManager {
    */
   async readRecent(hours: number, sessionKey?: string, maxEntries?: number): Promise<TranscriptEntry[]> {
     const now = new Date();
-    // The recent-read window is inclusive of "now": a turn that is buffered and
-    // then immediately read back can carry the same millisecond timestamp as
-    // this read, so a half-open [start, now) filter would drop it. Extend the
-    // upper bound by 1ms so the exclusive [start, end) filters in
-    // readRecentForSession / readRange (which stay half-open for
-    // caller-specified ranges, CLAUDE.md rule #35) still capture an entry
-    // stamped at exactly "now". This is the only place the "up to now" boundary
-    // is widened; explicit ranges are unaffected.
     const end = new Date(now.getTime() + 1);
     const start = new Date(now.getTime() - hours * 60 * 60 * 1000);
 
@@ -710,10 +660,6 @@ export class TranscriptManager {
     }
   }
 
-  /**
-   * Optimized read for a specific session: only looks in that session's channel
-   * directory and only reads files whose date falls within the lookback window.
-   */
   private async readRecentForSession(
     start: Date,
     end: Date,
@@ -721,9 +667,6 @@ export class TranscriptManager {
   ): Promise<TranscriptEntry[]> {
     const { dir, alternateDir, legacyDir, readbackDirs } = this.getTranscriptPath(sessionKey);
 
-    // Build set of date strings that overlap with [start, end].
-    // Always include end's date to handle midnight-crossing lookbacks
-    // (e.g. start=23:30 yesterday, end=00:30 today).
     const dateStrings = new Set<string>();
     const cursor = new Date(start);
     while (cursor <= end) {
@@ -741,11 +684,8 @@ export class TranscriptManager {
       readbackDirs,
     );
 
-    // Dedup identical raw rows that a partially-applied migration may have left
-    // in both the primary dir and a read-back dir (issue #1496, cursor review).
     const keepRawLine = makeRawLineDeduper();
     for (const file of files) {
-      // Only read files whose date is within the window
       const dateStr = file.name.slice(0, 10);
       if (!dateStrings.has(dateStr)) continue;
 
@@ -756,9 +696,6 @@ export class TranscriptManager {
           try {
             const entry = JSON.parse(line) as TranscriptEntry;
             const ts = new Date(entry.timestamp);
-            // Half-open window: exclusive end. readRecent widens its own end by
-            // 1ms so a just-written "now" entry is still captured here without
-            // relaxing this bound for direct callers (tests/transcript-boundary).
             if (ts >= start && ts < end && entry.sessionKey === sessionKey && keepRawLine(line)) {
               entries.push(entry);
             }
@@ -799,14 +736,12 @@ export class TranscriptManager {
 
       for (const entry of entries) {
         if (entry.isDirectory()) {
-          // This is a channel type directory (discord, slack, cron, main, etc.)
           const channelTypeDir = path.join(this.transcriptsDir, entry.name);
           try {
             const channelTypeEntries = await readdir(channelTypeDir, { withFileTypes: true });
 
             for (const channelTypeEntry of channelTypeEntries) {
               if (channelTypeEntry.isDirectory()) {
-                // This is a channel ID directory - contains daily transcript files
                 const channelDir = path.join(channelTypeDir, channelTypeEntry.name);
                 try {
                   const channelFiles = await readdir(channelDir);
@@ -815,7 +750,6 @@ export class TranscriptManager {
 
                     const filePath = path.join(channelDir, file);
 
-                    // Check if file is a daily transcript file (YYYY-MM-DD.jsonl)
                     if (this.isLegacyTranscriptFile(file)) {
                       const dateStr = file.slice(0, 10);
                       const fileDate = new Date(dateStr);
@@ -830,7 +764,6 @@ export class TranscriptManager {
                         }
                       }
                     } else {
-                      // Legacy file in new structure - clean up old entries
                       const cleaned = await this.cleanupTranscriptFile(filePath, cutoff);
                       if (cleaned) {
                         processed++;
@@ -841,7 +774,6 @@ export class TranscriptManager {
                   log.debug(`failed to process channel directory ${entry.name}/${channelTypeEntry.name}:`, err);
                 }
               } else if (channelTypeEntry.isFile() && channelTypeEntry.name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(channelTypeEntry.name)) {
-                // Legacy: channel type dir contains .jsonl files directly
                 const filePath = path.join(channelTypeDir, channelTypeEntry.name);
                 const cleaned = await this.cleanupTranscriptFile(filePath, cutoff);
                 if (cleaned) {
@@ -853,7 +785,6 @@ export class TranscriptManager {
             log.debug(`failed to process channel type directory ${entry.name}:`, err);
           }
         } else if (entry.isFile() && entry.name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(entry.name)) {
-          // Handle legacy flat files - delete if older than retentionDays
           if (this.isLegacyTranscriptFile(entry.name)) {
             const dateStr = entry.name.slice(0, 10);
             const fileDate = new Date(dateStr);
@@ -907,13 +838,11 @@ export class TranscriptManager {
             hasOldEntries = true;
           }
         } catch {
-          // Keep malformed lines to avoid data loss
           validLines.push(line);
         }
       }
 
       if (validLines.length === 0) {
-        // No valid entries left, delete the file
         try {
           await this.writeDirs.removing(() => unlink(filePath));
           log.debug(`deleted empty transcript file: ${filePath}`);
@@ -925,16 +854,13 @@ export class TranscriptManager {
       }
 
       if (hasOldEntries) {
-        // Rewrite file without old entries
         await writeFile(filePath, validLines.join("\n") + "\n", "utf-8");
         log.debug(`cleaned old entries from transcript file: ${filePath}`);
         return true;
       }
 
-      // No old entries found, no action needed
       return false;
     } catch (err) {
-      // File doesn't exist or is unreadable
       return false;
     }
   }
@@ -962,19 +888,16 @@ export class TranscriptManager {
       const raw = await readFile(this.checkpointPath, "utf-8");
       const checkpoint = JSON.parse(raw) as Checkpoint;
 
-      // Validate checkpoint structure
       if (!checkpoint.sessionKey || !checkpoint.capturedAt || !checkpoint.ttl || !Array.isArray(checkpoint.turns)) {
         log.warn("checkpoint file has invalid structure");
         return null;
       }
 
-      // Check if checkpoint is for the requested session (if specified)
       if (sessionKey && checkpoint.sessionKey !== sessionKey) {
         log.debug(`checkpoint session mismatch: ${checkpoint.sessionKey} vs ${sessionKey}`);
         return null;
       }
 
-      // Check if checkpoint has expired
       const ttl = new Date(checkpoint.ttl);
       if (isNaN(ttl.getTime())) {
         log.warn("checkpoint has invalid TTL format");
@@ -989,7 +912,6 @@ export class TranscriptManager {
       log.info(`loaded checkpoint with ${checkpoint.turns.length} turn(s), expires at ${checkpoint.ttl}`);
       return checkpoint;
     } catch (err) {
-      // File doesn't exist or is unreadable - that's fine
       log.debug("no valid checkpoint found");
       return null;
     }
@@ -1004,7 +926,6 @@ export class TranscriptManager {
       await unlink(this.checkpointPath);
       log.info("cleared checkpoint");
     } catch (err) {
-      // File doesn't exist - that's fine
       log.debug("no checkpoint to clear");
     }
   }
@@ -1028,12 +949,10 @@ export class TranscriptManager {
     const maxTokenBudget = Math.max(0, Math.floor(maxTokens));
     if (maxTokenBudget === 0) return "";
     const lines: string[] = [];
-    // Calculate time range for header
     const firstEntry = new Date(entries[0].timestamp);
     const lastEntry = new Date(entries[entries.length - 1].timestamp);
     const hoursDiff = Math.round((lastEntry.getTime() - firstEntry.getTime()) / (60 * 60 * 1000));
 
-    // Add header
     if (hoursDiff < 1) {
       lines.push("## Recent Conversation (last few minutes)");
     } else {
@@ -1044,7 +963,6 @@ export class TranscriptManager {
       return "";
     }
 
-    // Format each entry
     const formattedEntries: string[] = [];
     for (const entry of entries) {
       const time = new Date(entry.timestamp);
@@ -1121,7 +1039,6 @@ export class TranscriptManager {
         };
       }
 
-      // Sort files by path
       const sortedFiles = allFiles.sort();
 
       let totalEntries = 0;
@@ -1134,7 +1051,6 @@ export class TranscriptManager {
           const lines = content.trim().split("\n").filter(Boolean);
           totalEntries += lines.length;
 
-          // Count by channel type (first directory in path)
           const channelType = relativePath.includes(path.sep)
             ? relativePath.split(path.sep)[0]
             : "legacy";

@@ -1,12 +1,3 @@
-/**
- * Sync orchestration (issue #2009): run sources in configured priority
- * order (cheapest first is the recommended arrangement), dedupe by
- * post_id + content fingerprint, stamp provenance, and route the mapped
- * memory through the trust gate (`suggest` → review queue, `store` →
- * direct write). Persisted state lives in `<stateDir>/state.json`
- * (dedupe map, per-source last sync + new counts, monthly cost ledger);
- * every ingested record is materialized under `<stateDir>/records/`.
- */
 
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -46,7 +37,6 @@ interface XSyncState {
   version: 1;
   seen: Record<string, SeenEntry>;
   lastSyncAt: Record<string, string>;
-  /** new records recorded by the latest sync, per source id */
   lastNewCount: Record<string, number>;
   /** usd spent per "YYYY-MM", paid sources only */
   costLedger: Record<string, number>;
@@ -119,8 +109,6 @@ async function loadState(stateDir: string): Promise<{ state: XSyncState; warning
       },
     };
   } catch {
-    // A corrupt state file only costs dedupe history (re-fetch, re-dedupe):
-    // quarantine it and start fresh rather than failing the sync.
     const quarantine = `${statePath}.corrupt`;
     try {
       await rename(statePath, quarantine);
@@ -153,7 +141,6 @@ async function saveState(stateDir: string, state: XSyncState): Promise<void> {
 function compareIso(a: string, b: string, idA: string, idB: string): number {
   if (a < b) return -1;
   if (a > b) return 1;
-  // Total comparator: fall back to id so equal keys keep a stable order.
   return idA < idB ? -1 : idA > idB ? 1 : 0;
 }
 
@@ -180,7 +167,6 @@ async function writeRecordFile(stateDir: string, record: XPostRecord): Promise<v
   await rename(tmpPath, recordPath);
 }
 
-/** Runs one sync cycle. Source-level degradation lands in the report, never a throw. */
 export async function runXSync(config: XConnectorConfig, deps: XSyncDeps): Promise<XSyncReport> {
   const stateDir = resolveStateDir(config);
   await mkdir(path.join(stateDir, "records"), { recursive: true });

@@ -131,7 +131,6 @@ test("computeStats attributes capped per-app dwell from snapshot spans", () => {
 
 test("computeStats caps a long idle gap at maxDwellSeconds", () => {
   const snaps = [daySnap(1, "AppA", 0), daySnap(2, "AppB", 59)];
-  // 59s gap, cap 10 → AppA credited 10s only.
   const stats = computeStats(snaps, "2026-07-20", "UTC", 10);
   assert.equal(stats.apps.find((a) => a.app === "AppA")?.seconds, 10);
 });

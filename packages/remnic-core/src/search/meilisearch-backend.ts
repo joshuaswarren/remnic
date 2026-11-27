@@ -140,7 +140,6 @@ export class MeilisearchBackend implements SearchBackend {
   }
 
   async updateCompleted(execution?: SearchExecutionOptions): Promise<boolean> {
-    // autoIndex is off by default: the Meilisearch server is managed outside Remnic and
     // nothing is pushed by configuration, so there is no re-index that could be left incomplete.
     if (!this.autoIndex) return true;
     if (!this.memoryDir) return false;
@@ -169,7 +168,6 @@ export class MeilisearchBackend implements SearchBackend {
         snippet: d.snippet,
       }));
 
-      // Upsert current docs and wait for the task to complete
       if (isSearchAborted(execution)) return false;
       const addTask = await index.addDocuments(meilDocs, { primaryKey: "id" });
       // waitForTask resolves with a failed or canceled task and rejects only on timeout.
@@ -180,7 +178,6 @@ export class MeilisearchBackend implements SearchBackend {
       }
       if (isSearchAborted(execution)) return false;
 
-      // Remove docs that no longer exist on disk (paginated to handle large indexes)
       const currentIds = new Set(docs.map((d) => d.docid));
       try {
         const PAGE_SIZE = 1000;
@@ -201,7 +198,6 @@ export class MeilisearchBackend implements SearchBackend {
         if (staleIds.length > 0) {
           if (isSearchAborted(execution)) return false;
           const delTask = await index.deleteDocuments(staleIds);
-          // The deletion is part of completion: a stale document left searchable is not an
           // up-to-date index, and waitForTask resolves failed/canceled tasks without throwing.
           const deleted = await client.waitForTask(delTask.taskUid, { timeOutMs: this.timeoutMs });
           if (deleted.status !== "succeeded") {
@@ -257,7 +253,6 @@ export class MeilisearchBackend implements SearchBackend {
           );
           return "unknown";
         }
-        // Index doesn't exist — create it
         if (isSearchAborted(effectiveExecution)) return "skipped";
         const createTask = await client.createIndex(targetCollection, { primaryKey: "id" });
         if (isSearchAborted(effectiveExecution)) return "skipped";

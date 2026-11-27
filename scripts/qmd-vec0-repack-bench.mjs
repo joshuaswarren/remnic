@@ -1,25 +1,3 @@
-/**
- * Synthetic vec0 repack bench for the unpartitioned #937 algorithm.
- *
- * The repack functions below match docs/patches/qmd-2.5.3-vec0-repack.patch
- * (unpartitioned hash_seq table, commit 58300dac). That patch is not the
- * install path. Production cleanup repacks the partitioned table on QMD
- * commit 93d211f9 (docs/qmd-2.8.3.md). The functions are duplicated here so
- * the bench can run with better-sqlite3 and sqlite-vec and does not need a
- * QMD build.
- *
- *   NODE_PATH=/path/to/node_modules \
- *   node scripts/qmd-vec0-repack-bench.mjs --self-check
- *
- *   NODE_PATH=/path/to/node_modules \
- *   node scripts/qmd-vec0-repack-bench.mjs \
- *     --chunks 3256 --keep-per-chunk 369 --dims 768 --queries 4 --k 20 \
- *     --db /tmp/qmd-vec0-repack.sqlite
- *
- * 3256 chunks with 369 live slots is about 1.20M live rows at 36% occupancy,
- * the shape reported for a sparse ~1.2M index. Dimension 768 is
- * embeddinggemma-300M. Prints one JSON object on stdout. No document text.
- */
 
 import { createHash } from "node:crypto";
 import { statSync, unlinkSync } from "node:fs";
@@ -279,7 +257,6 @@ function selfCheck(dbPath) {
   if (Buffer.compare(reused.embedding, reusedNext.embedding) === 0) {
     throw new Error("sqlite did not copy inserted embeddings; reused buffer collided");
   }
-  // #937 fixture: 1100 rows, keep indexes 0, 1, and 1099 so both chunks stay allocated.
   const remove = db.prepare("DELETE FROM vectors_vec WHERE hash_seq = ?");
   const dropTx = db.transaction(() => {
     for (let i = 0; i < 1100; i++) {

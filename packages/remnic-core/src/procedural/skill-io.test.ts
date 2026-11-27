@@ -1,15 +1,3 @@
-/**
- * Skill bundle export / import I/O (issue #2369).
- *
- * Covers the acceptance matrix:
- *   - export → import into a FRESH memory dir reproduces the procedure steps
- *     with import provenance;
- *   - imported procedures land as `pending_review`, never active;
- *   - a bundle carrying `scripts/` imports the SKILL.md text only and flags
- *     `hasUnimportedResources`;
- *   - symlinked bundle dirs / SKILL.md files and escaping entries are skipped
- *     with a reason instead of being walked.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -161,7 +149,6 @@ test("symlinked bundles and escaping entries are skipped with a reason", async (
     await mkdir(linkedFile, { recursive: true });
     await symlink(path.join(outside, "evil", SKILL_FILE_NAME), path.join(linkedFile, SKILL_FILE_NAME), "file");
 
-    // A directory with no SKILL.md at all.
     await mkdir(path.join(dir, "empty-skill"), { recursive: true });
 
     const read = await readSkillBundlesFromDir(dir);

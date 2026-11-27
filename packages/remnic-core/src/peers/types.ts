@@ -1,15 +1,3 @@
-/**
- * Peer registry types — issue #679 PR 1/5.
- *
- * Generalizes the singular identity-anchor model to a multi-peer registry.
- * Every party Remnic interacts with — humans, agents, integrations, and
- * "self" — is represented as a `Peer` with an evolving cognitive profile.
- *
- * This module defines pure types only. Storage primitives live in
- * `./storage.ts`. Reasoner integration, recall injection, CLI/HTTP/MCP
- * surfaces, and migration of existing identity-anchor data ship in later
- * PRs (2/5 — 5/5).
- */
 
 /**
  * Kind of peer.
@@ -43,15 +31,7 @@ export interface Peer {
   readonly notes?: string;
 }
 
-/**
- * Evolving cognitive profile for a peer.
- *
- * Updated by the async profile reasoner (PR 2/5) from observable session
- * signals. Every field carries provenance back to its originating session
- * and signal. This PR only defines the shape — population is deferred.
- */
 export interface PeerProfile {
-  /** Peer this profile belongs to. */
   readonly peerId: string;
   /** ISO-8601 timestamp of most recent profile mutation. */
   readonly updatedAt: string;
@@ -87,13 +67,6 @@ export interface PeerProfileFieldProvenance {
   readonly note?: string;
 }
 
-/**
- * One row of the append-only interaction log for a peer.
- *
- * Stored on disk under `peers/{id}/interactions.log.md` as a sequence of
- * markdown bullet entries with a leading ISO-8601 timestamp. Append-only
- * by contract — the reasoner reads this log to derive profile updates.
- */
 export interface PeerInteractionLogEntry {
   /** ISO-8601 timestamp the interaction occurred. */
   readonly timestamp: string;
@@ -125,13 +98,6 @@ export interface PeerInteractionLogEntry {
  * final group ending on an alphanumeric. Negative lookahead-free so
  * it works in any JS engine.
  */
-// CodeQL alert #75: the previous form `^[A-Za-z0-9](?:[._-]?[A-Za-z0-9]+)*$`
-// was ambiguous on alphanumeric runs because `[._-]?` could match
-// empty, letting each iteration consume 1+ alphanumerics in many
-// overlapping ways — exponential backtracking on adversarial inputs.
-// Tighten so the optional group REQUIRES a separator before each
-// subsequent alphanumeric run; no overlapping match paths, linear
-// time on any input.
 export const PEER_ID_PATTERN = /^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$/;
 
 /** Maximum length for `Peer.id`. */

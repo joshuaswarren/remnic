@@ -1,11 +1,3 @@
-/**
- * Buffer → extract → persist coordinator (issue #1526, seam 15).
- * Owns runExtraction, shouldQueueExtraction, buildExtractionFingerprint,
- * normalizeExtractionFingerprintTurns and recordProcessedExtractionFingerprint.
- * The orchestrator delegates here and retains cross-subsystem routing,
- * persistence and post-write side effects via injected dependencies.
- * Extracted from orchestrator.ts without behavior changes.
- */
 
 import { createHash } from "node:crypto";
 import type { StorageManager } from "../index.js";
@@ -122,9 +114,6 @@ export interface ExtractionRunCoordinatorDeps {
   halfOpenProbeTimeoutMs?: number;
 }
 
-// Recall/extraction abort helpers live in orchestrator-helpers.ts since
-// #1526 seam 25; this file previously carried duplicate copies
-// (AGENTS.md rule 8 — no duplicated helpers).
 import { raceRecallAbort, throwIfRecallAborted } from "./orchestrator-helpers.js";
 import {
   capExtractionRetryStateEntries,
@@ -152,20 +141,8 @@ export {
 };
 export type { ExtractionResilienceStatus };
 
-/**
- * Coordinates the extraction run pipeline. Holds the dedupe fingerprint
- * cache (`recentExtractionFingerprints`) and delegates all side effects
- * to injected orchestrator methods.
- */
 export class ExtractionRunCoordinator {
   private readonly recentExtractionFingerprints = new Map<string, number>();
-  // Per-fingerprint extraction retry/backoff state (extraction hot-loop
-  // hardening). Outer key = namespace, inner key = fingerprint. Hydrated lazily
-  // from namespace-scoped meta so the hot path is a Map lookup; persisted back
-  // to meta on change (restart-safe, cross-process coherent via the shared
-  // meta.json). The breaker below is intentionally per-process in-memory
-  // (mirrors local-llm.cooldownUntilMs); a restart clears it but the persisted
-  // backoff still throttles, so a restart can't resurrect the hot loop.
   private readonly extractionRetryState = new Map<string, Map<string, ExtractionRetryStateEntry>>();
   private readonly hydratedRetryNamespaces = new Set<string>();
   private readonly providerBreaker: ProviderCircuitBreaker;
@@ -178,9 +155,6 @@ export class ExtractionRunCoordinator {
     return this.deps.config;
   }
 
-  // -------------------------------------------------------------------------
-  // Source-valid-at helpers (moved from orchestrator.ts module scope)
-  // -------------------------------------------------------------------------
 
   private latestSourceValidAtFromTurns(turns: readonly BufferTurn[]): string | undefined {
     let latestMs: number | null = null;
@@ -197,7 +171,6 @@ export class ExtractionRunCoordinator {
   }
 
   // -------------------------------------------------------------------------
-  // Extraction dedupe fingerprint helpers
   // -------------------------------------------------------------------------
 
   normalizeExtractionFingerprintTurns(turns: BufferTurn[]): string[] {
@@ -237,7 +210,6 @@ export class ExtractionRunCoordinator {
     if (options.commit !== false) {
       this.recentExtractionFingerprints.set(fingerprint, now);
     }
-    // Keep this cache bounded to avoid unbounded growth.
     if (options.commit !== false && this.recentExtractionFingerprints.size > 200) {
       const entries = Array.from(this.recentExtractionFingerprints.entries()).sort((a, b) => a[1] - b[1]);
       for (const [key] of entries.slice(0, entries.length - 200)) {
@@ -249,7 +221,6 @@ export class ExtractionRunCoordinator {
   }
 
   // -------------------------------------------------------------------------
-  // Processed-fingerprint recording
   // -------------------------------------------------------------------------
 
   async recordProcessedExtractionFingerprint(
@@ -273,13 +244,8 @@ export class ExtractionRunCoordinator {
   }
 
   // -------------------------------------------------------------------------
-  // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
   // -------------------------------------------------------------------------
 
-  /** Lazily hydrate the in-memory retry-state mirror for a namespace from meta.
-   *  One-time per namespace per coordinator; the hot path is then a Map lookup.
-   *  Cross-process coherence: a fresh coordinator hydrates from the shared
-   *  meta.json, so a failure persisted by another process is honored here. */
   private hydrateRetryStateFromMeta(namespace: string, meta: MetaState): void {
     if (this.hydratedRetryNamespaces.has(namespace)) return;
     this.hydratedRetryNamespaces.add(namespace);
@@ -297,8 +263,6 @@ export class ExtractionRunCoordinator {
     this.extractionRetryState.set(namespace, nsMap);
   }
 
-  /** Rebuild `meta.extractionRetryState` from the in-memory namespace mirror,
-   *  bounded to the newest entries, and prune the mirror to match. */
   private persistRetryStateToMeta(namespace: string, meta: MetaState): void {
     const nsMap = this.extractionRetryState.get(namespace);
     const entries = nsMap
@@ -319,7 +283,6 @@ export class ExtractionRunCoordinator {
       }
     }
   }
-  /** Record an extraction failure into per-fingerprint backoff state + breaker, persisting to namespace meta. Fail-open. */
   private async recordExtractionFailure(
     namespace: string,
     fingerprint: string,
@@ -334,13 +297,10 @@ export class ExtractionRunCoordinator {
       this.persistRetryStateToMeta(namespace, meta);
       // The caller's storage.updateMeta persists this — saving here would write the same file twice.
     } catch (err) {
-      // Fail-open: recording failure state must never crash observe/recall.
       log.warn("runExtraction: failed to record extraction retry state (non-fatal)", err);
     }
   }
 
-  /** Failure backoff into the in-memory mirror + breaker WITHOUT touching meta — the fallback
-   *  when the locked meta write cannot run: the retry gate reads this mirror, so it stays shut. */
   private applyExtractionFailureToMemory(
     namespace: string,
     fingerprint: string,
@@ -382,7 +342,6 @@ export class ExtractionRunCoordinator {
     return true;
   }
 
-  /** Live in-process resilience snapshot (breaker + backoff population). */
   getExtractionResilienceStatus(): ExtractionResilienceStatus {
     let backoffFingerprintCount = 0;
     for (const nsMap of this.extractionRetryState.values()) {
@@ -395,7 +354,6 @@ export class ExtractionRunCoordinator {
   }
 
   // -------------------------------------------------------------------------
-  // Main extraction pipeline
   // -------------------------------------------------------------------------
 
   async runExtraction(
@@ -413,31 +371,9 @@ export class ExtractionRunCoordinator {
       onDurableCommit?: () => void;
       /** Disarm preemption once persistence can no longer be aborted. */
       onBeforePersist?: () => void;
-      /**
-       * Explicit namespace override for the write path (#460).  When set, this
-       * is the namespace where extraction writes go instead of the one derived
-       * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * The resolved `principal` is still threaded into memory metadata for
-       * provenance; only the storage target is overridden.
-       */
       writeNamespaceOverride?: string;
-      /**
-       * Pin the provenance principal instead of deriving it from
-       * `resolvePrincipal(sessionKey)`. When set, this is the identity an
-       * access surface already authenticated; used so observed-turn provenance
-       * is correct even though `turn.sessionKey` is the original key.
-       */
       principalOverride?: string;
-      /**
-       * Access scope resolution may already have selected a profile while the
-       * session context remains intentionally unbound. Reuse that plan for
-       * persistence instead of deriving it from shared session state.
-       */
       scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
-      /**
-       * Force the extractor call, bypassing the retry-backoff / circuit-breaker
-       * gate (extraction hot-loop hardening). Set by explicit flush paths.
-       */
       forceExtractionAttempt?: boolean;
     } = {}
   ): Promise<ExtractionRunResult> {
@@ -524,7 +460,6 @@ export class ExtractionRunCoordinator {
       }
     };
 
-    // Skip extraction for cron job sessions - these are system operations, not user conversations
     const sessionKey = turns[0]?.sessionKey ?? "";
     if (sessionKey.includes(":cron:")) {
       log.debug(`skipping extraction for cron session: ${sessionKey}`);
@@ -549,8 +484,6 @@ export class ExtractionRunCoordinator {
     const targetTurns = normalizedTurns.filter((turn) => turn.extractionContextOnly !== true);
     if (targetTurns.length === 0) {
       log.debug("skipping extraction: no non-context turns after normalization");
-      // Context-only turns may still contain corrections (review: "context-only
-      // turns skip capture"). Scan normalizedTurns before clearing the buffer.
       if (normalizedTurns.length > 0) {
         throwIfDeadlineExceeded("before_context_only_capture");
         const capturePrincipal =
@@ -583,15 +516,6 @@ export class ExtractionRunCoordinator {
     const belowUserTurnThreshold = !skipUserTurnThreshold && userTurns.length < this.config.extractionMinUserTurns;
     if ((!skipCharThreshold && belowCharThreshold) || belowUserTurnThreshold) {
       log.debug(`skipping extraction: below threshold (totalChars=${totalChars}, userTurns=${userTurns.length})`);
-      // Passive correction capture runs even when extraction is skipped for
-      // being below the char/user-turn threshold (review: "skipped extraction
-      // skips capture"). A short correction like "stop using Vim" is under
-      // extractionMinChars but is exactly the high-value case this feature
-      // exists for. The write namespace resolves through the SAME scope-profile
-      // plan as the full extraction path so corrections target the active
-      // profile's write layer, not just resolveSelfNamespace (review:
-      // "below-threshold wrong namespace"). The ACL in passiveCorrectionService
-      // authorizes the actual plan/apply.
       {
         const capturePrincipal =
           typeof options.principalOverride === "string" && options.principalOverride.length > 0
@@ -632,21 +556,10 @@ export class ExtractionRunCoordinator {
       };
     }
 
-    // Provenance principal honours the access-surface override (#1495 thread 1,
-    // mirroring the recall path's `principalOverride`, issue #570 PR 4). Access
-    // surfaces that authenticated the caller at the transport layer pass their
-    // resolved principal so provenance uses the SAME identity the surface
-    // authorized, instead of `resolvePrincipal(sessionKey)` — which on a
-    // namespace-prefixed key would collapse to `default`. The ORIGINAL,
-    // un-prefixed session key still drives threading.
     const principal =
       typeof options.principalOverride === "string" && options.principalOverride.length > 0
         ? options.principalOverride
         : resolvePrincipal(sessionKey, this.config);
-    // Write path — explicit callers still win. Otherwise, an active hosted
-    // scope profile owns the extraction write target so hook-captured turns land
-    // in the same layer that profile recall searches. Without a profile, preserve
-    // the existing coding-agent overlay behavior (issue #569).
     const explicitWriteNamespace =
       typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.length > 0
         ? options.writeNamespaceOverride
@@ -679,10 +592,6 @@ export class ExtractionRunCoordinator {
         log.warn(
           `runExtraction: skipping scope profile ${scopeProfileWritePlan.profileId} because write layer ${scopeProfileWritePlan.writeLayer} is not writable inside the profile read stack`
         );
-        // Policy refusal (same family as namespace_write_revoked): the window
-        // stays in the buffer/claim pending a later attempt. Clearing here
-        // would destroy content policy never wrote — the claim drain would
-        // erase denied backlog and ack it as drained.
         return {
           status: "skipped",
           reason: "scope_profile_no_writable_layer",
@@ -787,17 +696,8 @@ export class ExtractionRunCoordinator {
       };
     }
 
-    // Extraction retry/backoff + circuit-breaker gate (extraction hot-loop
-    // hardening). Suppresses re-attempts of a recently-failed fingerprint and
-    // short-circuits every fingerprint while the provider breaker is open, so a
-    // failing LLM endpoint is not hammered once per observe. Forced flushes and
-    // fail-closed callers bypass the gate (rule 18) but still record failures.
-    // On a suppressed attempt the buffer is deliberately NOT cleared, so no
-    // extractable turn is dropped — it is retried after cooldown/nextEligibleAt.
     const forcedExtractionAttempt =
       options.failOnExtractionFailure === true || options.forceExtractionAttempt === true;
-    // Resolve the gate through the shared lifecycle capability plan (issue
-    // #1523) rather than reading the raw config flag at each call site.
     const extractionRetryEnabled = resolveMemoryLifecycleCapabilities(this.config).extractionRetry;
     let extractionProbeOwned = false;
     let extractionProbeToken: ProbeOwnerToken | undefined;
@@ -817,8 +717,6 @@ export class ExtractionRunCoordinator {
           if (st && nowMs < st.nextEligibleAtMs) suppressReason = "extraction_backoff";
         }
         if (suppressReason) {
-          // Passive correction capture is local and must not be delayed by a
-          // provider cooldown. It remains fail-open.
           try {
             await runDeadlineAware(
               () => runPassiveCapture(normalizedTurns as BufferTurn[], {
@@ -835,30 +733,20 @@ export class ExtractionRunCoordinator {
             log.warn("runExtraction: passive correction capture failed on suppressed attempt (non-fatal)", captureErr);
           }
           clearExtractionDeadlineTimer();
-          // Backoff suppression exits inside the gate, before the wrapper
-          // finally: release an acquired probe here (codex follow-up) so a
-          // cooldown-expired fingerprint cannot pin the breaker half_open.
           if (extractionProbeOwned) this.providerBreaker.releaseProbe(extractionProbeToken);
           return { status: "skipped", reason: suppressReason, persistedCount: 0, durableOutputCount: 0 };
         }
       } catch (err) {
         if (err instanceof ExtractionDeadlineError) throw err;
-        // Fail-open: a gate error must never block extraction.
         log.warn("runExtraction: extraction retry gate check failed; proceeding (fail-open)", err);
       }
     }
-    // Pass existing entity names so the LLM can reuse them instead of inventing variants.
-    // The probe owner must release on ANY pre-persistence exit too (codex P1):
-    // the big try below only covers from the extract call onward.
     try {
       const existingEntities = await runDeadlineAware(
         () => storage.listEntityNames(),
         "during_list_entity_names",
       );
       let result: ExtractionResult;
-      // The half-open probe is bounded: one that gets no answer in time counts as
-      // a provider failure (re-opens the breaker) instead of holding every other
-      // attempt until the provider answers or times out.
       const probe = startProbeDeadline(extractionProbeOwned, extractionAbortSignal, this.deps.halfOpenProbeTimeoutMs);
       try {
         result = await raceRecallAbort(
@@ -868,7 +756,6 @@ export class ExtractionRunCoordinator {
         );
       } catch (error) {
         const pastDeadline = deadlineMs !== undefined && Date.now() >= deadlineMs;
-        // Keep the caller deadline timer running while a probe timeout is turned into a failure result.
         if (pastDeadline || !probe.timedOut()) clearExtractionDeadlineTimer();
         if (pastDeadline) throw new ExtractionDeadlineError("during_extract");
         if (!probe.timedOut()) throw error;
@@ -881,16 +768,11 @@ export class ExtractionRunCoordinator {
       throwIfDeadlineExceeded("before_persist");
       throwIfAborted("before_persist");
 
-    // Defensive: validate extraction result before processing. Explicit
-    // fail-closed callers, such as flush-plan import, must not observe
-    // malformed extractor output as a successful skip.
     if (!result) {
       log.warn("runExtraction: extraction returned null/undefined");
       if (options.failOnExtractionFailure) {
         throw new Error("extraction failed: invalid_extraction_result");
       }
-      // Actual extraction failure: the window is retained for a retry (same
-      // no-drop contract as a recorded provider failure), never destroyed.
       return {
         status: "skipped",
         reason: "invalid_extraction_result",
@@ -916,8 +798,6 @@ export class ExtractionRunCoordinator {
       if (options.failOnExtractionFailure) {
         throw new Error("extraction failed: invalid_extraction_result");
       }
-      // Actual extraction failure: the window is retained for a retry (same
-      // no-drop contract as a recorded provider failure), never destroyed.
       return {
         status: "skipped",
         reason: "invalid_extraction_result",
@@ -931,9 +811,6 @@ export class ExtractionRunCoordinator {
       typeof result.extractionFailure === "string" && result.extractionFailure.trim().length > 0
         ? result.extractionFailure
         : undefined;
-    // Issue #3140: surface extraction-LLM outages on /health and as an
-    // ERROR-level deduplicated event instead of debug-only lines. Records on
-    // every completed attempt so a later success clears the failure.
     if (extractionFailure) {
       recordExtractionLlmFailure(extractionFailure);
       emitExtractionLlmFailureError(extractionFailure, result.extractionFailureClass);
@@ -944,10 +821,6 @@ export class ExtractionRunCoordinator {
       recordExtractionLlmSuccess();
     }
     let recordedRetryFailure = false;
-    // Record failure into backoff/breaker state, or heal on success. Runs for
-    // every result path (empty and durable), before the fail-closed throw, so a
-    // forced flush still records its failure (rule 18). Gated by
-    // extractionRetryEnabled so a disabled feature restores prior behavior.
     if (extractionFingerprint && extractionRetryEnabled) {
       if (extractionFailure) {
         const failureClass = result.extractionFailureClass ?? "provider_retryable";
@@ -963,27 +836,18 @@ export class ExtractionRunCoordinator {
           recordedRetryFailure = true;
         } catch (err) {
           if (err instanceof ExtractionDeadlineError) throw err;
-          // Fail-open, but retain the turns (a cleared buffer with no retry state drops them). Only a
-          // LOCK skip reaches here without the mutator having run — a later save must not double-count.
           if (err instanceof Error && err.message.includes("meta.json.lock not acquired"))
             this.applyExtractionFailureToMemory(selfNamespace, extractionFingerprint, failureClass, Date.now(), extractionProbeToken);
           recordedRetryFailure = true;
           log.warn("runExtraction: retry state kept in memory; meta persist will catch up", err);
         }
       } else if (result.extractionSkippedReason === undefined) {
-        // Provider responded without failure → breaker heals; clear any
-        // parked backoff for this fingerprint so it proceeds normally.
-        // PRRT_kwDORJXyws6zxG6u: pass the run's probe token so the settlement
-        // only applies to a probe this run owns.
         this.providerBreaker.success(extractionProbeToken);
         try {
           await runDeadlineAware(
             () =>
               storage.updateMeta((freshMeta) => {
-                // Hydrate the mirror from persisted meta before clearing: a forced flush
-                // bypassed the retry gate, and a stale persisted entry would keep blocking.
                 this.hydrateRetryStateFromMeta(selfNamespace, freshMeta);
-                // `false` skips the save when nothing was parked for this fingerprint.
                 return this.clearExtractionRetryEntry(selfNamespace, extractionFingerprint, freshMeta);
               }),
             "during_retry_bookkeeping_save",
@@ -998,8 +862,6 @@ export class ExtractionRunCoordinator {
     if (options.failOnExtractionFailure && extractionFailure) {
       throw new Error(`extraction failed: ${extractionFailure}`);
     }
-    // #3227: one count covers every enabled durable output kind, so a
-    // reflection-only or relationship-only result reaches persistence.
     const durableOutputCount = countRequestedDurableOutputs(result, this.config);
     if (durableOutputCount === 0) {
       log.debug("runExtraction: extraction produced no durable outputs; skipping persistence");
@@ -1029,10 +891,6 @@ export class ExtractionRunCoordinator {
         bufferKey,
         isLiveSession: clearBufferAfterExtraction,
       });
-      // Issue #3415: retention follows the actual extraction failure, not the
-      // retry bookkeeping. With retry disabled no backoff state is recorded,
-      // but the failed turns are still kept for the next attempt — clearing
-      // them is silent loss. A successful empty result still clears below.
       if (extractionFailure) {
         log.debug("runExtraction: retaining buffer after failed extraction", { extractionFailure });
       } else {
@@ -1054,7 +912,6 @@ export class ExtractionRunCoordinator {
         );
       } catch (err) {
         if (err instanceof ExtractionDeadlineError) throw err;
-        // Fail-open: threading errors must not block memory persistence.
         log.warn("[threading] processTurn failed before persistence (non-fatal)", err);
       }
     }
@@ -1068,12 +925,8 @@ export class ExtractionRunCoordinator {
       storage,
       threadIdForExtraction,
       { sessionKey, principal, validAt: sourceValidAt, ...originContext },
-      // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
-      // real namespace rather than a guess decoded from the storage dir.
       selfNamespace,
       scopeProfileWritePlan,
-      // Verbatim source turns for the faithfulness gate (#1576) so it can
-      // locate a quote per fact when #1575 spans are absent.
       normalizedTurns
         .map((t) => t.content)
         .join("\n\n")
@@ -1108,11 +961,6 @@ export class ExtractionRunCoordinator {
     });
     const postPersistMetadataFailed = postPersist.metadataFailed;
 
-    // Passive correction capture (issue #1581) — detect corrections expressed
-    // passively in the extracted turns and route to the Correction Contract.
-    // Runs AFTER persistence + buffer clear so a capture failure never blocks
-    // the extraction return. `clearBufferAfterExtraction` gates live-session
-    // auto-apply (replay/import → queue-only).
     await runPostPersistBestEffort("during_post_persist_passive_capture", () =>
       runPassiveCapture(normalizedTurns as BufferTurn[], {
         sessionKey,
@@ -1124,13 +972,8 @@ export class ExtractionRunCoordinator {
       }),
     );
 
-    // Build memory box from this extraction (v8.0 Phase 2A)
-    // Topics are derived from the current extraction's facts and entities only —
-    // not from readAllMemories() — so box topics accurately reflect the current
-    // session window and the call is free of expensive full-corpus I/O.
     if (resolvePresentationCapabilities(this.config).memoryBoxes && persistedIds.length > 0) {
       const extractionTopics = deriveTopicsFromExtraction(result);
-      // Derive episodic metadata from buffer turns (REMem-inspired)
       const firstUserTurn = turns.find((t) => t.role === "user");
       const boxGoal = firstUserTurn?.content?.slice(0, 100)?.trim() || undefined;
       await runPostPersistBestEffort("during_memory_box", () =>
@@ -1143,15 +986,12 @@ export class ExtractionRunCoordinator {
       );
     }
 
-    // Batch-append persisted IDs so non-fact memories (entities/questions) are
-    // always attached to the thread. The helper excludes pending_review ids (#1635).
     if (resolvePresentationCapabilities(this.config).threading && threadIdForExtraction && persistedIds.length > 0) {
       await runPostPersistBestEffort("during_thread_episode_append", () =>
         this.deps.appendPersistedThreadEpisodes(threadIdForExtraction, persistedIds, pendingReviewIds),
       );
     }
 
-    // Thread title update for the already-established thread context.
     if (resolvePresentationCapabilities(this.config).threading && threadIdForExtraction) {
       const conversationContent = turns.map((t) => t.content).join(" ");
       await runPostPersistBestEffort("during_thread_title_update", () =>
@@ -1159,11 +999,8 @@ export class ExtractionRunCoordinator {
       );
     }
 
-    // Check if consolidation is needed (debounced + non-zero gated).
     const nonZeroExtraction = durableOutputCount > 0;
     try {
-      // The increment of nonZeroExtractionsSinceConsolidation moved into
-      // the scheduler with the rest of the cadence state (issue #1526 PR1).
       this.deps.maybeScheduleConsolidation(nonZeroExtraction);
     } catch (err) {
       log.warn("runExtraction: consolidation scheduling failed after persistence (non-fatal)", err);
@@ -1189,9 +1026,6 @@ export class ExtractionRunCoordinator {
       clearExtractionDeadlineTimer();
     }
     } finally {
-      // The half-open probe is OWNED, not timed: the WRAPPER finally releases
-      // it on every exit path, including pre-persistence ones (codex P1) that
-      // never reach the inner try above.
       if (extractionProbeOwned) this.providerBreaker.releaseProbe(extractionProbeToken);
     }
   }

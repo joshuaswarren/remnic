@@ -15,9 +15,7 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-// ─── Allow‑list ───────────────────────────────────────────────────────────
 
-/** Fields that MAY appear in the report. Frozen `as const`. */
 export const REPORT_ALLOWED_CONFIG_FIELDS = Object.freeze([
   "qmdEnabled",
   "qmdAutoEmbedEnabled",
@@ -37,7 +35,6 @@ export const REPORT_ALLOWED_CONFIG_FIELDS = Object.freeze([
 const _allowListPin: (typeof REPORT_ALLOWED_CONFIG_FIELDS)[number] = "bogus";
 void _allowListPin;
 
-// ─── Types ────────────────────────────────────────────────────────────────
 
 export interface DoctorCheckSummary {
   name: string;
@@ -62,7 +59,6 @@ export interface ReportContent {
   benchScorecard?: BenchScorecardSummary;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────
 
 const SIZE_BUCKETS = Object.freeze([
   { label: "< 1 KB", max: 1024 },
@@ -115,7 +111,6 @@ function countMemories(dir: string): number {
   }
 }
 
-// ─── Config discovery ─────────────────────────────────────────────────────
 
 function findConfigPath(): string | undefined {
   const candidates = [
@@ -142,7 +137,6 @@ function findMemoryDir(configPath: string | undefined): string {
   return path.join(os.homedir(), ".remnic", "memory");
 }
 
-// ─── Config shape extractor (allow‑list only) ─────────────────────────────
 
 function extractConfigShape(rawConfig: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
@@ -160,20 +154,16 @@ function extractConfigShape(rawConfig: Record<string, unknown>): Record<string, 
   return result;
 }
 
-// ─── Doctor checks (named + boolean only) ─────────────────────────────────
 
 function runDoctorChecks(): DoctorCheckSummary[] {
   const checks: DoctorCheckSummary[] = [];
 
-  // Node.js version
   const nodeMajor = Number.parseInt(process.version.slice(1).split(".")[0], 10);
   checks.push({ name: "Node.js version", ok: nodeMajor >= 22 });
 
-  // Config file
   const configPath = findConfigPath();
   checks.push({ name: "Config file", ok: configPath !== undefined });
 
-  // Memory directory
   const memoryDir = findMemoryDir(configPath);
   try {
     mkdirSync(memoryDir, { recursive: true });
@@ -182,20 +172,13 @@ function runDoctorChecks(): DoctorCheckSummary[] {
     checks.push({ name: "Memory directory", ok: false });
   }
 
-  // OpenClaw config presence
   const openclawPath = path.join(os.homedir(), ".config", "openclaw", "openclaw.json");
   checks.push({ name: "OpenClaw config file", ok: existsSync(openclawPath) });
 
   return checks;
 }
 
-// ─── Report builders ──────────────────────────────────────────────────────
 
-/**
- * Allow-listed scorecard fields. A raw benchmark report card can carry
- * questions, answers, and recalled memory content, so nothing outside this
- * shape ever reaches the report.
- */
 export interface BenchScorecardSummary {
   /** A built-in benchmark id, or `"custom"`. Never a user-defined name. */
   benchmarkId?: string;
@@ -204,16 +187,6 @@ export interface BenchScorecardSummary {
   scores?: Record<string, number>;
 }
 
-/**
- * Built-in benchmark ids that are safe to name in a public report.
- *
- * A user-defined id can be a client, project, or person name, and syntax
- * restrictions do not anonymize it (#3037 review, P1). Anything not on this
- * list is reported as `"custom"` — the count and scores still convey the
- * signal without disclosing what was benchmarked.
- *
- * Frozen `as const`; do NOT annotate as `readonly string[]` (checklist 47).
- */
 const PUBLIC_BENCHMARK_IDS = Object.freeze([
   "ama-bench",
   "memory-arena",
@@ -257,15 +230,6 @@ const PUBLIC_BENCHMARK_IDS = Object.freeze([
 // @ts-expect-error "bogus" is not a public benchmark id — fails if the union widens
 const _benchIdPin: (typeof PUBLIC_BENCHMARK_IDS)[number] = "bogus";
 void _benchIdPin;
-/**
- * Public metric names that are safe to surface in a shared report.
- *
- * Anything outside this list is dropped during scorecard extraction, so a
- * user-defined key like `client_alpha` (a project or person name) is never
- * copied into a diagnostic report (#3037 review, P1). The fixed set is what
- * benchmarks are allowed to publish; per-benchmark additions belong here
- * as part of adding a metric, not at the read site.
- */
 const PUBLIC_METRIC_KEYS = Object.freeze([
   "recall",
   "precision",
@@ -290,7 +254,6 @@ const PUBLIC_METRIC_KEYS = Object.freeze([
 const _metricKeyPin: (typeof PUBLIC_METRIC_KEYS)[number] = "bogus";
 void _metricKeyPin;
 
-/** Metric keys are identifier-shaped; a free-text key could carry content. */
 const METRIC_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 
@@ -307,7 +270,6 @@ export function summarizeBenchScorecard(raw: unknown): BenchScorecardSummary | u
   if (typeof raw !== "object" || raw === null) return undefined;
   const summary: BenchScorecardSummary = {};
 
-  // Benchmark id: canonical `meta.benchmark` is a string; a bare scorecard
   // may carry `benchmark.id`. Either way it is mapped through the public
   // allow-list, never copied verbatim.
   const rawId = readBenchmarkId(raw);
@@ -317,11 +279,9 @@ export function summarizeBenchScorecard(raw: unknown): BenchScorecardSummary | u
       : "custom";
   }
 
-  // Task count from `results.tasks`, falling back to top-level `tasks`.
   const tasks = readNested(raw, "results", "tasks") ?? readOwn(raw, "tasks");
   if (Array.isArray(tasks)) summary.taskCount = tasks.length;
 
-  // Scores from `results.aggregates`, falling back to top-level `scores`.
   const aggregates = readNested(raw, "results", "aggregates") ?? readOwn(raw, "scores");
   const scores = extractNumericScores(aggregates);
   if (scores !== undefined) summary.scores = scores;
@@ -334,7 +294,6 @@ function readOwn(source: object, key: string): unknown {
   return Object.hasOwn(source, key) ? (source as Record<string, unknown>)[key] : undefined;
 }
 
-/** Walk a dotted path of own keys without following the prototype chain. */
 function readNested(source: unknown, ...path: string[]): unknown {
   let current: unknown = source;
   for (const key of path) {
@@ -345,11 +304,9 @@ function readNested(source: unknown, ...path: string[]): unknown {
   return current;
 }
 
-/** Locate the benchmark id at any of the three known locations. */
 function readBenchmarkId(raw: object): string | undefined {
   const metaId = readNested(raw, "meta", "benchmark");
   if (typeof metaId === "string" && metaId.length > 0) return metaId;
-  // Bare scorecard: benchmark.id.
   const bench = readOwn(raw, "benchmark");
   if (typeof bench === "object" && bench !== null) {
     const id = readOwn(bench, "id");
@@ -358,12 +315,6 @@ function readBenchmarkId(raw: object): string | undefined {
   return undefined;
 }
 
-/**
- * Keep finite numbers under public, identifier-shaped metric keys.
- * The allow-list rejects user-defined keys like `client_alpha` even when
- * they pass the syntax check (#3037 review, P1); the syntax check still
- * rejects arbitrary string content on top of that.
- */
 function extractNumericScores(source: unknown): Record<string, number> | undefined {
   if (typeof source !== "object" || source === null) return undefined;
   const scores: Record<string, number> = {};
@@ -388,7 +339,6 @@ export async function buildReport(options: { includeBench?: boolean } = {}): Pro
   const generatedAt = new Date().toISOString();
   const platform = { os: os.platform(), arch: os.arch(), node: process.version };
 
-  // Read package version
   let remnicVersion = "unknown";
   try {
     const pkgPath = require.resolve("@remnic/core/package.json");
@@ -400,7 +350,6 @@ export async function buildReport(options: { includeBench?: boolean } = {}): Pro
 
   const doctor = runDoctorChecks();
 
-  // Config shape (allow-list only)
   let configShape: Record<string, unknown> = {};
   try {
     const configPath = findConfigPath();
@@ -413,13 +362,11 @@ export async function buildReport(options: { includeBench?: boolean } = {}): Pro
     // Config unreadable — skip
   }
 
-  // Store scale
   const memoryDir = findMemoryDir(findConfigPath());
   const totalMemories = countMemories(memoryDir);
   const storeBytes = sizeOfStore(memoryDir);
   const sizeBucketLabel = sizeBucket(storeBytes);
 
-  // Optional bench scorecard — NEVER copied verbatim. A benchmark report card
   // can contain questions, answers, and recalled memory content
   // (docs/benchmarks.md), so the same allow-list discipline as the config
   // applies: only these numeric/enum aggregates are extracted (#3037 review).
@@ -493,7 +440,6 @@ export function renderReportJson(report: ReportContent): string {
   return JSON.stringify(report, null, 2);
 }
 
-// ─── CLI entrypoint ───────────────────────────────────────────────────────
 
 export async function cmdReport(options: { json?: boolean; includeBench?: boolean } = {}): Promise<void> {
   const reportDir = path.join(os.homedir(), ".remnic", "reports");

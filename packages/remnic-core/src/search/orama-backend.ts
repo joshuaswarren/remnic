@@ -320,7 +320,6 @@ export class OramaBackend implements SearchBackend {
     if (existingCount === 0) return;
 
     const embeddingProviderIdentity = this.embedHelper.getProviderIdentity();
-    // Find docs without vectors or with vectors from a different provider.
     const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
     const needsEmbed = allHits.hits.filter((h: any) => {
       const vector = this.normalizeStoredVector(h.document?.vector);
@@ -431,7 +430,6 @@ export class OramaBackend implements SearchBackend {
     try {
       raw = await readFile(filePath, "utf-8");
     } catch {
-      // No existing DB — create fresh
       this.db = await this.createDb();
       return this.db;
     }
@@ -447,7 +445,6 @@ export class OramaBackend implements SearchBackend {
   }
 
   private async ensureDbForCollection(collection: string): Promise<any> {
-    // For the default collection, use the cached instance
     if (collection === this.collection) return this.ensureDb();
 
     await this.ensureModules();
@@ -458,7 +455,6 @@ export class OramaBackend implements SearchBackend {
     try {
       raw = await readFile(filePath, "utf-8");
     } catch {
-      // No existing DB — create fresh
       return await this.createDb();
     }
 
@@ -508,7 +504,6 @@ export class OramaBackend implements SearchBackend {
       db.tokenizer = createCjkCapableTokenizer(this.oramaModule);
       if (persistedLanguage === ORAMA_CJK_TOKENIZER_LANGUAGE) return db;
     } else {
-      // Segmentation disabled: a database persisted under the CJK tokenizer
       // keeps its CJK terms unless it is re-indexed under the stock one, so
       // downgrade it instead of returning it unchanged (issue #2187 round 2).
       if (persistedLanguage !== ORAMA_CJK_TOKENIZER_LANGUAGE) return db;
@@ -527,7 +522,6 @@ export class OramaBackend implements SearchBackend {
       const hits = allHits.hits ?? [];
       const hasNonLegacyContent = hits.some((hit: any) => {
         const doc = this.getStoredDocument(db, hit);
-        // Orama full-text queries every string field by default, so every
         // indexed string field gates the rebuild — non-Latin text that only
         // rides in snippet/path/id would otherwise keep stale terms
         // (issue #2187 review round 2).
@@ -537,7 +531,6 @@ export class OramaBackend implements SearchBackend {
         return false;
       });
       if (hasNonLegacyContent) {
-        // Re-index every document in place (Orama update is remove+insert,
         // so content is re-tokenized; vectors are carried through). A single
         // failing document must not block the rest of the corpus: it keeps
         // its pre-upgrade terms, which is no worse than before the upgrade.
@@ -685,13 +678,11 @@ export class OramaBackend implements SearchBackend {
         const embedResult = await this.resolveCompatibleQueryEmbedding(db, query, execution);
         throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
         if (!embedResult) {
-          // Fall back to fulltext if no embeddings available
           searchParams = { term: query, limit };
         } else {
           searchParams = { mode: "vector", vector: { value: embedResult.vector, property: "vector" }, limit };
         }
       } else {
-        // hybrid
         const embedResult = await this.resolveCompatibleQueryEmbedding(db, query, execution);
         throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
         if (!embedResult) {

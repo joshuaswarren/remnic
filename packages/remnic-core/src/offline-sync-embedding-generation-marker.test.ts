@@ -1,7 +1,3 @@
-// Issue #3182: the chunk-level pull path must advance the node-local
-// generation marker around direct shard writes; partial chunks and no-ops
-// must not disturb a valid completed stamp. Stat pinning emulates a
-// coarse-tick filesystem so only a marker advance can move the stamp.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
@@ -42,9 +38,6 @@ async function seedPublishedGeneration(memoryDir: string): Promise<EmbeddingInde
     path.join(stateDir, "embeddings"),
     path.join(stateDir, "embedding-fallback-status.json"),
   );
-  // Same fixture shape as embedding-index-storage.test.ts: a published
-  // sharded generation with one entry, completed through the store's
-  // two-phase marker.
   await mkdir(path.join(stateDir, "embeddings"), { recursive: true });
   await writeFile(
     path.join(stateDir, "embeddings", shardRelFor("mem-old").split("/").pop()!),
@@ -91,7 +84,6 @@ test("a completed offline-sync chunk write to a published shard moves the genera
     assert.equal(await store.identityStamp(), stampBefore, "precondition: the completed stamp is stable");
 
     // The chunk-level pull path used by converge pulls and CLI hydrate:
-    // no IO hooks, plain fs final write (writeSafeFileFromUpload).
     const result = await applyOfflineSyncFileContentChunk({
       root: memoryDir,
       sourceId: "remote",
@@ -104,7 +96,6 @@ test("a completed offline-sync chunk write to a published shard moves the genera
     });
     assert.equal(result.applied, true, "precondition: the shard write applied");
 
-    // Force the exact stat the stamp reads so only a marker advance can move it.
     await utimes(shardDirOf(memoryDir), TICK_SEC, TICK_SEC);
     await assertInoUnchanged(memoryDir, inoBefore);
 
@@ -216,7 +207,6 @@ test("a failed direct shard write leaves the marker in-flight: the stamp never r
     const stampBefore = await store.identityStamp();
 
     // Force the final destructive write to fail: the publish rename cannot
-    // replace the shard file with a directory in its place.
     const shardAbs = path.join(memoryDir, ...shardRel.split("/"));
     await rm(shardAbs);
     await mkdir(shardAbs);

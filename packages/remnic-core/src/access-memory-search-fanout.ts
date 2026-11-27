@@ -48,18 +48,8 @@ export async function resolveMemorySearchDefaultFallback(options: {
   defaultAtFlatRootProvider: () => Promise<boolean>;
 }): Promise<string | null> {
   const { profilePlan, config, principal } = options;
-  // Defense-in-depth: principalSelfIsDefault is only ever true alongside a
-  // flat-root default on legacy deployments (a hosted scope-profile principal
-  // with its own policy fails this even when default is at the flat root). It
-  // is NOT redundant — it keeps a policy-having principal isolated from the
-  // flat default corpus.
   const principalSelfIsDefault =
     defaultNamespaceForPrincipal(principal, config) === config.defaultNamespace;
-  // readOrder must explicitly intend userGlobal (resolveScopeProfilePlan
-  // always materializes a userGlobal layer even when readOrder omits it, so
-  // the layer's presence alone is not consent), AND that layer must have
-  // resolved readable (a listed-but-unreadable layer is a deliberate
-  // omission). serverShared maps to sharedNamespace, not the default.
   const profileIntendsUserGlobal =
     profilePlan.profile.readOrder.includes("userGlobal");
   const userGlobalLayerReadable = profilePlan.layers.some(
@@ -76,19 +66,12 @@ export async function resolveMemorySearchDefaultFallback(options: {
       canReadNamespace(principal, config.defaultNamespace, config)
     )
   ) {
-    // Cheap gates failed — never probe the default store.
     return null;
   }
   const defaultAtFlatRoot = await options.defaultAtFlatRootProvider();
   return defaultAtFlatRoot ? config.defaultNamespace : null;
 }
 
-/**
- * Issue #2018 r4: the explicit legacy-flat-root signal — the configured
- * default namespace's storage root equals `config.memoryDir`. Resolved from
- * storage (not inferred from config/policy shape) so a hosted scope-profile
- * deployment never reaches into the default corpus.
- */
 export async function defaultNamespaceAtFlatRoot(
   getStorage: (namespace: string) => Promise<{ dir: string }>,
   config: { defaultNamespace: string; memoryDir: string },
@@ -170,13 +153,6 @@ export async function runMemorySearchFanout<TResult>(options: {
 }
 
 /**
- * Resolve results for a FLAT corpus (namespaces disabled).
- *
- * An explicit ranking mode routes through the namespace-aware search even
- * here, because that is the only path honoring it; the legacy direct-QMD calls
- * stay the default so nothing else moves.
- */
-/**
  * Reject an option combination a flat corpus cannot honor.
  *
  * A `mode` routes through the namespace-aware backend, which cannot target a
@@ -255,8 +231,6 @@ export async function runFlatCorpusMemorySearch<TResult>(options: {
   const { query, maxResults, collection, mode } = options;
   assertFlatCorpusOptions(options.mode, options.collection);
   if (mode) {
-    // The mode-aware backend has no collection selector on a flat corpus, so
-    // honoring the mode would silently search the default collection instead
     return options.searchAcrossNamespaces({ query, maxResults, mode });
   }
   return collection === "global"
@@ -322,11 +296,7 @@ export async function searchWithGenericExclusion<TResult extends { path: string 
       if (target <= 0) return [];
     }
     if (results.length >= target) break;
-    // What the backend actually served this round: its own page size when we
-    // named no limit.
     const served = limit ?? raw.length;
-    // A short page means the corpus is exhausted - asking for more is wasted
-    // work that returns the same rows.
     if (raw.length === 0 || raw.length < served) break;
     // The cap protects the backend from an unbounded walk, but it can never
     // sit at or below what the caller explicitly asked for: a request for N
@@ -350,11 +320,6 @@ export async function runScopedMemorySearch(options: {
   budget: number;
   /** `false` when the caller named no `maxResults`; see the helper below. */
   sendInitialLimit: boolean;
-  /**
-   * Authorize the scope. Runs BEFORE any budget decision so a zero budget - a
-   * valid empty search - can never skip the namespace/principal gate and turn
-   * an access error into a successful empty result.
-   */
   authorizeScope(): Promise<void> | void;
   collection?: string;
   mode?: "search" | "hybrid" | "bm25" | "vector";
@@ -440,9 +405,6 @@ export async function memorySearchThroughScope(
   count: number;
 }> {
   const { query, namespace, maxResults, mode, principal } = request;
-  // BOTH branches take the mode, and only the flat one reaches
-  // `assertFlatCorpusOptions` — validate here so a namespaced request cannot
-  // rank differently on a typo, and before any budget short-circuit.
   assertMemorySearchMode(mode);
   assertMemorySearchLimit(maxResults);
   const collection = request.collection?.trim();

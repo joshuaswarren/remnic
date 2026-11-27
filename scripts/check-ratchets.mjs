@@ -1,53 +1,4 @@
 #!/usr/bin/env node
-/**
- * Structural ratchets (issue #1529, epic #1520).
- *
- * Fails when structural debt grows past the committed baseline
- * (scripts/ratchet-baseline.json):
- *
- *   1. watchlistLoc            — line counts of the current god files; each
- *                                file's count may only stay equal or shrink.
- *   2. oversizedFileCount      — number of non-test .ts files above the
- *                                oversize threshold under packages/remnic-core/src.
- *   3. scatteredConfigFlagReads — occurrences of `config.<flag>Enabled` reads
- *                                outside config.ts and capabilities.ts (the two
- *                                chokepoints: config defines flags; capabilities
- *                                resolves them to CapabilitySet projections).
- *                                Writes (`config.XEnabled = value`) are excluded;
- *                                the heuristic regex also counts comments/strings
- *                                but the baseline is measured with the same rule.
- *   4. adHocNamespaceResolutions — call sites of the ad-hoc namespace-resolution
- *                                helpers (`resolveWritableNamespace` /
- *                                `namespaceFromStorageDir` /
- *                                `configuredNamespaces`) outside the ScopePlan
- *                                resolver module (scopes/scope-plan.ts). Every
- *                                read/write path should consume a resolved
- *                                ScopePlan instead (issue #1521); this ratchet
- *                                pins the residual count so it can only shrink.
- *   5. unmigratedHandlerCount   — entries in the access-surface catalog
- *                                (access-surface-catalog.ts) with
- *                                `operation: null`: handlers not yet routed
- *                                through the access boundary (issue #1525).
- *                                Every handler must dispatch through the
- *                                operation registry; this ratchet pins the
- *                                residual count so it can only shrink.
- *   6. fileSizeGrandfather      — per-file line-count ceilings for every source
- *                                file above the 1200-line cap across ALL
- *                                packages/<pkg>/src roots and root src/
- *                                (issue #1995, umbrella #1988). New files are
- *                                hard-capped at 1200 lines; grandfathered files
- *                                may only shrink, and --update can only lower
- *                                a ceiling, never raise one.
- *
- * Improvements pass and print a reminder to tighten the baseline with:
- *   node scripts/check-ratchets.mjs --update
- *
- * Node stdlib only, no shell-outs — must stay cross-platform (see #1518).
- *
- * REMNIC_RATCHET_ROOT / REMNIC_RATCHET_BASELINE are test seams used by
- * tests/check-ratchets.test.mjs (absolute paths); they are not user-facing
- * configuration.
- */
 
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -61,16 +12,6 @@ const ROOT = process.env.REMNIC_RATCHET_ROOT
 const BASELINE_PATH = process.env.REMNIC_RATCHET_BASELINE
   ? path.resolve(process.env.REMNIC_RATCHET_BASELINE)
   : path.join(ROOT, "scripts", "ratchet-baseline.json");
-/**
- * Optional changed-file scoping for the file-size ratchet (issue #1995,
- * merge-skew fix): when this env var points at a newline-separated list of
- * repo-relative paths (the PR's changed files), per-file ceiling FAILURES
- * only fire for files in the list. Without it (local runs, pushes to main)
- * every file is evaluated. Rationale: a PR that never touched config.ts
- * must not fail because ANOTHER merged PR grew config.ts on main after
- * this PR's baseline was committed — each PR is judged on its own changes,
- * and main's drift is caught on the PRs that cause it.
- */
 const CHANGED_FILES_PATH = process.env.REMNIC_RATCHET_CHANGED_FILES_PATH
   ? path.resolve(process.env.REMNIC_RATCHET_CHANGED_FILES_PATH)
   : null;
@@ -84,16 +25,6 @@ function readChangedFileScope() {
     );
   }
   const scope = new Set();
-  // CI writes the scope with `git diff -z -c core.quotePath=off`, so entries
-  // are NUL-separated and filenames arrive verbatim (round-3 finding). When
-  // ANY NUL is present it is the ONLY separator — filenames may contain
-  // literal newlines and must not be split on them (round-5 finding). A
-  // NUL-free file (hand-written/local) splits on newlines, with a single
-  // trailing \r stripped per entry (CRLF tolerance). Entries are otherwise
-  // preserved byte-for-byte: no trim() (space-edged filenames are legal —
-  // round-4 finding) and no backslash rewriting (git emits forward-slash
-  // separators on every platform; a literal backslash is CONTENT on Linux —
-  // round-5 finding).
   const raw = readFileSync(CHANGED_FILES_PATH, "utf8");
   const entries = raw.includes("\0")
     ? raw.split("\0")
@@ -107,30 +38,9 @@ function readChangedFileScope() {
 const CORE_SRC = path.join(ROOT, "packages", "remnic-core", "src");
 const DEFAULT_OVERSIZE_THRESHOLD_LOC = 3000;
 
-/**
- * File-size ratchet (issue #1995, umbrella #1988).
- *
- * Every non-test .ts source file under packages/<pkg>/src and root src/ is
- * capped at NEW_FILE_SIZE_CAP_LOC lines. Files already above the cap when the
- * baseline was generated are grandfathered with their then-current size as a
- * personal ceiling (metrics.fileSizeGrandfather): they may shrink, never
- * grow. `--update` can only LOWER a ceiling — laundering growth through a
- * baseline refresh is rejected; a deliberate exception requires hand-editing
- * the baseline JSON, which is loud in review.
- */
 const NEW_FILE_SIZE_CAP_LOC = 1200;
 
-/** Roots scanned by the file-size ratchet (repo-relative). */
 function sizeCapScanRoots() {
-  // Symlinked roots are VIOLATIONS, not silently skipped (round-9 finding):
-  // skipping a symlinked `packages/<pkg>`, `packages/<pkg>/src`, `packages`,
-  // or root `src` would let every file behind it evade the cap while the
-  // check stays green. Each symlinked candidate is reported and fails the
-  // metrics collection alongside in-root symlinked sources. statSync follows
-  // links, so lstat first (round-3 finding).
-  // lstat FIRST, tolerating ENOENT (round-12 finding): existsSync FOLLOWS
-  // symlinks, so a DANGLING symlinked root returned false and was silently
-  // skipped — evading the stated all-symlinked-roots rejection.
   const lstatOrNull = (candidate) => {
     try {
       return lstatSync(candidate);
@@ -152,8 +62,6 @@ function sizeCapScanRoots() {
     for (const entry of readdirSync(packagesDir, { withFileTypes: true })) {
       const pkgPath = path.join(packagesDir, entry.name);
       if (entry.isSymbolicLink()) {
-        // A symlinked package entry hides everything under it — violation,
-        // whether or not it resolves to a directory with a src/.
         symlinkedRoots.push(toPosix(path.relative(ROOT, pkgPath)));
         continue;
       }
@@ -187,39 +95,14 @@ const WATCHLIST = [
 ];
 
 const FLAG_READ_RE = /\bconfig\.[A-Za-z0-9_]+Enabled\b(?!\s*=[^=])/g;
-/**
- * Ad-hoc namespace-resolution call sites (issue #1521): occurrences of the
- * three legacy resolution helpers outside the ScopePlan resolver module. The
- * goal is zero — every path should resolve through `resolveScopePlan` instead.
- * The `\s*\(` anchor targets call/definition sites, excluding local
- * variables named `configuredNamespaces` (e.g. `const configuredNamespaces = …`).
- */
 const ADHOC_RESOLUTION_RE =
   /\b(resolveWritableNamespace|namespaceFromStorageDir|configuredNamespaces)\s*\(/g;
 const SCOPE_PLAN_REL = "packages/remnic-core/src/scopes/scope-plan.ts";
 
-/**
- * Unmigrated access-surface handlers (issue #1525): entries in the surface
- * catalog with `operation: null` have not yet been routed through the access
- * boundary. The goal is zero — every handler must dispatch through the
- * operation registry. This ratchet pins the residual count so it can only
- * shrink as domain-group migrations land.
- */
 const UNMIGRATED_HANDLER_RE = /operation:\s*null\b/;
 const SURFACE_CATALOG_REL = "packages/remnic-core/src/access-surface-catalog.ts";
 const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", ".git"]);
-// The strict (file-size) walker skips ONLY .git: git itself refuses to track
-// paths containing a .git component, so nothing there can be a committed
-// source. Everything else under a src root is measurable — "dist" is real
-// compiled code under include:["src"] (round-11 finding), and even a
-// committed src/node_modules file is compiled when reached through an
-// explicit relative import, which tsconfig's default exclude does not
-// prevent (round-13 finding).
 const STRICT_SKIPPED_DIR_NAMES = new Set([".git"]);
-/**
- * Direct value imports of the main `storage.ts` module (issue #1533 Phase B).
- * `import type` does not load the 7.7k-LOC module and must not count.
- */
 const DIRECT_STORAGE_IMPORT_RE = /from\s+"(?:\.\.?\/)+storage\.js"/;
 const TYPE_ONLY_IMPORT_RE = /^\s*import\s+type\s/;
 
@@ -249,10 +132,6 @@ function toPosix(relPath) {
 }
 
 function countLines(filePath) {
-  // Physical lines under EVERY terminator TypeScript accepts — \r\n, lone
-  // \n, AND lone \r (round-15 finding: a CR-only 1,300-line file measured
-  // as one line). No phantom line for a trailing terminator (round-8
-  // finding); a final line WITHOUT a terminator still counts.
   const text = readFileSync(filePath, "utf8");
   if (text.length === 0) return 0;
   const segments = text.split(/\r\n|\r|\n/);
@@ -261,12 +140,6 @@ function countLines(filePath) {
 }
 
 function isCountedSourceFile(name) {
-  // .ts/.tsx/.mts/.cts all compile under the packages' tsconfig "src"
-  // globs (round-7 + round-8 findings: bench-ui compiles JSX; TypeScript
-  // compiles .mts/.cts under the same include glob) — a giant .tsx, .mts,
-  // or .cts would otherwise evade the cap. Declarations (.d.*) and tests
-  // stay excluded. Legacy #1529 metrics scan only remnic-core/src, which
-  // has neither — their counts are unaffected.
   const excluded = [
     ".test.ts", ".test.tsx", ".test.mts", ".test.cts",
     ".d.ts", ".d.mts", ".d.cts",
@@ -277,7 +150,6 @@ function isCountedSourceFile(name) {
   );
 }
 
-/** Recursively list non-test .ts files under dir. Symlinks are skipped. */
 function walkSourceFiles(dir) {
   const out = [];
   if (!existsSync(dir)) {
@@ -300,13 +172,6 @@ function walkSourceFiles(dir) {
   return out;
 }
 
-/**
- * Strict variant for the file-size ratchet (issue #1995 round 6): identical
- * traversal, but a SYMLINK whose name looks like a counted source file (or a
- * symlinked subdirectory) is recorded as a violation instead of silently
- * skipped — otherwise `giant.ts -> elsewhere` would evade the line cap while
- * still compiling as part of the package.
- */
 function walkSourceFilesStrict(dir) {
   const files = [];
   const symlinkedSources = [];
@@ -317,17 +182,10 @@ function walkSourceFilesStrict(dir) {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isSymbolicLink()) {
-      // ANY symlink inside a scan root is a counting-evasion vector
-      // (`giant.ts -> elsewhere`, or a symlinked subtree) — record it.
       symlinkedSources.push(toPosix(path.relative(ROOT, full)));
       continue;
     }
     if (entry.isDirectory()) {
-      // Inside a src scan root, only node_modules and .git can never be
-      // source children (tsconfig's default exclude covers node_modules).
-      // A `src/dist/large.ts` IS compiled production code under
-      // `include: ["src"]` and must be measured — skipping every dir named
-      // "dist" here let such a module bypass the cap (round-11 finding).
       if (!STRICT_SKIPPED_DIR_NAMES.has(entry.name)) {
         const nested = walkSourceFilesStrict(full);
         files.push(...nested.files);
@@ -341,10 +199,6 @@ function walkSourceFilesStrict(dir) {
 }
 
 function collectMetrics(oversizeThresholdLoc) {
-  // `null` marks a watchlist file that is missing on disk. That is never an
-  // improvement: a rename would otherwise evade the per-file ratchet while
-  // the debt lives on under a new name. Missing files fail the check (and
-  // block --update) until the WATCHLIST is deliberately edited.
   const watchlistLoc = {};
   const missingWatchlistFiles = [];
   for (const relPath of WATCHLIST) {
@@ -384,18 +238,9 @@ function collectMetrics(oversizeThresholdLoc) {
         adHocNamespaceResolutions += adHocMatches.length;
       }
     }
-    // Issue #1533: count files importing directly from the main storage.ts
-    // (exclude storage.ts itself, and exclude the test-only storage-contract/
-    // harness dir — it imports storage.js by design to exercise the public
-    // surface, not as a production caller). May only decrease as Phase B
-    // migrates real importers to the MemoryStorage interface.
     if (
       relPosix !== "packages/remnic-core/src/storage.ts" &&
       !relPosix.includes("/storage-contract/") &&
-      // The storage/ subdirectory hosts StorageManager's own decomposition
-      // modules (entity-store, ...): they ARE the storage subsystem, not
-      // external importers, and importing the barrel instead creates a
-      // module-initialization cycle (index -> access-* -> ... -> storage).
       !relPosix.startsWith("packages/remnic-core/src/storage/") &&
       hasValueStorageImport(content)
     ) {
@@ -403,10 +248,6 @@ function collectMetrics(oversizeThresholdLoc) {
     }
   }
 
-  // Unmigrated access-surface handlers (issue #1525): count catalog entries
-  // still routed through surface-local validation instead of the boundary.
-  // Only data-entry lines (start with `{`) are counted — doc comments also
-  // mention `operation: null` and must not inflate the count.
   const catalogPath = path.join(ROOT, ...SURFACE_CATALOG_REL.split("/"));
   let unmigratedHandlerCount = 0;
   if (existsSync(catalogPath) && statSync(catalogPath).isFile()) {
@@ -419,12 +260,8 @@ function collectMetrics(oversizeThresholdLoc) {
     }
   }
 
-  // File-size ratchet (issue #1995): every source file over the cap, across
-  // ALL package src roots + root src/, keyed by repo-relative posix path.
   const oversizeByFile = {};
   const scanRoots = sizeCapScanRoots();
-  // Symlinked roots fail the check exactly like symlinked sources inside a
-  // real root (round-9 finding): both are counting-evasion vectors.
   const symlinkedSourceEntries = [...scanRoots.symlinkedRoots];
   for (const rootDir of scanRoots.roots) {
     const { files: rootFiles, symlinkedSources } = walkSourceFilesStrict(rootDir);
@@ -488,9 +325,6 @@ function readBaseline() {
       fail(`baseline metrics.${key} must be a non-negative integer`);
     }
   }
-  // fileSizeGrandfather (issue #1995) may be ABSENT on a legacy baseline —
-  // the comparison in main() then fails with a regenerate hint. Absence must
-  // not fail here or `--update` could never migrate a legacy baseline.
   if (metrics.fileSizeGrandfather !== undefined) {
     if (
       typeof metrics.fileSizeGrandfather !== "object" ||
@@ -557,8 +391,6 @@ function main() {
 
   if (args.includes("--update")) {
     const metrics = collectMetrics(DEFAULT_OVERSIZE_THRESHOLD_LOC);
-    // Symlink violations block the refresh too (round 14): a tree the CHECK
-    // mode rejects must never be able to mint a fresh baseline.
     if (metrics.symlinkedSourceEntries.length > 0) {
       fail(
         `cannot write baseline: symlinked source entries present: ${metrics.symlinkedSourceEntries.join(", ")}. ` +
@@ -571,32 +403,10 @@ function main() {
           "If a god file was deliberately split or renamed, remove it from WATCHLIST in this script first, then rerun --update.",
       );
     }
-    // Issue #1995: --update may only LOWER a grandfathered ceiling, and may
-    // never grandfather a file that became oversized AFTER the previous
-    // baseline (review finding on PR #2000: refresh would silently adopt new
-    // >cap files). Growth and new-file adoption both require shrinking the
-    // file; a deliberate exception requires hand-editing the baseline JSON
-    // (loud in review). First generation (no baseline on disk) bootstraps
-    // the grandfather set as-is — that one-time adoption ships in the PR
-    // that introduces the baseline and is itself reviewed.
     if (existsSync(BASELINE_PATH)) {
       const previous = readBaseline();
       const previousCeilings = previous.metrics.fileSizeGrandfather;
-      // A legacy baseline (predating the metric) also bootstraps as-is: the
-      // migration --update runs in the PR that introduces the metric.
       if (previousCeilings !== undefined) {
-        // Blame scoping mirrors the check path: with a changed-file scope
-        // (REMNIC_RATCHET_CHANGED_FILES_PATH = this branch's own diff),
-        // the guard only blocks growth in files THIS change touched.
-        // Growth that arrived via merges to main was judged on the PRs
-        // that caused it and may be refreshed into the baseline.
-        // An EMPTY scope means "this change touched no source files" — it
-        // must behave like an UNSCOPED update (guards apply everywhere), not
-        // unlock every file as out-of-scope (round-15 finding). And a NEW
-        // ceiling can never be created by --update regardless of scope: only
-        // RAISES of pre-existing ceilings are absorbable as growth inherited
-        // from main; adopting a new oversized file always requires the
-        // documented hand-edit exception (round-15 finding).
         const changedScope = readChangedFileScope();
         const scopedUpdate = changedScope !== null && changedScope.size > 0;
         const inScope = (file) => !scopedUpdate || changedScope.has(file);
@@ -625,10 +435,6 @@ function main() {
               `Shrink the file(s) to ${NEW_FILE_SIZE_CAP_LOC} lines or extract sibling modules first — --update never raises or adds a ceiling.`,
           );
         }
-        // Out-of-scope raises are permitted (that growth was judged on the
-        // PRs that landed it on main) but NEVER silent: each one is printed
-        // so the baseline diff review sees exactly what moved and why
-        // (review finding on PR #2000 round 2).
         for (const [file, lines] of Object.entries(metrics.oversizeByFile).sort(([a], [b]) => a.localeCompare(b))) {
           const ceiling = previousCeilings[file];
           if (ceiling !== undefined && lines > ceiling && !inScope(file)) {
@@ -660,15 +466,8 @@ function main() {
   const current = collectMetrics(threshold);
   const failures = [];
   const improvements = [];
-  // Touched files at or near a ceiling are a WARNING, not an "improvement".
-  // They were previously reported in the improvements list, where a reader
-  // scanning ~10 lines of baseline chatter reliably missed them and only
-  // learned about the ceiling from a red CI run (issue #2774).
   const warnings = [];
 
-  // The baseline and the script's WATCHLIST must describe the same set of
-  // files; a silent mismatch would leave a watchlist file unchecked (or make
-  // a delisted file look like an improvement).
   for (const file of WATCHLIST) {
     if (!(file in baseline.metrics.watchlistLoc)) {
       failures.push(`watchlist file ${file} is missing from the baseline — regenerate with --update`);
@@ -709,7 +508,6 @@ function main() {
     );
   }
 
-  // File-size ratchet (issue #1995): per-file ceilings across all src roots.
   const baselineCeilings = baseline.metrics.fileSizeGrandfather;
   if (baselineCeilings === undefined) {
     failures.push(
@@ -717,15 +515,8 @@ function main() {
         "regenerate with `node scripts/check-ratchets.mjs --update` and commit it",
     );
   } else {
-    // Merge-skew scoping: in PR CI, ceiling FAILURES only fire for files the
-    // PR itself changed (see readChangedFileScope). Improvements are always
-    // reported — they carry no blame.
     const changedScope = readChangedFileScope();
     const inScope = (file) => changedScope === null || changedScope.has(file);
-    // Symlinks inside scan roots are counting-evasion vectors (round-6
-    // finding: `giant.ts -> elsewhere` would compile but never be counted).
-    // Same blame scoping as ceilings: only symlinks THIS change introduced
-    // fail its CI run.
     for (const link of current.symlinkedSourceEntries ?? []) {
       if (inScope(link)) {
         failures.push(
@@ -840,10 +631,6 @@ function main() {
       console.log(`[ratchet]   - ${improvement}`);
     }
   }
-  // Printed last so it is the final thing a reader sees before OK. Only shown
-  // when a changed-file scope is known (PR CI, or REMNIC_RATCHET_CHANGED_FILES_PATH
-  // locally): without one, every watchlist file is "in scope" and the block
-  // would be noise rather than a warning about what you just touched.
   if (warnings.length > 0 && readChangedFileScope() !== null) {
     console.log("");
     console.log("[ratchet] WARNING — you are editing files with no room to grow:");

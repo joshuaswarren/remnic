@@ -189,19 +189,14 @@ test("default Pi extension creates isolated state for each host invocation", asy
     sessionManager: { getSessionId: () => "shared-session" },
   };
 
-  // Each extension independently recalls at first before_agent_start — state maps are
-  // isolated so the same session key produces fetch calls on both instances.
-  // Zero recall calls at session_start; recall fires on first before_agent_start.
   await first.emit("session_start", {}, ctx);
   await second.emit("session_start", {}, ctx);
   assert.equal(recallBodies.length, 0, "no recall at session_start");
 
-  // Context injection reads from each extension's isolated cachedContext.
   const firstResult = await first.emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx) as { systemPrompt?: string };
   const secondResult = await second.emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx) as { systemPrompt?: string };
   assert.ok(firstResult?.systemPrompt?.includes("remembered context"));
   assert.ok(secondResult?.systemPrompt?.includes("remembered context"));
-  // One recall call per extension from the first before_agent_start event.
   assert.equal(recallBodies.length, 2);
 });
 
@@ -327,7 +322,6 @@ test("first turn is not blocked by a slow recall; context lands on a later turn 
   });
 
   const harness = makePiHarness();
-  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
   await remnicPiExtension(harness.pi as any);
   const ctx = {
     cwd: "/tmp/remnic-pi",
@@ -335,7 +329,6 @@ test("first turn is not blocked by a slow recall; context lands on a later turn 
   };
   await harness.emit("session_start", {}, ctx);
 
-  // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
   const firstResult = await Promise.race([
     harness
       .emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx)
@@ -353,7 +346,6 @@ test("first turn is not blocked by a slow recall; context lands on a later turn 
   await waitFor(() => recallLanded, "background recall to land");
   await flushBackgroundChains();
 
-  // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
   const secondResult = (await harness.emit(
     "before_agent_start",
     { prompt: "next", systemPrompt: "" },
@@ -396,8 +388,6 @@ test("a recall that outlives its session_start epoch cannot overwrite the next e
     if (String(input).endsWith("/mcp")) return Response.json({ result: {} });
     recallCalls += 1;
     const callIndex = recallCalls;
-    // Each epoch's recall hangs until the test releases it, so landing order
-    // is fully controlled: stale must land LAST to expose an overwrite.
     await recallGates[callIndex - 1];
     return new Response(
       JSON.stringify({ context: callIndex === 1 ? "stale epoch context" : "fresh epoch context" }),
@@ -413,7 +403,6 @@ test("a recall that outlives its session_start epoch cannot overwrite the next e
   });
 
   const harness = makePiHarness();
-  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
   await remnicPiExtension(harness.pi as any);
   const ctx = {
     cwd: "/tmp/remnic-pi",
@@ -421,7 +410,6 @@ test("a recall that outlives its session_start epoch cannot overwrite the next e
   };
   await harness.emit("session_start", {}, ctx);
 
-  // Epoch N first turn: recall starts, exceeds the budget, runs on in the background.
   // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
   const epochNResult = (await harness.emit(
     "before_agent_start",
@@ -431,10 +419,8 @@ test("a recall that outlives its session_start epoch cannot overwrite the next e
   assert.ok(!epochNResult?.systemPrompt?.includes("context"), "first turn does not wait for recall");
   await waitFor(() => recallCalls === 1, "epoch N recall to be in flight");
 
-  // A reload emits session_start again: startupEpoch bumps and state resets.
   await harness.emit("session_start", {}, ctx);
 
-  // Epoch N+1's first turn starts its own recall.
   // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
   const epochN1First = (await harness.emit(
     "before_agent_start",
@@ -444,11 +430,9 @@ test("a recall that outlives its session_start epoch cannot overwrite the next e
   assert.ok(!epochN1First?.systemPrompt?.includes("context"));
   await waitFor(() => recallCalls === 2, "epoch N+1 recall to be in flight");
 
-  // Fresh recall lands first and populates context for the new epoch.
   releaseRecall[1]();
   await flushBackgroundChains();
 
-  // The stale epoch-N recall resolves AFTER — it must be dropped, not written.
   releaseRecall[0]();
   await flushBackgroundChains();
 
@@ -531,7 +515,6 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
   };
   await remnicPiExtension(second.pi);
   await second.emit("session_start", {}, secondContext);
-  // status comes from the (shared, still-tripped) breaker, written by the background probe once it settles.
   await waitFor(() => secondStatuses.length > 0, "second-session recall-disabled status");
   assert.deepEqual(secondStatuses.at(-1), ["remnic", "Remnic recall paused (timeouts delayed operations; auto-retry after cooldown)"]);
 
@@ -544,7 +527,6 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
     ui: { setStatus: (key: string, value: string) => differentCredentialStatuses.push([key, value]), notify: () => {} },
     sessionManager: { getSessionId: () => "breaker-reload-different-credential" },
   });
-  // A different credential gets a fresh (un-tripped) breaker → ready status once the background probe settles.
   await waitFor(() => differentCredentialStatuses.length > 0, "different-credential ready status");
   assert.deepEqual(differentCredentialStatuses.at(-1), ["remnic", "Remnic ready"]);
 
@@ -560,7 +542,6 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
     ui: { setStatus: (key: string, value: string) => changedPolicyStatuses.push([key, value]), notify: () => {} },
     sessionManager: { getSessionId: () => "breaker-reload-policy-change" },
   });
-  // A changed recall-timeout policy gets a fresh breaker → ready status once the background probe settles.
   await waitFor(() => changedPolicyStatuses.length > 0, "changed-policy ready status");
   assert.deepEqual(changedPolicyStatuses.at(-1), ["remnic", "Remnic ready"]);
 });
@@ -637,7 +618,6 @@ test("session_start status probe uses the startup timeout", async (t) => {
     sessionManager: { getSessionId: () => "startup-timeout-test", getEntries: () => [] },
   });
 
-  // The offline status is written by the background probe once the startup-timeout abort fires.
   await waitFor(() => statuses.length > 0, "offline status after the startup probe times out");
   assert.deepEqual(statuses, [["remnic", "Remnic offline"]]);
 });
@@ -796,8 +776,6 @@ test("MCP tools/list warning fires when the first attempt exhausts the budget", 
       statusEnabled: false,
       mcpToolsEnabled: true,
       requestTimeoutMs: 60000,
-      // A budget this small cannot fund a second attempt after the first
-      // times out; the warning must still be recorded.
       startupRequestTimeoutMs: 2,
     },
   });
@@ -828,7 +806,6 @@ test("a malformed tools/list catalog fails the listing and warns", async (t) => 
     if (url.endsWith("/mcp")) {
       const body = JSON.parse(String(init?.body ?? "{}")) as { id?: number; method?: string };
       if (body.method === "tools/list") {
-        // 200 with no tools array: must not count as a successful empty listing.
         return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }), { status: 200 });
       }
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }), { status: 200 });
@@ -912,7 +889,6 @@ test("session_start renders 'Remnic starting' when health answers 503 not_ready 
     sessionManager: { getSessionId: () => "starting-status-test", getEntries: () => [] },
   });
 
-  // The starting status is written by the background probe once the 503 not_ready answer is processed.
   await waitFor(() => statuses.length > 0, "starting status after a not_ready probe");
   assert.deepEqual(statuses, [["remnic", "Remnic starting"]]);
 });
@@ -959,7 +935,6 @@ test("a successful recall refreshes a stale 'Remnic offline' label once the daem
   assert.deepEqual(statuses, [["remnic", "Remnic offline"]]);
 
   daemonUp = true;
-  // The same production path that clears a stale cooldown: any daemon answer marks the client reachable.
   await runCommand("remnic-status", "", ctx);
   await emit("before_agent_start", { prompt: "hello", systemPrompt: "" }, ctx);
   await waitFor(() => statuses.length > 1, "refreshed ready status after a successful recall");
@@ -1899,8 +1874,6 @@ test("session_before_compact surfaces checkpoint write failures without dropping
   );
 });
 
-// A daemon that holds a request open forever is what the 2026-11-16 fleet saw: the LCM flush waited behind an
-// unreachable extraction LLM. omp gives a hook handler ~30s; the plugin must answer inside that, not at requestTimeoutMs.
 async function startStubDaemon(
   handler: (pathname: string, respond: (delayMs?: number) => void, req: http.IncomingMessage, res: http.ServerResponse) => void,
 ): Promise<{ url: string; hits: Map<string, number>; close: () => Promise<void> }> {
@@ -1921,7 +1894,6 @@ async function startStubDaemon(
   const listening = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", () => listening.resolve());
   await listening.promise;
-  // SAFETY: listen(0, host) binds a TCP socket, so address() is an AddressInfo, never a pipe-path string.
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
@@ -2019,7 +1991,6 @@ test("session_before_compact shares one deadline across flush, record and checkp
   );
   const elapsedMs = Date.now() - startedAt;
 
-  // flush 250ms + record 250ms leave ~400ms for the checkpoint. Per-call budgets would let it run to 900ms or more.
   assert.ok(elapsedMs < 1300, `the three calls took ${elapsedMs}ms; they share one 900ms deadline`);
   assert.ok(result instanceof Object && "compaction" in result, "the compaction summary is still returned");
   assert.ok(
@@ -2068,7 +2039,6 @@ test("before_agent_start refreshes recall context across sessions", async (t) =>
   };
   const event = { prompt: "same prompt", systemPrompt: "" };
 
-  // Session 1: recall fires on first before_agent_start, not session_start
   await emit("session_start", {}, session1Ctx);
   assert.equal(recallCalls, 0);
 
@@ -2078,7 +2048,6 @@ test("before_agent_start refreshes recall context across sessions", async (t) =>
 
   await emit("session_shutdown", {}, session1Ctx);
 
-  // Session 2: recall fires again on first before_agent_start
   await emit("session_start", {}, session2Ctx);
   assert.equal(recallCalls, 1);
 
@@ -2180,12 +2149,10 @@ test("empty recall at first before_agent_start does not inject context but a lat
   };
   const event = { prompt: "same prompt", systemPrompt: "" };
 
-  // Session 1: recall returns empty → no cached context → before_agent_start returns undefined
   await emit("session_start", {}, session1Ctx);
   assert.equal(await emit("before_agent_start", event, session1Ctx), undefined);
   await emit("session_shutdown", {}, session1Ctx);
 
-  // Session 2: recall returns content → cachedContext populated → before_agent_start injects
   await emit("session_start", {}, session2Ctx);
   const result = await emit("before_agent_start", event, session2Ctx) as { systemPrompt?: string };
 
@@ -2326,7 +2293,6 @@ test("before_agent_start keeps pi:default fallback when session manager is missi
   const noopCtx = { cwd: "/tmp/remnic-pi" };
   await emit("session_start", {}, noopCtx);
 
-  // Recall fires on first before_agent_start, not session_start
   assert.equal(recallBodies.length, 0);
 
   const result = await emit("before_agent_start", { prompt: "same prompt", systemPrompt: "" }, noopCtx) as { systemPrompt?: string };
@@ -2371,7 +2337,6 @@ test("recall context truncation stays within the configured budget", async (t) =
   const startMarker = "\n\n[Remnic context truncated]";
   const truncatedAt = text.indexOf(startMarker);
   assert.notEqual(truncatedAt, -1, "truncation marker present");
-  // The cached context meets its budget; the \n\n separator adds 2 chars to systemPrompt.
   assert.ok(text.length <= 42, `system prompt length ${text.length} ≤ 42`);
 });
 
@@ -2407,11 +2372,9 @@ test("before_agent_start fires recall on first event and caches the result", asy
   };
   const event = { prompt: "same prompt", systemPrompt: "" };
 
-  // No recall at session_start
   await emit("session_start", {}, ctx);
   assert.equal(recallCalls, 0);
 
-  // First before_agent_start fires recall and caches the result
   const result = await emit("before_agent_start", event, ctx) as { systemPrompt?: string };
   assert.equal(recallCalls, 1, "recall fired on first before_agent_start");
   assert.ok(result?.systemPrompt?.includes("remembered context"), "context was injected");
@@ -2422,8 +2385,6 @@ test("before_agent_start recall failure notification survives stale Pi ctx after
   const stale = makeStaleCtx({ sessionId: "stale-context-recall" });
   globalThis.fetch = async (input) => {
     const url = String(input);
-    // Let health and namespace probes succeed so snapshotPiContext works
-    // during the before_agent_start handler.  Only the recall call marks the ctx stale.
     if (url.endsWith("/engram/v1/live")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
@@ -2451,12 +2412,10 @@ test("before_agent_start recall failure notification survives stale Pi ctx after
   });
   await extension(pi as any);
 
-  // session_start does not fire recall
   await assert.doesNotReject(() =>
     emit("session_start", {}, stale.ctx)
   );
 
-  // before_agent_start recall fires and fails; notification survives stale ctx.
   await assert.doesNotReject(() =>
     emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, stale.ctx)
   );
@@ -2493,8 +2452,6 @@ test("observe failure notification survives stale Pi ctx after await", async (t)
   await assert.doesNotReject(() =>
     emit("message_end", { message: { id: "m1", role: "user", content: "remember this" } }, stale.ctx)
   );
-  // Ambiguous failures queue durably instead of dropping the turn; the
-  // deferral notification still fires through the captured (stale) notifier.
   assert.equal(stale.notifications.length, 1);
   assert.equal(stale.notifications[0].level, "warning");
   assert.match(stale.notifications[0].message, /queued durably/);
@@ -3015,13 +2972,6 @@ function makePiHarness(): {
   };
 }
 
-/**
- * Poll until `predicate` returns true, failing after `timeoutMs`. Since #3273
- * phase 1 the session_start startup probe (health -> version -> preflight) runs
- * in the BACKGROUND, so tests that assert on its side effects (status label,
- * breaker state, remnic_state entry, notification) must wait for the effect to
- * appear instead of reading it immediately after emitting session_start.
- */
 async function waitFor(predicate: () => boolean, label: string, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -3031,14 +2981,6 @@ async function waitFor(predicate: () => boolean, label: string, timeoutMs = 5000
   }
 }
 
-/**
- * Yield the event loop enough times for an async chain that only awaits
- * already-resolved promises (the mocked fetch responds on the next microtask)
- * to settle fully. Used for tests whose assertions are NEGATIVE (no entry or
- * notification): there is no positive effect to poll for, so the background
- * startup chain must have run to completion first, otherwise the absence is
- * asserted before the chain could have produced anything.
- */
 async function flushBackgroundChains(): Promise<void> {
   for (let i = 0; i < 12; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -3112,7 +3054,6 @@ function makeStaleCtx(options: {
 test("circuit breaker prevents context recall after a startup health probe timeout (#1626)", async (t) => {
   const originalFetch = globalThis.fetch;
   let fetchCalls = 0;
-  // fetch hangs until the AbortController fires, simulating an unreachable host.
   globalThis.fetch = async (_input, init) => {
     fetchCalls += 1;
     return new Promise<Response>((_resolve, reject) => {
@@ -3144,21 +3085,16 @@ test("circuit breaker prevents context recall after a startup health probe timeo
   };
   const event = { prompt: "any prompt", systemPrompt: "" };
 
-  // First session_start: health probe times out → daemon enters cooldown.
   await emit("session_start", {}, ctx);
   const healthProbeCalls = fetchCalls;
   assert.ok(healthProbeCalls >= 1, "health probe timed out");
 
-  // before_agent_start sees no cached recall (daemon was unreachable at startup).
   assert.equal(await emit("before_agent_start", event, ctx), undefined);
 
-  // Second session_start while breaker is still in cooldown: health probe runs
-  // but recall is skipped because isReachable() is false.
   await emit("session_start", {}, ctx);
   const totalCalls = fetchCalls;
   assert.ok(totalCalls > healthProbeCalls, "health probe ran again");
 
-  // before_agent_start still sees no cached recall (breaker prevented the one-shot).
   assert.equal(await emit("before_agent_start", event, ctx), undefined);
 });
 
@@ -3169,9 +3105,6 @@ test("session_shutdown replays the branch even when the daemon breaker is trippe
   globalThis.fetch = async (input, init) => {
     call += 1;
     if (String(input).endsWith("/engram/v1/observe")) {
-      // Fail the ENTIRE turn_end retry chain (1 initial + observeMaxRetries=2
-      // retries = 3 calls) so the breaker actually trips; the next observe
-      // (shutdown) then succeeds, proving shutdown bypasses the breaker.
       if (call <= 3) {
         throw new Error("The socket connection was closed unexpectedly.");
       }
@@ -3205,14 +3138,9 @@ test("session_shutdown replays the branch even when the daemon breaker is trippe
     },
   };
 
-  // turn_end observe fails transiently -> breaker tripped; the branch messages
-  // are queued durably for replay instead of dropped.
   await emit("turn_end", { message }, ctx);
   assert.equal(observeBodies.length, 0, "turn_end observe failed and recorded nothing");
 
-  // shutdown runs while the breaker is in cooldown; forceAttempt must still
-  // replay the branch (the last chance to observe before teardown), and the
-  // successful contact then drains what turn_end queued.
   await emit("session_shutdown", {}, ctx);
   assert.equal(observeBodies.length, 2, "shutdown bypassed the breaker, observed the branch, and drained the queue");
 });
@@ -3250,10 +3178,6 @@ test("session_shutdown observe uses the general request budget, not the per-turn
 
   await emit("session_shutdown", {}, stale.ctx);
 
-  // Shutdown replay is teardown (no host handler window), so it must use the
-  // general request budget (150ms), NOT the per-turn budget (30ms). The timed
-  // out turn is queued durably, and the deferral message embeds the timeout
-  // error, which deterministically proves which budget governed the replay.
   const deferral = stale.notifications.find((n) => /queued durably/.test(n.message));
   assert.ok(deferral, "shutdown observe ran, timed out, and queued the turn");
   assert.match(deferral!.message, /timed out after 150ms/);
@@ -3277,8 +3201,6 @@ test("retry-budget exhaustion trips the circuit breaker so the next turn cools d
       compactionEnabled: false,
       mcpToolsEnabled: false,
       statusEnabled: false,
-      // Per-turn budget below the first 200ms backoff, so a transient failure
-      // exhausts the retry budget and throws the budget-exceeded error.
       turnRequestTimeoutMs: 30,
       observeMaxRetries: 2,
       daemonCooldownMs: 60000,
@@ -3293,29 +3215,23 @@ test("retry-budget exhaustion trips the circuit breaker so the next turn cools d
     sessionManager: { getSessionId: () => "budget-breaker-test", getEntries: () => [], getBranch: () => [] },
   };
 
-  // First turn: transient socket close exhausts the retry budget. The
-  // budget-exceeded error must trip the breaker (not fall through silently).
   await emit("turn_end", { message }, ctx);
   const callsAfterFirst = calls;
   assert.ok(callsAfterFirst >= 1, "first turn attempted an observe");
 
-  // Second turn: breaker is in cooldown -> observe is skipped, no new fetch.
   await emit("turn_end", { message }, ctx);
   assert.equal(calls, callsAfterFirst, "breaker skipped the second turn after budget exhaustion");
 });
 
 test("isDaemonUnreachableError recognizes both budget-exceeded wordings so the breaker trips (review cursor)", () => {
-  // requestWithRetry retry-budget exhaustion:
   assert.ok(
     isDaemonUnreachableError(new Error("Remnic request exceeded the 50ms budget before retry 1 (POST /engram/v1/observe)")),
     "retry-budget exhaustion is unreachable",
   );
-  // Multi-chunk observe per-turn budget exhaustion:
   assert.ok(
     isDaemonUnreachableError(new Error("Remnic observe exceeded the per-turn budget of 20ms across 3 chunks (completed 1)")),
     "multi-chunk observe budget exhaustion is unreachable",
   );
-  // A semantic HTTP-style error is NOT classified as unreachable:
   assert.ok(!isDaemonUnreachableError(new Error("Internal Server Error")), "HTTP errors stay reachable");
 });
 
@@ -3328,7 +3244,6 @@ test("an offline startup health probe trips the circuit breaker so the first tur
       // Daemon is offline: a connection-level failure fails fast (live() does not retry).
       throw new Error("The socket connection was closed unexpectedly.");
     }
-    // If the breaker let recall through, this would hang until the AbortController fires.
     recallCalls += 1;
     return new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () =>
@@ -3360,10 +3275,7 @@ test("an offline startup health probe trips the circuit breaker so the first tur
   };
   const event = { prompt: "hi", systemPrompt: "" };
 
-  // 1) session_start health fails because the daemon is offline -> trips the breaker.
   await emit("session_start", {}, ctx);
-  // 2) before_agent_start (recall) fast-skips because the breaker is tripped, so the doomed
-  //    recall never costs the full turn budget.
   await emit("before_agent_start", event, ctx);
   assert.equal(recallCalls, 0, "recall fast-skipped after the offline startup probe tripped the breaker");
 });
@@ -3453,9 +3365,6 @@ test("/remnic-recall bounds retry to the general request budget instead of unbou
   };
 
   await runCommand("remnic-recall", "any query", ctx);
-  // The command passes the general request budget as a shared deadline, so the
-  // 40ms budget (below the first 200ms backoff) stops retries after one call
-  // instead of looping through the full retry chain unbounded.
   assert.equal(calls, 1, "manual recall did not loop through unbounded retries");
   assert.ok(
     notifications.some((n) => /Remnic command failed/.test(n.message)),
@@ -3471,7 +3380,6 @@ test("a successful /remnic-recall clears a stale circuit breaker (review cursor)
     if (url.endsWith("/engram/v1/recall")) {
       recallCalls += 1;
     }
-    // Manual recall responds OK; automatic context recall hangs until abort.
     if (url.endsWith("/engram/v1/recall") && init?.body && JSON.parse(String(init.body)).query === "manual") {
       return new Response(JSON.stringify({ context: "manual context" }), { status: 200 });
     }
@@ -3505,32 +3413,19 @@ test("a successful /remnic-recall clears a stale circuit breaker (review cursor)
     sessionManager: { getSessionId: () => "manual-recall-clears-breaker" },
   };
 
-  // 1) session_start: health probe + namespace preflight time out (30ms each).
-  //    `request()` transforms AbortError to `Remnic request timed out after Nms`,
-  //    which IS daemon-unreachable (index.ts:828), so the breaker IS tripped.
   await emit("session_start", {}, ctx);
   assert.equal(recallCalls, 0, "no recall at session_start");
 
-  // Let the in-flight startup probe settle before the manual recall: otherwise its
-  // unreachable verdict lands during before_agent_start's bounded wait and
-  // overrides the manual recall's markReachable.
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  // 2) Manual recall succeeds → markReachable() on the shared client.
   await runCommand("remnic-recall", "manual", ctx);
 
-  // 3) before_agent_start event: automatic recall fires now that the daemon is reachable.
-  //    Count only recall requests so health/preflight noise is excluded.
   const recallCallsBeforeAuto = recallCalls;
   await emit("before_agent_start", { prompt: "auto", systemPrompt: "" }, ctx);
   assert.ok(recallCalls > recallCallsBeforeAuto, "automatic recall ran after manual recall cleared the breaker");
 });
 
 test("a successful /remnic-recall is not clobbered by a late startup health unreachable verdict", async (t) => {
-  // Deterministic form of the race the breaker-clear test avoids with a 50ms sleep:
-  // hold startup /live, succeed /remnic-recall (markReachable), then release /live as
-  // unreachable while epoch/liveness stay current. A late applyBreaker must not wipe
-  // the fresh manual success — next automatic work must still reach the daemon.
   const originalFetch = globalThis.fetch;
   let recallCalls = 0;
   let healthStarted = false;
@@ -3567,7 +3462,6 @@ test("a successful /remnic-recall is not clobbered by a late startup health unre
       compactionEnabled: false,
       mcpToolsEnabled: false,
       statusEnabled: false,
-      // Large enough that the deferred hold, not the client AbortController, owns settlement.
       startupRequestTimeoutMs: 60_000,
       daemonCooldownMs: 60_000,
     },
@@ -3653,7 +3547,6 @@ test("before_agent_start awaits the in-flight startup probe before a first-turn 
   globalThis.fetch = async (input) => {
     const url = String(input);
     if (url.endsWith("/engram/v1/live")) {
-      // Slow daemon probe: resolves after 40ms (well within the 2000ms startup budget).
       await new Promise((r) => setTimeout(r, 40));
       probeResolvedAt = Date.now();
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -3690,8 +3583,6 @@ test("before_agent_start awaits the in-flight startup probe before a first-turn 
   await emit("session_start", {}, ctx);
   assert.equal(probeResolvedAt, null, "the startup probe is still in flight right after session_start returns");
 
-  // emit resolves the handler's return value: the injected { systemPrompt } (or undefined).
-  // SAFETY: before_agent_start returns { systemPrompt } when recall injects context; assertion below reads only that field.
   const result = await emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx) as { systemPrompt?: string };
 
   assert.ok(probeResolvedAt !== null, "the startup probe resolved");
@@ -3706,7 +3597,6 @@ test("before_agent_start bounds its startup-probe wait to the smaller of the sta
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     if (url.endsWith("/engram/v1/recall")) recallCalls += 1;
-    // Both the probe and any recall hang until their AbortController fires.
     return new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () =>
         reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
@@ -3724,7 +3614,6 @@ test("before_agent_start bounds its startup-probe wait to the smaller of the sta
       compactionEnabled: false,
       mcpToolsEnabled: false,
       statusEnabled: false,
-      // Startup budget (1000ms) far exceeds the turn budget (30ms): the wait caps at the turn budget.
       startupRequestTimeoutMs: 1000,
       turnRequestTimeoutMs: 30,
       daemonCooldownMs: 60000,
@@ -3743,7 +3632,6 @@ test("before_agent_start bounds its startup-probe wait to the smaller of the sta
   await emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx);
   const elapsed = Date.now() - startedAt;
 
-  // Total is ~60ms (bounded probe wait + recall, each 30ms), not the 1000ms an unbounded wait would cost.
   assert.ok(elapsed < 500, `before_agent_start took ${elapsed}ms, bounded by the 30ms turn budget (not the 1000ms startup budget)`);
   assert.ok(recallCalls >= 1, "the recall path still runs once the bounded probe wait elapses");
 });
@@ -3754,7 +3642,6 @@ test("observe-only first turn joins the in-flight startup probe so an unreachabl
   globalThis.fetch = async (input) => {
     const url = String(input);
     if (url.endsWith("/engram/v1/live")) {
-      // Still deciding when the first observe fires, then the daemon answers down.
       await new Promise((r) => setTimeout(r, 40));
       throw new Error("The socket connection was closed unexpectedly.");
     }
@@ -3788,12 +3675,9 @@ test("observe-only first turn joins the in-flight startup probe so an unreachabl
 
   await emit("session_start", {}, ctx);
   const startedAt = Date.now();
-  // The first message_end fires while the startup probe is still in flight.
   await emit("message_end", { message: { role: "user", content: "hello" } }, ctx);
   const elapsed = Date.now() - startedAt;
 
-  // Observe joined the probe (bounded) and, finding the daemon unreachable, skipped the
-  // doomed call instead of burning the full turn budget on it.
   assert.equal(observeCalls, 0, "the unreachable verdict prevented the doomed first-turn observe");
   assert.ok(elapsed < 1000, `the observe decided in ${elapsed}ms once the probe settled, not after the full turn budget`);
 });
@@ -3809,7 +3693,6 @@ test("a superseded startup probe cannot trip the breaker or override a newer suc
     const url = String(input);
     if (url.endsWith("/engram/v1/live")) {
       liveCall += 1;
-      // The first probe is slow and fails (daemon briefly down); the second succeeds.
       if (liveCall === 1) {
         await new Promise((r) => setTimeout(r, 60));
         firstProbeSettled = true;
@@ -3847,18 +3730,14 @@ test("a superseded startup probe cannot trip the breaker or override a newer suc
     sessionManager: { getSessionId: () => "superseded-probe" },
   };
 
-  // Two session_starts: the second probe supersedes the still-running first.
   await emit("session_start", {}, ctx);
   await emit("session_start", {}, ctx);
-  // Let the slow (stale) first chain finish settling so it can (wrongly) publish if unguarded.
   await waitFor(() => firstProbeSettled, "the stale first probe settles");
   await flushBackgroundChains();
 
-  // The newer (second) probe succeeded, so it owns the status and the preflight entry.
   assert.deepEqual(statuses.at(-1), ["remnic", "Remnic ready"], "the newer success owns the status");
   assert.equal(entries.filter((e: any) => e?.code === "NAMESPACE_OK").length, 1, "only the current probe published the preflight entry");
 
-  // The stale probe's failure must not have tripped the breaker: a live observe still reaches the daemon.
   await emit("turn_end", { message: { role: "user", content: "after probes" } }, ctx);
   assert.ok(observeCalls >= 1, "the breaker stayed reachable, so the observe reached the daemon");
 });
@@ -3871,7 +3750,6 @@ test("session_shutdown before a slow probe settles suppresses its status and pre
   globalThis.fetch = async (input) => {
     const url = String(input);
     if (url.endsWith("/engram/v1/live")) {
-      // The probe is slow; it settles only after the session has already shut down.
       await new Promise((r) => setTimeout(r, 50));
       liveResolved = true;
       throw new Error("The socket connection was closed unexpectedly.");
@@ -3909,7 +3787,6 @@ test("session_shutdown before a slow probe settles suppresses its status and pre
   assert.equal(liveResolved, false, "the probe was still in flight at shutdown");
   await emit("session_shutdown", {}, ctx);
 
-  // Let the (now stale) probe settle and its chain finish, then assert it published nothing.
   await waitFor(() => liveResolved, "the slow probe settles");
   await flushBackgroundChains();
   assert.equal(statuses.length, 0, "no status was written after the session shut down");
@@ -3929,7 +3806,6 @@ test("a preflight response released after session_shutdown publishes no entry or
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (url.includes("/engram/v1/namespace/writable")) {
-      // Hold the preflight answer until the test releases it, after shutdown.
       namespaceRequestStarted = true;
       await namespaceHeld;
       return new Response(JSON.stringify({ ok: false, reason: "not_writable", namespace: "default" }), { status: 200 });
@@ -3961,13 +3837,10 @@ test("a preflight response released after session_shutdown publishes no entry or
   };
 
   await emit("session_start", {}, ctx);
-  // Health and version have settled; the namespace request is in flight and held.
   await waitFor(() => namespaceRequestStarted, "the namespace preflight request is in flight");
   await emit("session_shutdown", {}, ctx);
   releaseNamespace?.();
 
-  // The chain is stale by the time the answer arrives: neither the persistent
-  // entry nor the error notification of the late not-writable verdict may land.
   await flushBackgroundChains();
   assert.ok(
     !entries.some((e: any) => e?.code === "NAMESPACE_OK" || e?.code === "NAMESPACE_NOT_WRITABLE"),
@@ -4012,7 +3885,6 @@ test("session_start preflight surfaces a loud persistent remnic_state error when
     sessionManager: { getSessionId: () => "preflight-bad", getEntries: () => [] },
   });
 
-  // Preflight runs in the background; wait for its error entry before asserting on it.
   await waitFor(() => entries.some((e) => e.type === "remnic_state" && e.data.level === "error"), "persistent not-writable error entry");
   const errorEntry = entries.find((e) => e.type === "remnic_state" && e.data.level === "error");
   assert.ok(errorEntry, "expected a persistent remnic_state error entry");
@@ -4058,7 +3930,6 @@ test("session_start preflight stays silent when the namespace is writable", asyn
     sessionManager: { getSessionId: () => "preflight-ok", getEntries: () => [] },
   });
 
-  // Wait for NAMESPACE_OK so the negative assertions below run after the chain, not vacuously before it.
   await waitFor(() => entries.some((e) => e.data.code === "NAMESPACE_OK"), "NAMESPACE_OK entry after a writable preflight");
   assert.equal(entries.some((e) => e.type === "remnic_state" && e.data.level === "error"), false);
   assert.equal(notifications.some((n) => n.level === "error"), false);
@@ -4100,7 +3971,6 @@ test("session_start preflight does not cry wolf when the daemon is unreachable",
     sessionManager: { getSessionId: () => "preflight-down", getEntries: () => [] },
   });
 
-  // Indeterminate (transport failure) writes nothing to poll; flush so the no-error assertion is not vacuous.
   await flushBackgroundChains();
   assert.equal(entries.some((e) => e.type === "remnic_state" && e.data.level === "error"), false);
   assert.equal(notifications.some((n) => n.level === "error"), false);
@@ -4139,7 +4009,6 @@ test("session_start preflight is skipped without an auth token", async (t) => {
     sessionManager: { getSessionId: () => "preflight-noauth", getEntries: () => [] },
   });
 
-  // No token → preflight skipped; flush the background chain before asserting the skip.
   await flushBackgroundChains();
   assert.equal(hitWritable, false);
   assert.equal(entries.some((e) => e.type === "remnic_state" && e.data.level === "error"), false);
@@ -4184,16 +4053,12 @@ test("session_start preflight self-heals: emits a resolved signal once the names
     sessionManager: { getSessionId: () => "preflight-heal", getEntries: () => [] },
   };
 
-  // First session: namespace not writable → loud error entry + notification.
   await emit("session_start", {}, ctx);
   await waitFor(() => entries.some((e) => e.data.code === "NAMESPACE_NOT_WRITABLE"), "initial not-writable error entry");
   assert.ok(entries.some((e) => e.data.code === "NAMESPACE_NOT_WRITABLE"), "expected an initial error entry");
   assert.ok(notifications.some((n) => n.level === "error"), "expected an initial error notification");
   const errorNotifsAfterFail = notifications.filter((n) => n.level === "error").length;
 
-  // Config fixed; next session: writable → an authoritative NAMESPACE_OK entry
-  // is recorded (so the latest state survives a restart), the loud error stops,
-  // and there is no success-notify spam.
   writable = true;
   await emit("session_start", {}, ctx);
   await waitFor(() => entries.some((e) => e.data.code === "NAMESPACE_OK"), "NAMESPACE_OK entry once the namespace is writable");
@@ -4210,7 +4075,6 @@ test("session_start preflight treats a malformed denial as indeterminate (no fal
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
     if (String(input).includes("/engram/v1/namespace/writable")) {
-      // ok:false but missing the reason/namespace contract → must NOT alarm.
       return new Response(JSON.stringify({ ok: false }), { status: 200 });
     }
     return new Response(JSON.stringify({}), { status: 200 });
@@ -4243,7 +4107,6 @@ test("session_start preflight treats a malformed denial as indeterminate (no fal
     sessionManager: { getSessionId: () => "preflight-malformed", getEntries: () => [] },
   });
 
-  // Malformed denial → indeterminate, nothing recorded; flush so the no-alarm assertions are not vacuous.
   await flushBackgroundChains();
   assert.equal(entries.some((e) => e.data.code === "NAMESPACE_NOT_WRITABLE"), false);
   assert.equal(notifications.some((n) => n.level === "error"), false);
@@ -4257,8 +4120,6 @@ test("session_start trips the circuit breaker on an offline daemon even when sta
     if (url.endsWith("/engram/v1/live")) {
       throw new Error("The socket connection was closed unexpectedly.");
     }
-    // Preflight or recall would land here; if the breaker let either through it
-    // would hang until its AbortController fires.
     nonHealthCalls += 1;
     return new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () =>
@@ -4291,10 +4152,7 @@ test("session_start trips the circuit breaker on an offline daemon even when sta
     ui: { setStatus: () => {}, notify: () => {} },
     sessionManager: { getSessionId: () => "status-off-breaker" },
   };
-  // Health fails at session_start → breaker trips despite statusEnabled=false;
-  // the preflight then fast-skips (indeterminate) instead of fetching.
   await emit("session_start", {}, ctx);
-  // The live recall hook fast-skips because the breaker is tripped.
   await emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx);
   assert.equal(nonHealthCalls, 0, "an offline probe must trip the breaker even with the status UI disabled");
 });
@@ -4303,7 +4161,6 @@ test("session_start preflight treats a malformed writable answer as indeterminat
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
     if (String(input).includes("/engram/v1/namespace/writable")) {
-      // ok:true but missing the namespace → malformed, must not be trusted.
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     return new Response(JSON.stringify({}), { status: 200 });
@@ -4335,7 +4192,6 @@ test("session_start preflight treats a malformed writable answer as indeterminat
     sessionManager: { getSessionId: () => "preflight-malformed-ok", getEntries: () => [] },
   });
 
-  // Indeterminate records no state entry; flush so the absence is not vacuous.
   await flushBackgroundChains();
   assert.equal(entries.some((e) => e.type === "remnic_state" && (e.data.code === "NAMESPACE_OK" || e.data.code === "NAMESPACE_NOT_WRITABLE")), false);
 });
@@ -4374,7 +4230,6 @@ test("session_start preflight tailors the remediation text for an unsupported (n
     sessionManager: { getSessionId: () => "preflight-unsupported", getEntries: () => [] },
   });
 
-  // The error notification is emitted by the background preflight.
   await waitFor(() => notifications.some((n) => n.level === "error"), "unsupported-namespace error notification");
   const err = notifications.find((n) => n.level === "error");
   assert.ok(err, "expected an error notification");
@@ -4405,7 +4260,6 @@ test("session_start warns once on plugin/daemon version mismatch without blockin
   const ctx = { cwd: "/tmp/pi-version-test", sessionManager: { getSessionId: () => "version-mismatch" } };
   await emit("session_start", {}, ctx);
   await emit("session_start", {}, ctx);
-  // The version check runs once in the background (the second chain is guarded) and warns once.
   await flushBackgroundChains();
   assert.equal(warnings.length, 1);
   assert.ok(warnings[0].includes(packageVersion));
@@ -4438,7 +4292,6 @@ for (const scenario of ["matching", "missing", "invalid", "unavailable"] as cons
     await emit("session_start", {}, {
       cwd: "/tmp/pi-version-test", sessionManager: { getSessionId: () => `version-${scenario}` },
     });
-    // The version check runs in the background; wait for the single initialize before asserting.
     await waitFor(() => initializes >= 1, "daemon version initialize completed");
     assert.equal(initializes, 1);
     assert.deepEqual(warnings, []);

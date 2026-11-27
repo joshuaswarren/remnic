@@ -510,10 +510,6 @@ export function registerTools(
       );
       const result = await persistExplicitCapture(orchestrator, candidate, source);
 
-      // #1645 (review thread yG-): a tombstone-blocked explicit capture lands
-      // pending_review (no active copy). Skip query-aware indexing and report it
-      // as queued for review so the caller doesn't believe an active memory was
-      // stored.
       if (result.tombstoneBlocked) {
         orchestrator.requestQmdMaintenanceForTool(maintenanceReason);
         return toolResult(
@@ -1748,9 +1744,6 @@ export function registerTools(
 
         const outputMemoryIds: string[] = [];
         let appliedMessage = "";
-        // #1645 (review thread Yhp): set when a write landed tombstone-blocked
-        // (pending_review) so the post-switch telemetry reports it as queued for
-        // review rather than a successful active write.
         let queuedForReview = false;
 
         switch (action) {
@@ -1918,14 +1911,7 @@ export function registerTools(
         orchestrator.requestQmdMaintenanceForTool(`memory_action_apply.${action}`);
         const wrote = await orchestrator.appendMemoryActionEvent({
           ...structuredEvent,
-          // #1645 (review thread Yhp): a tombstone-blocked write is NOT an
-          // active application — record it as skipped with the blocked id so an
-          // agent action that re-stores retired content is not reported as a
-          // successful active write (recall will not use it).
           outcome: queuedForReview ? "skipped" : "applied",
-          // #1645 (review thread yGr): status must agree with outcome — a
-          // blocked write is not "applied"; "rejected" reflects that the
-          // tombstone gate refused the active write (row is pending_review).
           status: queuedForReview ? "rejected" : "applied",
           dryRun: false,
           outputMemoryIds,
@@ -2911,8 +2897,6 @@ Best for:
     { name: "work_board" },
   );
 
-  // ── Shared Context tools (extracted to src/shared-context-tools.ts;
-  // tools.ts is at its fileSizeGrandfather ceiling — issue #2920) ──────
   registerSharedContextTools(api, orchestrator, hostRuntimeAgentId);
 
   api.registerTool(
@@ -2980,7 +2964,6 @@ Best for:
     { name: "compounding_promote_candidate" },
   );
 
-  // ── Profiling Report ──────────────────────────────────────────────────
   api.registerTool(
     {
       name: "remnic_profiling_report",
@@ -3024,13 +3007,11 @@ Returns: Performance trace data with timing breakdown`,
           return toolResult(JSON.stringify({ traces, stats, bottleneck }, null, 2));
         }
 
-        // ASCII format
         const lines: string[] = [];
         lines.push("Engram Profiling Report");
         lines.push("=".repeat(60));
         lines.push("");
 
-        // Stats summary — stats is { byKind: Record<string, …>, bySpan: Record<string, …> }
         type BucketEntry = { count: number; avgMs: number; p50Ms: number; p95Ms: number; maxMs: number };
         const allBuckets: Array<[string, Record<string, BucketEntry>]> = [
           ["byKind", stats.byKind],

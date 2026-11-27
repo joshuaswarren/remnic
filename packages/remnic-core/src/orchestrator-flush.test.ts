@@ -21,13 +21,9 @@ import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "./maintenance/namespace-planner.js";
 import { stubPersistExtraction } from "./testing/orchestrator-lite.js";
 
-/** Adds the `updateMeta` seam to a StorageManager stub that only has loadMeta/saveMeta. */
 function withMetaSeam<S extends { loadMeta: () => Promise<MetaState>; saveMeta: (meta: MetaState) => Promise<void> }>(
   storage: S,
 ): S & { updateMeta: (mutate: (meta: MetaState) => boolean | void | Promise<boolean | void>) => Promise<void> } {
-  // SAFETY: the constraint above declares exactly the loadMeta/saveMeta shape every
-  // stub here provides; re-typing to `S & { updateMeta }` adds one member and keeps
-  // all other members of S unchanged.
   const updatable = storage as S & {
     updateMeta: (mutate: (meta: MetaState) => boolean | void | Promise<boolean | void>) => Promise<void>;
   };
@@ -49,11 +45,6 @@ function makeTurn(sessionKey: string, content: string, sessionOwnerPrincipal?: s
   };
 }
 
-/**
- * Writable orchestrator double for `ingestBulkImportBatch` slice tests: the
- * real prototype methods run, but the per-test stub surface must stay
- * assignable (the real class marks these fields readonly).
- */
 interface BulkImportTestDouble {
   config: PluginConfig;
   extractionQueueCoordinator: ExtractionQueueCoordinator;
@@ -246,8 +237,6 @@ test("flushSession preserves retained context for other scoped sessions", async 
     _reason: string,
     options?: Record<string, unknown>,
   ) => {
-    // #3251: scoped retainDeferredTurns at the extraction boundary preserves
-    // other-scope retained turns — simulate that here.
     retainedTurns = [
       ...retainedTurns.filter((turn) => turn.sessionKey !== "session-z"),
       makeTurn("session-z", "new session A context", "alice"),
@@ -288,7 +277,6 @@ test("flushSession keeps all other-session retained turns ahead of the scoped ca
     _reason: string,
     options?: Record<string, unknown>,
   ) => {
-    // #3251: scoped retainDeferredTurns preserves other-scope retained turns.
     retainedTurns = [
       ...retainedTurns.filter((turn) => turn.sessionKey !== "session-z"),
       makeTurn("session-z", "new session A context", "alice"),
@@ -407,13 +395,6 @@ test("flushSession waits for queued extraction task completion", async () => {
 
 
 test("flushSession flushes the pending debounced buffer save before extraction, so keep_buffering turns survive a failed/timed-out extraction (issue #1909, PR #2016)", async () => {
-  // Regression: in steady-state debounced buffering a `keep_buffering` turn only
-  // SCHEDULES a trailing-edge save, so the newest turns live only in memory
-  // behind an unref'd timer. The lifecycle force-drain (before_reset /
-  // session_end) queues extraction with clearBufferAfterExtraction; if that
-  // extraction fails or times out and the host then exits, the debounce timer
-  // never fires and those turns are lost. flushSession must force the pending
-  // save durable BEFORE reading/clearing turns.
   let saved: BufferState | null = null;
   const storage = {
     async loadBuffer(): Promise<BufferState> {
@@ -431,7 +412,6 @@ test("flushSession flushes the pending debounced buffer save before extraction, 
   );
 
   await buffer.addTurn("thread-a", makeTurn("thread-a", "remember alpha"));
-  // Debounced keep_buffering: buffered in memory but NOT yet durable.
   assert.equal(saved, null, "debounced keep_buffering turn is not yet on disk");
   assert.equal(buffer.getTurns("thread-a").length, 1);
 
@@ -453,7 +433,6 @@ test("flushSession flushes the pending debounced buffer save before extraction, 
     options?: Record<string, unknown>,
   ) => {
     extractionAttempted = true;
-    // Extraction fails/times out: the buffer is NOT cleared.
     (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.(
       new Error("simulated extraction timeout"),
     );
@@ -465,9 +444,6 @@ test("flushSession flushes the pending debounced buffer save before extraction, 
   );
 
   assert.equal(extractionAttempted, true);
-  // The pending debounced save was forced durable BEFORE the failing
-  // extraction, so the keep_buffering turn is on disk for re-extraction even
-  // though extraction failed and (in production) the host would now exit.
   assert.ok(saved, "pending debounced save was flushed before extraction");
   const persisted = saved as BufferState;
   const entryTurns = persisted.entries?.["thread-a"]?.turns ?? [];
@@ -478,7 +454,6 @@ test("queued extraction settles immediately when its caller aborts while waiting
   const queue = new ExtractionQueueCoordinator(1);
   let extractionStarted = false;
   let releaseExtraction!: () => void;
-  // SAFETY: fixture deps stub — only the queued-extraction path fields are exercised.
   const coordinator = new TurnIngestionCoordinator({
     config: parseConfig({}),
     extractionQueueCoordinator: queue,
@@ -591,10 +566,6 @@ test("flushSession applies its deadline to a blocked pre-drain save", async () =
 });
 
 test("flushSession rejects and skips extraction when the durable buffer save fails, leaving turns and pending state intact (issue #1909, PR #2016)", async () => {
-  // Fail-closed regression: if the pending debounced save cannot land durably,
-  // flushSession must STOP before queuing extraction with
-  // clearBufferAfterExtraction. Otherwise the drain would clear turns that never
-  // reached disk; a subsequent extraction failure + host exit loses the turn.
   let saved: BufferState | null = null;
   let failSave = true;
   const storage = {
@@ -614,7 +585,6 @@ test("flushSession rejects and skips extraction when the durable buffer save fai
   );
 
   await buffer.addTurn("thread-a", makeTurn("thread-a", "remember alpha"));
-  // Debounced keep_buffering: buffered in memory but NOT yet durable.
   assert.equal(saved, null, "debounced keep_buffering turn is not yet on disk");
   assert.equal(buffer.getTurns("thread-a").length, 1);
 
@@ -639,14 +609,10 @@ test("flushSession rejects and skips extraction when the durable buffer save fai
     /simulated durable save failure/,
   );
 
-  // The failed save short-circuits the drain: extraction never runs.
   assert.equal(extractionAttempted, false, "extraction is skipped after a failed durable save");
   assert.equal(saved, null, "nothing was written durably");
-  // In-memory turns survive: the buffer was never read/cleared.
   assert.equal(buffer.getTurns("thread-a").length, 1, "buffered turn is retained after a failed flush");
 
-  // Pending state was retained (not cleared): once the durable write recovers,
-  // the still-pending save lands the turn on disk.
   failSave = false;
   await buffer.flushPendingSave();
   assert.ok(saved, "pending save was retained and lands durably once the write recovers");
@@ -1495,8 +1461,6 @@ test("runExtraction skips active scope profile writes when no layer is writable"
 
   assert.equal(result.status, "skipped");
   assert.equal(result.reason, "scope_profile_no_writable_layer");
-  // Policy refusal (review round): the window is RETAINED, never
-  // cleared — clearing here would destroy content policy never wrote.
   assert.equal(clearCalls, 0);
   assert.equal(result.retainedBuffer, true);
 });
@@ -1537,8 +1501,6 @@ test("runExtraction writes buffered turns to active scope profile write layer", 
     ...makeTurn("pi-observer:abc123", "remember the team profile target"),
     persistProcessedFingerprint: true,
   };
-  // SAFETY: runExtraction is driven only through the stub members assigned below;
-  // the prototype harness leaves the rest of Orchestrator unreachable in this test.
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = config;
   orchestrator.buffer = { clearAfterExtraction: async () => undefined };
@@ -1847,27 +1809,16 @@ test("runExtraction does not persist processed fingerprints for failed empty ext
   assert.equal(result.status, "skipped");
   assert.equal(result.reason, "empty_extraction_result");
   assert.equal(persistCalls.length, 0);
-  // #1908: a failed extraction now persists per-fingerprint retry-state to meta (one
-  // saveMeta call), but MUST NOT record a processed fingerprint — the invariant
-  // below (processedExtractionFingerprints stays []) is the real contract.
   assert.ok(saveMetaCalls <= 1, `expected at most one retry-state meta save, got ${saveMetaCalls}`);
-  // #1908: a retryable failure retains the buffer (clearCalls===0) so the backoff
-  // gate can re-attempt the turns after nextEligibleAt — clearing would orphan
-  // the persisted retry state (cursor high + codex P1).
   assert.equal(clearCalls, 0);
   assert.deepEqual(meta.processedExtractionFingerprints, []);
 });
 
 test("runExtraction retains the buffer on a failed extraction when extractionRetryEnabled=false (issue #3415)", async () => {
-  // Retention follows the actual extraction failure, not the retry bookkeeping:
-  // with retry disabled no retry state is recorded, but the turns must still
-  // be kept for the next attempt. Dropped turns are silent loss.
   const config = parseConfig({ extractionRetryEnabled: false });
   config.extractionMinChars = 0;
   config.extractionMinUserTurns = 1;
   let clearCalls = 0;
-  // SAFETY: runExtraction is driven only through the stub members assigned below;
-  // the prototype harness leaves the rest of Orchestrator unreachable in this test.
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = config;
   orchestrator.buffer = { clearAfterExtraction: async () => { clearCalls += 1; } };
@@ -1951,10 +1902,6 @@ test("runExtraction still clears the buffer on a successful empty extraction whe
 });
 
 test("runExtraction retains buffers and keeps in-memory backoff when the meta lock is unavailable", async () => {
-  // Lock contention makes updateMeta fail closed without running the mutator.
-  // The retry gate reads the in-memory mirror, so the failure must still park
-  // backoff there and retain the buffer — a cleared buffer with no retry state
-  // silently drops the turns (base behavior retained them).
   const config = parseConfig({});
   config.extractionMinChars = 0;
   config.extractionMinUserTurns = 1;
@@ -2095,9 +2042,6 @@ test("runExtraction keeps the empty live path fail-open when liveness metadata w
     extract: async () => ({ facts: [], entities: [], questions: [], profileUpdates: [] }),
   };
 
-  // Normal live turn (no persistProcessedFingerprint): the liveness stamp is
-  // diagnostic only, so a metadata write failure must neither reject the task
-  // nor retain the buffer — extraction succeeded and produced nothing durable.
   const result = await orchestrator.runExtraction(
     [makeTurn("session-live-empty", "a transient note not worth remembering")],
     { bufferKey: "session-live-empty" },
@@ -2326,9 +2270,6 @@ test("runExtraction persists fingerprint and extraction counters through one coh
     },
   );
 
-  // The counters and fingerprint land on a FRESHLY loaded meta (the serialized
-  // updateMeta re-read), so more than one load is expected; the single save is
-  // the coherent-write contract under test.
   assert.ok(loadMetaCalls >= 2, 'expected a fresh meta read before the save');
   assert.equal(saveMetaCalls, 1);
   assert.equal(clearCalls, 1);
@@ -2416,9 +2357,6 @@ test("runExtraction loads meta before updating extraction counters when fingerpr
     bufferKey: "logical-thread:thread-15",
   });
 
-  // The counters and fingerprint land on a FRESHLY loaded meta (the serialized
-  // updateMeta re-read), so more than one load is expected; the single save is
-  // the coherent-write contract under test.
   assert.ok(loadMetaCalls >= 2, 'expected a fresh meta read before the save');
   assert.equal(saveMetaCalls, 1);
   assert.equal(clearCalls, 1);
@@ -2871,20 +2809,10 @@ test("runExtraction still clears the session buffer after persistence even if re
   );
 });
 
-// ── NHZEV (codex P2): the QMD STARTUP sync must cover cataloged dynamic
-// namespaces too, not only configuredNamespaces(). A dynamic namespace written
-// before a daemon restart exists ONLY in the persisted catalog; if the boot-time
-// "sync current disk state" pass embeds only the configured set, that
-// namespace's QMD collection stays stale after restart. Since #3518 the corpus
-// update lives in startupSearchSync (the post-ready retry entry point), so we
 // drive that with stubbed internals and assert updateNamespacesDetailed() received the
-// UNION of configured + cataloged namespaces.
 test("startupSearchSync covers cataloged dynamic namespaces (NHZEV)", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   let updateArg: string[] | undefined;
-  // #2980 fences startup work by lifecycle epoch: the first sync begins an
-  // epoch that resets the gate fields the selfDeps seam fail-fasts on (PR
-  // #1801 set-trap contract). Prototype fakes must declare them.
   orchestrator.deferredInitAbort = null;
   orchestrator.deferredSyncSucceeded = false;
   const memoryDir = path.join(os.tmpdir(), "remnic-startup-maintenance-nhzev");
@@ -2953,9 +2881,6 @@ test("startupSearchSync covers cataloged dynamic namespaces (NHZEV)", async () =
   );
 });
 
-// NHZEV fallback: a catalog read failure during startup sync must degrade to the
-// configured set rather than breaking the sync — same failure-tolerance
-// contract as runQmdMaintenance (maintenanceNamespaces swallows the read error).
 test("startupSearchSync falls back to configured set on catalog read failure (NHZEV)", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   let updateArg: string[] | undefined;

@@ -58,7 +58,6 @@ export function runHealthWorker(request: HealthRequest, data: HealthWorkerData):
   let completed = false;
 
   // 1 = healthy, 2 = network failure, 3 = auth rejection, 4 = HTTP failure.
-  // The caller must not report an HTTP auth response as a network outage.
   function finish(ok: boolean, rejectedAuth = false, httpFailure = false): void {
     if (completed) return;
     completed = true;

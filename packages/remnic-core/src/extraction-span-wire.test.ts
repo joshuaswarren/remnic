@@ -57,7 +57,6 @@ function openObjectSchemas(node: SchemaNode, path: string, found: string[]): voi
 test("provider schema closes every object schema with additionalProperties false", () => {
   for (const mode of ["off", "on"] as const) {
     const open: string[] = [];
-    // SAFETY: extractionProviderJsonSchema returns a JSON Schema document; SchemaNode names the keys walked here.
     openObjectSchemas(extractionProviderJsonSchema(mode) as SchemaNode, "$", open);
     assert.deepEqual(open, [], `spanMode=${mode}: objects that let a provider emit extra keys`);
   }

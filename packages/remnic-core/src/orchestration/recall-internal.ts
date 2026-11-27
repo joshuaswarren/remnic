@@ -139,23 +139,13 @@ export class RecallInternalCoordinator {
     lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.deps.config),
   ): Promise<string> {
     const recallStart = Date.now();
-    // Per-recall QMD degradations (#1536/#3082). Local array so overlapping
-    // recalls that share a sink cannot mark each other failed.
     const backendDegradations: SearchDegradation[] = [];
-    // Issue #680 — historical recall.  Parse `options.asOf` once at the
-    // top of the recall so each boost-pass uses identical filter logic.
-    // Invalid values are rejected at input boundaries (CLI / HTTP / MCP)
-    // per CLAUDE.md rule 51; if a malformed value sneaks through here,
-    // we treat it as "no historical pin" rather than throwing inside
-    // recall — the upstream surfaces are the source of truth.
     let asOfMs: number | undefined;
     if (typeof options.asOf === "string" && options.asOf.length > 0) {
       const parsed = Date.parse(options.asOf);
       if (Number.isFinite(parsed)) asOfMs = parsed;
     }
     const timings = foldQueueWaitTiming(options.queueWaitMs); // #1906 queue-wait phase
-    // Phase-2 await timings (#1830): separate from `timings` so traces and the
-    // eval shadow keep their payloads; folded into the recall-timings record only.
     const phase2Timings: Record<string, string> = {};
     const phase2Timer = createPhase2Timer(phase2Timings, () => options.abortSignal?.aborted === true);
     const profileTraceId = this.deps.profiler.startTrace("recall", sessionKey, {
@@ -170,16 +160,9 @@ export class RecallInternalCoordinator {
       profileTraceClosed = true;
       this.deps.profiler.endTrace(profileTraceId); // persists to JSONL file
     };
-    // The CONFIGURED core budget, which is what the sections that run outside the
-    // bounded runner report in their metrics: nothing enforces a deadline for them,
-    // so reporting a derived figure would claim a bound that does not exist. The
-    // bounded runner below derives and reports its own effective budget per
-    // section, against the request budget still left when that section starts.
     const recallSectionDeadlineMs = this.deps.config.recallCoreDeadlineMs ?? 75_000;
     const recallOuterTimeoutMs = this.deps.config.recallOuterTimeoutMs ?? 75_000;
     const enrichmentSectionDeadlineMs = this.deps.config.recallEnrichmentDeadlineMs ?? 60_000;
-    // Wrap entire recall body in try/finally so profiling trace is always closed,
-    // even on unexpected exceptions (e.g., throwIfRecallAborted, phase-1 errors).
     try {
     const recordRecallSectionMetric =
       createRecallSectionMetricRecorder({ timings, logger: log });
@@ -204,10 +187,6 @@ export class RecallInternalCoordinator {
       .digest("hex")
       .slice(0, 16);
     const sectionBuckets: RecallSectionBuckets = new Map();
-    // The effective LCM read session_id SET is computed below from
-    // `recallNamespaces` (the SAME read-authorized namespace set normal QMD/file
-    // recall searches, incl. coding `readFallbacks`). See the
-    // `lcmReadSessionIds` derivation after `recallNamespaces` is built.
     const queryPolicy = buildRecallQueryPolicy(prompt, sessionKey, {
       cronRecallPolicyEnabled: resolveRecallAuxiliaryCapabilities(this.deps.config).cronRecallPolicy,
       cronRecallNormalizedQueryMaxChars:
@@ -216,7 +195,6 @@ export class RecallInternalCoordinator {
         this.deps.effectiveCronRecallInstructionHeavyTokenCap(),
       cronConversationRecallMode: this.deps.config.cronConversationRecallMode,
     });
-    // #1952 state views: config flag OR per-call override, gated on change intent; computed once for all branches.
     const retrievalQuery = queryPolicy.retrievalQuery || prompt;
     const stateViewActive = resolveRecallStateViewActive(options, this.deps.config, prompt);
     const stateViewPacketActive =
@@ -235,27 +213,12 @@ export class RecallInternalCoordinator {
     let recalledMemoryIds: string[] = [];
     let recalledMemoryPaths: string[] = [];
     let recalledMemoryNamespaces: Array<string | undefined> = [];
-    // Boosted QmdSearchResult array for the serving branch (issue #687 PR 3/4).
-    // Populated alongside recalledMemoryPaths so the X-ray capture can read
-    // per-result explain data (e.g. reinforcementBoost) from the result that
-    // was actually served.
     let xrayRecalledResults: QmdSearchResult[] = [];
-    // Issue #1577 — per-recall trust map (admitted + quarantined). LOCAL, not
-    // instance state, so concurrent recalls cannot race on it. Consumed by
-    // formatQmdResults, publishRecallResults (quarantine filtering on ALL
-    // paths), and the X-ray capture (rule 34).
     let recallTrustByPath: Map<string, TrustStageResultItem> | null = null;
-    // Issue #1577 — sink for the cold pipeline's trust map: cold callers read
-    // it back into recallTrustByPath so every path feeds the same consumers
-    // (rule 41 parity).
     const trustByPathSink: { trustByPath: Map<string, TrustStageResultItem> | null } = {
       trustByPath: null,
     };
     const lcmStructuredXrayResults: RecallXrayResult[] = [];
-    // Per-branch PRE-truncation pool size for the X-ray filter trace
-    // (issue #570 PR 1): `recalledMemoryCount` is post-truncation, so the
-    // trace would otherwise report considered == admitted. The capture block
-    // picks the branch that produced the admitted results via `recallSource`.
     const xrayBranchPoolSize: Record<
       "hot_qmd" | "hot_embedding" | "cold_fallback" | "recent_scan",
       number
@@ -265,9 +228,6 @@ export class RecallInternalCoordinator {
       cold_fallback: 0,
       recent_scan: 0,
     };
-    // Sink the cold-fallback pipeline (four call sites) writes its
-    // pre-truncation pool size into (issue #570 PR 1); the X-ray capture
-    // block reads it as the cold-fallback pool.
     const xrayColdPoolSink = { size: 0 };
     let selectedResultPartition: RecallResultPartition | null = null;
     let identityInjectionModeUsed: IdentityInjectionMode | "none" = "none";
@@ -281,11 +241,7 @@ export class RecallInternalCoordinator {
       graphExpandedIntentEnabled: caps.graphExpandedIntent,
       prompt,
     };
-    // Issue #1547 — let the heuristic decide no_recall BEFORE the planner/non-planner fork so it fires with planner on OR off.
     const requestedMode: RecallPlanMode | undefined = options.mode ?? (planRecallMode(prompt) === "no_recall" ? "no_recall" : undefined);
-    // planner entirely — the decision is overridden anyway. Otherwise consult
-    // the LLM planner when opted in (issue #1367 / Option C); it falls back to
-    // the heuristic on disable / shadow / timeout / error.
     const recallDecision =
       requestedMode !== undefined
         ? resolveRecallModeDecision(recallModeDecisionOptions)
@@ -378,13 +334,6 @@ export class RecallInternalCoordinator {
       this.deps.config.verbatimArtifactsMaxRecall,
     );
     const embeddingFetchLimit = computedFetchLimit;
-    // Principal resolution honours the access-surface override (issue
-    // #570 PR 4).  Access surfaces that have already authenticated the
-    // caller at the transport layer (HTTP / MCP) pass their resolved
-    // principal directly so namespace ACL decisions use the same
-    // identity the surface authorized, instead of re-running
-    // `resolvePrincipal(sessionKey)` which only maps raw session keys
-    // through configured rules and otherwise collapses to `"default"`.
     const principal =
       typeof options.principalOverride === "string"
         && options.principalOverride.length > 0
@@ -403,15 +352,6 @@ export class RecallInternalCoordinator {
         `namespace override is not readable: ${namespaceOverride}`,
       );
     }
-    // Resolve every namespace-bearing field through ONE ScopePlan (#1521): the
-    // read set, the LCM read keys, the coding overlay, and the scope-profile plan
-    // all come from a single pure resolver that delegates to the same helpers
-    // the inline code used. Parity snapshots in scope-plan.test.ts pin the
-    // outputs so this migration cannot change behavior.
-    //
-    // Catalog read touch (issue #1499) is recorded LATER — after the Phase 1
-    // abort gate — so it fires only when retrieval actually runs, not for
-    // aborted / short-circuited recalls.
     const codingContext = sessionKey
       ? this.deps.getCodingContextForSession(sessionKey)
       : null;
@@ -434,16 +374,6 @@ export class RecallInternalCoordinator {
       lcmReadSessionIds,
     } = scopePlan;
     await options.onRecallPlanResolved?.(recallMode, recallNamespaces);
-    // `firstNonEmptyLcmRead`: query the ordered LCM read key set, return the
-    // FIRST non-empty result (#1505). The query-SCORED sections no longer use
-    // it — they MERGE candidates across every authorized key (a weak primary
-    // hit must not mask stronger fallback evidence); this helper now serves
-    // only compressed-history, a holistic per-session DAG narrative with no
-    // per-item id to merge on. A single-key set is exactly one call. A legacy
-    // SESSIONLESS recall yields one `undefined` key: one archive-wide read,
-    // no `session_id` filter. Hosted scope profiles without a session key get
-    // an EMPTY key set, so LCM cannot bypass the profile read stack. NEVER
-    // the literal "default" session id (codex P2).
     const firstNonEmptyLcmRead = async <T>(
       read: (lcmSessionId: string | undefined) => Promise<T>,
       isEmpty: (value: T) => boolean,
@@ -512,7 +442,6 @@ export class RecallInternalCoordinator {
         namespace: selfNamespace,
         snapshot: intentSnapshot,
       });
-      // Clean up workspace selection before early return to prevent Map leaks.
       const earlySessionKey = sessionKey ?? "default";
       this.deps._recallWorkspaceOverrides.delete(earlySessionKey);
       timings.total = `${Date.now() - recallStart}ms`;
@@ -524,16 +453,6 @@ export class RecallInternalCoordinator {
         recallPlan: timings.recallPlan,
         queryPolicy: timings.queryPolicy,
       });
-      // X-ray capture for the `no_recall` early-return path
-      // (issue #570 PR 1).  `no_recall` skips retrieval entirely, so
-      // the snapshot carries zero results and an empty-budget accounting
-      // — but we STILL capture it when the caller opts in so
-      // `getLastXraySnapshot()` returns a useful debug document rather
-      // than silently `null` (or a stale prior capture).
-      //
-      // Skip capture when the caller has already aborted this recall —
-      // otherwise a canceled call could clobber a prior successful
-      // capture (issue #570 PR 1 review follow-up).
       if (
         options.xrayCapture === true &&
         !options.abortSignal?.aborted
@@ -561,8 +480,6 @@ export class RecallInternalCoordinator {
             traceId,
           });
         } catch (err) {
-          // Capture is a best-effort side channel: a capture failure
-          // must NEVER propagate into the primary recall path.
           log.debug(`x-ray capture (no_recall) failed: ${err}`);
         }
       }
@@ -661,16 +578,8 @@ export class RecallInternalCoordinator {
       memoryDir: this.deps.config.memoryDir,
     });
 
-    // --- Phase 1: Launch ALL independent data fetches in parallel ---
     throwIfRecallAborted(options.abortSignal);
 
-    // Catalog read touch (issue #1499): record reads against the recalled
-    // namespaces HERE — after the abort gate, immediately before retrieval
-    // actually runs — so `lastReadAt` reflects a real read, not a recall that was
-    // aborted/errored/short-circuited before reaching this point (round 3/4/6,
-    // codex/cursor — no_recall, zero-limit, aborted, and pre-read-error cases).
-    // `no_recall` already returned earlier, so it cannot reach here. Best-effort
-    // and failure-tolerant.
     if (
       this.deps.namespaceCatalog.enabled &&
       recallResultLimit > 0 &&
@@ -679,7 +588,6 @@ export class RecallInternalCoordinator {
       for (const ns of recallNamespaces) this.deps.storageRouter.recordRead(ns);
     }
 
-    // 0. Shared context (v4.0, optional)
     const sharedContextPromise = (async (): Promise<string | null> => {
       if (
         !this.deps.isRecallSectionEnabled(
@@ -762,7 +670,6 @@ export class RecallInternalCoordinator {
       return trimmed.trim().length > 0 ? trimmed : null;
     })();
 
-    // 1. Profile
     const profilePromise = (async (): Promise<string | null> => {
       if (!this.deps.isRecallSectionEnabled("profile")) return null;
       const t0 = Date.now();
@@ -778,31 +685,9 @@ export class RecallInternalCoordinator {
       return profile || null;
     })();
 
-    // 1p. Peer profile injection (issue #679 PR 3/5).
-    // Reads the profile.md for the peer registered on this session and
-    // injects the most-recently-updated N fields into context. Wrapped
-    // in a try-catch (CLAUDE.md #13 — external I/O must not crash the
-    // primary recall flow). Gate: `peerProfileRecallEnabled` must be
-    // true AND `peerProfileRecallMaxFields` must be > 0 AND a peer ID
-    // must be registered for this session (rule 30 — new
-    // filters/transforms must have configuration gates).
     //
-    // Issue #679 completion: side-channel annotation for recall X-ray.
-    // We capture the peer id and injected-field count separately from
-    // the promise result string so the xray snapshot builder can record
-    // them without re-parsing the rendered section text.
     //
-    // Three-state semantics (mirrors docs/peers.md X-ray contract):
-    //   undefined — feature off, no peer registered, or maxFields=0 (field
-    //               absent from snapshot — peerProfileInjection not set).
-    //   null      — feature enabled + peer registered, but no profile or no
-    //               fields found (snapshot carries explicit null).
-    //   object    — injection occurred (snapshot carries { peerId, fieldsInjected }).
     //
-    // Cursor Bugbot (PR #764): must start as `undefined` so early-return
-    // paths that never enter the feature-enabled branch leave the annotation
-    // absent. Starting as `null` incorrectly sets peerProfileInjection:null
-    // on the snapshot even when peerProfileRecallEnabled is false.
     let peerProfileXrayAnnotation:
       | { peerId: string; fieldsInjected: number }
       | null
@@ -825,34 +710,17 @@ export class RecallInternalCoordinator {
           success: true,
         });
         if (!peerProfile) {
-          // Feature on + peer registered, but no profile written yet.
-          // Three-state contract: explicit null = "enabled but no profile".
           peerProfileXrayAnnotation = null;
           return null;
         }
         const allFields = Object.entries(peerProfile.fields);
         if (allFields.length === 0) {
-          // Profile exists but has no fields — same semantic as no profile.
           peerProfileXrayAnnotation = null;
           return null;
         }
-        // Select the top-N most-recently-updated fields by consulting
-        // provenance. Fields without provenance get epoch-0 ms so they
-        // sort last (least recent).
-        // Codex P2: parse ISO-8601 to epoch ms rather than comparing
-        // strings. ISO-8601 strings with different timezone offsets
-        // (e.g. "2026-04-20T00:00:00+05:00" vs "2026-04-20T00:00:00Z")
-        // can order incorrectly under lexicographic comparison even
-        // though they may refer to different instants. `Date.parse`
-        // returns NaN on malformed input — we fall back to 0 (epoch)
-        // so invalid timestamps sort last rather than causing NaN
-        // comparison instability.
         const fieldsByRecency = allFields
           .map(([key, value]) => {
             const prov = peerProfile.provenance[key];
-            // Find the most recent observedAt (epoch ms) across all
-            // provenance entries for this field. Fall back to 0 if none
-            // recorded or if all entries are malformed.
             let latestMs = 0;
             if (Array.isArray(prov) && prov.length > 0) {
               for (const p of prov) {
@@ -874,7 +742,6 @@ export class RecallInternalCoordinator {
           });
         const capped = fieldsByRecency.slice(0, this.deps.config.peerProfileRecallMaxFields);
         const lines = capped.map(({ key, value }) => `**${key}**: ${value}`);
-        // Record xray annotation: peerId + how many fields were injected.
         peerProfileXrayAnnotation = { peerId, fieldsInjected: capped.length };
         return `## Peer Profile\n\n${lines.join("\n\n")}`;
       } catch (err) {
@@ -892,7 +759,6 @@ export class RecallInternalCoordinator {
       }
     })();
 
-    // 1a. Identity continuity signals (v8.4)
     const identityContinuityPromise = (async () => {
       if (
         !this.deps.isRecallSectionEnabled(
@@ -958,9 +824,6 @@ export class RecallInternalCoordinator {
         "entityRetrieval",
         null as string | null,
         async (sectionSignal) => {
-          // The transcript store is shared and takes no signal of its own, so the
-          // section stops WAITING on a stalled read rather than pretending to
-          // interrupt it — otherwise a cancelled section sits in this await.
           const transcriptEntries = sessionKey
             ? await raceAbort(
                 readRecentEntityTranscriptEntries(
@@ -989,8 +852,6 @@ export class RecallInternalCoordinator {
             originAuthorityEnabled: this.securityCapabilities.originAuthority, untrustedOrigins: this.deps.config.untrustedOrigins,
             abortSignal: sectionSignal,
           }).catch((err) => {
-            // Cancellation is the deadline/abort contract working; let the bounded
-            // runner record it as cancelled rather than as an empty section.
             if (isAbortError(err)) throw err;
             log.warn(`entity retrieval build failed: ${err}`);
             return null;
@@ -999,7 +860,6 @@ export class RecallInternalCoordinator {
       );
     })();
 
-    // 1b. Knowledge Index (v7.0)
     const knowledgeIndexPromise = (async (): Promise<{
       result: string;
       cached: boolean;
@@ -1097,7 +957,6 @@ export class RecallInternalCoordinator {
       }
     })();
 
-    // 1c. Verbatim artifacts (v8.0 phase 1)
     const artifactsPromise = (async (): Promise<MemoryFile[]> => {
       if (
         !this.deps.isRecallSectionEnabled(
@@ -1539,13 +1398,6 @@ export class RecallInternalCoordinator {
       () => harmonicRetrievalAbort.cancel(),
     );
 
-    // Verified recall and semantic rules both need readAllMemories().
-    // Instead of a shared preload (which has namespace/dir mismatch issues),
-    // each subsystem calls readAllMemories() on its correct storage instance.
-    // The version-keyed hot-memories cache (keyed by baseDir + the corpus
-    // version sentinel, issue #1902) serves repeat reads within a version epoch
-    // from memory, so these subsystems share one disk scan; a memory write
-    // between recalls bumps the corpus version and forces exactly one rescan.
 
     const verifiedRecallPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
@@ -1850,30 +1702,14 @@ export class RecallInternalCoordinator {
         return prefilter;
       })();
 
-    // 2. QMD search (the slow part — runs in parallel with preamble)
     type QmdPhaseResult = {
       memoryResultsLists: QmdSearchResult[][];
       globalResults: QmdSearchResult[];
-      /** Top QMD score BEFORE contextual weight scaling from the agent merge.
-       * Used by the confidence gate so that enabling parallel retrieval doesn't
-       * silently lower scores below the calibrated gate threshold. */
       preAugmentTopScore: number;
-      /** Max score from direct + temporal agents (post-weight) BEFORE merge.
-       * Included in the confidence gate so that strong specialized hits (e.g.
-       * an exact entity-name match) are not discarded just because the QMD
-       * contextual pass returned a weak result. */
       maxSpecializedScore: number;
-      /**
-       * Degradations observed while producing this phase result (#1536).
-       * Cached WITH the result so cache hits replay them — a served-from-
-       * cache partial result must still explain why it is partial (codex
-       * round-4 review on #1544).
-       */
       degradations?: SearchDegradation[];
     } | null;
 
-    // Cross-lingual recall (#2197): computed beside the prefilter; never
-    // throws — a failed corpus sample only skips the plan.
     const crossScriptPlanPromise = (async () => {
       const queryLanguage = detectLanguageHint(retrievalQuery);
       if (queryLanguage === undefined) return null;
@@ -1889,11 +1725,6 @@ export class RecallInternalCoordinator {
     const qmdPromise = observeEnrichmentPromise(
       (async (): Promise<QmdPhaseResult> => {
         const t0 = Date.now();
-        // Degradation accounting for this phase (#1536): everything pushed
-        // after this mark belongs to this phase and is cached with its
-        // result; cache hits and stale fallbacks replay stored degradations
-        // so served-from-cache results still explain their gaps, and every
-        // path that skips QMD entirely reports backend_unavailable.
         const phaseDegradationsStart = backendDegradations.length;
         const replayCachedDegradations = (value: {
           degradations?: SearchDegradation[];
@@ -2168,7 +1999,6 @@ export class RecallInternalCoordinator {
                   this.deps.config.parallelAgentWeights,
                   qmdFetchLimit + lifecycleHeadroom,
                   this.deps.config.memoryDir,
-                  // Derive agent-hit namespace so a same (namespace,path) memory merges once (#2020).
                   (p) => this.deps.namespaceFromPath(p),
                 );
               }
@@ -2244,13 +2074,6 @@ export class RecallInternalCoordinator {
         })
         .finally(() => qmdEnrichmentAbort.dispose()),
       () => {
-        // The enrichment budget abandoned the hot QMD phase mid-flight
-        // (#1536, codex round-7 on #1544): QmdClient treats this abort as
-        // caller cancellation and never reports, so report the abandonment
-        // deterministically here — the exact mirror of the cold-tier
-        // deadline gate. Guarded: a CALLER abort also routes through this
-        // cancel callback, and an aborted recall is not a backend
-        // degradation (no snapshot is recorded for it anyway).
         if (!options.abortSignal?.aborted) {
           backendDegradations.push({
             backend: "qmd",
@@ -2306,7 +2129,6 @@ export class RecallInternalCoordinator {
       }
 
       let section: string | null = null;
-      // Try checkpoint first (post-compaction recovery)
       let checkpointInjected = false;
       if (resolvePipelineProcessingCapabilities(this.deps.config).checkpoint) {
         const checkpoint = await this.deps.transcript.loadCheckpoint(sessionKey);
@@ -2321,7 +2143,6 @@ export class RecallInternalCoordinator {
           if (formatted) {
             section = `## Working Context (Recovered)\n\n${formatted}`;
             checkpointInjected = true;
-            // Clear checkpoint after injection
             await this.deps.transcript.clearCheckpoint();
           }
         }
@@ -2333,7 +2154,6 @@ export class RecallInternalCoordinator {
           `recall: read ${entries.length} transcript entries for sessionKey=${sessionKey}`,
         );
 
-        // Apply max turns cap
         const cappedEntries = entries.slice(-transcriptMaxTurns);
         if (cappedEntries.length > 0) {
           log.debug(
@@ -2358,11 +2178,7 @@ export class RecallInternalCoordinator {
       return section;
     })();
 
-    // Compaction reset runs independently of transcript — it must work even when
-    // transcriptEnabled=false, since compaction recovery is a separate concern.
     const compactionPromise = (async (): Promise<string | null> => {
-      // Always clean up per-session workspace selections, even if the feature is off,
-      // to prevent the Map from accumulating stale entries on long-running gateways.
       const effectiveSessionKey = sessionKey ?? "default";
       const compactionWorkspaceDir =
         this.deps._recallWorkspaceOverrides.get(effectiveSessionKey);
@@ -2388,9 +2204,6 @@ export class RecallInternalCoordinator {
         const signalAge = Date.now() - signalStat.mtimeMs;
         const signalData = JSON.parse(await readFile(signalPath, "utf-8"));
 
-        // Validate signal belongs to this session (defense-in-depth: filename
-        // is already per-session, but the sessionKey inside provides a second check).
-        // Use strict !== so missing/null sessionKey also fails validation.
         if (signalData.sessionKey !== effectiveSessionKey) {
           log.debug(
             `recall: compaction signal is for ${signalData.sessionKey}, not ${effectiveSessionKey} — skipping`,
@@ -2406,7 +2219,6 @@ export class RecallInternalCoordinator {
           return null;
         }
 
-        // Signal is fresh and belongs to this session — build recovery context
         let section = "\n\n## Session Recovery (Post-Compaction)\n\n";
         section += `⚠️ A compaction occurred at ${signalData.compactedAt} and this is a fresh session.\n\n`;
 
@@ -2428,8 +2240,6 @@ export class RecallInternalCoordinator {
         return section;
       } catch (err) {
         log.debug("recall: compaction signal check failed:", err);
-        // Remove corrupt/unreadable signal files so they don't cause repeated
-        // parse failures on every recall() until the 1-hour sweep runs.
         await unlink(signalPath).catch(() => {});
         return null;
       }
@@ -2684,10 +2494,6 @@ export class RecallInternalCoordinator {
       }),
     );
 
-    // Start memory-boxes read in parallel with the rest of phase-1 (it can take
-    // several seconds on large box directories due to sequential I/O). We kick it
-    // off here so it overlaps with QMD and other concurrent work rather than
-    // running sequentially in phase-2 and blocking assembly.
     const recentBoxesPromise = observeEnrichmentPromise(
       this.deps.isRecallSectionEnabled(
         "memory-boxes",
@@ -2721,7 +2527,6 @@ export class RecallInternalCoordinator {
         : Promise.resolve([] as BoxFrontmatter[]),
     );
 
-    // --- Wait for core sections first, then bounded enrichment ---
     this.deps.profiler.startSpan("phase-1-parallel", profileTraceId);
     const phase1Start = Date.now();
     log.info(
@@ -2838,9 +2643,6 @@ export class RecallInternalCoordinator {
           return null;
         }
         if (sectionHandle?.timedOut) {
-          // cancel() routes a deadline cut through the degradation accounting
-          // the assembly race performs; keep a value the section still
-          // delivered (e.g. a stale-cache fallback served before the cut).
           promise.cancel();
           if (outcome.status === "resolved" && outcome.value != null) {
             onStatus?.("ok");
@@ -2949,13 +2751,6 @@ export class RecallInternalCoordinator {
         return fallback;
       }
 
-      // Task-level deadline abort (#1907): give the step a child controller and
-      // pass its signal into the task so the losing task cooperatively stops
-      // instead of running to completion on the daemon thread after the race is
-      // lost. Compose with the request signal so a client disconnect ALSO stops
-      // the step's cooperative reads. This step controller only maps to the
-      // step's `fallback` (fail-open, rule 41); it never rejects the recall —
-      // a request-level abort rejects at the next throwIfRecallAborted boundary.
       const stepController = new AbortController();
       const stepSignal = options.abortSignal
         ? AbortSignal.any([options.abortSignal, stepController.signal])
@@ -3001,14 +2796,11 @@ export class RecallInternalCoordinator {
       }
     };
 
-    // --- Phase 2: Assemble sections in correct order ---
     this.deps.profiler.startSpan("assembly", profileTraceId);
 
-    // 0. Shared context
     if (sharedCtx)
       this.deps.appendRecallSection(sectionBuckets, "shared-context", sharedCtx);
 
-    // 0a. Explicit cue evidence
     const explicitCueMaxChars =
       this.deps.getRecallSectionMaxChars("explicit-cue") ??
       this.deps.config.explicitCueRecallMaxChars;
@@ -3022,12 +2814,6 @@ export class RecallInternalCoordinator {
       try {
         const explicitCueSection = await buildExplicitCueRecallSection({
           engine: this.deps.lcmEngine,
-          // #1495 thread 3 + #1505 fallback unification: read across the ordered
-          // LCM read key set (primary overlay → coding fallbacks) so a
-          // branch-scoped session finds its own explicit-cue evidence even when
-          // archived at project/root scope (rule 39). #1505 codex P2: the builder
-          // MERGES candidates across every key under its single budget instead of
-          // short-circuiting on the first non-empty key.
           sessionIds: lcmReadSessionIds,
           query: retrievalQuery,
           maxChars: explicitCueMaxChars,
@@ -3047,9 +2833,6 @@ export class RecallInternalCoordinator {
       }
     }
 
-    // 0b. Targeted factual evidence. This is query-triggered and lossless:
-    // it uses the LCM archive to recover exact numeric facts that broad
-    // compressed-history or search sections can crowd out.
     const targetedFactMaxChars =
       this.deps.getRecallSectionMaxChars("targeted-facts") ??
       this.deps.config.targetedFactRecallMaxChars;
@@ -3066,10 +2849,6 @@ export class RecallInternalCoordinator {
       try {
         const targetedFactSection = await buildTargetedFactRecallSection({
           engine: this.deps.lcmEngine,
-          // #1495 + #1505 fallback unification: read across the ordered LCM read
-          // key set so a branch-scoped session finds its own targeted-fact
-          // evidence even when archived at project/root scope. #1505 codex P2: the
-          // builder MERGES candidates across every key under its single budget.
           sessionIds: lcmReadSessionIds,
           query: retrievalQuery,
           maxChars: targetedFactMaxChars,
@@ -3095,10 +2874,6 @@ export class RecallInternalCoordinator {
       }
     }
 
-    // 0c. Focused list/count evidence. This recovers user-specific list
-    // candidates and countable facts that are easy to bury in broad search
-    // results, while staying gated to explicit list/count/recommendation
-    // prompts.
     const focusedListMaxChars =
       this.deps.getRecallSectionMaxChars("focused-list") ??
       this.deps.config.focusedListRecallMaxChars;
@@ -3115,11 +2890,6 @@ export class RecallInternalCoordinator {
       try {
         const focusedListSection = await buildFocusedListRecallSection({
           engine: this.deps.lcmEngine,
-          // #1495 thread 3 + #1505 fallback unification: read across the ordered
-          // LCM read key set so a branch-scoped session reads its own
-          // focused-list/count evidence even at project/root scope (rule 39).
-          // #1505 codex P2: the builder MERGES candidates across every key under
-          // its single budget.
           sessionIds: lcmReadSessionIds,
           query: retrievalQuery,
           maxChars: focusedListMaxChars,
@@ -3145,10 +2915,6 @@ export class RecallInternalCoordinator {
       }
     }
 
-    // 0d. Response guidance evidence. This recovers durable user
-    // instructions and preferences that affect how an answer should be shaped
-    // for the current query, such as requested date formats, tool/version
-    // details, or preferred editing workflows.
     const responseGuidanceMaxChars =
       this.deps.getRecallSectionMaxChars("response-guidance") ??
       this.deps.config.responseGuidanceRecallMaxChars;
@@ -3170,10 +2936,6 @@ export class RecallInternalCoordinator {
         const responseGuidanceSection = await buildResponseGuidanceRecallSection({
           engine: this.deps.lcmEngine,
           // #1495 thread 3 + #1505 fallback unification: read across the ordered
-          // LCM read key set so a branch-scoped session reads its own
-          // response-guidance evidence even at project/root scope (rule 39).
-          // #1505 codex P2: the builder MERGES candidates across every key under
-          // its single budget.
           sessionIds: lcmReadSessionIds,
           query: retrievalQuery,
           maxChars: responseGuidanceMaxChars,
@@ -3200,9 +2962,6 @@ export class RecallInternalCoordinator {
       }
     }
 
-    // 0e. Chronological event-order evidence. Prefer the ingest-time temporal
-    // index, which can safely merge event times across source sessions. Fall
-    // back to the legacy per-session LCM turn order when the index is absent.
     const eventOrderMaxChars =
       this.deps.getRecallSectionMaxChars("event-order") ??
       this.deps.config.eventOrderRecallMaxChars;
@@ -3229,8 +2988,6 @@ export class RecallInternalCoordinator {
         });
         if (timeline) {
           const timelineItems: TemporalTimelineRecallItem[] = [];
-          // Sequential reads keep file-descriptor pressure bounded. The index
-          // query above has already capped total reads deterministically.
           for (const event of timeline) {
             const namespace = this.deps.namespaceFromPath(event.path);
             if (
@@ -3266,8 +3023,6 @@ export class RecallInternalCoordinator {
           });
         }
 
-        // Legacy fallback: LCM turn indexes are local to one session, so keep
-        // first-non-empty semantics and never interleave them across sessions.
         if (!eventOrderSection && this.deps.lcmEngine?.enabled) {
           eventOrderSection = await firstNonEmptyLcmRead(
             (lcmSessionId) =>
@@ -3300,7 +3055,6 @@ export class RecallInternalCoordinator {
       }
     }
 
-    // 1. Profile
     if (profile)
       this.deps.appendRecallSection(
         sectionBuckets,
@@ -3308,11 +3062,6 @@ export class RecallInternalCoordinator {
         `## User Profile\n\n${profile}`,
       );
 
-    // 1p. Peer profile (issue #679 PR 3/5)
-    // Codex P2 (PR #764): only finalize the xray annotation when the section
-    // was actually appended — appendRecallSection may drop it (disabled,
-    // maxChars===0). We clear the annotation when the section is dropped so
-    // the xray snapshot never reports injection that didn't happen.
     if (peerProfileSection) {
       const peerSectionAppended = this.deps.appendRecallSection(
         sectionBuckets,
@@ -3320,13 +3069,10 @@ export class RecallInternalCoordinator {
         peerProfileSection,
       );
       if (!peerSectionAppended) {
-        // Section was gated out — treat as null (feature on + peer registered,
-        // but no context actually injected).
         peerProfileXrayAnnotation = null;
       }
     }
 
-    // 1-pre. Calibration rules (injected early so model sees adjustments first)
     if (calibrationSection) {
       this.deps.appendRecallSection(
         sectionBuckets,
@@ -3343,7 +3089,6 @@ export class RecallInternalCoordinator {
       );
     }
 
-    // 1a. Identity continuity
     if (identityContinuity) {
       this.deps.appendRecallSection(
         sectionBuckets,
@@ -3363,9 +3108,7 @@ export class RecallInternalCoordinator {
       );
     }
 
-    // 1b. Knowledge Index
     if (kiResult?.result) {
-      // #1955 review: fence parallel Knowledge Index section (copies untrusted entity content without per-field origin).
       const kiBody = this.securityCapabilities.originAuthority
         ? renderAuthorityBoundContent(kiResult.result, undefined, { enabled: true, untrustedOrigins: this.deps.config.untrustedOrigins })
         : kiResult.result;
@@ -3384,7 +3127,6 @@ export class RecallInternalCoordinator {
       );
     }
 
-    // 1c. Verbatim artifacts (quote-first anchors)
     if (artifacts.length > 0) {
       const lines = artifacts.map((a) => {
         const artifactType = a.frontmatter.artifactType ?? "fact";
@@ -3408,8 +3150,6 @@ export class RecallInternalCoordinator {
       );
     }
 
-    // 1d. Memory Boxes (topic continuity windows, v8.0 Phase 2A)
-    // recentBoxesPromise was kicked off before phase-1 so it ran concurrently.
     {
       const recentBoxes = await awaitEnrichmentSection(
         "memory-boxes",
@@ -3433,7 +3173,6 @@ export class RecallInternalCoordinator {
       }
     }
 
-    // 1e. TMT node (temporal memory tree, v8.2)
     if (
       this.deps.isRecallSectionEnabled(
         "temporal-memory-tree",
@@ -3455,33 +3194,12 @@ export class RecallInternalCoordinator {
       }
     }
 
-    // LCM compressed history section
     if (
       this.deps.lcmEngine?.enabled &&
       recallMode !== "minimal" &&
       (recallMode as RecallPlanMode) !== "no_recall"
     ) {
       try {
-        // #1495 + #1505 fallback unification: read across the ordered LCM read
-        // key set so a branch-scoped session reads its own structured
-        // message-part evidence even when archived at project/root scope.
-        // #1505 codex P2: structured matches are query-SCORED evidence, so MERGE
-        // across EVERY key (primary overlay → project/root fallbacks) instead of
-        // short-circuiting on the first non-empty key — a weak branch-key hit must
-        // not mask stronger project-fallback parts. Keys are queried in priority
-        // order; dedupe by session_id+turn_index+part_id keeps the primary key's
-        // row on collision. `formatStructuredRecall` applies the single budget
-        // below. A sessionless key (`undefined`) normalizes to "" → no matches
-        // (structured parts are inherently per-session; pre-#1505 behavior, codex
-        // P2).
-        // FAULT ISOLATION (allSettled, not all): the pre-#1505 first-non-empty read
-        // short-circuited, so a fallback key was often never queried and its latent
-        // search failure never surfaced. Querying every key eagerly must NOT let one
-        // key's failure (e.g. a SqliteError from a corrupt/locked fallback index)
-        // reject the batch and discard the OTHER keys' parts — or, since this and
-        // the compressed-history read below share one try block, silently drop the
-        // compressed-history section a healthy primary key would still produce. So
-        // read each key independently and keep the fulfilled batches.
         const structuredSettled = await Promise.allSettled(
           lcmReadSessionIds.map((lcmSessionId) =>
             this.deps.lcmEngine!.searchStructuredParts(lcmSessionId ?? "", retrievalQuery),
@@ -3537,17 +3255,6 @@ export class RecallInternalCoordinator {
             }
           }
         }
-        // #1495 + #1505 fallback unification: read across the ordered LCM read key
-        // set so a branch-scoped session reads its own compressed-history evidence
-        // even at project/root scope. UNLIKE the query-scored sections above, the
-        // compressed history is a per-session HOLISTIC DAG narrative, not a set of
-        // independently-rankable evidence items — concatenating two sessions'
-        // summaries would double-count the conversation and blow the budget, and
-        // there is no per-item id to dedupe on. So this section deliberately keeps
-        // first-non-empty semantics (#1505 codex P2 scope: "merge the query-matched
-        // sections"): the highest-priority authorized key (primary overlay →
-        // project/root) that actually has a compressed history wins. A sessionless
-        // key (`undefined`) normalizes to empty → no section (pre-#1505 behavior).
         const lcmSection = await firstNonEmptyLcmRead(
           (lcmSessionId) =>
             this.deps.lcmEngine!.assembleRecall(
@@ -3621,7 +3328,6 @@ export class RecallInternalCoordinator {
       );
     }
 
-    // 2. QMD results — post-process and format
     const qmdWasSettledBeforeAssemblyWait =
       qmdPromise.getSettledOutcome() !== undefined;
     const qmdResult = await awaitEnrichmentSection("qmd", qmdPromise, undefined, qmdEnrichmentAbort);
@@ -3634,7 +3340,6 @@ export class RecallInternalCoordinator {
         maxSpecializedScore,
       } = qmdResult;
 
-      // Merge/dedupe by namespace and path; keep the best score and first non-empty snippet.
       const memoryResultsRaw = mergeGraphExpandedResults(
         memoryResultsLists.flat(),
         [],
@@ -3780,21 +3485,12 @@ export class RecallInternalCoordinator {
       }
       memoryResults = memoryResults.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config, "qmd"));
 
-      // Apply mandatory recall safety filters before deadline-bound scoring
-      // enrichment. If scoring times out, we must fall back to this filtered
-      // list rather than raw QMD hits; boostSearchResults also removes
-      // forgotten, lifecycle-filtered, superseded/as_of-invalid, and
-      // dream/procedural memories.
       const qmdBoostInput = await this.deps.filterSearchResultsForRecall(
         memoryResults,
         undefined,
         {
           asOfMs,
           stateViewActive,
-          // If QMD had already settled before the ordered assembly reached it,
-          // do not let unrelated slow enrichment turn those known results into
-          // unchecked misses. QMD that only settles during its own wait remains
-          // bounded by the shared post-retrieval assembly deadline.
           deadlineAtMs: qmdWasSettledBeforeAssemblyWait
             ? null
             : enrichmentAssemblyDeadlineAtMs,
@@ -3805,7 +3501,6 @@ export class RecallInternalCoordinator {
         },
       );
 
-      // Apply recency and access count boosting
       memoryResults = await awaitAssemblyStep(
         "qmd-boost",
         () =>
@@ -3819,9 +3514,7 @@ export class RecallInternalCoordinator {
         qmdBoostInput.results,
       );
 
-      // Optional LLM reranking (default off). Fail-open if rerank fails/slow.
       if (caps.rerank && this.deps.config.rerankProvider === "local") {
-        // (namespace, path) id so cross-namespace same-path hits don't collapse; LLM-safe + cache-stable (#2020).
         const rerankId = (r: QmdSearchResult): string => `${r.namespace ?? ""}|${r.path}`;
         const ranked = await rerankLocalOrNoop({
           query: retrievalQuery,
@@ -3849,24 +3542,8 @@ export class RecallInternalCoordinator {
         );
       }
 
-      // Trust-reweighting stage. TrustScore (issue #1577) SUBSUMES the Memory
-      // Worth multiplier — exactly one runs (rule 39; the double-multiplier
-      // test in trust-score-stage.test.ts pins it structurally). Applied on
-      // EVERY recall path via applyTrustScoreToBranch so the gate is consistent
-      // (rule 41 parity). Fail-open on lookup errors so recall never breaks.
       {
-        // Deadline-bound the trust stage (issue #1905): a slow corpus scan must
-        // not outrun the shared enrichment-assembly budget (the source of the
-        // 17s qmdPost outliers). On timeout/abort/error the fallback returns
-        // the inputs unchanged — the stage is already documented fail-open.
-        // Pass the frontmatter already loaded by the safety filter so the stage
-        // does O(candidates) work instead of a full-corpus scan.
         const trustT0 = Date.now();
-        // The fallback is a distinct object: identity-comparing the outcome to
-        // it detects a deadline/abort/error fallback so the metric records the
-        // truth. awaitAssemblyStep injects a step signal that aborts the losing
-        // task on deadline (or when the request disconnects), so an orphaned
-        // corpus scan stops at its next loop boundary (#1905/#1907).
         const trustFallback = { results: memoryResults, trustByPath: recallTrustByPath };
         const trustOutcome = await awaitAssemblyStep(
           "trustStage",
@@ -3893,31 +3570,11 @@ export class RecallInternalCoordinator {
           success: !trustFellBack,
         });
       }
-      // Synapse-inspired confidence gate: check scores BEFORE slicing so
-      // reranking doesn't affect which score the gate evaluates.
       //
-      // Gate exclusively on the pre-augmentation QMD top score so the threshold
-      // stays on the same scale it was calibrated against (raw QMD scores, not
-      // post-merge weighted scores). This avoids two pitfalls:
-      //   1. The 0.7× contextual weight silently lowering scores below threshold.
-      //   2. A direct/temporal hit on a different scale inflating the gate score.
-      // We also include maxSpecializedScore so that a strong direct/temporal hit (e.g.
-      // an exact entity-name match at score 1.0) is not discarded just because the QMD
-      // contextual pass returned a weak result. maxSpecializedScore is post-weight, so
-      // direct hits at weight 1.0 stay on the same 0-1 scale as QMD scores.
-      // IMPORTANT: maxSpecializedScore is only included when QMD also found something
-      // (preAugmentTopScore > 0). When QMD returns nothing, a weak specialized hit must
-      // NOT block the embedding fallback safety net — that path exists precisely for the
-      // case where QMD finds nothing. Setting effectiveGateScore = 0 when QMD is empty
-      // preserves the original behaviour: empty QMD → gate skipped → fallback available.
       const effectiveGateScore =
         preAugmentTopScore > 0
           ? Math.max(preAugmentTopScore, maxSpecializedScore)
           : 0;
-      // Capture pre-gate pool size for X-ray before the confidence
-      // gate can zero `memoryResults`.  Placing the capture after the
-      // gate would record 0 instead of the true pre-gate pool size
-      // (issue #570 PR 1 review follow-up).
       xrayBranchPoolSize.hot_qmd = Math.max(
         xrayBranchPoolSize.hot_qmd,
         memoryResults.length,
@@ -3932,9 +3589,6 @@ export class RecallInternalCoordinator {
           confidenceGateRejected = true;
         }
       }
-      // Diversify via MMR over the full candidate pool *before* truncating to
-      // the final recall limit. Running MMR after the slice would be unable
-      // to promote diverse candidates sitting just below the cutoff.
       const hotQmdPartition =
         options.xrayCapture === true
           ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
@@ -3956,11 +3610,9 @@ export class RecallInternalCoordinator {
             caps,
             stateViewPacketActive,
           ).appliedResults;
-      // E-Mem-inspired memory reconstruction: fill gaps for referenced entities
       if (resolveRecallEnhancementCapabilities(this.deps.config).memoryReconstruction && memoryResults.length > 0) {
         try {
           const snippets = memoryResults.map((r) => r.snippet);
-          // Extract entity paths already present in recall results to avoid duplicates
           const coveredRefs = memoryResults
             .map((r) => r.path)
             .filter((p) => p.startsWith("entities/"))
@@ -3972,7 +3624,6 @@ export class RecallInternalCoordinator {
             knownEntities,
           );
           if (missing.length > 0) {
-            // Allow up to maxExpansions successful entity expansions
             const budget = this.deps.config.memoryReconstructionMaxExpansions;
             let expanded = 0;
             for (const entityName of missing) {
@@ -4028,9 +3679,6 @@ export class RecallInternalCoordinator {
           .filter(Boolean);
         xrayRecalledResults = memoryResults;
       } else if (!confidenceGateRejected) {
-        // Only attempt fallback paths if the confidence gate did NOT fire.
-        // When the gate rejects, all recall pathways are skipped to prevent
-        // low-relevance results from polluting context.
         const queryAwarePrefilter = await queryAwarePrefilterPromise;
         if (queryAwarePrefilter.candidatePaths?.size !== 0) {
         let scoped = await awaitAssemblyStep(
@@ -4069,13 +3717,7 @@ export class RecallInternalCoordinator {
           },
           [] as QmdSearchResult[],
         );
-        // Issue #1577 — trust filter before packet cap (AGENTS.md order).
-        // Feature gate is consistent across ALL recall paths (rule 41 parity).
         {
-          // Deadline-bound (issue #1905). This branch has no preloaded
-          // frontmatter map (boost ran without one), so pass undefined and let
-          // the stage's corpus/direct-read fallback cover it — identical lookup
-          // semantics (rule 41 parity).
           const trustT0 = Date.now();
           const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
           const trustOutcome = await awaitAssemblyStep(
@@ -4178,7 +3820,6 @@ export class RecallInternalCoordinator {
             searchOptions: qmdSearchOptions,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
-          // #1577: read cold trust map back for X-ray/epistemic (rule 41).
           recallTrustByPath = trustByPathSink.trustByPath;
           if (longTerm.length > 0) {
             if (shouldPersistGraphSnapshot) {
@@ -4228,9 +3869,6 @@ export class RecallInternalCoordinator {
         source: "fresh",
         success: true,
       });
-      // If the user is pushing back ("that's not right", "why did you say that"),
-      // gently suggest an explicit workflow to inspect what was recalled and record feedback.
-      // IMPORTANT: this is suggestion-only; never auto-mark negatives.
       if (isDisagreementPrompt(prompt)) {
         this.deps.appendRecallSection(
           sectionBuckets,
@@ -4248,7 +3886,6 @@ export class RecallInternalCoordinator {
         );
       }
     } else if (recallResultLimit > 0 && !this.deps.qmd.isAvailable()) {
-      // Fallback: embeddings first, then recency-only.
       const queryAwarePrefilter = await queryAwarePrefilterPromise;
       if (queryAwarePrefilter.candidatePaths?.size !== 0) {
         let scoped = await awaitAssemblyStep(
@@ -4279,7 +3916,6 @@ export class RecallInternalCoordinator {
               undefined,
               { asOfMs, stateViewActive, requestingConnector: options.sourceConnector },
             );
-            // MMR runs on the pre-truncation pool (see the hot-embedding branch).
             xrayBranchPoolSize.hot_embedding = Math.max(
               xrayBranchPoolSize.hot_embedding,
               boostedScoped.length,
@@ -4288,10 +3924,7 @@ export class RecallInternalCoordinator {
           },
           [] as QmdSearchResult[],
         );
-        // Issue #1577 — trust filter before packet cap (AGENTS.md order).
-        // Feature gate is consistent across ALL recall paths (rule 41 parity).
         {
-          // Deadline-bound (issue #1905); no preloaded map on this branch.
           const trustT0 = Date.now();
           const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
           const trustOutcome = await awaitAssemblyStep(
@@ -4388,9 +4021,6 @@ export class RecallInternalCoordinator {
               includeInRecall: this.deps.config.temporalSupersessionIncludeInRecall,
             },
           });
-          // Convert to QmdSearchResult with recency baseline, then boost so
-          // temporal/tag boosts match the QMD path. Cap AFTER boosting, and
-          // pass a pre-populated memoryByPath to skip redundant disk reads.
           const queryAwareScopedMemories = queryAwarePrefilter.candidatePaths
             ? activeMemories.filter((memory) =>
                 queryAwarePrefilter.candidatePaths?.has(memory.path),
@@ -4424,7 +4054,6 @@ export class RecallInternalCoordinator {
               searchOptions: qmdSearchOptions,
               ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
             });
-            // #1577: cold trust map back.
             recallTrustByPath = trustByPathSink.trustByPath;
             if (longTerm.length > 0) {
               recallSource = "cold_fallback";
@@ -4483,8 +4112,6 @@ export class RecallInternalCoordinator {
                     { asOfMs, stateViewActive, requestingConnector: options.sourceConnector },
                   )
                 ).sort((a, b) => b.score - a.score);
-                // MMR runs on the pre-truncation pool so diverse candidates just
-                // below the cutoff can be promoted into the injected set.
                 xrayBranchPoolSize.recent_scan = Math.max(
                   xrayBranchPoolSize.recent_scan,
                   boostedRecent.length,
@@ -4494,12 +4121,7 @@ export class RecallInternalCoordinator {
               [] as QmdSearchResult[],
             );
             // Issue #1577 — trust filter before packet cap (AGENTS.md order).
-            // Feature gate is consistent across ALL recall paths (rule 41).
             {
-              // Deadline-bound (issue #1905). The recent-scan branch already
-              // loaded every candidate's MemoryFile (queryAwareScopedMemories),
-              // so hand that frontmatter to the stage as the preloaded map —
-              // the trust/memory-worth lookup then does zero corpus scans.
               const trustT0 = Date.now();
               const recentPreloaded = new Map<string, MemoryFile>(
                 queryAwareScopedMemories.filter((m) => m.path).map((m) => [m.path, m]),
@@ -4605,7 +4227,6 @@ export class RecallInternalCoordinator {
                 searchOptions: qmdSearchOptions,
                 ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
               });
-              // #1577: cold trust map back.
               recallTrustByPath = trustByPathSink.trustByPath;
               if (longTerm.length > 0) {
                 if (shouldPersistGraphSnapshot) {
@@ -4771,7 +4392,6 @@ export class RecallInternalCoordinator {
       storage: profileStorage,
       snapshot: buildIntentDebugSnapshot(),
     }));
-    // 2.5. Compression guideline recall section (v8.11 Task 5)
     const compressionEnabled = this.deps.isRecallSectionEnabled(
       "compression-guidelines",
       resolveCompressionCapabilities(this.deps.config).compressionGuidelineLearning === true,
@@ -4791,12 +4411,9 @@ export class RecallInternalCoordinator {
     } else {
       phase2Timer.skipped("Compression");
     }
-    // 3. Transcript/summaries/conversation/compounding are fetched in parallel above,
-    // then assembled here according to recallPipeline order.
     if (transcriptSection) {
       this.deps.appendRecallSection(sectionBuckets, "transcript", transcriptSection);
     }
-    // Compaction reset context — independent section so it works even when transcript is disabled.
     if (compactionSection) {
       this.deps.appendRecallSection(
         sectionBuckets,
@@ -4878,7 +4495,6 @@ export class RecallInternalCoordinator {
       ).length;
       timings.queryAware = `${timings.queryAware};helped=${helpedCount}`;
     }
-    // --- Timing summary ---
     timings.total = `${Date.now() - recallStart}ms`;
     this.deps.profiler.endSpan("assembly", profileTraceId);
     log.info(
@@ -4897,12 +4513,6 @@ export class RecallInternalCoordinator {
       recallPlan: timings.recallPlan,
       queryPolicy: timings.queryPolicy,
     });
-    // Episodic context (#2331): opt-in raw-turn episodes for the top recalled
-    // facts; flag off is a no-op so recall output stays byte-identical.
-    // Namespaces must be index-aligned with recalledMemoryPaths here — every
-    // recall branch populates xrayRecalledResults from the same array it
-    // mapped paths from, so per-path namespaces derive from those results
-    // (the assembly-time assignment below runs after this section).
     const episodicNamespaceByPath = new Map<string, string | undefined>();
     for (const result of xrayRecalledResults) {
       if (result.path) episodicNamespaceByPath.set(result.path, result.namespace);
@@ -4910,8 +4520,6 @@ export class RecallInternalCoordinator {
     const episodicMemoryNamespaces = recalledMemoryPaths.map((memoryPath) =>
       episodicNamespaceByPath.get(memoryPath),
     );
-    // The section is advisory context: an archive error degrades the
-    // section, never the recall (fail-open).
     try {
       await appendEpisodicContextSection(this.deps, {
         sectionBuckets, recalledMemoryPaths,
@@ -4973,17 +4581,7 @@ export class RecallInternalCoordinator {
       omittedSections,
       omittedMemoryIds: assembledRecall.omittedMemoryIds,
     });
-    // X-ray capture (issue #570 PR 1).  Only fires when the caller
-    // explicitly opts in via `xrayCapture: true`.  No behavior change
-    // when the flag is absent — this branch and the setter both
-    // short-circuit.  Captured data is composed from values we have
-    // already derived above, so capture cost is a single object
-    // allocation; no new recall work is performed.
     //
-    // Skip capture when the caller has already aborted this recall —
-    // otherwise a canceled call could clobber a prior successful
-    // capture that the capturing caller has not yet read back
-    // (issue #570 PR 1 review follow-up).
     if (
       options.xrayCapture === true &&
       !options.abortSignal?.aborted
@@ -5015,30 +4613,16 @@ export class RecallInternalCoordinator {
           selectedResultPartition?.appliedResults.map(toPartitionXrayResult) ?? [];
         const headroomResults =
           selectedResultPartition?.headroomResults.map(toPartitionXrayResult) ?? [];
-        // Derive xray results from `recalledMemoryPaths` as the single
-        // source of truth — `recalledMemoryIds` and `recalledMemoryPaths`
-        // are built with two independent filters upstream
-        // (`extractMemoryIdsFromResults` drops paths whose filename does
-        // not match `*.md`, while `.map(path).filter(Boolean)` drops
-        // empty paths only), so zipping them positionally would silently
-        // misalign when the two filters differ.  Re-deriving `memoryId`
-        // from the path here guarantees `memoryId` and `path` refer to
-        // the same underlying result.
         const idFromPath = (p: string): string | null => {
           const match = p.match(/([^/\\]+)\.md$/);
           return match ? match[1] ?? null : null;
         };
-        // Build a path → QmdSearchResult index so we can pull per-result
-        // explain data (e.g. reinforcementBoost) from the result that
-        // boostSearchResults annotated before surfacing to xray.
-        // #1952: label the captured branch through the same inject-seam annotator.
         const xrayResultByPath = indexStateViewAnnotatedResults(
           xrayRecalledResults, retrievalQuery, this.deps.config, stateViewActive, asOfMs,
         );
         const results: RecallXrayResult[] = [];
         for (let xrayIdx = 0; xrayIdx < recalledMemoryPaths.length; xrayIdx += 1) {
           const recalledPath = recalledMemoryPaths[xrayIdx]!;
-          // Namespace from the aligned capture array, not re-derived from a relative path (#2020).
           const recalledNamespace = recalledMemoryNamespaces[xrayIdx];
           const derivedId = idFromPath(recalledPath);
           if (!derivedId) continue;
@@ -5066,9 +4650,6 @@ export class RecallInternalCoordinator {
                 retrievalReason: `served-by=${servedBy}`,
                 currentContextScopes: options.currentContextScopes,
               });
-              // Claim-level provenance span (#1575 PR 3): surface the first
-              // source excerpt so the X-ray shows the literal utterance this
-              // fact derives from. Thin read from already-loaded frontmatter.
               const fm = memory.frontmatter;
               if (fm.sources && fm.sources.length > 0) {
                 sourceSpan = {
@@ -5098,17 +4679,11 @@ export class RecallInternalCoordinator {
               : {}),
             ...(provenance ? { provenance } : {}),
             ...(sourceSpan ? { sourceSpan } : {}),
-            // Issue #1577 — per-result trust projection for X-ray visibility.
             ...(trustItem ? { trust: projectTrustForXray(trustItem) } : {}),
           });
         }
-        // Issue #1577 — surface quarantined items in X-ray with their exclusion
-        // reason so operators see WHY a memory was dropped (rule 34 — exclusion
-        // must never look like "no result"). These are NOT in recalledMemoryPaths
-        // (they were excluded from injection) but ARE in the trust map.
         if (recallTrustByPath) {
           for (const qItem of recallTrustByPath.values()) {
-            // Map is keyed by composite trustResultKey; read the plain path from the item (#2020).
             if (!qItem.quarantined || recalledMemoryPaths.includes(qItem.path)) continue;
             const qId = idFromPath(qItem.path);
             if (!qId) continue;
@@ -5123,17 +4698,6 @@ export class RecallInternalCoordinator {
             });
           }
         }
-        // `considered` must reflect the pool size of the branch that
-        // actually produced the admitted results, NOT the max across
-        // every branch that ran.  Otherwise a flow where hot_qmd
-        // assembled a large pool that was killed by the confidence
-        // gate and a different branch (or none) ultimately served
-        // the recall would report hot_qmd's pool as "considered" —
-        // incorrectly attributing those drops to the result limit.
-        // Pick the pool by `recallSource`; fall back to
-        // `recalledMemoryCount` when no branch ran (e.g. every branch
-        // returned zero).  This path never runs for `no_recall` —
-        // that branch captures its own snapshot earlier.
         let xrayConsidered: number;
         switch (recallSource) {
           case "hot_qmd":
@@ -5152,16 +4716,11 @@ export class RecallInternalCoordinator {
             xrayConsidered = recalledMemoryCount;
             break;
           default: {
-            // Compile-time guard: adding a new `recallSource` value
-            // must force this switch to be updated.
             const _exhaustive: never = recallSource;
             void _exhaustive;
             xrayConsidered = recalledMemoryCount;
           }
         }
-        // `considered` must never be less than `admitted` — in degenerate
-        // flows where a branch's pool counter missed an assignment, prefer
-        // the admitted count as the floor so the trace stays self-consistent.
         xrayConsidered = Math.max(xrayConsidered, recalledMemoryIds.length);
         const filters: RecallFilterTrace[] = [
           {
@@ -5195,17 +4754,9 @@ export class RecallInternalCoordinator {
           sessionKey,
           namespace: selfNamespace,
           traceId,
-          // Issue #679 completion: record peer-profile injection in the
-          // xray snapshot. peerProfileXrayAnnotation is set inside
-          // peerProfileRecallPromise when injection actually occurred,
-          // and stays null otherwise. By the time xray capture runs,
-          // phase-1 parallel work is complete so the annotation is
-          // guaranteed to be populated.
           peerProfileInjection: peerProfileXrayAnnotation,
         });
       } catch (err) {
-        // Capture is a best-effort side channel: a capture failure
-        // must NEVER propagate into the primary recall path.
         log.debug(`x-ray capture failed: ${err}`);
       }
     }
@@ -5238,22 +4789,12 @@ export class RecallInternalCoordinator {
             injectedChars: identityInjectedChars,
             truncated: identityInjectionTruncated,
           },
-          // Included at record time so the published snapshot is born
-          // annotated — a post-record annotation leaves a window where
-          // readers see the snapshot without degradations, and a concurrent
-          // same-session recall could drop them entirely (codex + cursor
-          // reviews on #1544).
           backendDegradations:
             backendDegradations.length > 0 ? backendDegradations : undefined,
         }),
         "last recall record",
       );
-      // Record admitted ids when handles render OR navigation needs authority.
-      // Handles-off + navigation-on is the shipped default; skip only when both are off.
       if (shouldRecordRecallAuthorityHistory(this.deps.config) && recalledMemoryIds.length > 0) {
-        // Only handle-eligible ids aid resolution; filter out non-memory .md
-        // basenames (entity reconstructions) so the resolver never records a
-        // citation target that cannot be loaded.
         const handleEligibleIds = recalledMemoryIds.filter((id) =>
           MEMORY_ID_PATTERN.test(id),
         );

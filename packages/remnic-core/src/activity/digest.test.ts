@@ -39,7 +39,6 @@ test("composeActivityDigestBody is byte-identical across two renders (determinis
 });
 
 test("per-app time section is sorted with a stable tiebreaker on equal dwell", () => {
-  // Two apps with identical (zero) dwell — last snapshots — must order by name.
   const snaps = [
     snap({ id: 1, contentHash: "a", capturedAtUtc: "2026-03-10T14:00:00.000Z", app: "Zed" }),
     snap({ id: 2, contentHash: "b", capturedAtUtc: "2026-03-10T14:00:00.000Z", app: "Arc" }),
@@ -47,7 +46,6 @@ test("per-app time section is sorted with a stable tiebreaker on equal dwell", (
   const body1 = composeActivityDigestBody("2026-03-10", "UTC", snaps);
   const body2 = composeActivityDigestBody("2026-03-10", "UTC", [...snaps].reverse());
   assert.equal(body1, body2);
-  // Arc sorts before Zed at equal dwell.
   assert.ok(body1.indexOf("- Arc:") < body1.indexOf("- Zed:"));
 });
 
@@ -79,14 +77,12 @@ test("activityDayWindow yields half-open DST-aware bounds", () => {
   const w = activityDayWindow("2026-03-10", "America/Chicago");
   assert.equal(w.startUtc, "2026-03-10T05:00:00.000Z");
   assert.equal(w.endUtc, "2026-03-11T05:00:00.000Z");
-  // Spring-forward day: CST→CDT shift reflected.
   const dst = activityDayWindow("2026-03-08", "America/Chicago");
   assert.equal(dst.startUtc, "2026-03-08T06:00:00.000Z");
   assert.equal(dst.endUtc, "2026-03-09T05:00:00.000Z");
 });
 
 test("a snapshot at exactly local midnight lands in exactly one day", () => {
-  // Local midnight 2026-03-10 in America/Chicago (CST) == 06:00Z.
   const midnightUtc = "2026-03-10T06:00:00.000Z";
   const day10 = activityDayWindow("2026-03-10", "America/Chicago");
   const day09 = activityDayWindow("2026-03-09", "America/Chicago");

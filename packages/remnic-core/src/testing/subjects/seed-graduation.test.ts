@@ -1,11 +1,3 @@
-/**
- * Seed-graduation subject for the scenario-matrix harness.
- *
- * Every canonical row runs the real graduation pass twice: once gated off
- * (the shipped default, which must touch storage zero times) and once enabled
- * with independent corroboration present. The scenario dimensions are
- * orthogonal to the gate, so the same promote/hold invariant holds per row.
- */
 import assert from "node:assert/strict";
 
 import {
@@ -92,7 +84,6 @@ const subject: LifecycleSubject<SeedGraduationState> = {
   },
 
   async exercise(state): Promise<void> {
-    // Gate off (shipped default): no evaluation, no storage contact at all.
     const off = await runSeedGraduationPass({
       memories: state.memories,
       storage: state.storage,
@@ -102,7 +93,6 @@ const subject: LifecycleSubject<SeedGraduationState> = {
     assert.equal(off.promoted, 0);
     assert.equal(state.calls.length, 0);
 
-    // Enabled with two independent corroborations: the seed graduates.
     const on = await runSeedGraduationPass({
       memories: state.memories,
       storage: state.storage,

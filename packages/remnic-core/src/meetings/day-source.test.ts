@@ -127,7 +127,6 @@ test("loadDayData assembles detection + activity for the requested day, keyed to
   assert.equal(data.detection.appSpans[0]?.app, "Zoom");
   assert.deepEqual(data.detection.audioWindows, [], "no wearable transcripts → no audio windows");
   assert.equal(data.activity?.length, 2);
-  // Activity is the raw ActivitySnapshot list now — no rename mapper in between.
   assert.equal(data.activity?.[0]?.windowTitle, "Standup");
   assert.equal(data.activity?.[0]?.capturedAtUtc, "2026-03-10T14:00:00.000Z");
   assert.equal(data.conversations.length, 0);
@@ -157,8 +156,6 @@ test("deriveAppSpans gives a lone matching snapshot a non-zero span so app+audio
     Date.parse(spans[0]!.endUtc) > Date.parse(spans[0]!.startUtc),
     "the span is non-zero-length, so detect's isFinitePair keeps it",
   );
-  // With a real span the overlapping audio window now classifies as app+audio;
-  // the old zero-length span was dropped and this returned nothing.
   const detected = detectMeetings({
     date: DATE,
     appSpans: spans,
@@ -171,7 +168,6 @@ test("deriveAppSpans gives a lone matching snapshot a non-zero span so app+audio
 });
 
 test("deriveAppSpans derives runs per capture machine so another machine cannot split a call (issue #1900)", () => {
-  // Laptop is in Zoom continuously; a desktop ticks Chrome (non-match) in between.
   const spans = deriveAppSpans(
     [
       snap({ machine: "laptop", app: "Zoom", capturedAtUtc: "2026-03-10T14:00:00.000Z" }),
@@ -213,8 +209,6 @@ test("loadDayData converts the transcript timezone so audio lines up with UTC sc
     timezone: "America/Chicago",
   });
   const data = await source.loadDayData(DATE);
-  // 09:00 America/Chicago (CDT) is 14:00Z, not 09:00Z: the window now overlaps
-  // the 14:00Z Zoom snapshot; before the fix it drifted to 09:00Z and missed it.
   assert.equal(data.detection.audioWindows.length, 1);
   assert.equal(data.detection.audioWindows[0]?.startUtc, "2026-03-10T14:00:00.000Z");
   assert.equal(data.detection.audioWindows[0]?.endUtc, "2026-03-10T14:30:00.000Z");
@@ -225,10 +219,6 @@ test("loadDayData converts the transcript timezone so audio lines up with UTC sc
 });
 
 test("deriveAppSpans gives a LONE TRAILING matching snapshot a finite span so end-of-window app+audio is not missed (issue #1900)", () => {
-  // A single Zoom tick at the end of the machine's snapshots, with NO later
-  // non-matching tick to bound it. Before the fix this pushed endUtc==startUtc,
-  // a zero-length point detect's isFinitePair dropped — so overlapping audio
-  // never paired and no meeting surfaced.
   const spans = deriveAppSpans(
     [snap({ app: "Zoom", capturedAtUtc: "2026-03-10T14:00:00.000Z" })],
     config().appPatterns,
@@ -267,9 +257,6 @@ test("buildAudioWindows marks provider sources + carries the title so a titled p
   assert.equal(windows.length, 1);
   assert.equal(windows[0]?.providerMeeting, true, "a known provider source is marked so detect's provider branch fires");
   assert.equal(windows[0]?.title, "Weekly sync", "the provider-supplied title is carried onto the window");
-  // No app spans and only one non-wearer speaker: the provider branch is the
-  // ONLY path to a meeting. Before the fix the window carried neither
-  // providerMeeting nor title, so nothing was detected.
   const detected = detectMeetings({ date: DATE, appSpans: [], audioWindows: windows });
   assert.equal(detected.length, 1);
   assert.equal(detected[0]?.detectionSource, "provider");

@@ -45,8 +45,6 @@ test("parseConfig honours bufferMaxTurnsPerSession and defaults to the backstop"
 
 test("a session keeps more turns than the old 200 cap while extraction is stuck", async () => {
   const storage = new FakeStorage({ turns: [], lastExtractionAt: null, extractionCount: 0 });
-  // SAFETY: FakeStorage implements the full BufferStorage surface the
-  // constructor touches (loadBuffer/saveBuffer); the cast is exact.
   const buffer = new SmartBuffer(
     parseConfig({ bufferSaveDebounceMs: 0 }),
     storage as BufferStorage,
@@ -67,8 +65,6 @@ test("a session keeps more turns than the old 200 cap while extraction is stuck"
 
 test("a configured cap still refuses live captures once it is reached", async () => {
   const storage = new FakeStorage({ turns: [], lastExtractionAt: null, extractionCount: 0 });
-  // SAFETY: FakeStorage implements the full BufferStorage surface the
-  // constructor touches (loadBuffer/saveBuffer); the cast is exact.
   const buffer = new SmartBuffer(
     parseConfig({ bufferSaveDebounceMs: 0, bufferMaxTurnsPerSession: 4 }),
     storage as BufferStorage,

@@ -1,15 +1,3 @@
-/**
- * Engine factory — constructs a `CodingGraphEngine` backed by the WASM
- * tree-sitter parser + tier-1 extractors.
- *
- * Rule 11 (no module-level state): the backend, query caches, and parser
- * instances all live on the returned engine object. Two `createCodingGraphEngine`
- * calls in the same process have fully isolated state.
- *
- * Rule 30/48: `codingGraph.enabled` defaults `false` in @remnic/core; the
- * loader is never invoked when disabled, so this factory is only reached when
- * the user has explicitly opted in.
- */
 import {
   CODING_GRAPH_ENGINE_VERSION,
   TIER_1_LANGUAGES,
@@ -25,19 +13,11 @@ import { WasmTreeSitterBackend, type ParserBackend } from "./parser-backend.js";
 import { emitFileIR } from "./emit.js";
 import { sniffLanguage, isTier1Language } from "./language-sniff.js";
 
-/**
- * The internal engine object. Implements `CodingGraphEngine` from @remnic/core.
- */
 class CodingGraphEngineImpl implements CodingGraphEngine {
   readonly engineVersion: string;
   readonly supportedLanguages: readonly CodingGraphLanguage[];
   private readonly backend: ParserBackend;
   private disposed = false;
-  /**
-   * Serialize parse calls. The backend's single Parser instance is shared
-   * across all languages, so concurrent setLanguage/parse calls would race.
-   * Each parseFile call awaits the previous before touching the parser.
-   */
   private parseChain: Promise<void> = Promise.resolve();
 
   constructor(backend: ParserBackend) {
@@ -55,15 +35,12 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
       };
     }
 
-    // Serialize: wait for any in-flight parse before touching the shared parser.
     const previous = this.parseChain;
     let release!: () => void;
     this.parseChain = new Promise<void>((resolve) => {
       release = resolve;
     });
     await previous;
-    // Re-check disposed: another caller may have disposed the engine
-    // while we were waiting for the previous parse to finish.
     if (this.disposed) {
       release();
       return {
@@ -82,7 +59,6 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
 
   private async doParseFile(input: ParseFileInput): Promise<ParseResult> {
 
-    // Resolve the language — explicit override wins, then sniff from path.
     const lang: CodingGraphLanguage | null =
       input.language ?? sniffLanguage(input.path);
     if (!lang || !isTier1Language(lang)) {
@@ -95,7 +71,6 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
       };
     }
 
-    // Ensure the grammar is loaded (rule 51 — error, not silent skip).
     try {
       await this.backend.ensureLanguage(lang);
     } catch (err) {
@@ -143,8 +118,6 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
       );
       return { ok: true, ir };
     } catch (err) {
-      // Rule 44: extraction/query errors surface as tagged parse_failed,
-      // not thrown exceptions that abort batch reindex.
       return {
         ok: false,
         code: "parse_failed",
@@ -159,9 +132,6 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
-    // Wait for any in-flight parse to finish before tearing down the
-    // backend. Without this, a parseFile call that already passed the
-    // disposed guard can touch freed parser/grammar state.
     await this.parseChain;
     await this.backend.dispose();
   }

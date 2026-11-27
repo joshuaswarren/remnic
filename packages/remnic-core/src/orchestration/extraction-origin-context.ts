@@ -1,6 +1,3 @@
-/**
- * Derive issue #1955 origin metadata at the extraction boundary.
- */
 
 import { classifyOrigin, type OriginClass } from "../security/origin-authority.js";
 import type { BufferTurn } from "../types.js";
@@ -15,7 +12,6 @@ export interface ExtractionSourceContext {
   originConflict?: boolean;
 }
 
-/** Derive one origin context from the turns that supplied an extraction. */
 export function deriveExtractionOriginContext(
   targetTurns: readonly BufferTurn[],
   fallbackConnector?: string,

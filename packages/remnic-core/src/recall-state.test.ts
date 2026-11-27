@@ -43,7 +43,6 @@ test("clampGraphRecallExpandedEntries caps path provenance and preserves legacy 
   assert.deepEqual(current?.pathNodeIds, pathNodeIds.slice(0, 64));
   assert.equal("pathNodeIds" in (legacy ?? {}), false);
 });
-// ── Tier-explain field is optional and absent by default ───────────────────
 
 test("LastRecallStore.record omits tierExplain when caller did not provide it", async () => {
   const { store } = await freshStore();
@@ -53,7 +52,6 @@ test("LastRecallStore.record omits tierExplain when caller did not provide it", 
   assert.equal(snap.tierExplain, undefined);
 });
 
-// ── Tier-explain is persisted and round-trips through disk ─────────────────
 
 test("LastRecallStore.record persists tierExplain and round-trips to JSON on disk", async () => {
   const { store, dir } = await freshStore();
@@ -77,7 +75,6 @@ test("LastRecallStore.record persists tierExplain and round-trips to JSON on dis
   assert.ok(snap);
   assert.deepEqual(snap.tierExplain, tierExplain);
 
-  // Confirm disk shape matches the in-memory snapshot.
   const raw = await readFile(path.join(dir, "state", "last_recall.json"), "utf-8");
   const parsed = JSON.parse(raw) as Record<string, { tierExplain?: RecallTierExplain }>;
   assert.deepEqual(parsed["s1"]?.tierExplain, tierExplain);
@@ -101,7 +98,6 @@ test("LastRecallStore.record shims legacy resultPaths/resultNamespaces into incl
   assert.deepEqual(snap.memoryIds, ["same-id", "same-id"]);
 });
 
-// ── Legacy on-disk shapes hydrate to includedMemories (#2476) ─────────────
 
 test("LastRecallStore.load shims legacy last_recall.json shapes to includedMemories", async () => {
   const { dir } = await freshStore();
@@ -148,7 +144,6 @@ test("LastRecallStore.load shims legacy last_recall.json shapes to includedMemor
   assert.deepEqual(idsOnly.memoryIds, ["fact-delta"]);
 });
 
-// ── Defensive copies isolate the stored snapshot from caller mutation ──────
 
 test("LastRecallStore.record copies filteredBy so caller mutation does not tear the snapshot", async () => {
   const { store } = await freshStore();
@@ -168,7 +163,6 @@ test("LastRecallStore.record copies filteredBy so caller mutation does not tear 
     tierExplain,
   });
 
-  // Mutate the caller's array after record() returns.
   filteredBy.push("not-trusted-zone");
 
   const snap = store.get("s1");
@@ -176,7 +170,6 @@ test("LastRecallStore.record copies filteredBy so caller mutation does not tear 
 });
 
 test("LastRecallStore.get returns a defensive copy; mutation does not tear the store", async () => {
-  // Regression for PR #535 review: get() previously returned a live
   // reference to internal state, so a caller that mutated memoryIds,
   // budgetsApplied.includedSections, or tierExplain fields would
   // corrupt subsequent reads.
@@ -203,7 +196,6 @@ test("LastRecallStore.get returns a defensive copy; mutation does not tear the s
 
   const snap = store.get("s1");
   assert.ok(snap);
-  // Mutate every mutable field on the returned copy.
   snap.memoryIds.push("leak");
   snap.budgetsApplied?.includedSections?.push("leak");
   snap.tierExplain?.filteredBy.push("leak");
@@ -258,7 +250,6 @@ test("LastRecallStore.annotateTierExplain attaches tierExplain to an existing sn
   assert.ok(snap);
   assert.deepEqual(snap.tierExplain, explain);
 
-  // Round-trips to disk.
   const raw = await readFile(path.join(dir, "state", "last_recall.json"), "utf-8");
   const parsed = JSON.parse(raw) as Record<string, { tierExplain?: RecallTierExplain }>;
   assert.deepEqual(parsed["s1"]?.tierExplain, explain);
@@ -315,7 +306,6 @@ test("LastRecallStore.record copies sourceAnchors array and lineRange tuple", as
     tierExplain,
   });
 
-  // Mutate original.
   anchors!.push({ path: "/b.md" });
   const firstAnchor = anchors![0];
   if (firstAnchor?.lineRange) firstAnchor.lineRange[0] = 99;
@@ -326,7 +316,6 @@ test("LastRecallStore.record copies sourceAnchors array and lineRange tuple", as
   assert.deepEqual(snap?.tierExplain?.sourceAnchors?.[0]?.lineRange, [1, 2]);
 });
 
-// ── Recall-impressions rotation (issue #1910) ──────────────────────────────
 async function fileExists(p: string): Promise<boolean> {
   try {
     await stat(p);
@@ -343,11 +332,9 @@ test("LastRecallStore rotates recall_impressions.jsonl once it exceeds the byte 
     const store = new LastRecallStore(dir, { impressionsRotateBytes: 64, impressionsRotateKeep: 3 });
     await store.load();
 
-    // First append creates the active file (below threshold, no rotation).
     await store.record({ sessionKey: "s1", query: "q1", memoryIds: [] });
     assert.equal(await fileExists(`${impressionsPath}.1`), false);
 
-    // Grow the active file past the threshold, then append: rotation moves the
     // oversized active file to .1 and starts a fresh active file.
     await writeFile(impressionsPath, "x".repeat(128), "utf8");
     await store.record({ sessionKey: "s2", query: "q2", memoryIds: [] });
@@ -370,10 +357,8 @@ test("LastRecallStore keeps at most impressionsRotateKeep archives", async () =>
     const store = new LastRecallStore(dir, { impressionsRotateBytes: 32, impressionsRotateKeep: keep });
     await store.load();
 
-    // Bootstrap the state dir + active file (record() creates them).
     await store.record({ sessionKey: "seed", query: "seed", memoryIds: [] });
 
-    // Force several rotations by growing the active file before each append.
     for (let i = 0; i < 5; i += 1) {
       await writeFile(impressionsPath, "y".repeat(64), "utf8");
       await store.record({ sessionKey: `s${i}`, query: `q${i}`, memoryIds: [] });
@@ -408,7 +393,6 @@ test("LastRecallStore serializes concurrent impression writes without losing row
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-concurrent-"));
   try {
     const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
-    // Small threshold forces rotations mid-flight; a large keep means no archive
     // falls off the end, so every appended row survives somewhere.
     const store = new LastRecallStore(dir, { impressionsRotateBytes: 200, impressionsRotateKeep: 100 });
     await store.load();
@@ -420,7 +404,6 @@ test("LastRecallStore serializes concurrent impression writes without losing row
       ),
     );
 
-    // Gather every impression line across the active file and all archives.
     const stateDir = path.dirname(impressionsPath);
     const files = (await readdir(stateDir))
       .filter((f) => f.startsWith("recall_impressions.jsonl"))
@@ -432,7 +415,6 @@ test("LastRecallStore serializes concurrent impression writes without losing row
         if (line.trim()) lines.push(line);
       }
     }
-    // Serialization guarantees no interleaved/torn writes: every line parses and
     // every session key appears exactly once.
     const keys = new Set<string>();
     for (const line of lines) {
@@ -450,7 +432,6 @@ test("LastRecallStore serializes rotation across processes sharing memoryDir (#1
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-crossproc-"));
   try {
     const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
-    // Two independent stores over the SAME memoryDir stand in for two processes.
     // Each has its own in-process write chain, so only the on-disk rotation lock
     // keeps their archive shifts from interleaving and stomping each other's
     // `.1`. A large keep means nothing falls off the end, so every appended row
@@ -501,9 +482,7 @@ test("LastRecallStore preserves the current impression when rotation fails (#191
   try {
     const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
     await mkdir(path.dirname(impressionsPath), { recursive: true });
-    // Seed an active file over the (tiny) threshold so rotation is attempted.
     await writeFile(impressionsPath, "seed-row-that-exceeds-threshold\n", "utf8");
-    // Make the .1 archive target a non-empty directory so the active→.1 rename
     // fails with a non-ENOENT error, forcing rotateImpressionsIfNeeded to throw.
     await mkdir(`${impressionsPath}.1`, { recursive: true });
     await writeFile(path.join(`${impressionsPath}.1`, "blocker"), "x", "utf8");
@@ -512,10 +491,8 @@ test("LastRecallStore preserves the current impression when rotation fails (#191
     await store.load();
     await store.record({ sessionKey: "preserved", query: "q", memoryIds: [] });
 
-    // Rotation threw, but the current impression must still be appended.
     const active = await readFile(impressionsPath, "utf8");
     assert.ok(active.includes('"sessionKey":"preserved"'), "impression preserved despite rotation failure");
-    // The blocking directory remains (rotation could not move over it).
     assert.ok((await stat(`${impressionsPath}.1`)).isDirectory(), "rotation did not clobber the blocked target");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -527,16 +504,13 @@ test("LastRecallStore spills an impression to the durable pending queue on rotat
   try {
     const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
     await mkdir(path.dirname(impressionsPath), { recursive: true });
-    // Seed the active file over the threshold so rotation WOULD be attempted.
     const seeded = `${"x".repeat(256)}\n`;
     await writeFile(impressionsPath, seeded, "utf8");
-    // Hold the cross-process rotation lock from a foreign owner with a fresh
     // mtime so it is not broken as stale within the acquisition budget. Our
     // record() must then observe acquired=false.
     const lockPath = `${impressionsPath}.lock`;
     await writeFile(lockPath, "999999 foreign-owner 2999-01-01T00:00:00.000Z\n", "utf8");
 
-    // Tiny maxWaitMs so the acquisition times out deterministically instead of
     // blocking for the default multi-second budget.
     const store = new LastRecallStore(dir, {
       impressionsRotateBytes: 128,
@@ -546,21 +520,18 @@ test("LastRecallStore spills an impression to the durable pending queue on rotat
     await store.load();
     await store.record({ sessionKey: "spilled-append", query: "q", memoryIds: [] });
 
-    // Rotation was refused because the lock could not be acquired: no archive
     // shift ran, so an unlocked rename never raced a peer's rotation.
     assert.equal(
       await fileExists(`${impressionsPath}.1`),
       false,
       "rotation must be skipped when the cross-process lock is not acquired",
     );
-    // The impression is NEVER written to the active file unlocked — that could
     // land it in the inode a peer renames to `.1`. The active file is untouched.
     assert.equal(
       await readFile(impressionsPath, "utf8"),
       seeded,
       "active file must not be written while the rotation lock is held elsewhere",
     );
-    // It is durably queued in the pending spill instead, not dropped.
     const pendingDir = `${impressionsPath}.pending.d`;
     const spillNames = await readdir(pendingDir);
     assert.equal(spillNames.length, 1, "exactly one impression spilled to the pending queue");
@@ -569,7 +540,6 @@ test("LastRecallStore spills an impression to the durable pending queue on rotat
       "spilled impression durably queued",
     );
 
-    // Release the lock; the next record() DOES acquire it and folds the spill
     // back into the active file (after rotation) before appending its own row.
     await rm(lockPath, { force: true });
     await store.record({ sessionKey: "drained-append", query: "q2", memoryIds: [] });
@@ -592,13 +562,11 @@ test("LastRecallStore takes the shared rotation lock for active-file appends eve
   try {
     const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
     await mkdir(path.dirname(impressionsPath), { recursive: true });
-    // This writer disables its OWN rotation (bytes=0), but a peer writer with
     // rotation enabled shares the same on-disk lock and may rename the active
     // inode to `.1` at any moment. An unlocked append here could land in that
     // offline-sync-excluded archive and be silently dropped (#2033).
     const seeded = "seed-row\n";
     await writeFile(impressionsPath, seeded, "utf8");
-    // A peer holds the cross-process rotation lock (fresh mtime, not stale
     // within the budget), standing in for a peer mid-rotation.
     const lockPath = `${impressionsPath}.lock`;
     await writeFile(lockPath, "999999 foreign-owner 2999-01-01T00:00:00.000Z\n", "utf8");
@@ -611,7 +579,6 @@ test("LastRecallStore takes the shared rotation lock for active-file appends eve
     await store.load();
     await store.record({ sessionKey: "off-spilled", query: "q", memoryIds: [] });
 
-    // Even with local rotation disabled, the append took the shared lock, could
     // not acquire it, and spilled rather than writing the active file the peer
     // may rename to `.1`.
     assert.equal(
@@ -627,7 +594,6 @@ test("LastRecallStore takes the shared rotation lock for active-file appends eve
       "spilled impression durably queued",
     );
 
-    // Release the lock; the next append acquires it and folds the spill back into
     // the active file. Local rotation stays disabled, so no archive is created.
     await rm(lockPath, { force: true });
     await store.record({ sessionKey: "off-drained", query: "q2", memoryIds: [] });
@@ -647,17 +613,14 @@ test("LastRecallStore never re-appends a drained impression when its spill unlin
   try {
     const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
     await mkdir(pendingDir, { recursive: true });
-    // A durable spill left by a prior lock-timed-out append.
     await writeFile(
       path.join(pendingDir, "spill.jsonl"),
       `${JSON.stringify({ sessionKey: "evt-spill" })}\n`,
       "utf8",
     );
-    // Rotation stays out of the way: threshold far above anything written here.
     const store = new LastRecallStore(dir, { impressionsRotateBytes: 1_000_000, impressionsRotateKeep: 5 });
     await store.load();
 
-    // Make the pending dir non-writable so the drain can READ the spill but its
     // CLAIM (a rename to `<uuid>.jsonl.claimed`, which needs directory write
     // permission) FAILS. Because the crash-safe fix claims each spill by rename
     // BEFORE committing its rows, a spill that cannot be claimed is skipped this
@@ -674,7 +637,6 @@ test("LastRecallStore never re-appends a drained impression when its spill unlin
     );
     assert.equal((await readdir(pendingDir)).length, 1, "unclaimed spill remains for a later pass");
 
-    // Restore write permission; the next drain claims the spill and folds it in
     // exactly once.
     await chmod(pendingDir, 0o755);
     await store.record({ sessionKey: "cur2", query: "q2", memoryIds: [] });
@@ -690,7 +652,6 @@ test("LastRecallStore never re-appends a drained impression when its spill unlin
 });
 
 test("LastRecallStore.drainPendingImpressions folds only what fits the synced active file under the cap and defers the rest instead of rotating drained rows into sync-excluded archives (#2033)", async () => {
-  // Regression for the pre-sync-rotation thread: a pre-snapshot drain must NEVER
   // rotate a just-drained row into recall_impressions.jsonl.1/.2, because those
   // archives are offline-sync-EXCLUDED — rotating a drained row there and then
   // deleting its spill would leave the row only in a path sync omits, lost when
@@ -703,7 +664,6 @@ test("LastRecallStore.drainPendingImpressions folds only what fits the synced ac
     const pendingDir = `${impressionsPath}.pending.d`;
     await mkdir(pendingDir, { recursive: true });
     const cap = 200;
-    // Six ~97-byte spill rows (~582 bytes total) — nearly 3x the cap. Two fit the
     // active file under the cap (97 + 97 = 194 <= 200); the third would need a
     // rotation into an excluded archive, so the drain stops there.
     const sessionKeys: string[] = [];
@@ -725,10 +685,8 @@ test("LastRecallStore.drainPendingImpressions folds only what fits the synced ac
       "folded what fits, deferred the overflow that would rotate into an excluded archive",
     );
 
-    // The synced active file holds the folded rows and stays within the cap.
     const activeSize = (await stat(impressionsPath)).size;
     assert.ok(activeSize <= cap, `active file (${activeSize}B) stays within the ${cap}B cap`);
-    // No archive was created: no drained row was moved into a sync-excluded path.
     assert.equal(await fileExists(`${impressionsPath}.1`), false, "no drained row rotated into a sync-excluded archive");
 
     const active = await readFile(impressionsPath, "utf-8");
@@ -736,13 +694,11 @@ test("LastRecallStore.drainPendingImpressions folds only what fits the synced ac
     const remaining = await readdir(pendingDir);
     assert.equal(foldedKeys.length, 2, "exactly the two rows that fit the cap were folded");
     assert.equal(remaining.length, 4, "the deferred overflow stays durable in the pending queue");
-    // No row is dropped or duplicated: folded + still-pending accounts for all six.
     assert.equal(foldedKeys.length + remaining.length, sessionKeys.length, "every row is either folded or still pending — none lost");
     for (const key of foldedKeys) {
       assert.equal(active.split(key).length - 1, 1, `${key} folded exactly once`);
     }
 
-    // A second drain makes no further progress — the active file is already at
     // the cap, so the next row would still need an excluded-archive rotation.
     // The rows stay durable and the drain stays deferred rather than losing them.
     assert.deepEqual(
@@ -757,7 +713,6 @@ test("LastRecallStore.drainPendingImpressions folds only what fits the synced ac
 });
 
 test("LastRecallStore.drainPendingImpressions folds a large pending batch one spill at a time, preserving every row without materializing the whole queue (#2033)", async () => {
-  // Regression for the huge-drain-under-lock thread: the fold must not join and
   // split the entire pending queue as one synchronous payload while holding the
   // rotation lock — that blocks the event loop long enough for the lock-refresh
   // timer to miss and a peer to stale-break the lock. Each spill is folded as an
@@ -772,7 +727,6 @@ test("LastRecallStore.drainPendingImpressions folds a large pending batch one sp
     const count = 40;
     const keys: string[] = [];
     for (let i = 0; i < count; i += 1) {
-      // Zero-padded names so the sorted spill order is deterministic.
       const key = `batch-${String(i).padStart(3, "0")}`;
       keys.push(key);
       await writeFile(
@@ -782,7 +736,6 @@ test("LastRecallStore.drainPendingImpressions folds a large pending batch one sp
       );
     }
 
-    // Rotation disabled: the whole batch folds into the active file, no archives.
     const store = new LastRecallStore(dir, { impressionsRotateBytes: 0, impressionsRotateKeep: 5 });
     await store.load();
     assert.deepEqual(
@@ -813,7 +766,6 @@ test("LastRecallStore recovers an impression spill claim orphaned by a crash bef
   const pendingDir = `${impressionsPath}.pending.d`;
   try {
     await mkdir(pendingDir, { recursive: true });
-    // Simulate a drain that CLAIMED a spill (renamed q.jsonl -> q.jsonl.claimed)
     // and then CRASHED before appending the rows to the active file. The
     // `.claimed` file is the ONLY durable copy of the impression — the old
     // read-then-unlink ordering would already have deleted it and lost the row.
@@ -822,7 +774,6 @@ test("LastRecallStore recovers an impression spill claim orphaned by a crash bef
       `${JSON.stringify({ sessionKey: "evt-orphan" })}\n`,
       "utf8",
     );
-    // Rotation stays out of the way so both rows land in the active file.
     const store = new LastRecallStore(dir, { impressionsRotateBytes: 1_000_000, impressionsRotateKeep: 5 });
     await store.load();
     await store.record({ sessionKey: "cur", query: "q", memoryIds: [] });
@@ -843,13 +794,11 @@ test("LastRecallStore refuses to write an impression spill into a symlinked pend
   try {
     const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
     await mkdir(path.dirname(impressionsPath), { recursive: true });
-    // Plant a symlink AT the spill-directory path pointing at a real directory
     // outside the memory store. The write path must refuse it before any file
     // lands in the target.
     const pendingDir = `${impressionsPath}.pending.d`;
     await symlink(outside, pendingDir);
 
-    // Force the spill branch: hold the rotation lock from a foreign owner so
     // record()'s append cannot acquire it and falls back to spilling.
     const lockPath = `${impressionsPath}.lock`;
     await writeFile(lockPath, "999999 foreign-owner 2999-01-01T00:00:00.000Z\n", "utf8");
@@ -859,7 +808,6 @@ test("LastRecallStore refuses to write an impression spill into a symlinked pend
       impressionsLockOptions: { maxWaitMs: 40, pollMs: 10 },
     });
     await store.load();
-    // The spill refusal is swallowed as a logged append failure (record never
     // throws), but nothing may be written through the poisoned link.
     await store.record({ sessionKey: "symlink-refused", query: "q", memoryIds: [] });
 
@@ -884,7 +832,6 @@ test("LastRecallStore writes an impression spill via a temp name then renames to
   try {
     const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
     await mkdir(path.dirname(impressionsPath), { recursive: true });
-    // Force the spill branch: a foreign owner holds the rotation lock so
     // record()'s append cannot acquire it and falls back to spilling.
     const lockPath = `${impressionsPath}.lock`;
     await writeFile(lockPath, "999999 foreign-owner 2999-01-01T00:00:00.000Z\n", "utf8");
@@ -898,13 +845,11 @@ test("LastRecallStore writes an impression spill via a temp name then renames to
 
     const pendingDir = `${impressionsPath}.pending.d`;
     const entries = await readdir(pendingDir);
-    // Exactly one spill, named with the final `.jsonl` suffix — no temp artifact
     // left behind, and nothing ending in the temp `.tmp` suffix.
     assert.equal(entries.length, 1, "exactly one spill file after the rename");
     assert.ok(entries[0].endsWith(".jsonl"), "spill has the final .jsonl suffix");
     assert.ok(!entries[0].endsWith(".jsonl.tmp"), "no temp artifact left behind");
 
-    // The drain's own lister (the exact one a concurrent lock holder runs) sees a
     // single COMPLETE spill — the temp name is invisible to it, so a drain can
     // never read/rename a partial `.jsonl`.
     const listed = await listContainedSpillFiles(pendingDir);
@@ -917,7 +862,6 @@ test("LastRecallStore writes an impression spill via a temp name then renames to
 });
 
 test("LastRecallStore.drainPendingImpressions folds pending spills into the synced active file (#2033)", async () => {
-  // Regression for the offline-sync impression-drain thread: a record() that
   // times out on the rotation lock spills to the offline-sync-EXCLUDED
   // recall_impressions.jsonl.pending.d/. drainPendingImpressions() folds those
   // rows back into the synced active file so a snapshot can capture them.
@@ -940,7 +884,6 @@ test("LastRecallStore.drainPendingImpressions folds pending spills into the sync
     assert.equal(await readFile(impressionsPath, "utf-8"), row, "spill folded verbatim into active file");
     assert.deepEqual(await readdir(pendingDir), [], "committed spill deleted from the pending queue");
 
-    // Nothing pending now → fast no-op that folds nothing and defers nothing.
     assert.deepEqual(
       await store.drainPendingImpressions(),
       { folded: false, pendingDeferred: false },
@@ -961,7 +904,6 @@ test("LastRecallStore.drainPendingImpressions is a side-effect-free no-op when n
       { folded: false, pendingDeferred: false },
       "no pending dir → no drain, nothing deferred",
     );
-    // A no-op drain must not create the state dir or a transient lock file.
     await assert.rejects(() => readdir(path.join(dir, "state")), /ENOENT/);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -969,7 +911,6 @@ test("LastRecallStore.drainPendingImpressions is a side-effect-free no-op when n
 });
 
 test("LastRecallStore.drainPendingImpressions recovers a crash-orphaned .claimed spill (#2033)", async () => {
-  // A crash between claim and commit leaves the rows as a `<uuid>.jsonl.claimed`
   // orphan — the only durable copy. The drain must recover it (rename back to
   // `.jsonl`) and fold it into the active file, never lose it.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-drain-orphan-"));
@@ -1043,7 +984,6 @@ test("LastRecallStore.drainPendingImpressions defers an incomplete spill temp (#
 });
 
 test("LastRecallStore.drainPendingImpressions reports pendingDeferred and never claims success when the rotation lock is held (#2033)", async () => {
-  // Regression for the offline-sync lock-timeout thread (PRRT_kwDORJXyws6SE4Ac):
   // a pending spill exists but a PEER holds the rotation lock, so the drain
   // cannot fold it into the synced active file. The drain MUST report
   // pendingDeferred=true (a distinct deferred signal) and MUST NOT touch the
@@ -1057,12 +997,10 @@ test("LastRecallStore.drainPendingImpressions reports pendingDeferred and never 
     const row = `${JSON.stringify({ sessionKey: "s1", writeNonce: "n-1", memoryIds: ["m-1"] })}\n`;
     await writeFile(path.join(pendingDir, "spill-1.jsonl"), row, "utf-8");
 
-    // Foreign-owner lock with a far-future timestamp so it is NOT broken as
     // stale within the acquisition budget; the drain must observe acquired=false.
     const lockPath = `${impressionsPath}.lock`;
     await writeFile(lockPath, "999999 foreign-owner 2999-01-01T00:00:00.000Z\n", "utf8");
 
-    // Tiny maxWaitMs so acquisition times out deterministically.
     const store = new LastRecallStore(dir, {
       impressionsLockOptions: { maxWaitMs: 40, pollMs: 10 },
     });
@@ -1073,7 +1011,6 @@ test("LastRecallStore.drainPendingImpressions reports pendingDeferred and never 
       { folded: false, pendingDeferred: true },
       "lock held → drain is deferred, never reports a fold",
     );
-    // The active file was NEVER written unlocked: a snapshot now would miss the
     // spilled impression, which is exactly why the caller must not treat a
     // deferred drain as a clean snapshot.
     assert.equal(
@@ -1081,7 +1018,6 @@ test("LastRecallStore.drainPendingImpressions reports pendingDeferred and never 
       false,
       "pending spill must NOT be folded into the active file while the lock is held",
     );
-    // The spill is preserved in the offline-sync-EXCLUDED queue for a later
     // lock holder (or caller retry) to fold — deferred, never dropped.
     assert.deepEqual(
       await readdir(pendingDir),
@@ -1094,7 +1030,6 @@ test("LastRecallStore.drainPendingImpressions reports pendingDeferred and never 
 });
 
 test("LastRecallStore.drainPendingImpressions reports pendingDeferred when a spill stays unclaimable even though the lock was acquired (#2033)", async () => {
-  // Regression for finding 1: acquiring the rotation lock is NOT sufficient to
   // report a clean drain. If the fold cannot claim a spill (rename race), its
   // durable rows stay in the offline-sync-EXCLUDED queue. The drain must report
   // the fold INCOMPLETE (pendingDeferred=true) — even when it DID fold other
@@ -1109,7 +1044,6 @@ test("LastRecallStore.drainPendingImpressions reports pendingDeferred when a spi
     const stuck = `${JSON.stringify({ sessionKey: "stuck", writeNonce: "n-stuck" })}\n`;
     await writeFile(path.join(pendingDir, "a-foldable.jsonl"), foldable, "utf-8");
     await writeFile(path.join(pendingDir, "b-stuck.jsonl"), stuck, "utf-8");
-    // Block ONLY b-stuck's claim: a directory sits at its `.claimed` target, so
     // the claim rename (file -> directory) fails while a-foldable claims cleanly.
     await mkdir(path.join(pendingDir, "b-stuck.jsonl.claimed"), { recursive: true });
 
@@ -1120,11 +1054,9 @@ test("LastRecallStore.drainPendingImpressions reports pendingDeferred when a spi
       { folded: true, pendingDeferred: true },
       "folded the claimable spill but a leftover remains → deferred, never a clean drain",
     );
-    // The claimable row reached the active file; the stuck row did not.
     const active = await readFile(impressionsPath, "utf-8");
     assert.ok(active.includes("foldable"), "claimable spill folded into the active file");
     assert.ok(!active.includes('"sessionKey":"stuck"'), "unclaimable spill NOT folded — still excluded");
-    // The leftover live spill is preserved for a later pass.
     assert.ok(
       (await readdir(pendingDir)).includes("b-stuck.jsonl"),
       "leftover spill preserved in the pending queue for a retry",
@@ -1174,7 +1106,6 @@ test("RecallHandleHistoryStore rejects unsafe session keys", async () => {
 test("RecallHandleHistoryStore.load drops unsafe and malformed entries from persisted state", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-handle-history-"));
   await mkdir(path.join(dir, "state"), { recursive: true });
-  // JSON.parse materializes "__proto__" as an OWN key; load must not adopt it.
   const poisoned =
     '{"__proto__": [{"at": "t", "ids": ["evil"]}], "bad": "not-an-array", "ok": [{"at": "t", "ids": ["m-1"]}]}';
   await writeFile(path.join(dir, "state", "handle_history.json"), poisoned, "utf-8");

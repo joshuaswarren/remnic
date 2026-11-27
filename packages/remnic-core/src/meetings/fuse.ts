@@ -1,22 +1,3 @@
-/**
- * Meeting fusion (issue #1900, Phase 4 slice 2).
- *
- * For a detected meeting window `[startUtc, endUtc)` (half-open, AGENTS.md §23),
- * fuse the concurrent signals into a screen-aware `FusedMeeting`:
- *
- *   1. Transcript — clip every wearable source's segments to the window and run
- *      them through the SHARED wearables reconciliation (`fuseCluster`). Higher-
- *      `sourceTrust` text wins overlapping regions and the out-voted sources are
- *      recorded per segment; this module never re-implements alignment/dedup —
- *      the repo rule is "extend the shared fusion module, never fork it".
- *   2. Screen context — other-app foreground dwell within the window, kept only
- *      when it lasts `contextDwellSeconds`, plus deduped on-screen text excerpts
- *      capped at `maxContextChars`.
- *   3. Attendees — distinct non-wearer speaker labels from the fused transcript
- *      (already resolved through the wearables speaker registry upstream).
- *
- * Pure and deterministic: same inputs ⇒ same `FusedMeeting`.
- */
 
 import { fuseCluster } from "../wearables/fusion/reconcile.js";
 import type {
@@ -31,9 +12,7 @@ import type {
   MeetingsConfig,
 } from "./types.js";
 
-/** Per-run tuning that mirrors the wearables fusion knobs. */
 export interface MeetingFusionOptions {
-  /** Per-source trust priors handed to reconciliation. */
   sourceTrust?: Record<string, number>;
   /** Max drift (ms) for two segments to align across sources. */
   windowToleranceMs?: number;
@@ -41,18 +20,14 @@ export interface MeetingFusionOptions {
 
 const SORT_STR = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
-/** `HH:MM` in UTC for a parseable ISO instant (mirrors the day-store fallback). */
 function formatClockUtc(ms: number): string {
   return new Date(ms).toISOString().slice(11, 16);
 }
 
-/** Overlap of two half-open [start,end) windows in ms (0 when disjoint). */
 function overlapMs(aStart: number, aEnd: number, bStart: number, bEnd: number): number {
   return Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
 }
 
-/** Whether a segment falls in the half-open window; null when it carries no
- *  parseable start (the caller decides via the conversation-level overlap). */
 function segmentInWindow(
   seg: FusionSegmentInput,
   windowStartMs: number,
@@ -66,7 +41,6 @@ function segmentInWindow(
   return overlapMs(startMs, endMs, windowStartMs, windowEndMs) > 0;
 }
 
-/** Clip one conversation to the window, keeping only in-window segments. */
 function clipConversation(
   conv: FusionConversationInput,
   windowStartMs: number,
@@ -85,7 +59,6 @@ function clipConversation(
   let latestIso: string | undefined;
   for (const seg of conv.segments) {
     const decision = segmentInWindow(seg, windowStartMs, windowEndMs);
-    // Untimed segments ride along only when the conversation itself overlaps.
     if (decision === false || (decision === null && !convOverlaps)) continue;
     kept.push(seg);
     if (seg.startIso !== undefined) {
@@ -114,7 +87,6 @@ function clipConversation(
   };
 }
 
-/** Strip the URL scheme for a compact screen-context label. */
 function shortenUrl(url: string): string {
   return url.replace(/^[a-z]+:\/\//i, "");
 }
@@ -127,8 +99,6 @@ function contextLabel(snap: ActivitySnapshot): string {
   return snap.app;
 }
 
-/** True when a snapshot is the meeting app itself (captions/chat/participants),
- *  not other context. Matches the meeting's app or any configured app pattern. */
 function isMeetingAppSnapshot(
   snap: ActivitySnapshot,
   meetingApp: string | undefined,
@@ -152,14 +122,6 @@ interface ScreenContextResult {
   snapshotCount: number;
 }
 
-/**
- * Build the screen-context timeline + excerpts from the day's activity clipped
- * to the meeting window. Consecutive snapshots sharing a foreground key form a
- * dwell run whose length is bounded by the NEXT foreground change (or the
- * window end); other-app runs are emitted only when the dwell clears
- * `contextDwellSeconds`, so a brief alt-tab is dropped and a lingered doc is
- * kept. Meeting-app snapshots never enter the timeline but feed excerpts.
- */
 function buildScreenContext(
   activity: readonly ActivitySnapshot[],
   windowStartMs: number,
@@ -172,7 +134,6 @@ function buildScreenContext(
     .filter((entry) => Number.isFinite(entry.ms) && entry.ms >= windowStartMs && entry.ms < windowEndMs)
     .sort((a, b) => a.ms - b.ms || SORT_STR(a.snap.app, b.snap.app));
 
-  /** Run key detail: the URL when present, else the window title. */
   const keyDetail = (snap: ActivitySnapshot): string =>
     snap.browserUrl !== undefined && snap.browserUrl.length > 0 ? snap.browserUrl : snap.windowTitle;
 
@@ -190,17 +151,12 @@ function buildScreenContext(
     let runEndIdx = runStartIdx + 1;
     while (runEndIdx < win.length && keyOf(win[runEndIdx]!.snap) === key) runEndIdx++;
     const runStartMs = win[runStartIdx]!.ms;
-    // A run's dwell ends at the NEXT foreground change (next different-key
-    // snapshot). The trailing run has no observed switch-away, so bound it by the
-    // LAST snapshot in the run — never inflate to the meeting end (a lone trailing
-    // alt-tab would otherwise look like it dwelled until the meeting ended).
     const runEndMs = runEndIdx < win.length ? win[runEndIdx]!.ms : win[runEndIdx - 1]!.ms;
     const dwellSeconds = Math.floor((runEndMs - runStartMs) / 1000);
     const head = win[runStartIdx]!.snap;
 
     const isMeetingApp = key === MEETING_APP_KEY;
     if (isMeetingApp) {
-      // Captions / chat / participant text visible on the meeting app itself.
       for (let i = runStartIdx; i < runEndIdx; i++) {
         const text = win[i]!.snap.text;
         if (text.trim().length > 0) includedText.push(text.trim());
@@ -221,7 +177,6 @@ function buildScreenContext(
     runStartIdx = runEndIdx;
   }
 
-  // Dedup excerpts (first occurrence wins) and cap total characters.
   const excerpts: string[] = [];
   const seen = new Set<string>();
   let used = 0;
@@ -236,7 +191,6 @@ function buildScreenContext(
   return { events, excerpts, snapshotCount: win.length };
 }
 
-/** Fuse one detected meeting's transcript + screen context into a FusedMeeting. */
 export function fuseMeeting(
   input: MeetingBuildInput,
   config: MeetingsConfig,
@@ -267,11 +221,6 @@ export function fuseMeeting(
   const corroborated = new Set<string>();
   for (const segment of fused.segments) {
     for (const alt of segment.provenance.alternatives) {
-      // Suppress a source only as corroborator of the SAME segment it won
-      // (a winner is never its own alternative, so this is a guard). A source
-      // that WON one segment but lost another still corroborates the one it
-      // lost — deleting it globally erased legitimate multi-device corroboration
-      // and dropped the summary/fact trust boost.
       if (alt.source === segment.provenance.source) continue;
       corroborated.add(alt.source);
     }

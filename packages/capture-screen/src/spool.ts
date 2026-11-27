@@ -120,13 +120,6 @@ const SELECT_COLUMNS =
 
 const ISO_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
 
-/**
- * Validate + canonicalize a capture instant to UTC `Z`. Date-only strings and
- * offsetless timestamps are rejected, and impossible calendar dates (Date.parse
- * silently rolls 2026-02-30 → Mar 2) are caught by re-checking the written
- * Y-M-D, so every persisted `captured_at_utc` and every keyset cursor is an
- * unambiguous, order-stable instant.
- */
 function canonicalInstant(value: string): string {
   const match = typeof value === "string" ? ISO_INSTANT.exec(value) : null;
   if (!match || !Number.isFinite(Date.parse(value))) {
@@ -154,12 +147,8 @@ export class Spool {
     this.#db.exec("PRAGMA busy_timeout = 5000;");
     this.#db.exec(SCHEMA_SQL);
     if (location !== ":memory:") {
-      // Screen-capture history is sensitive; keep the spool owner-only (best
-      // effort; ignored where chmod is a no-op).
       try {
         chmodSync(location, 0o600);
-        // WAL mode writes <location>-wal / <location>-shm sidecars that hold the
-        // same sensitive capture text; keep them owner-only too (best effort).
         for (const suffix of ["-wal", "-shm"]) {
           try {
             chmodSync(`${location}${suffix}`, 0o600);
@@ -243,7 +232,6 @@ export class Spool {
     }
   }
 
-  /** Link the prior in-session snapshot of the same window to `newId`. */
   #supersede(newId: number, app: string, windowTitle: string, capturedAtUtc: string, sessionGapSeconds: number): number | null {
     const prior = this.#db
       .prepare(
@@ -298,7 +286,6 @@ export class Spool {
     };
   }
 
-  /** All snapshots in a local day's window, ordered — the basis for /v1/stats. */
   daySnapshots(date: string, timezone: string): DaemonSnapshot[] {
     const { startUtc, endUtc } = activityDayWindow(date, timezone);
     const rows = this.#db
@@ -310,7 +297,6 @@ export class Spool {
     return rows.map((row) => ({ ...row }));
   }
 
-  /** Latest non-superseded fingerprint per (app, window) — primes the dedup cache. */
   latestFingerprints(): WindowFingerprint[] {
     const rows = this.#db
       .prepare(

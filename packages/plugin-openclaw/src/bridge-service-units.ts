@@ -382,7 +382,6 @@ function userRuntimeDir(): string {
   return uid === undefined ? "/run/user" : `/run/user/${uid}`;
 }
 
-/** Restore literal percents, once the unresolved-specifier guard has run. */
 function settleUnitValue(value: string): string {
   return value.replaceAll(ESCAPED_PERCENT, "%");
 }
@@ -489,7 +488,6 @@ function readUnitCliOverrides(
         const next = tokens[index + 1];
         if (next === undefined) continue;
         const value = unquote(next);
-        // `--host --port` means --host was given no value.
         if (value.startsWith("-")) continue;
         found = value;
         continue;
@@ -541,9 +539,7 @@ function readUnitCliOverrides(
 export function resolveUnitEndpoint(
   unit: string,
   scope: UnitScope,
-  /** Injected in tests; reads a unit's `EnvironmentFile=` from disk. */
   readFile: (candidate: string) => string | undefined = defaultUnitFileReader,
-  /** Injected in tests; lists a directory for `EnvironmentFile=` wildcards. */
   listDir: (directory: string) => string[] = defaultUnitDirLister,
 ): UnitEndpoint {
   // The server accepts --host/--port/--auth-token/--config on its command line

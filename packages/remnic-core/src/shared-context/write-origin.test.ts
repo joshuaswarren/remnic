@@ -62,7 +62,6 @@ test("manager: authenticated identity is the origin and a mismatched agentId is 
     "the write lands in the authenticated agent's directory",
   );
 
-  // No resolvable identity (in-process caller): the supplied agent id stands.
   const local = await manager.writeAgentOutput({ agentId: "local-agent", title: "Local", content: "x" });
   assert.match(await readFile(local, "utf-8"), /^sharedBy: "local-agent"$/m);
 });
@@ -103,9 +102,6 @@ test("access service: a principal-less authenticated write never stamps the call
   t.after(() => rm(dir, { recursive: true, force: true }));
   const service = new EngramAccessService({ config, sharedContext: manager } as unknown as Orchestrator);
 
-  // The default request-identity path: bearer-authenticated surface, no
-  // configured principal, no adapter identity — principal resolves to
-  // undefined. The client's `agentId` must not become audit metadata.
   const result = (await service.sharedContextWriteOutput({
     agentId: "claimed-agent",
     title: "Principal-less",
@@ -115,8 +111,6 @@ test("access service: a principal-less authenticated write never stamps the call
   const raw = await readFile(result.path, "utf-8");
   assert.match(raw, /^sharedBy: "unattributed:access-surface"$/m);
   assert.doesNotMatch(raw, /^sharedBy: "claimed-agent"$/m);
-  // The producer label survives for grouping/display — it is not audit
-  // metadata and collapsing it would erase multi-agent overlaps.
   assert.match(raw, /^agent: "claimed-agent"$/m);
 });
 

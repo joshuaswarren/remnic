@@ -106,7 +106,6 @@ export function resolveMemoryAge(
   return { referenceMs: null, source: "unknown" };
 }
 
-/** UTC calendar-day key ("YYYY-MM-DD") for a millisecond instant. */
 export function utcDayKey(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }

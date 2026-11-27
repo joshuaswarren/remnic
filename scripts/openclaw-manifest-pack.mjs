@@ -1,13 +1,3 @@
-/**
- * Pack-time manifest minifier (issue: OpenClaw caps openclaw.plugin.json at
- * 256 KiB via MAX_PLUGIN_MANIFEST_BYTES; the pretty-printed manifest crossed
- * that cap at 9.15.x, so every install on current hosts failed with
- * "unsafe plugin manifest path: ... (validation)").
- *
- * `prepack` swaps the committed pretty manifest for a compact serialization
- * of the same document; `postpack` restores the pretty original so the git
- * tree stays clean. The committed file remains pretty-printed for review.
- */
 import { copyFileSync, readFileSync, unlinkSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 
@@ -15,8 +5,6 @@ const packageDir = process.cwd();
 const manifestPath = path.join(packageDir, "openclaw.plugin.json");
 const backupPath = path.join(packageDir, ".openclaw.plugin.json.prepack");
 
-// OpenClaw's MAX_PLUGIN_MANIFEST_BYTES is 256 KiB; fail earlier so schema
-// growth surfaces in CI before it breaks installs on real hosts.
 const HARD_CAP_BYTES = 256 * 1024;
 const FAIL_AT_BYTES = 250_000;
 
@@ -33,8 +21,6 @@ if (command === "minify") {
     );
     process.exit(1);
   }
-  // A leftover backup from a crashed pack holds the authoritative pretty
-  // form — never clobber it with a possibly already-minified manifest.
   if (!existsSync(backupPath)) {
     copyFileSync(manifestPath, backupPath);
   }

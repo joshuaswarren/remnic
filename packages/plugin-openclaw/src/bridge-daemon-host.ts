@@ -30,10 +30,6 @@ export function isLoopbackDaemonHost(host: string): boolean {
   return isLoopbackHost(normalized);
 }
 
-/**
- * Collapse an IPv6 literal to its canonical form, or `undefined` when the
- * string is not one. Node's `net.isIPv6` validates; `URL` canonicalizes.
- */
 function canonicalIPv6(value: string): string | undefined {
   if (!isIPv6(value)) return undefined;
   try {

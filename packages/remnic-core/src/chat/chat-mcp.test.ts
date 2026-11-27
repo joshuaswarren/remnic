@@ -1,9 +1,3 @@
-/**
- * Chat MCP surface tests (issue #1583 PR 4).
- *
- * Verifies the tools/list parity gate (chat.enabled → memory_chat visible,
- * byte-identical when off — rule 39) and the memory_chat tool dispatch.
- */
 
 import { strict as assert } from "node:assert";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -103,7 +97,6 @@ test("MCP memory_chat: rejects empty message with input error", async () => {
 
 test("MCP memory_chat: strips internal error from structuredContent (Thread 17)", async () => {
   const memoryDir = await mkdtemp(join(tmpdir(), "chat-mcp-leak-"));
-  // LLM returns null → engine tags the result with error: "no_llm_available".
   const llm = {
     chatCompletion: async () => null,
   };
@@ -125,7 +118,6 @@ test("MCP memory_chat: strips internal error from structuredContent (Thread 17)"
     };
   }).result;
   assert.equal(result?.isError, false, "should not be a JSON-RPC error");
-  // The text content and structuredContent must NOT expose the raw error field.
   const sc = result?.structuredContent ?? {};
   assert.ok(!("error" in sc), "structuredContent must not leak the error field");
   const text = result?.content?.[0]?.text ?? "";
@@ -135,12 +127,6 @@ test("MCP memory_chat: strips internal error from structuredContent (Thread 17)"
   await rm(memoryDir, { recursive: true, force: true });
 });
 
-// ──────────────────────────────────────────────────────────────────────────
-// Issue #1850 round 6: MCP memory_chat dispatches via processChatMessage,
-// bypassing op.run() (the boundary hook every other callTool branch routes
-// through). It must still enforce the per-token ops allow-list (op-gate) AND
-// the chat-session namespace, matching the HTTP /engram/v1/chat/message route.
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Narrow a tools/call JSON-RPC response into just the fields the r6 tests
@@ -206,7 +192,6 @@ test("MCP memory_chat: ops-scoped token without chat_message is rejected (issue 
   });
   const server = new EngramMcpServer(service, { chatVisible: true, principal: "alice" });
 
-  // Token permits recall but NOT chat_message.
   const outcome = await tokenCapabilityStore.run({ version: 1, ops: ["recall"] }, async () =>
     readToolOutcome(await server.handleRequest(makeCallRequest("engram.memory_chat", { message: "hi" }))),
   );
@@ -235,7 +220,6 @@ test("MCP memory_chat: unrestricted token is allowed (issue #1850 r6)", async ()
   const service = makeChatService(memoryDir, { chatCompletion: async () => ({ content: "hello [id: y]." }) });
   const server = new EngramMcpServer(service, { chatVisible: true, principal: "alice" });
 
-  // Explicit-unrestricted record (version present, no axes) ⇒ both gates no-op.
   const outcome = await tokenCapabilityStore.run({ version: 1 }, async () =>
     readToolOutcome(await server.handleRequest(makeCallRequest("engram.memory_chat", { message: "hi" }))),
   );
@@ -257,7 +241,6 @@ test("MCP memory_chat: namespace-scoped token cannot resume a cross-namespace se
   const service = makeChatService(memoryDir, llm);
   const server = new EngramMcpServer(service, { chatVisible: true, principal: "alice" });
 
-  // 1. Create a session bound to namespace "team-a" under an unrestricted token.
   const createOutcome = readToolOutcome(
     await server.handleRequest(makeCallRequest("engram.memory_chat", { message: "remember this" }), {
       namespaceOverride: "team-a",
@@ -269,9 +252,6 @@ test("MCP memory_chat: namespace-scoped token cannot resume a cross-namespace se
   const chatSessionId = created.chatSessionId as string;
   assert.equal(dispatchCount, 1, "the create call dispatched the LLM exactly once");
 
-  // 2. Resume that session under a token scoped to a DIFFERENT namespace. The
-  //    resumed session is an id-loaded record whose stored namespace ("team-a")
-  //    must be gated against the token's allow-list (["team-b"]) — rejected.
   const resumeOutcome = await tokenCapabilityStore.run({ version: 1, namespaces: ["team-b"] }, async () =>
     readToolOutcome(
       await server.handleRequest(
@@ -286,13 +266,6 @@ test("MCP memory_chat: namespace-scoped token cannot resume a cross-namespace se
 });
 
 test("MCP memory_chat: NEW session namespace is gated — scoped token cannot start a chat in a disallowed namespace (issue #1850 r8)", async () => {
-  // The resume path already gates the session's stored namespace (r6). A NEW
-  // chat turn (no chatSessionId) previously forwarded scope.namespace straight
-  // to processChatMessage with NO allow-list gate, so a namespace-scoped token
-  // could mint a session in a namespace outside its allow-list. The new-session
-  // path must resolve the EFFECTIVE namespace (scope.namespace OR server
-  // default) and fail closed against the token allow-list — same chokepoint the
-  // HTTP /engram/v1/chat/message route gained in r7.
   const memoryDir = await mkdtemp(join(tmpdir(), "chat-mcp-new-ns-gate-"));
   let dispatchCount = 0;
   const llm = {
@@ -301,8 +274,6 @@ test("MCP memory_chat: NEW session namespace is gated — scoped token cannot st
       return { content: "ok [id: new]." };
     },
   };
-  // namespacesEnabled + a server default OUTSIDE the scoped token's allow-list,
-  // so the fail-closed-against-default case is exercisable.
   const service = makeBaseService({
     fallbackLlmRef: llm,
     memoryDir,
@@ -315,9 +286,6 @@ test("MCP memory_chat: NEW session namespace is gated — scoped token cannot st
   });
   const server = new EngramMcpServer(service, { chatVisible: true, principal: "alice" });
 
-  // (1) DISALLOWED explicit namespace: token scoped to ["team-a"], but the new
-  //     session would be created under scope.namespace "team-b" (not in the
-  //     allow-list) → rejected BEFORE processChatMessage (LLM never reached).
   const deniedExplicit = await tokenCapabilityStore.run(
     { version: 1, ops: ["chat_message"], namespaces: ["team-a"] },
     async () =>
@@ -332,8 +300,6 @@ test("MCP memory_chat: NEW session namespace is gated — scoped token cannot st
   assert.match(deniedExplicit.text, /not permitted to access namespace/i);
   assert.equal(dispatchCount, 0, "the denied new chat must not dispatch the LLM");
 
-  // (2) ALLOWED explicit namespace: same token, scope.namespace "team-a" (IN
-  //     the allow-list) → gate passes, chat runs, returns a reply + session id.
   const allowedExplicit = await tokenCapabilityStore.run(
     { version: 1, ops: ["chat_message"], namespaces: ["team-a"] },
     async () =>
@@ -350,10 +316,6 @@ test("MCP memory_chat: NEW session namespace is gated — scoped token cannot st
   assert.ok(typeof allowedParsed.chatSessionId === "string", "the allowed new chat returns a chatSessionId");
   assert.equal(dispatchCount, 1, "only the allowed new chat dispatched the LLM");
 
-  // (3) FAIL CLOSED against the server default: same token scoped to ["team-a"],
-  //     NEW chat with NO scope.namespace → effective namespace is the server
-  //     default ("default"), not in ["team-a"] → rejected. Mirrors the HTTP r7
-  //     new-session gate (omitting the param cannot bypass it).
   const deniedDefault = await tokenCapabilityStore.run(
     { version: 1, ops: ["chat_message"], namespaces: ["team-a"] },
     async () =>

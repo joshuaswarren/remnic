@@ -1,8 +1,3 @@
-/**
- * Focused regression tests for issue #2347: host-agnostic SUMMARY/FILTER
- * plans, the pure summary seam, receipt recording, and the discriminated
- * action ledger. Fake chats only — no real user data, no host paths.
- */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -109,7 +104,6 @@ function rejectedCode(request: ActiveContextTransformRequest, deps: ActiveContex
   return plan.errorCode ?? "missing-errorCode";
 }
 
-// ── pure summary seam ──────────────────────────────────────────────────────
 
 test("summarizeContextPure deterministic path truncates without an LLM", async () => {
   const long = "Sentence one about work. Filler sentence two. ".repeat(40);
@@ -146,7 +140,6 @@ test("summarizeContextPure llm mode never falls back", async () => {
   );
 });
 
-// ── SUMMARY plan ───────────────────────────────────────────────────────────
 
 test("SUMMARY plan is content-addressed, bounded, and carries no raw text", () => {
   const fixedNow = () => new Date("2026-08-18T10:00:00.000Z");
@@ -169,7 +162,6 @@ test("SUMMARY plan is content-addressed, bounded, and carries no raw text", () =
   assert.equal(first.precondition.principal, SCOPE.principal);
   assert.ok(first.planHash.length === 64);
 
-  // Plans carry hashes and counts, never message text.
   const serialized = JSON.stringify(first);
   for (const needle of ["alpha content", "beta content", "gamma content", "system prompt text"]) {
     assert.equal(serialized.includes(needle), false, `plan leaked raw text: ${needle}`);
@@ -178,7 +170,6 @@ test("SUMMARY plan is content-addressed, bounded, and carries no raw text", () =
 
 test("scope checks run before selection: session or namespace mismatch rejects with scope_mismatch", () => {
   const badSession = baseDeps({ resolvedScope: { ...SCOPE, sessionKey: "sess-other" } });
-  // Selector is ALSO invalid (unknown ID) — scope must still win.
   assert.equal(
     rejectedCode(summaryRequest({ selector: { messageIds: ["nope"] } }), badSession),
     "scope_mismatch",
@@ -206,12 +197,10 @@ test("selector rules: duplicate, unknown, dual-form, and inverted spans reject",
 
 test("system/developer/protected/named messages are never removable", () => {
   const deps = baseDeps();
-  // Everything selected is protected → preserve_conflict, not a no-op plan.
   assert.equal(
     rejectedCode(summaryRequest({ selector: { messageIds: ["m-sys", "m-c"] } }), deps),
     "preserve_conflict",
   );
-  // Developer role protected even when named as removable.
   const devSnapshot = fakeSnapshot([
     fakeMessage("d-1", 0, "developer", "dev text"),
     fakeMessage("u-1", 1, "user", "user text"),
@@ -278,7 +267,6 @@ test("explicit llm method behind a closed llm gate is unsupported", () => {
   );
 });
 
-// ── FILTER plan ────────────────────────────────────────────────────────────
 
 test("FILTER keeps score >= threshold, drops only chosen non-protected IDs, and hashes the criterion", () => {
   const scores: Record<string, number> = { "m-a": 0.9, "m-b": 0.5, "m-d": 0.6 };
@@ -323,7 +311,6 @@ test("FILTER rejects missing, NaN, and out-of-range scores", () => {
   );
 });
 
-// ── prepare ────────────────────────────────────────────────────────────────
 
 test("prepare joins source text in order and content-addresses the replacement", async () => {
   const plan = planActiveContextTransform(summaryRequest(), baseDeps());
@@ -379,7 +366,6 @@ test("prepare passes FILTER plans through after revalidation", async () => {
   assert.equal(prepared.replacement, undefined);
 });
 
-// ── receipts ───────────────────────────────────────────────────────────────
 
 function appliedReceipt(
   planId: string,
@@ -463,7 +449,6 @@ test("plan-stage events are recordable without a receipt", () => {
   assert.equal(event.receiptOutcome, undefined);
 });
 
-// ── ledger discriminated union ─────────────────────────────────────────────
 
 async function* linesOf(rows: string[]): AsyncGenerator<string> {
   yield* rows;

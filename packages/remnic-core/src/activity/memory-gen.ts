@@ -37,9 +37,6 @@ const LABEL_ATTRIBUTION = new RegExp(
   String.raw`^\s*(${ATTRIBUTION_SPEAKER}(?:\s+[A-Za-z][\w.'’-]*){0,3})\s*:\s*`,
   "i",
 );
-// A sender named inside an otherwise-allowlisted label ("Update from Alice:",
-// "Note by Bob:") is still attribution. Case-sensitive on the capitalized name
-// so generic labels ("Summary by section:") stay eligible.
 const LABEL_NAMES_SENDER = /\b(?:from|by)\s+[A-Z][a-z]/;
 const NON_SENDER_LABELS: Record<string, true> = {
   note: true, notes: true, todo: true, fixme: true, reminder: true, update: true,
@@ -176,28 +173,20 @@ export async function generateActivityMemories(
     rejectedByJudge: 0,
     skipped: 0,
   };
-  // `extractionMode` is the independent extraction gate (per the config contract);
-  // `enabled` gates source ingestion, not extraction of a supplied digest.
   if (config.extractionMode !== "smart" || digestBody.trim().length === 0) return result;
 
-  // Event-time bound: the digest's local day. Backfilled or delayed digests
-  // then land on the day they describe rather than at write time.
   const { startUtc, endUtc } = activityDayWindow(date, config.timezone);
 
   let extracted: ExtractionResult;
   try {
     extracted = await deps.extract(digestBody);
   } catch (err) {
-    // A provider/parse failure must not throw out of the pass; return the
-    // structured zero-result so the caller can retry on the next digest run.
     log.warn(
       `activity extraction failed; skipping the day's memory pass: ${err instanceof Error ? err.message : String(err)}`,
     );
     return result;
   }
   if (extracted.extractionFailure !== undefined) {
-    // In-band failure marker (partial/failed provider result): treat like a
-    // thrown extraction — warn and return the structured zero-result.
     log.warn(
       `activity extraction reported a failure; skipping the day's memory pass: ${extracted.extractionFailure}`,
     );
@@ -229,18 +218,12 @@ export async function generateActivityMemories(
       importanceLevel: scoreImportance(fact.content, fact.category, fact.tags).level,
     })));
   } catch (err) {
-    // Degraded smart mode (wearables parity): a judge failure must not abort the
-    // day's writes. Fall back to trust scoring alone (no judge accept boost).
     log.warn(
       `activity extraction judge unavailable; using trust scoring only: ${err instanceof Error ? err.message : String(err)}`,
     );
     verdicts = new Map();
   }
 
-  // Score every candidate once, then keep the STRONGEST (highest-trust) copy per
-  // normalized key so a weaker earlier duplicate (e.g. a judge-rejected one)
-  // cannot crowd out a stronger later one. The day is fixed for this digest, so
-  // the normalized content alone keys the in-run set.
   interface ScoredCandidate {
     fact: ExtractedFact;
     key: string;
@@ -264,7 +247,6 @@ export async function generateActivityMemories(
       autoApproveTrust: config.autoApproveTrust,
       reviewTrust: config.reviewTrust,
     });
-    // Dedup key: trim + lowercase so whitespace/case variants collapse (day-scoped).
     const key = fact.content.trim().toLowerCase();
     const scored: ScoredCandidate = {
       fact,
@@ -278,9 +260,6 @@ export async function generateActivityMemories(
     if (prev === undefined) {
       strongestByKey.set(key, scored);
     } else {
-      // In-run duplicate: keep the copy with the more durable decision (active >
-      // review > drop), breaking ties by trust — so a higher-confidence reject
-      // cannot crowd out a lower-trust accepted copy.
       result.skipped += 1;
       const rankOf = (outcome: SmartDecision["outcome"]): number =>
         outcome === "active" ? 2 : outcome === "review" ? 1 : 0;
@@ -296,8 +275,6 @@ export async function generateActivityMemories(
   for (const scored of strongestByKey.values()) {
     const existing = await deps.writer.findActivityMemoryByContent(scored.key, startUtc, endUtc);
     if (existing !== null) {
-      // Same-day duplicate of a persisted row: reassess in place; never write new
-      // or use a cap slot. (The same text on another day is not found here.)
       if (existing.status === "pending_review") {
         if (scored.decision.outcome === "drop" && scored.decision.reason === "judge-rejected") {
           if (
@@ -350,8 +327,6 @@ export async function generateActivityMemories(
     return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
   });
 
-  // Seed the cap from memories already persisted for this day so repeated digest
-  // runs cannot each write up to the limit. `0` stays uncapped.
   const alreadyWritten =
     config.maxMemoriesPerDay > 0 ? await deps.writer.countActivityMemoriesForDay(startUtc, endUtc) : 0;
   let remaining =
@@ -364,9 +339,6 @@ export async function generateActivityMemories(
       result.skipped += 1;
       continue;
     }
-    // Trust fields FIRST so the salvage-mode 64-entry cap can never trim these
-    // load-bearing keys; extractor attributes ride along after and never override
-    // them (collisions are compared against the canonical lowercase form).
     const structuredAttributes: Record<string, string> = {
       trustScore: entry.trust.toFixed(3),
       trustDecision: entry.trustDecision,
@@ -381,9 +353,6 @@ export async function generateActivityMemories(
         category: entry.fact.category,
         tags: [...entry.fact.tags, "activity"],
         entityRef: entry.fact.entityRef,
-        // Persist the decision-derived trust as confidence; extractor attributes
-        // ride along, with trust score/decision + judge verdict added last so
-        // downstream sees the active/pending rationale (wearable-path parity).
         confidence: entry.trust,
         validAt: startUtc,
         structuredAttributes,

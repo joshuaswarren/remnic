@@ -1,25 +1,3 @@
-/**
- * CPU rerank profile for qwen3-reranker-0.6b Q8 on node-llama-cpp 3.18.1.
- * The pinned QMD build uses 3.20.0. Prefix reuse, a larger token batch, and
- * fewer threads were slower or not order-stable. None of them ship.
- * See docs/qmd-2.8.3.md.
- *
- * Stock scoring calls LlamaRankingContext.rank(), which erases the whole
- * sequence before every document. The prefix trial evaluates the shared
- * query prefix once with evaluateWithoutGeneratingNewTokens, then scores
- * each document suffix the same way rank() reads its logit. It does not
- * truncate documents. QMD already truncates to context - 512 - query tokens;
- * these fixtures stay inside that budget.
- *
- *   NODE_PATH=/path/to/node_modules \
- *   QMD_FORCE_CPU=1 \
- *   node scripts/qmd-rerank-cpu-bench.mjs \
- *     --model /path/to/qwen3-reranker-0.6b-q8_0.gguf \
- *     --docs 8 --doc-chars 800 --full-docs 40
- *
- * Prints one JSON object. measuredOn is "vm". Scores are the trial, not a
- * host capture. No document text is printed.
- */
 
 import { createRequire } from "node:module";
 import { availableParallelism } from "node:os";
@@ -29,9 +7,6 @@ import { pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 
 async function loadLlama() {
-  // node-llama-cpp is ESM with top-level await. require() throws, and a
-  // static import would bind this script to one install. Resolve through
-  // NODE_PATH, then import the file URL.
   const entry = require.resolve("node-llama-cpp");
   return import(pathToFileURL(entry).href);
 }

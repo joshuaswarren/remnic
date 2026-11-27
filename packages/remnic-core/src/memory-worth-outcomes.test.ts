@@ -328,7 +328,6 @@ test("outcome facts with time and join data become observations", () => {
     assert.equal(view.observation.schemaVersion, 1);
     assert.equal(view.observation.observedAt, "2026-08-12T00:00:00.000Z");
     assert.equal(view.observation.joinId, "act-1");
-    // Round-trips through public types (undefined optionals drop in JSON).
     const roundTripped = JSON.parse(JSON.stringify(view.observation)) as Record<string, unknown>;
     assert.equal(roundTripped.schemaVersion, 1);
     assert.equal(roundTripped.memoryId, "fact-1");

@@ -32,11 +32,7 @@ import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { sanitizeFragment } from "./coding-namespace.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Public types
-// ──────────────────────────────────────────────────────────────────────────
 
-/** A single commit in the delta slice. */
 export interface GitCommit {
   /** Full or abbreviated SHA — callers decide precision. */
   sha: string;
@@ -54,19 +50,15 @@ export interface GitLogSlice {
   commits: GitCommit[];
   /** Files touched across those commits, de-duplicated and sorted. */
   touchedFiles: string[];
-  /** The repo's current HEAD SHA. */
   currentHead: string;
 }
 
-/** Persisted marker: the HEAD we last computed a delta against, and when. */
 export interface LastSeenState {
-  /** HEAD SHA at the time of the last delta. */
   head: string;
   /** ISO timestamp of the last delta computation. */
   at: string;
 }
 
-/** A successful delta computation. */
 export interface SessionDelta {
   /** Commits since last seen, capped to {@link MAX_DELTA_COMMITS}. */
   commits: GitCommit[];
@@ -95,7 +87,6 @@ export interface SessionDelta {
  * happened" (rule 34).
  */
 export type SessionDeltaResult =
-  /** A non-empty delta was computed. */
   | { ok: true; kind: "changed"; delta: SessionDelta; nextState: LastSeenState }
   /** Prior head equals current head — no changes to report. */
   | { ok: true; kind: "unchanged"; nextState: LastSeenState }
@@ -107,7 +98,6 @@ export type SessionDeltaResult =
   | { ok: false; code: "git_failed"; detail: string };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Caps (rule 27 / rule 48)
 // ──────────────────────────────────────────────────────────────────────────
 
 /** Maximum commits retained in a delta. Older commits beyond the cap are dropped. */
@@ -117,7 +107,6 @@ export const MAX_DELTA_COMMITS = 20;
 export const MAX_DELTA_FILES = 50;
 
 // ──────────────────────────────────────────────────────────────────────────
-// Pure differ
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -140,19 +129,14 @@ export function computeSessionDelta(
   const now = new Date().toISOString();
   const nextState: LastSeenState = { head: current.currentHead, at: now };
 
-  // First session — no prior marker. Initialize state but render nothing.
-  // A first session claiming "0 changes" is a contract lie (rule 34).
   if (lastSeen === null) {
     return { ok: true, kind: "first_run", nextState };
   }
 
-  // Unchanged — prior head still current. Suppress, do not render "no changes".
   if (lastSeen.head === current.currentHead) {
     return { ok: true, kind: "unchanged", nextState };
   }
 
-  // If the slice reports zero commits despite a head change, the prior head
-  // is unreachable (force-push/rebase erased it). Tagged failure, never a crash.
   if (current.commits.length === 0) {
     return {
       ok: false,
@@ -171,9 +155,6 @@ export function computeSessionDelta(
     delta: {
       commits,
       touchedFiles,
-      // Uncapped totals — the slices above are capped for transport, but
-      // the summary/metrics must report the true delta size so callers
-      // never under-report on large repos (issue #1630 fix 1).
       totalCommits: current.commits.length,
       totalTouchedFiles: current.touchedFiles.length,
       summaryLine: buildSummaryLine(current.commits.length, current.touchedFiles.length, lastSeen.at),
@@ -183,7 +164,6 @@ export function computeSessionDelta(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Caps — rule 27: guard slice(-n) against n === 0
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -210,7 +190,6 @@ export function capFiles(files: string[], max: number): string[] {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Summary line
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -230,15 +209,11 @@ export function buildSummaryLine(commitCount: number, fileCount: number, sinceIs
  * depends on the runtime locale or timezone.
  */
 function formatSinceDate(iso: string): string {
-  // Defensive: if the stored timestamp is malformed, fall back to the raw
-  // string rather than crashing the delta render (rule 34 — never crash on
-  // persisted state corruption).
   const match = /^(\d{4}-\d{2}-\d{2})/.exec(iso);
   return match ? match[1]! : iso;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// State persistence
 // ──────────────────────────────────────────────────────────────────────────
 
 /** Subdirectory under `<memoryDir>/state/` holding coding-knowledge markers. */
@@ -272,7 +247,6 @@ export async function readLastSeenState(statePath: string): Promise<LastSeenStat
     if (!head || !at) return null;
     return { head, at };
   } catch {
-    // Absent or unreadable — treat as first run.
     return null;
   }
 }
@@ -301,9 +275,6 @@ export async function writeLastSeenState(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Git invoker — the contract the surface handler satisfies to populate a
-// GitLogSlice from a real repo. Mirrors coding/git-context.ts discipline:
-// 2s timeout per call, never throws, exitCode returned to the caller.
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -361,26 +332,15 @@ export function resolveSlice(
     return { ok: false, code: "no_head", detail: "rev-parse HEAD returned empty" };
   }
 
-  // First run — no prior head to diff against. Return an empty slice; the
-  // differ turns this into a `first_run` outcome.
   if (!sinceHead) {
     return { ok: true, slice: { commits: [], touchedFiles: [], currentHead } };
   }
 
-  // Unchanged — short-circuit before the log call (saves a git invocation).
   if (sinceHead === currentHead) {
     return { ok: true, slice: { commits: [], touchedFiles: [], currentHead } };
   }
 
-  // Use a unique ASCII separator unlikely to appear in commit subjects or
-  // paths. NUL would be ideal but is awkward to pass through argv; unit
-  // separator (\x1f) is the next-best thing and is rejected by sanitize if
-  // it ever leaks into memory content.
   const SEP = "\x1f";
-  // --reverse makes git emit oldest-first, so the commits array reads in
-  // chronological order and capCommits' slice(-max) keeps the NEWEST entries
-  // (the ones a returning agent cares about). Without --reverse, git log is
-  // newest-first and slice(-max) would drop exactly the commits we want.
   const logResult = invoker(repoRoot, [
     "log",
     "--reverse",
@@ -389,18 +349,9 @@ export function resolveSlice(
     `${sinceHead}..${currentHead}`,
   ]);
   if (logResult.exitCode !== 0) {
-    // Exit code 128 is git's "bad revision" / "object not found" — the prior
-    // head is genuinely unreachable (force-push/rebase erased it). Return an
-    // empty slice so the differ labels it `unreachable_head`; the state marker
-    // advances so the next call sees the new head as the baseline.
     if (logResult.exitCode === 128) {
       return { ok: true, slice: { commits: [], touchedFiles: [], currentHead } };
     }
-    // Other non-zero exit codes (127 = spawn failure / 2s timeout, 129+ =
-    // signal, etc.) are TRANSIENT — the old head is probably still valid. Do
-    // NOT treat these as unreachable and do NOT let the caller advance the
-    // state marker. Return `git_failed` so the surface preserves the old
-    // marker and the next session retries.
     return {
       ok: false,
       code: "git_failed",
@@ -425,16 +376,7 @@ export function parseLogOutput(stdout: string, sep: string): {
   const commits: GitCommit[] = [];
   const fileSet = new Set<string>();
 
-  // Git emits each commit as:
-  //   <sha><SEP><subject>
-  //   <blank line>
-  //   <file1>
-  //   <file2>
-  //   <blank line>
-  //   <next commit>...
   //
-  // We split on blank-line-separated blocks. A commit block starts with a
-  // line containing the separator; file blocks do not.
   const blocks = stdout.split(/\n\s*\n/);
   for (const block of blocks) {
     const lines = block.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
@@ -449,7 +391,6 @@ export function parseLogOutput(stdout: string, sep: string): {
         if (lines[i]!) fileSet.add(lines[i]!);
       }
     } else {
-      // A file-only block (continuation) — every non-empty line is a file.
       for (const line of lines) fileSet.add(line);
     }
   }

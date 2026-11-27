@@ -139,7 +139,6 @@ test("appliesTo=false registers an honest skip, never a silent pass", () => {
 });
 
 test("teardown runs when a post-setup phase throws, and is skipped (no crash) when setup throws", async () => {
-  // (a) exercise throws AFTER a successful setup → teardown MUST still run.
   let toreDown = 0;
   const exerciseThrows: LifecycleSubject<{ id: string }> = {
     async setup() {
@@ -163,7 +162,6 @@ test("teardown runs when a post-setup phase throws, and is skipped (no crash) wh
   await assert.rejects(async () => cap1.tests[0].fn(), /exercise boom/);
   assert.equal(toreDown, 1, "teardown must run even when a post-setup phase throws");
 
-  // (b) setup throws → teardown MUST NOT be called for a fixture that never existed.
   let toreDownAfterSetupFail = 0;
   const setupThrows: LifecycleSubject<{ id: string }> = {
     async setup() {

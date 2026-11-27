@@ -1,10 +1,3 @@
-/**
- * Request-input validation for the HTTP surface. Every failure raises
- * CaptureInputError, which the daemon maps to HTTP 400 — invalid date,
- * timezone, limit, or cursor is rejected loudly, never silently defaulted
- * (rule 39). The keyset cursor is an opaque base64url token over the
- * (started_at_utc, id) tuple the conversations query orders by.
- */
 
 import { Buffer } from "node:buffer";
 

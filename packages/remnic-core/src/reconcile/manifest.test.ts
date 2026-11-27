@@ -43,7 +43,6 @@ test("buildReconcileManifest stops scheduling read batches once the signal abort
   const controller = new AbortController();
   let reads = 0;
   const stub = Buffer.from("stub");
-  // 120 files = three 50-file read batches; the abort lands inside batch 1.
   const files = Array.from({ length: 120 }, (_, i) => ({
     path: `facts/batch-abort-${i}.md`,
     sha256: createHash("sha256").update(String(i)).digest("hex"),
@@ -61,8 +60,6 @@ test("buildReconcileManifest stops scheduling read batches once the signal abort
     }),
     (error: unknown) => (error as Error)?.name === "AbortError"
   );
-  // Batch 1 was already in flight when the abort landed, so exactly its 50
-  // reads ran; batches 2 and 3 must never be scheduled.
   assert.equal(reads, 50);
 });
 
@@ -138,9 +135,6 @@ test("reconcile manifest reparses cached pre-version identities after Unicode mi
   });
 
   assert.equal(reads, 1);
-  // The café body is lossy under the legacy normalizer, so the persisted
-  // legacy hash stays primary and the recovered current identity rides along
-  // as an alias (issue #2367).
   assert.equal(
     manifest.files[0]?.memory?.contentHash,
     legacyHash,
@@ -164,9 +158,6 @@ test("reconcile manifest reparses cached identities lacking the identity-resolut
       reads += 1;
       return serialized;
     },
-    // Same normalizerVersion, but written before identity-resolution
-    // versioning existed: the entry carries no aliases and must NOT be
-    // reused (issue #2367 review round 2).
     cachedFiles: [{
       ...file,
       memory: {
@@ -258,10 +249,6 @@ test("reconcile manifest recovers raw identity beneath a configured citation", a
 });
 
 test("reconcile manifest prefers a persisted explicit hash over a colliding legacy body hash (issue #2367)", async () => {
-  // Source `caf` with body `café`: hash("caf") numerically equals the legacy
-  // hash of the stored body, but it is the fact's explicit contentHashSource
-  // identity written by the current normalizer. The legacy candidate match
-  // must not replace it.
   const source = "caf";
   const body = "café";
   const persistedHash = ContentHashIndex.computeHash(source);

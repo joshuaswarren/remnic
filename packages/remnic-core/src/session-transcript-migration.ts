@@ -60,13 +60,11 @@ function isCanonicalSessionDir(channelType: string, channelId: string): boolean 
 }
 
 export interface SessionMigrationEntryGroup {
-  /** The distinct session key these lines belong to. */
   sessionKey: string;
   /** Whether this key is a recognized legacy `agent:<id>:...` shape. */
   legacy: boolean;
   /** Destination directory (relative to the transcripts root). */
   destDir: string;
-  /** Number of JSONL entries that will move. */
   entryCount: number;
 }
 
@@ -75,14 +73,9 @@ export interface SessionMigrationFilePlan {
   sourceRelPath: string;
   /** The date-stamped file name (e.g. `2026-06-29.jsonl`). */
   fileName: string;
-  /** Distinct session groups discovered inside this source file. */
   groups: SessionMigrationEntryGroup[];
   /** Lines that could not be parsed as JSON or lacked a sessionKey. */
   unmovableLines: number;
-  /**
-   * True when EVERY entry in the file already belongs in the source directory
-   * (nothing to do). Such files are skipped.
-   */
   alreadyHomed: boolean;
 }
 
@@ -92,9 +85,7 @@ export interface SessionMigrationPlan {
   transcriptsDir: string;
   /** Per-file plans that have at least one entry to move. */
   files: SessionMigrationFilePlan[];
-  /** Distinct destination session keys across all files. */
   distinctSessions: number;
-  /** Total entries that will be re-homed. */
   movedEntries: number;
 }
 
@@ -163,11 +154,6 @@ async function listFallbackSourceFiles(
     for (const idEnt of idEntries) {
       if (!idEnt.isDirectory()) continue;
 
-      // Only canonical `session/<hash>` dirs are already homed — skip those.
-      // A LEGACY `session/<name>` dir (e.g. `foo:bar:session:baz` →
-      // `session/baz` under the OLD parser) is a real migration source and
-      // must be scanned/split (codex review on PR #1504). `planFile`'s
-      // destination gate still guarantees losslessness/idempotence.
       if (isCanonicalSessionDir(typeEnt.name, idEnt.name)) continue;
 
       const chanDir = path.join(typeDir, idEnt.name);
@@ -192,7 +178,6 @@ async function listFallbackSourceFiles(
 
 interface ParsedSourceLine {
   sessionKey?: string;
-  /** The raw JSONL text (without trailing newline). */
   raw: string;
 }
 
@@ -239,7 +224,6 @@ function planFile(sourceRelPath: string, fileName: string, lines: ParsedSourceLi
     }
     const identity = parseSessionIdentity(line.sessionKey);
     const paths = sessionStoragePaths(line.sessionKey);
-    // Only move when the destination directory differs from the source.
     if (paths.dir === sourceDir) {
       continue;
     }
@@ -274,9 +258,6 @@ function planFile(sourceRelPath: string, fileName: string, lines: ParsedSourceLi
   };
 }
 
-/**
- * Compute the migration plan without modifying anything.
- */
 export async function planSessionTranscriptMigration(
   options: MigrateSessionTranscriptsOptions
 ): Promise<SessionMigrationPlan> {
@@ -375,9 +356,6 @@ async function rewriteSourceRetainingUnmoved(
 ): Promise<{ removed: boolean }> {
   const sourcePath = await resolveSafeStoragePath(transcriptsDir, sourceRelPath);
   if (retainedLines.length === 0) {
-    // Atomic-rename into a sibling tombstone then unlink, so a crash leaves the
-    // original intact (never delete-before-confirm; rule #54). Simpler and
-    // equally safe: unlink only after destinations are confirmed written.
     try {
       await unlink(sourcePath);
     } catch (err) {
@@ -400,9 +378,6 @@ async function rewriteSourceRetainingUnmoved(
   return { removed: false };
 }
 
-/**
- * Run the migration. Dry-run by default; pass `apply: true` to mutate.
- */
 export async function migrateSessionTranscripts(
   options: MigrateSessionTranscriptsOptions
 ): Promise<SessionMigrationResult> {
@@ -431,8 +406,6 @@ export async function migrateSessionTranscripts(
       const lines = parseSourceLines(content);
       const sourceDir = path.dirname(filePlan.sourceRelPath);
 
-      // Bucket lines by destination, preserving order. Retain unmovable lines
-      // and any line already homed in the source dir.
       const byDest = new Map<string, string[]>();
       const retained: string[] = [];
       for (const line of lines) {
@@ -450,12 +423,10 @@ export async function migrateSessionTranscripts(
         byDest.set(dest, bucket);
       }
 
-      // 1. Write destinations FIRST (write-then-rename, idempotent merge).
       for (const [destDir, destLines] of byDest.entries()) {
         await mergeAppendLines(transcriptsDir, destDir, filePlan.fileName, destLines);
       }
 
-      // 2. Only after all destinations are confirmed, rewrite/remove source.
       const { removed } = await rewriteSourceRetainingUnmoved(transcriptsDir, filePlan.sourceRelPath, retained);
       if (removed) {
         filesRemoved += 1;
@@ -463,12 +434,6 @@ export async function migrateSessionTranscripts(
         filesRewritten += 1;
       }
     } catch (err) {
-      // The `errors` array is surfaced to operators via the CLI
-      // (`sessions migrate-transcripts --apply`) AND persisted in the audit
-      // manifest. Raw `err.message`/`String(err)` can leak filesystem paths or
-      // stack detail, so route operator-facing strings through the shared
-      // `displayErrorDetail()` sanitizer (cursor review on PR #1504, rule #51).
-      // The full error still goes to the operator-only debug log.
       const detail = displayErrorDetail(err);
       errors.push(
         `Failed to migrate ${filePlan.sourceRelPath}${detail ? `: ${detail}` : ""}`,
@@ -487,7 +452,6 @@ export async function migrateSessionTranscripts(
       errors,
     });
   } catch (err) {
-    // Manifest is best-effort audit; do not fail the migration over it.
     log.debug(`failed to write session migration manifest: ${err}`);
   }
 

@@ -208,8 +208,6 @@ export async function gatherConsoleState(
   const daemon = readDaemonInfo(orchestrator, errors);
   const embeddingIndex = await readEmbeddingIndexState(orchestrator, errors);
 
-  // Faithfulness gate distribution (issue #1576). Optional — absent when
-  // the gate is off or the orchestrator does not expose the accessor.
   let faithfulness: ConsoleFaithfulnessDistribution | undefined;
   try {
     if (typeof orchestrator.getConsoleFaithfulnessDistribution === "function") {
@@ -344,12 +342,6 @@ function readDedupRecent(
   errors: string[],
 ): ConsoleDedupDecision[] {
   try {
-    // Cursor Medium: call directly on `orchestrator` to preserve the
-    // `this` binding. Extracting the method into a local and invoking
-    // it bare loses `this`, so a non-arrow implementation that
-    // references `this` would fail at runtime. Mirrors how
-    // `readExtractionQueue` and `readMaintenanceLedgerTail` invoke
-    // their orchestrator methods.
     if (typeof orchestrator.getConsoleDedupRecentDecisions !== "function") return [];
     const raw = orchestrator.getConsoleDedupRecentDecisions() ?? [];
     return raw.slice(-MAX_DEDUP_TAIL).map((d) => ({
@@ -395,8 +387,6 @@ async function streamLedgerTopN<T extends { ts: string }>(
 ): Promise<T[]> {
   let stream: ReturnType<typeof createReadStream>;
   try {
-    // `fs.access`-style probe so we can quietly return `[]` for
-    // ENOENT without hitting the readline error path.
     await fs.stat(ledgerPath);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -414,7 +404,6 @@ async function streamLedgerTopN<T extends { ts: string }>(
   const cap = Math.max(1, topN) * 2;
   const buf: T[] = [];
   const truncate = () => {
-    // Sort descending by ts, keep top-N, drop the rest.
     buf.sort((a, b) => {
       const aMs = Date.parse(a.ts);
       const bMs = Date.parse(b.ts);
@@ -440,8 +429,6 @@ async function streamLedgerTopN<T extends { ts: string }>(
       }
       const event = project(parsed as Record<string, unknown>);
       if (event === null) continue;
-      // Drop rows we couldn't even date-stamp — they can't be sorted
-      // meaningfully against the rest of the corpus.
       if (!event.ts || !Number.isFinite(Date.parse(event.ts))) continue;
       buf.push(event);
       if (buf.length >= cap) truncate();
@@ -455,11 +442,6 @@ async function streamLedgerTopN<T extends { ts: string }>(
 }
 
 function projectLedgerRow(p: Record<string, unknown>): ConsoleMaintenanceLedgerEvent | null {
-  // The two canonical writers produce different row shapes:
-  //   - extraction-judge-telemetry: `{ts, verdictKind, reason, candidateCategory, ...}`
-  //   - rebuild-observations / migrate-observations:
-  //     `{sessionKey, hour, turnCount, userTurns, assistantTurns, rebuiltAt}`
-  // Map both into the canonical {ts, category, summary} shape.
   const ts =
     typeof p.ts === "string" && p.ts.length > 0
       ? p.ts
@@ -488,17 +470,6 @@ async function readMaintenanceLedgerTail(
     const memoryDir = orchestrator.config?.memoryDir;
     if (!memoryDir || typeof memoryDir !== "string") return [];
     const ledgerDir = path.join(memoryDir, "state", "observation-ledger");
-    // Codex review converged on two competing constraints:
-    //   1. Don't load the whole file into memory (multi-GB ledgers
-    //      would OOM the console surface).
-    //   2. Don't miss recent rows just because the file isn't sorted
-    //      by recency (`rebuilt-observations.jsonl` is sorted by
-    //      sessionKey/hour, so byte-tail reads silently drop recent
-    //      lexicographically-earlier sessions).
-    // The right answer is a streaming bounded top-N: visit every row,
-    // but keep only the MAX_LEDGER_TAIL most-recent in memory at any
-    // time. Memory stays O(MAX_LEDGER_TAIL); recency ordering is
-    // globally correct.
     const verdictsTopN = await streamLedgerTopN(
       path.join(ledgerDir, "extraction-judge-verdicts.jsonl"),
       MAX_LEDGER_TAIL,
@@ -509,10 +480,6 @@ async function readMaintenanceLedgerTail(
       MAX_LEDGER_TAIL,
       projectLedgerRow,
     );
-    // Merge the two source top-N windows and select the global
-    // top-N. Both inputs already arrive oldest-first within their
-    // respective windows; sort the merged set descending by ts and
-    // take the most-recent MAX_LEDGER_TAIL.
     const events: ConsoleMaintenanceLedgerEvent[] = [...verdictsTopN, ...rebuiltTopN];
     if (events.length === 0) return [];
     events.sort((a, b) => {
@@ -524,7 +491,6 @@ async function readMaintenanceLedgerTail(
       return 0;
     });
     const tail = events.slice(0, MAX_LEDGER_TAIL);
-    // Reverse so the caller sees oldest-first within the tail window.
     return tail.reverse();
   } catch (err) {
     errors.push(`maintenanceLedgerTail: ${describeError(err)}`);
@@ -534,7 +500,6 @@ async function readMaintenanceLedgerTail(
 
 function summarizeLedgerEvent(p: Record<string, unknown>): string {
   const parts: string[] = [];
-  // Judge-verdict rows.
   if (typeof p.verdictKind === "string") parts.push(`verdict=${p.verdictKind}`);
   if (typeof p.reason === "string" && p.reason.length > 0) {
     const trimmed = p.reason.length > 80 ? `${p.reason.slice(0, 80)}…` : p.reason;
@@ -543,7 +508,6 @@ function summarizeLedgerEvent(p: Record<string, unknown>): string {
   if (typeof p.candidateCategory === "string") {
     parts.push(`cat=${p.candidateCategory}`);
   }
-  // Canonical rebuilt-observations rows (codex P2).
   if (typeof p.sessionKey === "string" && p.sessionKey.length > 0) {
     parts.push(`session=${p.sessionKey}`);
   }
@@ -596,9 +560,6 @@ function readDaemonInfo(
         version: typeof info?.version === "string" ? info.version : "unknown",
       };
     }
-    // Fallback: process uptime + best-effort package version. This is
-    // only meaningful when the orchestrator runs in the same process
-    // as the CLI (which is the case for `remnic console --state-only`).
     const uptimeMs = Math.round((process.uptime?.() ?? 0) * 1000);
     return { uptimeMs, version: resolvePackageVersion() };
   } catch (err) {

@@ -20,9 +20,7 @@
 export interface FusionSegmentInput {
   /** Resolved speaker label (e.g. "Jane", "Me (you)", "Speaker 0"). */
   speaker: string;
-  /** Whether this speaker is the wearer. */
   isSelf: boolean;
-  /** Utterance text. */
   text: string;
   /** ISO 8601 start, when known. */
   startIso?: string;
@@ -30,9 +28,7 @@ export interface FusionSegmentInput {
   endIso?: string;
 }
 
-/** One normalized conversation fed into fusion. */
 export interface FusionConversationInput {
-  /** Source id this conversation came from. */
   source: string;
   /** Provider-stable conversation id within that source. */
   conversationId: string;
@@ -48,45 +44,29 @@ export interface FusionConversationInput {
   segments: FusionSegmentInput[];
 }
 
-/** Why a particular source's text was chosen for a fused segment. */
 export type SegmentPickReason =
   | "only-source"
   | "higher-trust"
   | "more-complete"
   | "tie-break";
 
-/** Kind of unresolved conflict surfaced during reconciliation. */
 export type DisagreementKind = "asr-text" | "speaker" | "timestamp";
 
-/** Per-segment record of where the chosen text came from and what else was considered. */
 export interface FusedSegmentProvenance {
-  /** Source id the chosen text came from. */
   source: string;
-  /** Conversation id within that source. */
   conversationId: string;
   /** Trust weight of the chosen source at reconciliation time (0..1). */
   sourceTrust: number;
-  /** Why this source won the pick. */
   reason: SegmentPickReason;
   /** Other sources that offered a candidate text for this window/speaker. */
   alternatives: Array<{ source: string; text: string }>;
-  /** The chosen source's ORIGINAL start time (ISO), when known. The fused
-   * segment is emitted on the group/window ANCHOR timeline position so
-   * pre-sorted chronology stays valid even when the higher-trust source's
-   * clock is later than the anchor; this preserves WHERE the chosen text
-   * was actually recorded for provenance/traceability. */
   sourceStartIso?: string;
-  /** The chosen source's ORIGINAL end time (ISO), when known (see sourceStartIso). */
   sourceEndIso?: string;
 }
 
-/** One reconciled utterance in a fused conversation. */
 export interface FusedSegment {
-  /** Reconciled speaker label. */
   speaker: string;
-  /** Whether this speaker is the wearer. */
   isSelf: boolean;
-  /** Reconciled utterance text. */
   text: string;
   /** Window start (ISO), when known. */
   startIso?: string;
@@ -97,7 +77,6 @@ export interface FusedSegment {
   provenance: FusedSegmentProvenance;
 }
 
-/** An unresolved conflict that reconciliation could not settle deterministically. */
 export interface FusedDisagreement {
   kind: DisagreementKind;
   /**
@@ -105,15 +84,12 @@ export interface FusedDisagreement {
    * label, or "(no timestamp)" for un-timestamped windows.
    */
   subject: string;
-  /** The conflicting candidates that could not be auto-resolved. */
   candidates: Array<{ source: string; value: string }>;
   /** Best-effort provisional winner; marked uncertain, NOT authoritative. */
   provisional?: { source: string; value: string };
 }
 
-/** A reconciled speaker that appears in the fused conversation. */
 export interface FusedSpeaker {
-  /** Display label. */
   label: string;
   /** Whether this speaker is the wearer. */
   isSelf: boolean;
@@ -123,11 +99,9 @@ export interface FusedSpeaker {
    * source only).
    */
   confidence: number;
-  /** Source ids that produced this speaker. */
   sources: string[];
 }
 
-/** Record of one source conversation that fed a fused conversation. */
 export interface FusedContribution {
   source: string;
   conversationId: string;
@@ -136,22 +110,15 @@ export interface FusedContribution {
   segmentCount: number;
 }
 
-/** How a fused conversation was assembled. */
 export interface FusedConversationProvenance {
-  /** Source conversations that fed this cluster. */
   contributions: FusedContribution[];
   /** Max gap (ms) two conversations could span and still merge. */
   proximityGapMs: number;
   /** Max drift (ms) for two segments to align across sources. */
   windowToleranceMs: number;
-  /** Clustering method (deterministic, time-proximity based). */
   method: "time-proximity";
 }
 
-/**
- * A real-world conversation reconstructed from one or more wearable
- * sources recording at the same time. The fused artifact.
- */
 export interface FusedWearableConversation {
   /** Stable content-hash id (deterministic from inputs; idempotent). */
   id: string;
@@ -171,12 +138,10 @@ export interface FusedWearableConversation {
   summary?: string;
   /** Aligned, reconciled segments in chronological order. */
   segments: FusedSegment[];
-  /** Unresolved conflicts surfaced during reconciliation. */
   disagreements: FusedDisagreement[];
   provenance: FusedConversationProvenance;
 }
 
-/** Options for a fusion pass. */
 export interface FusionOptions {
   /** Max gap (ms) between conversations to merge into one cluster. */
   proximityGapMs?: number;
@@ -186,7 +151,6 @@ export interface FusionOptions {
   sourceTrust?: Record<string, number>;
 }
 
-/** Result of fusing one day across all sources. */
 export interface FusionDayResult {
   date: string;
   conversations: FusedWearableConversation[];
@@ -196,24 +160,16 @@ export interface FusionDayResult {
   contentHash: string;
 }
 
-/** Frontmatter persisted on a fused-day derived file. */
 export interface FusedDayMeta {
   kind: "wearable-fusion";
   date: string;
   sourceCount: number;
   conversationCount: number;
   contentHash: string;
-  /**
-   * SHA-256 over the canonical serialized body (`hashFusionBody`). Stored
-   * so the skip-unchanged path can detect a body whose bytes drifted from
-   * the recomputed artifact even when `contentHash` + conversation count
-   * still match — forcing a self-repair rewrite on body-level corruption.
-   */
   bodyHash: string;
   fusedAt: string;
 }
 
-/** A parsed fused-day derived file. */
 export interface FusedDayFile {
   meta: FusedDayMeta;
   conversations: FusedWearableConversation[];

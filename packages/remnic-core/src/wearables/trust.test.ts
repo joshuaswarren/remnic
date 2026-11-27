@@ -20,12 +20,10 @@ test("trust = confidence x sourceTrust, clamped to [0,1]", () => {
         0.72,
     ) < 1e-9,
   );
-  // Missing confidence defaults to 0.7.
   assert.equal(
     computeTrustScore({ extractionConfidence: undefined, sourceTrust: 1, evidence: NO_EVIDENCE }),
     0.7,
   );
-  // Boosts never push past 1.
   assert.equal(
     computeTrustScore({
       extractionConfidence: 1,

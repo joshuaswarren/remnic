@@ -1,12 +1,3 @@
-/**
- * Shared Remnic config-file discovery (issue #2796).
- *
- * One implementation of the candidate order every surface uses: explicit
- * `--config` path, then `REMNIC_CONFIG_PATH`/`ENGRAM_CONFIG_PATH`, then the
- * first existing candidate under cwd, then the home default. The standalone
- * server boots from this order and the CLI resolves `--config`-less commands
- * through it, so the two can never drift onto different files.
- */
 
 import fs from "node:fs";
 import path from "node:path";

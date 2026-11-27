@@ -1,7 +1,3 @@
-/**
- * Model Registry - Stores and retrieves model capabilities
- * Avoids repeated external lookups by caching model info locally
- */
 
 import { log } from "./logger.js";
 import fs from "node:fs";
@@ -138,9 +134,6 @@ export class ModelRegistry {
 
   private saveRegistry(): void {
     try {
-      // Created on first save, never at construction: building a registry
-      // happens on every plugin registration, including read-only discovery
-      // passes, and must not touch the operator's memory dir.
       const registryDir = dirname(this.registryPath);
       if (!fs.existsSync(registryDir)) fs.mkdirSync(registryDir, { recursive: true });
       fs.writeFileSync(this.registryPath, JSON.stringify(this.data, null, 2));
@@ -157,7 +150,6 @@ export class ModelRegistry {
   }
 
   private normalizeModelId(modelId: string): string {
-    // Remove common suffixes and prefixes for matching
     return modelId
       .toLowerCase()
       .replace(/@\d+bit$/, "") // Remove @4bit, @8bit
@@ -170,13 +162,9 @@ export class ModelRegistry {
       .trim();
   }
 
-  /**
-   * Get capabilities for a model, using cache if available
-   */
   getCapabilities(modelId: string): ModelCapabilities {
     const normalizedId = this.normalizeModelId(modelId);
 
-    // Check cache first
     if (this.data.models[normalizedId]) {
       const cached = this.data.models[normalizedId];
       if (!this.isCacheExpired(cached)) {
@@ -186,7 +174,6 @@ export class ModelRegistry {
       log.info(`ModelRegistry: cache expired for ${modelId}, will refresh`);
     }
 
-    // Check known models
     for (const [knownId, capabilities] of Object.entries(KNOWN_MODELS)) {
       if (normalizedId.includes(knownId)) {
         log.info(`ModelRegistry: using known capabilities for ${modelId}`);
@@ -195,9 +182,6 @@ export class ModelRegistry {
           ...capabilities,
           modelId: normalizedId,
           source: "default",
-          // Reachable only with a missing or expired cached record, so any
-          // learned structuredOutput is stale here — leave it unset and let
-          // getStructuredOutput's freshness rules drive the re-probe.
           fetchedAt: new Date().toISOString(),
         };
         this.data.models[normalizedId] = caps;
@@ -206,7 +190,6 @@ export class ModelRegistry {
       }
     }
 
-    // Return defaults
     log.info(`ModelRegistry: using default capabilities for ${modelId}`);
     return {
       ...DEFAULT_CAPABILITIES,
@@ -214,17 +197,11 @@ export class ModelRegistry {
     };
   }
 
-  /**
-   * Store capabilities for a model
-   */
   setCapabilities(modelId: string, capabilities: Omit<ModelCapabilities, "modelId" | "fetchedAt">): void {
     const normalizedId = this.normalizeModelId(modelId);
     const previous = this.data.models[normalizedId];
     const caps: ModelCapabilities = {
       ...capabilities,
-      // A replacement record (e.g. fresh LM Studio detection) must not erase a
-      // learned structuredOutput shaping — but an EXPIRED decision must not be
-      // renewed either: drop it so the re-probe stays due.
       structuredOutput:
         capabilities.structuredOutput ??
         (previous && !this.isCacheExpired(previous) ? previous.structuredOutput : undefined),
@@ -275,7 +252,6 @@ export class ModelRegistry {
   } {
     const caps = this.getCapabilities(modelId);
 
-    // Use override if provided (e.g., user knows their LLM server limits), otherwise use detected caps
     const sanitizedOverride =
       typeof maxContextOverride === "number" &&
       Number.isFinite(maxContextOverride) &&
@@ -285,13 +261,10 @@ export class ModelRegistry {
         : undefined;
     const effectiveContextWindow = sanitizedOverride ?? Math.max(1024, Math.floor(caps.contextWindow));
 
-    // Guardrails: never allow output budget to exceed the model/server context window.
-    // If we do, input budget goes negative and we end up generating huge, invalid prompts.
     const overheadTokens = Math.min(1000, Math.floor(effectiveContextWindow / 10)); // <=10% overhead, max 1k
     const minInputTokens = Math.min(512, Math.floor(effectiveContextWindow / 4)); // keep some room even on small contexts
     const minOutputTokens = Math.min(256, Math.max(1, effectiveContextWindow - overheadTokens - minInputTokens));
 
-    // Base output budget: typical output, but scaled down for small contexts.
     let outputTokens = caps.typicalOutputTokens;
 
     // For very large contexts, default to ~12.5% output (capped), which tends to be plenty for JSON extraction.
@@ -299,10 +272,8 @@ export class ModelRegistry {
       outputTokens = Math.min(Math.floor(effectiveContextWindow / 8), 16384);
     }
 
-    // Never let output exceed 25% of context.
     outputTokens = Math.min(outputTokens, Math.floor(effectiveContextWindow / 4));
 
-    // Clamp output so we always have positive input headroom.
     const maxOutputTokens = Math.max(1, effectiveContextWindow - overheadTokens - minInputTokens);
     outputTokens = Math.min(maxOutputTokens, Math.max(minOutputTokens, outputTokens));
 
@@ -311,7 +282,6 @@ export class ModelRegistry {
       effectiveContextWindow - outputTokens - overheadTokens,
     );
 
-    // Convert to characters (rough estimate: 1 token ≈ 4 chars)
     const maxInputChars = Math.max(0, Math.floor(availableForInput * 3.5)); // Conservative: 3.5 chars/token
 
     const source = sanitizedOverride ? "user override" : caps.source;
@@ -322,16 +292,10 @@ export class ModelRegistry {
     };
   }
 
-  /**
-   * List all cached models
-   */
   listCached(): string[] {
     return Object.keys(this.data.models);
   }
 
-  /**
-   * Clear expired cache entries
-   */
   cleanExpired(): number {
     const before = Object.keys(this.data.models).length;
     this.data.models = Object.fromEntries(

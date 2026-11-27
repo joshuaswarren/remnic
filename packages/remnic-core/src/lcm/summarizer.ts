@@ -3,7 +3,6 @@ import { estimateTokens } from "./archive.js";
 import type { LcmArchive, LcmMessage } from "./archive.js";
 import type { LcmDag } from "./dag.js";
 
-/** Generate a ULID-like ID (timestamp + random). */
 function generateNodeId(): string {
   const ts = Date.now().toString(36).padStart(9, "0");
   const rand = Math.random().toString(36).slice(2, 10);
@@ -45,7 +44,6 @@ export class LcmSummarizer {
   ): Promise<number> {
     let nodesCreated = 0;
 
-    // Phase 1: Create leaf nodes from unsummarized messages
     const maxLeafBatches = options.maxLeafBatches;
     const readLimit =
       maxLeafBatches === undefined
@@ -54,7 +52,6 @@ export class LcmSummarizer {
     const unsummarized = this.archive.getUnsummarizedMessages(sessionId, readLimit);
     if (unsummarized.length >= this.config.leafBatchSize) {
       const batches = chunkArray(unsummarized, this.config.leafBatchSize);
-      // Only process complete batches (leave partial for next time)
       const completeBatches = unsummarized.length % this.config.leafBatchSize === 0
         ? batches
         : batches.slice(0, -1);
@@ -65,7 +62,6 @@ export class LcmSummarizer {
       }
     }
 
-    // Phase 2: Roll up at each depth level
     if (nodesCreated > 0) {
       nodesCreated += await this.rollupAll(sessionId);
     }
@@ -73,7 +69,6 @@ export class LcmSummarizer {
     return nodesCreated;
   }
 
-  /** Create a leaf summary node (depth 0) from a batch of messages. */
   private async createLeafNode(
     sessionId: string,
     messages: LcmMessage[],
@@ -104,7 +99,6 @@ export class LcmSummarizer {
     return true;
   }
 
-  /** Roll up orphan nodes at each depth level up to maxDepth. */
   private async rollupAll(sessionId: string): Promise<number> {
     let totalCreated = 0;
 
@@ -113,7 +107,6 @@ export class LcmSummarizer {
       if (orphans.length < this.config.rollupFanIn) continue;
 
       const batches = chunkArray(orphans, this.config.rollupFanIn);
-      // Only process complete batches
       const completeBatches = orphans.length % this.config.rollupFanIn === 0
         ? batches
         : batches.slice(0, -1);

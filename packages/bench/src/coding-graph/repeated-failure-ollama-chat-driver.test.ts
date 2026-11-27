@@ -629,7 +629,6 @@ test("RepeatedFailureOllamaChatDriver bounds a non-cooperative evaluator", async
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     },
   });
-  // Integration coverage for the real driver deadline; the evaluator never settles.
   const result = await driver.runEpisode({
     identity: {
       suiteVersion: "v1",

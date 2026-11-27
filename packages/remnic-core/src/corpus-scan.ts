@@ -1,20 +1,3 @@
-/**
- * Corpus maintenance scans (the pure, read-only filesystem work the daemon
- * runs periodically).
- *
- * Three scans live here, all of them corpus-sized:
- *   - the recall-corpus path walk (hot + cold tiers);
- *   - the entity-entry fingerprint the canonical-id migration reads on every
- *     entity unlock;
- *   - the watermark's freshness stat over the newest hot partition.
- *
- * They are plain functions over plain inputs so the corpus-scan worker can run
- * them off the main event loop: `src/corpus-scan-worker.entry.ts` is bundled
- * into a plain-JavaScript worker entry (`src/corpus-scan-worker.entry.mjs`,
- * generated — see scripts/sync-corpus-scan-worker.mjs) and the host falls back
- * to these functions inline when a worker cannot start. One implementation,
- * two execution sites, identical results.
- */
 
 import type { Dirent, Stats } from "node:fs";
 import { createHash } from "node:crypto";
@@ -23,7 +6,6 @@ import path from "node:path";
 import { isErrnoCode } from "./utils/errno.js";
 import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 
-/** An errno-carrying filesystem failure. */
 export type ErrnoFailure = NodeJS.ErrnoException;
 
 /**
@@ -39,9 +21,7 @@ export function isPropagatableReadError(error: ErrnoFailure): boolean {
 }
 
 export interface CorpusScanWalkOptions {
-  /** Memory root the walk is contained in. */
   baseDir: string;
-  /** Directories to walk (category roots, cold root, archive root). */
   startDirs: readonly string[];
   /** Strict mode: backend read failures propagate instead of being skipped. */
   propagateReadErrors?: boolean;
@@ -70,8 +50,6 @@ export async function collectContainedMarkdownPaths(options: CorpusScanWalkOptio
   const { baseDir, startDirs, propagateReadErrors = false, checkCancelled } = options;
   const filePaths: string[] = [];
 
-  // Resolve the memory root once: a missing root is an empty corpus and an
-  // unreadable root is a backend failure the strict census must surface.
   try {
     await realpath(baseDir);
   } catch (error) {
@@ -87,9 +65,6 @@ export async function collectContainedMarkdownPaths(options: CorpusScanWalkOptio
 
   const collectPaths = async (dir: string): Promise<void> => {
     checkCancelled?.();
-    // Directory-level guard, isolated from per-entry handling: skip symlinked
-    // or non-directory category dirs. A failure here means the whole subtree
-    // does not exist or escaped the store — fail closed by skipping it.
     let dirStat: Stats;
     try {
       dirStat = await lstat(dir);
@@ -103,10 +78,6 @@ export async function collectContainedMarkdownPaths(options: CorpusScanWalkOptio
     }
     if (dirStat.isSymbolicLink()) return; // never follow symlinks out of the store (both modes)
     if (!dirStat.isDirectory()) {
-      // A category root that EXISTS but is not a directory (e.g. `facts/`
-      // replaced by a regular file) is a layout/backend failure: a strict
-      // census must not silently publish the remaining categories as healthy.
-      // Non-strict (recall) stays best-effort and skips it (issue #2156 round-10).
       if (propagateReadErrors) {
         throw new Error(`corpus scan: expected a directory but found a non-directory at ${dir}`);
       }
@@ -127,9 +98,6 @@ export async function collectContainedMarkdownPaths(options: CorpusScanWalkOptio
 
     const subdirs: string[] = [];
     for (const entry of entries) {
-      // Outside the per-entry handling below, which deliberately swallows
-      // non-propagatable errors — a cancellation must never be swallowed with
-      // them (issue #2307).
       checkCancelled?.();
       // Never follow symlinked entries out of the store.
       if (entry.isSymbolicLink()) continue;
@@ -141,8 +109,6 @@ export async function collectContainedMarkdownPaths(options: CorpusScanWalkOptio
         filePaths.push(fullPath);
       }
     }
-    // Recurse into real subdirectories regardless of any single poisoned entry
-    // above, so valid nested in-store memories are never dropped.
     for (const subdir of subdirs) {
       await collectPaths(subdir);
     }
@@ -151,8 +117,6 @@ export async function collectContainedMarkdownPaths(options: CorpusScanWalkOptio
   for (const dir of startDirs) {
     await collectPaths(dir);
   }
-  // A signal that fired during the last directory read would otherwise return a
-  // truncated path list as if it were the whole corpus (issue #2307 review).
   checkCancelled?.();
   return filePaths;
 }
@@ -196,9 +160,6 @@ export async function fingerprintEntityEntries(entitiesDir: string): Promise<str
  */
 export async function statMtimes(paths: readonly string[]): Promise<Array<number | null>> {
   const results: Array<number | null> = new Array(paths.length).fill(null);
-  // Fixed-size batches: an unbounded Promise.all submits one libuv operation
-  // per file at once, and the worker and main thread share that threadpool, so
-  // a large bulk import would delay every other filesystem operation.
   const STAT_BATCH_SIZE = 256;
   for (let start = 0; start < paths.length; start += STAT_BATCH_SIZE) {
     await Promise.all(paths.slice(start, start + STAT_BATCH_SIZE).map(async (filePath, offset) => {

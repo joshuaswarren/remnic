@@ -25,7 +25,6 @@ export class HermesMemoryExtensionPublisher implements MemoryExtensionPublisher 
   };
 
   async resolveExtensionRoot(): Promise<string> {
-    // Hermes does not have an extension directory.
     return "";
   }
 

@@ -1,11 +1,3 @@
-/**
- * Chat session state — transcript + pending-plan pointer persisted under
- * `<memoryDir>/state/chat/<chatSessionId>.jsonl` (issue #1583).
- *
- * Atomic appends (rule 54).  Chat transcripts are excluded from memory
- * extraction — the work-task exclusion tag is stamped on creation so talking
- * *about* memories does not create memories of the conversation itself.
- */
 
 import { mkdir, readFile, appendFile, readdir, stat, unlink, open } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
@@ -17,16 +9,10 @@ import type { ChatSessionState, ChatTranscriptEntry } from "./chat-types.js";
 
 const CHAT_DIR_NAME = "state/chat";
 
-/**
- * Resolve the chat-session directory for a given memory dir.
- */
 export function chatSessionDir(memoryDir: string): string {
   return join(memoryDir, CHAT_DIR_NAME);
 }
 
-/**
- * Resolve the transcript file path for a chat session id.
- */
 /**
  * Validate a chat session id is safe for filesystem use (no path traversal).
  * Accepts UUIDs and alphanumeric+dash identifiers only (P1 — path safety).
@@ -42,20 +28,7 @@ export function chatSessionFile(memoryDir: string, chatSessionId: string): strin
   return join(chatSessionDir(memoryDir), `${chatSessionId}.jsonl`);
 }
 
-// ---------------------------------------------------------------------------
-// Monotonic transcript seq (issue #1687 review — strictly increasing)
-// ---------------------------------------------------------------------------
 
-/**
- * Last emitted transcript `seq`. Seeded from `Date.now()` on first use and
- * incremented when two appends land in the same millisecond, so `seq` is
- * strictly increasing within a process (review thread: `Date.now()` alone is
- * not monotonic — same-ms entries would share a seq and break the SSE
- * reconnect dedup-by-seq contract). Across process restarts the counter is
- * raised above the on-disk max by `loadChatSession` (issue #1718), so a
- * backward clock step (NTP, VM migration, manual change) cannot re-seed it
- * below lines already persisted for a resumed session.
- */
 let lastTranscriptSeq = 0;
 
 function nextTranscriptSeq(): number {
@@ -92,10 +65,7 @@ export async function createChatSession(
     confirmedPlanIds: new Set(),
     createdAt: now,
   };
-  // Ensure the directory exists.
   await mkdir(chatSessionDir(memoryDir), { recursive: true });
-  // Write a metadata header line so the file is never empty and carries
-  // the principal/scope binding (used for per-session isolation checks).
   await appendFile(
     chatSessionFile(memoryDir, id),
     JSON.stringify({
@@ -103,8 +73,6 @@ export async function createChatSession(
       ts: now,
       role: "system" as const,
       content: `Chat session created. Principal: ${opts.principal ?? "default"}. Namespace: ${opts.namespace ?? "default"}. work_task: Excluded from memory extraction`,
-      // Structured binding fields so loadChatSession doesn't need to regex-parse
-      // prose (robust against dotted principals like alice@example.com).
       ...(opts.principal ? { principal: opts.principal } : {}),
       ...(opts.namespace ? { namespace: opts.namespace } : {}),
       ...(opts.sessionKey ? { sessionKey: opts.sessionKey } : {}),
@@ -143,9 +111,7 @@ export async function loadChatSession(
     try {
       const entry = JSON.parse(line) as ChatTranscriptEntry & Record<string, unknown>;
       transcript.push(entry);
-      // Extract binding from the system header line.
       if (entry.role === "system" && entry.seq === 0) {
-        // Prefer structured fields (robust against dotted principals).
         const metaPrincipal = typeof entry.principal === "string" ? entry.principal : undefined;
         const metaNamespace = typeof entry.namespace === "string" ? entry.namespace : undefined;
         const metaSessionKey = typeof entry.sessionKey === "string" ? entry.sessionKey : undefined;
@@ -163,7 +129,6 @@ export async function loadChatSession(
         if (metaSessionKey) sessionKey = metaSessionKey;
         createdAt = entry.ts;
       }
-      // Scan for pending-plan / pending-promotion markers (append-only state).
       if (entry.role === "system") {
         const pm = entry.content.match(/^pending_plan:(.+)$/);
         if (pm) pendingPlanId = pm[1];
@@ -171,8 +136,6 @@ export async function loadChatSession(
         if (pp) pendingPromotionId = pp[1];
         const resolved = entry.content.match(/^(plan_applied|plan_cancelled|promotion_applied|promotion_cancelled):/);
         if (resolved) {
-          // Only clear the matching pending — a plan resolution must not drop
-          // an active promotion (and vice versa) (cursor Medium OlACs).
           if (entry.content.startsWith("plan_")) {
             pendingPlanId = undefined;
           }
@@ -186,14 +149,6 @@ export async function loadChatSession(
       // tolerated, never crash the engine).
     }
   }
-  // Issue #1718 — backward-clock-skew robustness: raise the module-level seq
-  // counter so the next append is strictly greater than any line already on
-  // disk for this session, regardless of clock direction across restarts
-  // (NTP step, VM migration, manual change). Without this, a backward clock
-  // skew would re-seed the counter below the on-disk max and the SSE
-  // reconnect dedup-by-seq contract could drop freshly-appended entries as
-  // duplicates. The transcript is already fully parsed above, so this is a
-  // single pass over the in-memory array.
   for (const e of transcript) {
     if (typeof e.seq === "number" && e.seq + 1 > lastTranscriptSeq) {
       lastTranscriptSeq = e.seq + 1;
@@ -223,19 +178,6 @@ export interface ChatSessionNamespaceHost {
   configRef?: { defaultNamespace?: string } | undefined;
 }
 
-/**
- * The shared effective-namespace chokepoint for a resumed chat session
- * (issue #1850 round 6). A chat session is an id-loaded record whose stored
- * namespace bypassed the per-token allow-list; BOTH the HTTP dispatch
- * (`/engram/v1/chat/message`, `/engram/v1/chat/events/:id`) and the MCP
- * dispatch (`memory_chat` → processChatMessage) call this ONE function so
- * neither surface can dodge it. Loads the session and runs
- * `enforceNamespaceAllowList` (which maps undefined → the server default).
- * FAIL CLOSED: a scoped token whose allow-list does not cover the session's
- * effective namespace is rejected; no-op for unrestricted/legacy tokens. A
- * missing session is left to the downstream handler (404 /
- * chat_session_not_found) — only FOUND sessions carry a namespace to gate.
- */
 export async function enforceChatSessionNamespace(
   service: ChatSessionNamespaceHost,
   chatSessionId: string,
@@ -264,20 +206,10 @@ export async function appendTranscriptEntry(
     seq: nextTranscriptSeq(),
     ts: new Date().toISOString(),
   };
-  // Atomic resurrection guard (codex P2): open with O_APPEND but WITHOUT
-  // O_CREAT so a session already unlinked by a concurrent TTL sweep fails at
-  // open-time (ENOENT) — there is no stat->appendFile TOCTOU. A headerless
-  // recreation would load with no principal binding and be treated as public
-  // by sessionBelongsToPrincipal. A concurrent unlink during the append is
-  // caught by the post-append re-stat below so the turn fails visibly rather
-  // than writing to an orphaned inode and returning 200.
   let fh;
   try {
     fh = await open(filePath, fsConstants.O_APPEND | fsConstants.O_WRONLY);
   } catch (err) {
-    // Only ENOENT (session unlinked by a concurrent TTL sweep) maps to
-    // chat_session_expired; real fs errors (EACCES, EMFILE, EISDIR, ...)
-    // are rethrown so the caller surfaces the actual failure (codex P2).
     if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error("chat_session_expired");
     }
@@ -288,17 +220,9 @@ export async function appendTranscriptEntry(
   } finally {
     await fh.close();
   }
-  // Post-append re-check (codex P2): if a concurrent TTL sweep unlinked the
-  // session between open() and here, the append landed on the orphaned inode
-  // and the directory no longer references it. Re-stat the PATH (not the fd)
-  // so the turn fails with chat_session_expired instead of returning 200 with
-  // a reply the client cannot resume. A later sweep unlinking an over-TTL
-  // session is a legitimate TTL action, not a silent loss.
   try {
     await stat(filePath);
   } catch (err) {
-    // Only ENOENT (concurrent TTL unlink) is session expiry; other fs
-    // errors (EACCES, EMFILE, ENOTDIR, ...) are rethrown (codex/kilo P2).
     if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error("chat_session_expired");
     }
@@ -309,18 +233,8 @@ export async function appendTranscriptEntry(
 }
 
 // ---------------------------------------------------------------------------
-// In-process transcript pub/sub (issue #1687 SSE push)
 // ---------------------------------------------------------------------------
 
-/**
- * Per-session listener sets, keyed by `memoryDir + chatSessionId` so two
- * memory stores sharing a legacy/imported session id cannot leak transcript
- * entries to each other (AGENTS.md State Scoping — module-level singletons
- * are scoped per store).  Kept module-level so appendTranscriptEntry can fan
- * out new entries to open SSE connections regardless of which caller
- * appended (HTTP, MCP, or CLI).  Empty sets are pruned so the map never
- * grows unbounded (rule 47 — no leak).
- */
 const transcriptListeners = new Map<string, Set<(entry: ChatTranscriptEntry) => void>>();
 
 function transcriptListenerKey(memoryDir: string, chatSessionId: string): string {
@@ -371,10 +285,6 @@ export function subscribeChatTranscript(
   };
 }
 
-/**
- * Append a pending-plan marker so a later turn can confirm the plan
- * (append-only state — loadChatSession scans for the latest unresolved one).
- */
 export async function markPendingPlan(
   memoryDir: string,
   chatSessionId: string,
@@ -386,9 +296,6 @@ export async function markPendingPlan(
   });
 }
 
-/**
- * Append a pending-promotion marker so a later turn can confirm the promotion.
- */
 export async function markPendingPromotion(
   memoryDir: string,
   chatSessionId: string,
@@ -400,9 +307,6 @@ export async function markPendingPromotion(
   });
 }
 
-/**
- * Record that a pending plan was applied or cancelled.
- */
 export async function markPlanResolved(
   memoryDir: string,
   chatSessionId: string,
@@ -414,9 +318,6 @@ export async function markPlanResolved(
   });
 }
 
-/**
- * Record that a pending promotion was applied or cancelled.
- */
 export async function markPromotionResolved(
   memoryDir: string,
   chatSessionId: string,
@@ -428,9 +329,6 @@ export async function markPromotionResolved(
   });
 }
 
-/**
- * Clean up expired chat sessions based on TTL.
- */
 export async function cleanupExpiredChatSessions(
   memoryDir: string,
   ttlHours: number,
@@ -454,11 +352,6 @@ export async function cleanupExpiredChatSessions(
       // boundary is inclusive; sub-millisecond APFS mtime skew is negligible
       // against an hour-scale threshold (rule 54 — deterministic cleanup).
       if (ttlHours <= 0 || ageHours >= ttlHours) {
-        // Re-check mtime immediately before unlinking so a turn appended
-        // mid-sweep (which refreshes mtime) is not deleted by the stale age
-        // decision captured above (codex P2). ttlHours <= 0 (expire-all)
-        // skips the re-check. The residual microsecond window is a
-        // legitimate sweep of an over-TTL file.
         if (ttlHours > 0) {
           const fresh = await stat(filePath);
           const freshAge = (Date.now() - fresh.mtimeMs) / (1000 * 60 * 60);
@@ -482,8 +375,6 @@ export function sessionBelongsToPrincipal(
   session: ChatSessionState,
   principal?: string,
 ): boolean {
-  // A session with no recorded principal is accessible to anyone (legacy/
-  // single-user case).  A session with a principal requires an exact match.
   if (!session.principal) return true;
   return session.principal === principal;
 }

@@ -26,44 +26,29 @@ import {
 } from "../storage/entity-canonical-id-references.js";
 import { withRawEntityPageMutation } from "../storage/entity-canonical-id-lock.js";
 
-// Write-boundary journal cache for promoted copies (issue #2213).
 const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
-// ── Types ────────────────────────────────────────────────────────────────────
 
 export type SpaceKind = "personal" | "project" | "team";
 
 export interface Space {
-  /** Unique space ID */
   id: string;
-  /** Human-readable name */
   name: string;
-  /** Space type */
   kind: SpaceKind;
-  /** Description */
   description?: string;
   /** Memory directory path (absolute) */
   memoryDir: string;
-  /** Created at */
   createdAt: string;
-  /** Updated at */
   updatedAt: string;
-  /** Owner */
   owner?: string;
-  /** Members (for team spaces) */
   members?: string[];
-  /** Parent space (for promotion) */
   parentSpaceId?: string;
 }
 
 export interface SpaceManifest {
-  /** Current active space ID */
   activeSpaceId: string;
-  /** All spaces */
   spaces: Space[];
-  /** Manifest version */
   version: number;
-  /** Last updated */
   updatedAt?: string;
 }
 
@@ -106,17 +91,11 @@ export interface SpacePromoteResult {
 }
 
 export interface ConflictEntry {
-  /** Memory ID */
   memoryId: string;
-  /** Source file path */
   sourcePath: string;
-  /** Target file path */
   targetPath: string;
-  /** Conflict type */
   conflictType: "content_mismatch" | "metadata_mismatch" | "both";
-  /** Source content hash */
   sourceHash: string;
-  /** Target content hash */
   targetHash: string;
 }
 
@@ -138,7 +117,6 @@ export interface AuditEntry {
   memoryIds?: string[];
 }
 
-// ── Manifest management ─────────────────────────────────────────────────────
 
 const MANIFEST_VERSION = 1;
 const MANIFEST_LOCK_STALE_MS = 30_000;
@@ -481,7 +459,6 @@ function sleepSync(ms: number): void {
 
 function createPersonalSpace(baseDir?: string, memoryDirOverride?: string): Space {
   const homeDir = baseDir ?? resolveHomeDir();
-  // Priority: override > REMNIC_MEMORY_DIR > ENGRAM_MEMORY_DIR > existing standalone dir > existing OpenClaw dir > new standalone dir
   const standalonePath = path.join(homeDir, ".engram", "memory");
   const openclawPath = path.join(homeDir, ".openclaw", "workspace", "memory", "local");
   const memoryDir =
@@ -504,7 +481,6 @@ function createPersonalSpace(baseDir?: string, memoryDirOverride?: string): Spac
   };
 }
 
-// ── Space CRUD ──────────────────────────────────────────────────────────────
 
 export function listSpaces(baseDir?: string): Space[] {
   const manifest = loadManifest(baseDir);
@@ -540,7 +516,6 @@ export function createSpace(options: {
       throw new Error(`Space "${id}" already exists`);
     }
 
-    // Validate parent space exists
     if (options.parentSpaceId && !manifest.spaces.some((s) => s.id === options.parentSpaceId)) {
       throw new Error(`Parent space "${options.parentSpaceId}" not found`);
     }
@@ -557,7 +532,6 @@ export function createSpace(options: {
       parentSpaceId: options.parentSpaceId,
     };
 
-    // Ensure memory directory exists before publishing the manifest entry.
     fs.mkdirSync(memoryDir, { recursive: true });
 
     manifest.spaces.push(created);
@@ -565,7 +539,6 @@ export function createSpace(options: {
     return created;
   });
 
-  // Audit
   appendAudit(
     {
       action: "space.create",
@@ -587,12 +560,10 @@ export function deleteSpace(spaceId: string, baseDir?: string): void {
     const idx = manifest.spaces.findIndex((s) => s.id === spaceId);
     if (idx === -1) throw new Error(`Space "${spaceId}" not found`);
 
-    // If deleting active space, switch to personal
     if (manifest.activeSpaceId === spaceId) {
       manifest.activeSpaceId = "personal";
     }
 
-    // Clear parentSpaceId references from children
     for (const space of manifest.spaces) {
       if (space.parentSpaceId === spaceId) {
         space.parentSpaceId = undefined;
@@ -612,7 +583,6 @@ export function deleteSpace(spaceId: string, baseDir?: string): void {
   );
 }
 
-// ── Switch ───────────────────────────────────────────────────────────────────
 
 export function switchSpace(spaceId: string, baseDir?: string): SpaceSwitchResult {
   const { previousId, spaceName } = updateManifest(baseDir, (manifest) => {
@@ -640,7 +610,6 @@ export function switchSpace(spaceId: string, baseDir?: string): SpaceSwitchResul
   };
 }
 
-// ── Push / Pull ─────────────────────────────────────────────────────────────
 
 export async function pushToSpace(
   sourceSpaceId: string,
@@ -718,7 +687,6 @@ export async function pullFromSpace(
   };
 }
 
-// ── Share ────────────────────────────────────────────────────────────────────
 
 export function shareSpace(spaceId: string, members: string[], baseDir?: string): SpaceShareResult {
   const spaceName = updateManifest(baseDir, (manifest) => {
@@ -747,7 +715,6 @@ export function shareSpace(spaceId: string, members: string[], baseDir?: string)
   };
 }
 
-// ── Promote ──────────────────────────────────────────────────────────────────
 
 export async function promoteSpace(
   sourceSpaceId: string,
@@ -766,16 +733,12 @@ export async function promoteSpace(
   if (!source) throw new Error(`Source space "${sourceSpaceId}" not found`);
   if (!target) throw new Error(`Target space "${targetSpaceId}" not found`);
 
-  // Promotion requires parent-child relationship or explicit force
   if (source.parentSpaceId !== targetSpaceId && target.parentSpaceId !== sourceSpaceId) {
     if (!options?.force) {
       throw new Error("Spaces must have a parent-child relationship for promotion. Use --force to override.");
     }
   }
 
-  // Subject guard (issue #2372): the SAME gate as the scope-profile promotion
-  // path — a user-subject (or unstamped, fail-closed) memory promoted into a
-  // TEAM space warns/rejects with the override named; recorded in the audit trail.
   const subjectWarnings: string[] = [];
   const warnedMemoryIds: string[] = [];
   if (target.kind === "team") {
@@ -826,7 +789,6 @@ export async function promoteSpace(
   };
 }
 
-// ── Merge ────────────────────────────────────────────────────────────────────
 
 export async function mergeSpaces(
   sourceSpaceId: string,
@@ -862,7 +824,6 @@ export async function mergeSpaces(
   };
 }
 
-// ── Audit trail ─────────────────────────────────────────────────────────────
 
 export function getAuditLog(baseDir?: string): AuditEntry[] {
   const auditPath = path.join(getSpacesDir(baseDir), "audit.jsonl");
@@ -885,7 +846,6 @@ function appendAudit(entry: Omit<AuditEntry, "id" | "timestamp">, baseDir?: stri
   fs.appendFileSync(auditPath, `${JSON.stringify(full)}\n`);
 }
 
-// ── Internal helpers ─────────────────────────────────────────────────────────
 
 interface CopyOptions {
   filterIds?: string[];
@@ -908,12 +868,6 @@ async function copyMemories(
   const targetRoot = fs.realpathSync(targetDir);
 
   const sourceFiles = walkMd(sourceRoot);
-  // Entity pages in THIS copy batch can re-establish collisions the target's
-  // journal already resolved (Codex P1, round 19; mirrors capsule-merge):
-  // once the next migration parks the mapping, a memory canonicalized onto
-  // the target's canonical claimant is permanently misattributed. Memories
-  // whose ref targets a batch-supplied entity id copy byte-faithful behind
-  // the reconcile marker instead.
   const sourceEntityIds = new Set(
     sourceFiles
       .filter((p) => {
@@ -953,10 +907,6 @@ function copyPreparedMemories(
   let merged = 0;
   const conflicts: ConflictEntry[] = [];
   let skipped = 0;
-  // The reconcile marker is published ONCE, after every record landed
-  // (Codex P1, round 21): a per-record marker could be consumed by a peer
-  // between a legacy-preserving memory write and its colliding entity page,
-  // canonicalizing the memory onto the wrong claimant irreversibly.
   let reconcileNeeded = false;
   for (const sourcePath of sourceFiles) {
     const sourceRealPath = safeRealpath(sourcePath);
@@ -977,13 +927,6 @@ function copyPreparedMemories(
       continue;
     }
 
-    // The target's migration journal is a write boundary for promoted copies
-    // too (issue #2213): a pre-migration source memory can carry a legacy
-    // entityRef the target already renamed, and corpus bumps no longer
-    // re-trigger the migration. Read per record so a mid-batch journal change
-    // applies to later copies. Only memory-tier records canonicalize —
-    // entities/ pages carry relationship targets (reconcile-marker territory,
-    // below) and everything else copies byte-faithful.
     const targetKind = classifyEntityRefWritePath(targetRoot, targetPath);
     const idsAtCompare = historicalIdCache.get(path.join(targetRoot, "state"));
     const sourceRef = targetKind === "memory" ? readEntityRefFromFrontmatter(content) : null;
@@ -994,7 +937,6 @@ function copyPreparedMemories(
         : content;
     const sourceHash = hashContent(content);
 
-    // Filter by IDs if specified
     if (options?.filterIds?.length) {
       const fm = parseSimpleFrontmatter(content);
       if (!fm?.id || !options.filterIds.includes(fm.id)) {
@@ -1003,7 +945,6 @@ function copyPreparedMemories(
       }
     }
 
-    // Check for conflict
     if (fs.existsSync(targetPath)) {
       const targetStat = safeLstat(targetPath);
       if (!targetStat?.isFile() || targetStat.isSymbolicLink()) {
@@ -1021,13 +962,6 @@ function copyPreparedMemories(
       const targetContent = fs.readFileSync(targetPath, "utf8");
       const targetHash = hashContent(targetContent);
 
-      // A target already holding the CANONICALIZED form is the same memory —
-      // done, and re-promoting after a ref rewrite must not report a conflict.
-      // The verdict is only valid for the snapshot it was computed under
-      // (Codex P1): a mapping parked/removed mid-compare would leave the
-      // target's formerly-canonical ref with nothing left to repair it — a
-      // moved journal falls through to the write path, which resolves at the
-      // write and repairs after it.
       if (
         hashContent(canonicalContent) === targetHash
         && historicalIdCache.get(path.join(targetRoot, "state")) === idsAtCompare
@@ -1052,7 +986,6 @@ function copyPreparedMemories(
       // moved mid-compare (the write path re-resolves and repairs) (#2213).
     }
 
-    // Copy file
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     const targetParentRealPath = safeRealpath(path.dirname(targetPath));
     if (!targetParentRealPath || !isPathInsideRoot(targetParentRealPath, targetRoot)) {
@@ -1061,14 +994,8 @@ function copyPreparedMemories(
     }
     const stateDir = path.join(targetRoot, "state");
     if (targetKind === "memory" && !refHasSourceClaimant) {
-      // Re-resolve at the write and REPAIR afterwards: a peer process can
-      // publish the journal at any point in this loop, and the corpus bump
-      // below no longer re-triggers the migration.
       const idsAtWrite = historicalIdCache.get(stateDir);
       const written = canonicalizeEntityRefFrontmatter(content, idsAtWrite);
-      // Snapshot the prior target: a repair failure must restore it (or
-      // remove a newly created file) before propagating — a reported-failed
-      // copy must not replace the prior claimant's bytes (AGENTS.md §14).
       let priorTarget: string | null = null;
       try {
         priorTarget = fs.readFileSync(targetPath, "utf8");
@@ -1098,34 +1025,18 @@ function copyPreparedMemories(
         throw err;
       }
     } else if (targetKind === "memory") {
-      // Ref targets a batch-supplied entity page (potential collision
-      // claimant): keep the legacy bytes; the DEFERRED marker below lets the
-      // migration settle the collision and rewrite per its verdict (Codex P1).
       fs.writeFileSync(targetPath, content);
       reconcileNeeded = true;
     } else {
       fs.writeFileSync(targetPath, content);
       if (targetKind === "entity") {
-        // Entity pages carry relationship TARGETS only rewriteRelationshipTargets
-        // understands — copy bytes faithfully behind the deferred reconcile
-        // pass (issue #2213).
         reconcileNeeded = true;
       }
     }
     merged++;
-    // Bump the target's corpus sentinel per write (out-of-band — not through a
-    // StorageManager mutation), on the CANONICAL root (targetRoot), matching
-    // where files were written and where a StorageManager resolves its
-    // version/cache keys. Per-write (not once after the loop) so a warm
-    // hot-memories cache for the target rescans MID-batch and never serves the
-    // pre-copy corpus while copies are still landing (#1902; a symlinked target
-    // would otherwise diverge, and a once-after bump leaves in-batch reads
-    // stale).
     bumpMemoryCorpusVersionForDir(targetRoot);
   }
 
-  // Every record — including every collision claimant entity page — is on
-  // disk; NOW the reconcile pass can settle collisions safely.
   if (reconcileNeeded) {
     requestEntityCanonicalIdReconcileSync(path.join(targetRoot, "state"));
   }

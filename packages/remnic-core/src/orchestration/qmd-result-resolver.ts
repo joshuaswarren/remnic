@@ -1,30 +1,3 @@
-/**
- * QMD result resolver — extracted from the orchestrator (issue #1526 seam 11).
- *
- * Owns the subsystem that resolves a QMD search-result path back to the
- * concrete `MemoryFile` (and its owning namespace/storage). Three concerns
- * live here:
- *
- *   - `readQmdResultMemory` — resolve a result path to a `MemoryFile`,
- *     handling cold-tier collections, namespace-prefixed collections, and
- *     absolute vs relative paths.
- *   - `resolveColdQmdResultForRecall` — wrap a result with its owner
- *     namespace so the recall pipeline can scope-filter candidates.
- *   - `storageForAbsoluteQmdResultPath` — find the `StorageManager` whose
- *     directory tree contains an absolute result path.
- *
- * Behavior-preserving move from orchestrator.ts — no logic changes. The
- * orchestrator constructs one instance and keeps thin delegating methods so
- * existing call sites (recallInternal, applyColdFallbackPipeline,
- * loadSearchResultMemoryMap, suggestLinksForMemory, and the
- * RecallRerankCoordinator callback) continue to work.
- *
- * Config, the storage router, and the orchestrator's namespace-resolution
- * helpers are accessed through getter callbacks (not captured at
- * construction) so that post-construction reassignment of the
- * orchestrator's live fields is honored. This mirrors the
- * RecallRerankCoordinator / ConversationIndexCoordinator accessor pattern.
- */
 
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -137,10 +110,6 @@ export function qmdResultPathCandidates(storageDir: string, resultPath: string):
   return [...candidates];
 }
 
-/** Canonicalize flat hot-memory identities before merging with native hits (#3194).
- * This is a path-only map: no candidates, collections or namespace scopes are removed.
- * Cold/explicit foreign collections keep their existing owner-resolution path.
- */
 export function normalizeFlatQmdResults(
   results: QmdSearchResult[],
   config: PluginConfig,
@@ -173,10 +142,6 @@ function storageDirOrNull(storage: StorageManager): string | null {
   return typeof dir === "string" && dir.length > 0 ? dir : null;
 }
 
-/**
- * Coordinator for resolving QMD search-result paths to concrete memory
- * files and their owning namespace/storage.
- */
 export class QmdResultResolver {
   private readonly getConfig: () => PluginConfig;
   private readonly storageFor: (namespace: string) => Promise<StorageManager>;

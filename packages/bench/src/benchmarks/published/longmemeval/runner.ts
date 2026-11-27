@@ -1,11 +1,3 @@
-/**
- * LongMemEval runner migrated into @remnic/bench for phase 1.
- *
- * As of issue #566 PR 2/7, the per-item lifecycle (reset → ingest →
- * recall → answer → judge → score) lives in `../harness.ts`. This
- * module only knows about dataset loading + how to translate a
- * `LongMemEvalItem` into a `HarnessPlan`.
- */
 
 import { collectTemporalLexicalCues } from "@remnic/core";
 

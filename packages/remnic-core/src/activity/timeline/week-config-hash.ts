@@ -44,10 +44,6 @@ export function computeWeeklyConfigHash(input: WeeklyConfigInput): string {
   }
   const rawTimezone = requireNonBlank(input.timezone, "timezone");
   assertValidTimezone(rawTimezone);
-  // Canonicalize before hashing: `utc` and `UTC` are the same zone, and
-  // `US/Eastern` is an alias of `America/New_York`. Hashing the raw string
-  // gives two callers two identities for one zone, which would fork one
-  // snapshot history on a harmless casing or alias change.
   const timezone = new Intl.DateTimeFormat("en-US", { timeZone: rawTimezone })
     .resolvedOptions().timeZone;
   const weekStartsOn = requireNonBlank(input.weekStartsOn, "weekStartsOn");
@@ -59,8 +55,6 @@ export function computeWeeklyConfigHash(input: WeeklyConfigInput): string {
   if (!Array.isArray(input.categories)) {
     throw new RangeError("categories must be an array of category definitions");
   }
-  // Copy + sort: never sort the caller's array in place, and hash category
-  // order-independently so a harmless reorder cannot orphan stored snapshots.
   const sorted = input.categories
     .map((category, index) => ({
       id: requireNonBlank(category?.id, `categories[${index}].id`),
@@ -72,8 +66,6 @@ export function computeWeeklyConfigHash(input: WeeklyConfigInput): string {
       throw new RangeError(`duplicate category id: ${sorted[index].id}`);
     }
   }
-  // Fixed field order; JSON.stringify each part so no separator can collide
-  // with category content.
   const body = [
     JSON.stringify(timezone),
     JSON.stringify(weekStartsOn),

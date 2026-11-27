@@ -1,13 +1,3 @@
-/**
- * Correction Contract surface tests (issue #1580 PR 3).
- *
- * Asserts the three transports (MCP / HTTP / CLI) all dispatch through the
- * SAME boundary operations (memory_correct_plan / memory_correct_apply) so
- * validation + namespace policy reach every correction path (rule 22 / 39).
- *
- * Gate parity test: when correctionVisible is off, tools/list is byte-identical
- * to pre-feature — the two correction tools are absent (rule 39).
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EngramMcpServer } from "../access-mcp.js";
@@ -15,12 +5,8 @@ import type { EngramAccessService } from "../access-service.js";
 import { getOperation, __resetRegistryForTest } from "../access-boundary.js";
 import type { CorrectionPlan, CorrectionOutcome } from "./correction-contract.js";
 
-// Re-register operations after a prior test file cleared the registry.
 import "../access-operations.js";
 
-// ---------------------------------------------------------------------------
-// Helpers — safe extraction without inline casts
-// ---------------------------------------------------------------------------
 
 function extractToolNames(response: unknown): Set<string> {
   if (typeof response !== "object" || response === null) return new Set();
@@ -105,7 +91,6 @@ const STUB_OUTCOME: CorrectionOutcome = {
 };
 
 // ---------------------------------------------------------------------------
-// Gate parity: tools/list visibility (rule 39)
 // ---------------------------------------------------------------------------
 
 test("tools/list gate: correction tools absent when correctionVisible off (byte-identical)", async () => {
@@ -121,7 +106,6 @@ test("tools/list gate: correction tools absent when correctionVisible off (byte-
 
 test("tools/list gate: correction tools present when correctionVisible on (default)", async () => {
   const stub = { briefingEnabled: true } as unknown as EngramAccessService;
-  // correctionVisible defaults to true (enabled by default — plan is read-only).
   const server = new EngramMcpServer(stub, { emitLegacyTools: true });
   const response = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" });
   const names = extractToolNames(response);
@@ -152,7 +136,6 @@ test("MCP surface: memory_correct_plan forwards duplicateOf", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// MCP dispatch: tools/call → boundary operation → service method
 // ---------------------------------------------------------------------------
 
 test("MCP surface: memory_correct_plan forwards the request abort signal", async () => {
@@ -221,7 +204,6 @@ test("MCP surface: remnic.memory_correct_plan alias dispatches identically", asy
 });
 
 // ---------------------------------------------------------------------------
-// Boundary validation: empty text rejected (rule 51)
 // ---------------------------------------------------------------------------
 
 test("boundary: memory_correct_plan rejects empty text with a structured error", async () => {
@@ -236,7 +218,6 @@ test("boundary: memory_correct_plan rejects empty text with a structured error",
       arguments: { text: "" },
     },
   });
-  // The MCP server wraps boundary errors in an isError result.
   if (typeof response === "object" && response !== null && "result" in response) {
     const result = response.result;
     if (typeof result === "object" && result !== null && "isError" in result) {
@@ -270,7 +251,6 @@ test("boundary: memory_correct_apply rejects missing planId with a structured er
 });
 
 // ---------------------------------------------------------------------------
-// Operation registry: both ops are registered
 // ---------------------------------------------------------------------------
 
 test("registry: memory_correct_plan + memory_correct_apply are registered operations", () => {

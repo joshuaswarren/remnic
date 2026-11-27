@@ -64,17 +64,6 @@ import type {
   WearableSourceSettings,
 } from "./types.js";
 
-/**
- * Memory status used for a given memory mode. Least-privilege default:
- * anything that is not explicitly "auto" lands in the review queue
- * rather than active recall.
- */
-/**
- * Compose a wearable-side envelope in salvage mode (issue #1989 PR4):
- * wearable transcripts and provider-native memories are MACHINE input —
- * one malformed field must not abort a whole day's sync. Drops are
- * warn-logged, never silent.
- */
 function composeSalvagedWearableEnvelope(
   input: MemoryWriteInput,
   ctx: WriteContext,
@@ -166,13 +155,10 @@ export interface WearableMemoryGenResult {
    * callers don't count blocked content as successfully created (#1645).
    */
   tombstoneBlocked: number;
-  /** Earlier borderline writes promoted to active by new evidence. */
   promoted: number;
-  /** Earlier pending writes retired by a fresh judge-reject verdict. */
   demoted: number;
   skipped: number;
   skippedByReason: Record<string, number>;
-  /** Non-fatal problems (e.g. the extraction engine erroring). */
   warnings: string[];
   /**
    * True when every conversation was extracted (the pass may still
@@ -203,9 +189,7 @@ const IMPORTANCE_RANK: Record<ImportanceLevel, number> = {
   critical: 4,
 };
 
-/** Max characters of transcript per extraction turn. */
 const MAX_EXTRACTION_CHUNK_CHARS = 6_000;
-/** Skip extraction for conversations with less substance than this. */
 const MIN_CONVERSATION_CHARS = 80;
 
 /**
@@ -247,8 +231,6 @@ export function buildExtractionTurns(
       timestamp,
       sourceValidAt: timestamp,
       sessionKey,
-      // Always-on capture: this transcript may carry TV, podcast, or
-      // overheard speech the wearer never authored (issue #2294).
       ambientCapture: true,
     });
     chunkLines = [];
@@ -267,11 +249,6 @@ interface GatedCandidate {
   fact: ExtractedFact;
   importance: ImportanceScore;
   conversation: WearableConversation;
-  /**
-   * Ambient high-impact verdict, decided where the extraction's entity list is
-   * still in scope so personhood comes from the extractor's own `type:
-   * "person"` metadata rather than the spelling of `entityRef` (#2294).
-   */
   highImpact: boolean;
 }
 
@@ -339,10 +316,6 @@ async function scoreCandidates(
   return scored;
 }
 
-/**
- * Run extraction + gates over a day's conversations and persist the
- * survivors. Returns counts for the sync summary.
- */
 export async function generateWearableMemories(
   sourceId: string,
   date: string,
@@ -379,11 +352,6 @@ export async function generateWearableMemories(
     try {
       extraction = await deps.extract(turns);
     } catch (err) {
-      // One failing extraction call almost always means every call will
-      // fail (missing key, provider outage) — stop hammering the engine
-      // and surface a single actionable warning instead of one per
-      // conversation. Candidates gathered before the failure still
-      // persist below.
       result.warnings.push(
         `extraction failed for ${sourceId}/${date} (conversation ${conversation.id}): ${describeErrorForOperator(err)} — the memory pass for this day retries on the next sync`,
       );
@@ -402,15 +370,6 @@ export async function generateWearableMemories(
         continue;
       }
       const highImpact = isHighImpactPersonalFact({ ...fact, content }, personRefs);
-      // In smart mode the trust bands subsume the hard confidence
-      // floor — a borderline fact belongs in the review band, not on
-      // the floor. The pre-filter applies to review/auto modes only.
-      //
-      // High-impact ambient claims are exempt: the extraction clamp just
-      // pinned them to 0.39, which is below the 0.6 default floor, so the
-      // pre-filter would silently drop the very candidates `review` mode
-      // promises to queue and would make the auto-mode cap unreachable
-      // (#2294). They skip the floor and land pending_review via the cap.
       if (
         highImpact === false &&
         settings.memoryMode !== "smart" &&
@@ -443,13 +402,6 @@ export async function generateWearableMemories(
     }
   }
 
-  // Drop candidates that already exist in storage BEFORE applying the
-  // day cap so duplicates never consume cap slots that novel,
-  // lower-scoring candidates should get (Codex P2 on PR #1458). In
-  // smart mode a duplicate of a PENDING_REVIEW write is kept aside as
-  // a promotion candidate — corroboration that arrives after the
-  // original borderline write (another device syncing the same day)
-  // must be able to promote it in place (Cursor review on PR #1462).
   const novel: GatedCandidate[] = [];
   const promotable: GatedCandidate[] = [];
   for (const candidate of candidates) {
@@ -468,16 +420,10 @@ export async function generateWearableMemories(
     novel.push(candidate);
   }
 
-  // Re-score promotion candidates with TODAY'S evidence; promote the
-  // ones that now clear the auto threshold. Never consumes day-cap
-  // slots (no new memory is written).
   if (promotable.length > 0) {
     const promoteScores = await scoreCandidates(promotable, settings, deps, result);
     for (const [index, candidate] of promotable.entries()) {
       const scored = promoteScores.get(index);
-      // Every wearable candidate is ambient by construction, so a high-impact
-      // personal claim can only ever reach the review queue — late-arriving
-      // corroboration must not promote a clamped TV line to active (#2294).
       const decision = scored
         ? decideSmart(scored.trust, scored.verdict, settings, {
             capAtReview: candidate.highImpact,
@@ -487,12 +433,6 @@ export async function generateWearableMemories(
         skip("duplicate-existing");
         continue;
       }
-      // A fresh judge-REJECT retires the stored row — but only a
-      // pending_review one. Active rows are never auto-demoted: an
-      // operator approval or accrued recall signals must not be
-      // overturned by one later LLM verdict; contradiction scans and
-      // supersession own active-row retirement (Cursor review on PR
-      // #1462, round 7).
       if (scored.verdict === "reject") {
         if (deps.writer.demoteWearableMemory !== undefined) {
           const existingForDemote = await deps.writer.findWearableMemoryByContent!(
@@ -548,19 +488,11 @@ export async function generateWearableMemories(
     }
   }
 
-  // Smart mode: judge + trust scoring decide active/review/drop per
-  // fact. The judge runs ONE batch call for the whole day; trust
-  // combines extraction confidence x sourceTrust with corroboration
-  // boosts (cross-device agreement, existing-memory support).
   let trustById = new Map<number, ScoredCandidate>();
   if (settings.memoryMode === "smart") {
     trustById = await scoreCandidates(novel, settings, deps, result);
   }
 
-  // Smart decisions run BEFORE the day cap so dropped facts (judge
-  // rejections, below-trust) never consume cap slots that surviving
-  // candidates ranked past position N should get (Cursor review on PR
-  // #1462).
   interface Writable {
     candidate: GatedCandidate;
     index: number;
@@ -570,10 +502,6 @@ export async function generateWearableMemories(
   const modeStatus = memoryStatusForMode(settings.memoryMode);
   const writable: Writable[] = [];
   novel.forEach((candidate, index) => {
-    // Every wearable candidate is ambient, so a high-impact personal claim can
-    // never be written active — on ANY mode. `auto` has no trust scoring and an
-    // operator may set minConfidence at or below the speculative ceiling, which
-    // would otherwise let a clamped TV line straight into recall (#2294).
     const capAtReview = candidate.highImpact;
     if (settings.memoryMode !== "smart") {
       const status = capAtReview ? "pending_review" : modeStatus;
@@ -610,8 +538,6 @@ export async function generateWearableMemories(
     });
   });
 
-  // Day cap over the SURVIVORS: strongest by trust in smart mode, by
-  // importance otherwise. Stable ordering with a content tiebreak.
   const strength = (entry: Writable): number =>
     settings.memoryMode === "smart"
       ? trustById.get(entry.index)?.trust ?? 0
@@ -665,9 +591,6 @@ export async function generateWearableMemories(
       contentHashSource: candidate.fact.content,
       status,
     });
-    // #1645: a tombstone-blocked wearable write lands pending_review (no active
-    // copy) — count it as blocked, NOT created, so the sync summary and callers
-    // don't report blocked content as successfully created active memories.
     if ("duplicate" in writeResult) {
       skip("duplicate-existing");
     } else if (writeResult.tombstoneBlocked) {
@@ -727,12 +650,6 @@ export async function writeDailyDigestMemory(
     },
     { source: wearableSourceLabel(sourceId) },
   );
-  // A provider derives conversation.title from the same captured audio, so a
-  // title lifted from a television scene ("Dana's cancer diagnosis") would
-  // otherwise ride into recall on the digest, bypassing the extraction prompt
-  // and its clamp entirely. Digest content is `moment`, which the classifier
-  // already treats as personal-claim-shaped, so this reads the titles alone
-  // and holds only a contaminated digest for review (#2294).
   const titleIsHighImpact = lines.some((line) =>
     isHighImpactPersonalFact({ category: "fact", content: line }),
   );
@@ -750,7 +667,6 @@ export async function writeDailyDigestMemory(
  * review queue. Always `pending_review` regardless of memoryMode — the
  * provider's extraction quality is outside Remnic's control.
  */
-/** Native-source trust prior reduction (provider extraction quality). */
 const NATIVE_TRUST_FACTOR = 0.9;
 
 export async function importNativeMemories(
@@ -767,17 +683,11 @@ export async function importNativeMemories(
   const seenContent = new Set<string>();
   const smart = settings.importNativeMemories === "smart";
 
-  // Smart path: one judge batch over the novel items, like transcript
-  // facts, with a reduced source prior — provider extraction quality is
-  // outside Remnic's control.
   const novel: WearableNativeMemory[] = [];
   for (const memory of memories) {
     const content = memory.content?.trim();
     if (!content) continue;
     if (alreadyImportedIds.has(memory.id)) continue;
-    // Intra-run + cross-run dedup: the storage hash index only learns a
-    // fact after its write lands, so same-content items within one page
-    // batch need the local set.
     if (seenContent.has(content) || (await deps.writer.hasFactContentHash(content))) {
       importedIds.push(memory.id);
       continue;
@@ -828,11 +738,6 @@ export async function importNativeMemories(
       });
       const decision = decideSmart(trust, verdict, settings);
       if (decision.outcome === "drop") {
-        // Deliberately NOT recorded in importedIds: a dropped native
-        // fact re-fetches and re-scores on later syncs, so corpus or
-        // corroboration support that arrives later can still admit it.
-        // The judge verdict cache keeps repeated rejections cheap
-        // (Cursor review on PR #1462).
         continue;
       }
       status = decision.outcome === "active" ? "active" : "pending_review";
@@ -871,29 +776,7 @@ export async function importNativeMemories(
       },
       { source: `${wearableSourceLabel(sourceId)}:native` },
     );
-    // Per-item isolation: one rejected write must not discard the items
-    // already stored on this page — the caller can only account for what
-    // this function returns, so a mid-page throw would hide completed
-    // writes from the summary and skip their reindex. The failed item is
-    // left out of importedIds and retries on the next sync.
-    let nativeWriteResult;
-    try {
-      nativeWriteResult = await deps.writer.writeSealedMemory(nativeEnvelope, {
-        importance: scoreImportance(content, "fact", memory.tags ?? []),
-        contentHashSource: content,
-        status,
-      });
-    } catch (err) {
-      warnings.push(
-        `${sourceId}: native memory ${memory.id} failed to import: ${describeErrorForOperator(err)} — it retries on the next sync`,
-      );
-      continue;
-    }
-    // #1645: a tombstone-blocked native import lands pending_review (no active
-    // copy) — count it as blocked, NOT imported. Still record the provider id in
-    // importedIds so the next sync doesn't re-import and duplicate the pending
-    // row; the block is permanent for this content. A write the dedup window
-    // suppressed (a concurrent writer committed the fact first) counts as neither.
+    let nativeWriteResult;    try {      nativeWriteResult = await deps.writer.writeSealedMemory(nativeEnvelope, {        importance: scoreImportance(content, "fact", memory.tags ?? []),        contentHashSource: content,        status,      });    } catch (err) {      warnings.push(        `${sourceId}: native memory ${memory.id} failed to import: ${describeErrorForOperator(err)} — it retries on the next sync`,      );      continue;    }
     if (!("duplicate" in nativeWriteResult)) {
       if (nativeWriteResult.tombstoneBlocked) tombstoneBlocked += 1;
       else imported += 1;

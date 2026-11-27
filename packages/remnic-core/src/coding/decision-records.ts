@@ -1,39 +1,5 @@
-/**
- * Decision records — pure storage contract (issue #1548 Track A PR 1).
- *
- * The four-memory-shape memory layer stores architectural decisions as
- * markdown files with YAML frontmatter under the coding namespace. This
- * module is the **pure contract**: data shape, parse, serialise, validate,
- * and the supersede mutation. No filesystem, no orchestrator — callers
- * (PR 2's MCP/HTTP/CLI surfaces and the orchestrator's normal persist
- * pipeline) hang these helpers onto real storage.
- *
- * Why markdown + frontmatter?
- *  - QMD searches the body for free (rule 43 — storage chokepoint means the
- *    orchestrator persist pipeline fires for catalog + reindex + dedup).
- *  - Human-reviewable diff via the same tooling as any other memory page.
- *  - The body carries prose; the frontmatter carries the searchable,
- *    structured fields.
- *
- * Why this parser/serialiser and not a YAML dep?
- *  - The surface used here is intentionally narrow: scalar strings and
- *    flow-style arrays of strings. A full YAML dependency is heavier than
- *    the parser we need and would unlock a footgun (block-scalar
- *    representations, anchors, multiple-document streams) we deliberately
- *    want to be impossible.
- *
- * Supersede ordering (rule 25): the replacement record MUST land on disk
- * BEFORE the superseded record's `status` flips, so a process crash between
- * the two writes leaves the new decision discoverable rather than nothing.
- *
- * Pure module — type-only import of the plugin config interface keeps this
- * dependency-free (the entry types live in `../types.ts`).
- */
 import type { CodingKnowledgeConfig } from "../types.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Public types
-// ──────────────────────────────────────────────────────────────────────────
 
 export type DecisionStatus = "proposed" | "accepted" | "superseded" | "rejected";
 
@@ -44,25 +10,11 @@ export const DECISION_STATUSES = [
   "rejected",
 ] as const satisfies readonly DecisionStatus[];
 
-/**
- * The "active" statuses callers surface in standing-decisions lists, briefing
- * text, and the search-by-default index. Exported as a frozen set so the
- * decision-records tests, the briefing helper, and the future list surface
- * share one declaration (rule 53 — single source of truth for classification).
- *
- * Stand-up note: superseded + rejected are intentionally excluded. A supersede
- * edge (`b.supersedes = "a"`) tells callers what to fall back to.
- */
 export const ACTIVE_DECISION_STATUSES: ReadonlySet<DecisionStatus> = new Set<DecisionStatus>([
   "proposed",
   "accepted",
 ]);
 
-/**
- * Least-privileged default for a parsed record whose frontmatter omits
- * `status` (rule 48). "Proposed" — never "accepted" — because accepting a
- * decision is a deliberate operator action.
- */
 export const DEFAULT_DECISION_STATUS: DecisionStatus = "proposed";
 
 export interface DecisionRecord {
@@ -94,7 +46,6 @@ export type DecisionRecordInput = Omit<DecisionRecord, "supersedes"> & {
 };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Gate / type guard
 // ──────────────────────────────────────────────────────────────────────────
 
 const DECISION_STATUS_BY_VALUE: Record<string, DecisionStatus> = Object.freeze({
@@ -123,7 +74,6 @@ const FRONTMATTER_KEYS = Object.freeze([
 ] as const satisfies readonly (keyof DecisionRecord | "id")[]);
 
 // ──────────────────────────────────────────────────────────────────────────
-// Serialise
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -162,7 +112,6 @@ export function serializeDecisionRecord(record: DecisionRecordInput): string {
     lines.push("# Entity references");
     for (const ref of record.entityRefs) lines.push(`- ${ref}`);
   }
-  // Trailing newline keeps the file POSIX-well-formed for `cat`/editors.
   lines.push("");
   return lines.join("\n");
 }
@@ -185,10 +134,6 @@ function encodeFrontmatterValue(
 }
 
 function escapeYamlString(value: string): string {
-  // Inside a double-quoted YAML scalar, escape backslashes and double-quotes
-  // AND emit real newlines as a `\n` escape (the parser below mirrors this).
-  // Keeping all scalars single-line makes the line-based frontmatter parser
-  // safe and the file diff-friendly.
   return value
     .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
@@ -196,7 +141,6 @@ function escapeYamlString(value: string): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Parse
 // ──────────────────────────────────────────────────────────────────────────
 
 interface ParsedFrontmatter {
@@ -215,7 +159,6 @@ interface ParsedFrontmatter {
 export function parseDecisionRecord(raw: string): DecisionRecord {
   const { fields, body } = extractFrontmatter(raw);
 
-  // Surface unexpected keys early — silent drift is rule 51's worst case.
   for (const fieldKey of Object.keys(fields)) {
     if (!FRONTMATTER_KEYS.includes(fieldKey as (typeof FRONTMATTER_KEYS)[number])) {
       throw new Error(
@@ -245,14 +188,6 @@ export function parseDecisionRecord(raw: string): DecisionRecord {
   const supersedes =
     fields.supersedes === undefined ? undefined : requireString(fields.supersedes, "supersedes");
 
-  // The parser is intentionally permissive about the on-disk shape. A
-  // record with `status: "superseded"` and no `supersedes` field is the
-  // shape `applySupersede` writes for the replaced record — the
-  // `supersedes` edge lives on the *replacement*, not the superseded one,
-  // so this branch must accept the canonical serialised form and stay
-  // round-trippable. Excluding superseded records from "active" listings is
-  // `listActive`'s job (rule 53, single classification source), not the
-  // parser's.
 
   const record: DecisionRecord = {
     id,
@@ -264,8 +199,6 @@ export function parseDecisionRecord(raw: string): DecisionRecord {
     entityRefs,
     ...(supersedes !== undefined ? { supersedes } : {}),
   };
-  // Body is preserved byte-for-byte on serialise; we don't introspect it
-  // here so format-neutral round-trips stay open (rule 38).
   void body;
   return record;
 }
@@ -300,7 +233,6 @@ function parseEntityRefs(field: unknown): string[] {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// YAML frontmatter subset (intentionally narrow)
 // ──────────────────────────────────────────────────────────────────────────
 
 function extractFrontmatter(raw: string): ParsedFrontmatter {
@@ -349,9 +281,6 @@ function decodeScalar(valueText: string): unknown {
   if (lower === "null" || lower === "~") return null;
   if (/^-?\d+$/.test(valueText)) return Number(valueText);
   if (/^".*"$/.test(valueText)) {
-    // Restore escapes — order matters: handle the backslash-pair first so
-    // the literal `\\n` we emit from `escapeYamlString` decodes to a real
-    // newline (NOT a backslash-n).
     return valueText
       .slice(1, -1)
       .replace(/\\\\/g, "\u0000")
@@ -369,12 +298,6 @@ function parseFlowList(valueText: string): unknown[] {
   const out: string[] = [];
   let buf = "";
   let inQuotes = false;
-  // Track whether we are sitting on a backslash so that `\"` inside a
-  // quoted element is recognised as an escaped quote rather than a
-  // closing quote. Without this flag, a ref containing a literal `"`
-  // (e.g. an entity id like `org/dept/\"lead\"`) would close its own
-  // element early and the next comma would split a string in half
-  // (cursor bug d16b2a18, review round on PR #1590).
   let escaped = false;
   for (let i = 0; i < inner.length; i += 1) {
     const c = inner[i]!;
@@ -417,20 +340,8 @@ function stripFlowStringQuotes(value: string): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Supersede
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * Pure supersede mutation: given the current record set, the id of a record
- * to supersede, and the replacement record (already accepted), returns a new
- * list with the replacement appended and the old record flipped to
- * `superseded`.
- *
- * The hook fires `event: "write:<replacementId>"` BEFORE
- * `event: "mutate:<oldId>:superseded"` so storage callers can guarantee
- * disk-order matches the rule-25 requirement (the replacement lands before
- * the old record's status flips).
- */
 export function applySupersede(
   records: readonly DecisionRecord[],
   targetId: string,
@@ -443,13 +354,6 @@ export function applySupersede(
       `applySupersede cannot find target record '${targetId}' in the current record set.`,
     );
   }
-  // Reject a collision where `replacement.id` already exists in the record
-  // set. Without this guard, an operator typo or MCP rename can silently
-  // overwrite an unrelated decision with a record that `supersedes` itself,
-  // corrupting the decision history (chatgpt-codex-connector review on
-  // PR #1590). The replacement must either be a NEW id (append) or the
-  // same id as the target (in-place replacement — supported as a separate
-  // edge case below).
   const existing = records.find((r) => r.id === replacement.id);
   if (existing && replacement.id !== targetId) {
     throw new Error(
@@ -463,9 +367,6 @@ export function applySupersede(
       : r,
   );
   const replacementWithEdge: DecisionRecord = { ...replacement, supersedes: targetId };
-  // Same-id replacement path: a single record swaps its body in place. The
-  // entry keeps its place in the array (so the listing order is preserved)
-  // and the new record still carries the supersede edge for traceability.
   if (replacement.id === targetId) {
     const idx = next.findIndex((r) => r.id === targetId);
     next[idx] = replacementWithEdge;
@@ -480,7 +381,6 @@ export function applySupersede(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Listing
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -493,15 +393,8 @@ export function listActive(records: readonly DecisionRecord[]): DecisionRecord[]
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Coding-knowledge feature gate (Track A PR 1 wiring boundary)
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * Single source of truth for "are decision records active for this operator?"
- * (rule 39 — every behaviour dependent on Track A consults this, not raw
- * config reads). The master gate is `codingKnowledge.enabled`; the
- * decision-record subsystem has its own on-switch.
- */
 export function isDecisionRecordsEnabled(config: CodingKnowledgeConfig): boolean {
   return config.enabled === true && config.decisionRecords === true;
 }

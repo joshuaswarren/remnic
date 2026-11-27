@@ -1,17 +1,3 @@
-/**
- * Sealed system prompt for the chat engine (issue #1583).
- *
- * The prompt encodes the core rules that every turn enforces:
- * - Always cite memory ids/handles and source quotes when asserting what's
- *   remembered.
- * - NEVER apply a mutation without explicit user confirmation in the
- *   conversation.
- * - Render plans as the diff the Correction Contract returns.
- * - Prefer "I found nothing" over speculation.
- *
- * The engine supplements the prompt with a tool-citation guard at runtime
- * (the model must ground assertions in tool results from the current turn).
- */
 
 /**
  * Build the system prompt for the chat engine.  Parameterised by whether the

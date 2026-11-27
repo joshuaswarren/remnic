@@ -1,8 +1,3 @@
-/**
- * Isolated span-join helper (issue #2333 leftover).
- *
- * Pure. Extraction wiring waits on the Phase A bench gate.
- */
 
 export type SpanJoinOk = { start: number; end: number };
 export type SpanJoinErr = { ok: false; error: "not_adjacent" };

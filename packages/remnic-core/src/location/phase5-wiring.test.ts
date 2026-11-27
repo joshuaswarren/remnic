@@ -155,7 +155,6 @@ function bodyOf(serialized: string): string {
   return parsed.body;
 }
 
-// ── Wearable fill ───────────────────────────────────────────────────────────
 
 test("wearable sync fills only missing conversation locations from a dominant overlap", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-phase5-fill-"));
@@ -190,12 +189,10 @@ test("conflicting and below-threshold overlaps leave wearable locations unfilled
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-phase5-threshold-"));
   try {
     await seedLocationDays(memoryDir, {
-      // Two equal-overlap places → ambiguous (conflict).
       "2026-06-11": [
         segment("2026-06-11T15:00:00.000Z", "2026-06-11T15:15:00.000Z", "Diner"),
         segment("2026-06-11T15:15:00.000Z", "2026-06-11T15:30:00.000Z", "Gym"),
       ],
-      // A 2-minute overlap only → below the 300s floor.
       "2026-06-12": [segment("2026-06-12T15:28:00.000Z", "2026-06-12T16:30:00.000Z", "Library")],
     });
     const { deps, written } = makeSyncDeps(memoryDir, new Date("2026-06-12T03:00:00.000Z"), locationConfig());
@@ -277,7 +274,6 @@ test("wearable fill resolves the day bucket across a midnight boundary in the lo
   }
 });
 
-// ── Day summary opt-in ──────────────────────────────────────────────────────
 
 function opsCoordinator(storage: StorageManager, configOverrides: Partial<PluginConfig>) {
   return new WorkspaceOpsCoordinator({
@@ -338,7 +334,6 @@ test("gatherTodayFacts appends location context only when requested and gated", 
   assert.equal(normalized(flagButTaggingOff), normalized(baseline), "flag with tagging disabled → byte-identical");
 });
 
-// ── Briefing opt-in ─────────────────────────────────────────────────────────
 
 test("briefingLocationSection is opt-in, start-day anchored, and labels-only", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "remnic-phase5-briefing-"));
@@ -375,7 +370,6 @@ test("briefingLocationSection is opt-in, start-day anchored, and labels-only", a
   }
 });
 
-// ── Privacy ─────────────────────────────────────────────────────────────────
 
 test("phase-5 outputs never contain coordinates or raw location records", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "remnic-phase5-privacy-"));

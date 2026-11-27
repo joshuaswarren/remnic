@@ -1,8 +1,3 @@
-/**
- * Recall-profile-storage contract lifecycle subject for the scenario-matrix harness.
- * Exercises resolveCompositeProfileStorage across single-storage pass-through,
- * empty storage fallback, multi-storage precedence, and aggregation deduplication.
- */
 
 import assert from "node:assert/strict";
 import path from "node:path";

@@ -187,7 +187,6 @@ describe("runBulkImportPipeline", () => {
     assert.equal(result.errors.length, 1);
     assert.equal(result.errors[0].batchIndex, 1);
     assert.ok(result.errors[0].message.includes("extraction failed"));
-    // Other batches still processed
     assert.equal(result.batchesProcessed, 3);
     assert.equal(result.memoriesCreated, 2); // batch 0 + batch 2
   });
@@ -215,9 +214,7 @@ describe("runBulkImportPipeline", () => {
       { batchSize: 10 },
       fn,
     );
-    // Only 2 valid turns processed
     assert.equal(result.turnsProcessed, 2);
-    // 1 validation error for the invalid turn
     assert.equal(result.errors.length, 1);
     assert.ok(result.errors[0].message.includes("role"));
     assert.equal(calls.length, 1);
@@ -273,7 +270,6 @@ describe("runBulkImportPipeline", () => {
       { batchSize: 2 },
       fn,
     );
-    // 3 batches × 3 entities = 9
     assert.equal(result.entitiesCreated, 9);
   });
 

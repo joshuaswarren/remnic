@@ -29,18 +29,13 @@ test("shouldRunProactivePass: budget disables skip the pass", () => {
     shouldRunProactivePass(proactiveConfig({ proactiveExtractionMaxTokens: 0 }), 2, true, fakeClient(false)),
     false,
   );
-  // A busy lane must not mask a budget disable either.
   assert.equal(shouldRunProactivePass(proactiveConfig({ proactiveExtractionMaxTokens: 0 }), 2, true, busy), false);
 });
 
 test("shouldRunProactivePass: skips only a local extraction against a busy background lane (issue #2011)", () => {
-  // Local extractor + busy lane + gate on → skip.
   assert.equal(shouldRunProactivePass(proactiveConfig(), 2, true, fakeClient(true)), false);
-  // Local extractor + idle lane → run.
   assert.equal(shouldRunProactivePass(proactiveConfig(), 2, true, fakeClient(false)), true);
-  // Cloud extractor (no single-lane saturation) → run even if the local lane is busy.
   assert.equal(shouldRunProactivePass(proactiveConfig(), 2, false, fakeClient(true)), true);
-  // Gate disabled → run even when the local lane is busy.
   assert.equal(
     shouldRunProactivePass(proactiveConfig({ proactiveExtractionSkipWhenLocalLlmBusy: false }), 2, true, fakeClient(true)),
     true,
@@ -63,17 +58,14 @@ test("LocalLlmClient.isBackgroundLaneContended reflects background queue and in-
 
   assert.equal(client.isBackgroundLaneContended(), false);
 
-  // A queued background request contends the lane.
   internals.requestQueues.background.push({});
   assert.equal(client.isBackgroundLaneContended(), true);
   internals.requestQueues.background.length = 0;
   assert.equal(client.isBackgroundLaneContended(), false);
 
-  // An in-flight background request contends the lane too.
   internals.queueProcessing.add("background");
   assert.equal(client.isBackgroundLaneContended(), true);
 
-  // A recall-critical request on the separate priority slot does not.
   internals.queueProcessing.clear();
   internals.queueProcessing.add("recall-critical");
   assert.equal(client.isBackgroundLaneContended(), false);

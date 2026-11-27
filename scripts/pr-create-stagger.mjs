@@ -1,9 +1,3 @@
-// PR-create stagger math (parallel-run defect, 2026-08).
-//
-// Opening five PRs at once reliably trips GitHub 429/502/503. The fleet fix
-// that worked: serialize `gh pr create` behind a lock with a 65s gap. This
-// module owns the wait math so it is testable; scripts/gh-pr-create-stagger.sh
-// calls it. Pure — no filesystem, no clock.
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";

@@ -15,19 +15,12 @@ import {
   semanticAgreementKey,
 } from "./plan.js";
 
-/**
- * Issue #2477: offline-sync and the reconcile planner validate the same peer
- * census fields, and cursor/manifest order and key plan entries the same way.
- * These tests fail the moment one surface drifts from the other, which was
- * previously a silent convergence bug.
- */
 
 const PATH = "facts/2026-03-01/a.md";
 const GOOD_SHA = "a".repeat(64);
 
 type CensusOutcome = { accepted: boolean; digest?: string };
 
-/** Validate one census file record through the offline-sync snapshot surface. */
 function offlineSyncOutcome(overrides: Record<string, unknown>): CensusOutcome {
   try {
     const snapshot = normalizeOfflineSyncSnapshot({
@@ -44,7 +37,6 @@ function offlineSyncOutcome(overrides: Record<string, unknown>): CensusOutcome {
   }
 }
 
-/** Validate the same record through the reconcile planner's census surface. */
 function reconcileOutcome(overrides: Record<string, unknown>): CensusOutcome {
   try {
     const entries = planNamespaceReconciliation({

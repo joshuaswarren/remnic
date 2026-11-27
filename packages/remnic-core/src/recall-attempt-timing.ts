@@ -10,10 +10,6 @@ import {
 } from "./recall-timings.js";
 import type { PluginConfig } from "./types.js";
 
-// Receives the recall pipeline's per-phase timing payload for the attempt in
-// flight, so the attempt's single record (requestId + outcome + httpTotalMs +
-// phases) is pushed once, from recordRecallAttempt's `finally`. Scoped per
-// attempt via AsyncLocalStorage: no recall option or signature carries it.
 const attemptSinkStore = new AsyncLocalStorage<(payload: RecallTimingEmission) => void>();
 
 /**

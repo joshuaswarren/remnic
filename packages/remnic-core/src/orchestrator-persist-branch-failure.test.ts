@@ -14,27 +14,13 @@ import {
 } from "./testing/orchestrator-lite.js";
 import type { ExtractionResult } from "./types.js";
 
-/**
- * #3288: a branch that throws after an earlier fact in the same batch is
- * durable must still land that fact's batch-end effects (behavior signal,
- * harmonic node, temporal/tag index entry, QMD request) before the error
- * reaches the caller. A retry exact-dedupes the earlier fact, so this failure
- * path is the only chance those effects get.
- */
 const EARLIER = "Prefers terse queue names for background jobs in Project Gamma.";
 
 type BranchCase = {
   label: string;
   config?: Parameters<typeof makeHarmonicLifecycleConfig>[1];
-  /** Outputs persisted after the EARLIER fact; one of them hits the injected failure. */
   later: Partial<ExtractionResult>;
-  /** Installs the failure and returns the error the pass must rethrow. */
   inject: (orchestrator: Orchestrator, storage: StorageManager, memoryDir: string) => Promise<Error>;
-  /**
-   * Proves the failing branch had already committed its own write when it
-   * threw and returns that write's id. It is durable too, so batch-end
-   * finalization must cover it as well as the earlier fact.
-   */
   committedBeforeFailure?: (storage: StorageManager) => Promise<string>;
 };
 
@@ -52,10 +38,7 @@ async function assertEarlierFactFinalized(branch: BranchCase): Promise<void> {
   const orchestrator = new Orchestrator(config);
   const storage = await orchestrator.getStorageForNamespace();
   const temporalIdBatches: string[][] = [];
-  // Finalization starts the temporal/tag update without awaiting it; cleanup
-  // waits for it so the temp dir is not removed under its lock.
   const temporalUpdates: Promise<void>[] = [];
-  // Bracket access is TypeScript's typed escape hatch for the private method; the spy only wraps it.
   const originalTemporal = orchestrator["updateTemporalTagIndexes"].bind(orchestrator);
   orchestrator["updateTemporalTagIndexes"] = (target, persistedIds) => {
     temporalIdBatches.push([...persistedIds]);
@@ -163,7 +146,6 @@ const MERGE_TARGET_ID = "merge-target-gamma";
 const MERGE_SEED = "The Project Gamma billing service deploys on a Tuesday cadence.";
 const MERGE_INCOMING = "The Project Gamma billing service deploys at 09:00 UTC sharp.";
 
-/** Seed an active merge target and a deterministic merge judge for MERGE_INCOMING only. */
 async function armSemanticMerge(orchestrator: Orchestrator, memoryDir: string): Promise<void> {
   const created = new Date(Date.now() - 3600_000).toISOString();
   const seededDir = path.join(memoryDir, "facts", created.slice(0, 10));
@@ -189,13 +171,11 @@ async function armSemanticMerge(orchestrator: Orchestrator, memoryDir: string): 
     ].join("\n"),
     "utf8",
   );
-  // Band neighbor for the incoming fact only ([minSimilarity, threshold)).
   const embeddings = orchestrator.embeddingFallback;
   embeddings.isAvailable = async () => true;
   embeddings.search = async (query) => (query === MERGE_INCOMING ? [{ id: MERGE_TARGET_ID, score: 0.85, path: "" }] : []);
   embeddings.indexFile = async () => {};
   embeddings.removeFromIndex = async () => {};
-  // Deterministic merge judge; every other local-LLM prompt gets no answer.
   orchestrator.localLlm.chatCompletion = async (messages) =>
     messages[0]?.role === "system" && messages[0].content.startsWith("You maintain a long-term memory store")
       ? {
@@ -223,9 +203,6 @@ test("#3288: a semantic-merge post-effect failure after the merge commits finali
     },
     inject: async (orchestrator, _storage, memoryDir) => {
       await armSemanticMerge(orchestrator, memoryDir);
-      // The merged-target graph rebuild fails open, but the edge-cache
-      // invalidation that follows it is not wrapped: an unavailable graph
-      // index escapes runMergedTargetPostEffects after the merge committed.
       const failure = new Error("synthetic graph index failure");
       orchestrator["graphIndexFor"] = () => {
         throw failure;

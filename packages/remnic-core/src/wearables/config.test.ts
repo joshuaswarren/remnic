@@ -44,7 +44,6 @@ test("source settings default to the fully-automated smart pipeline", () => {
     stripFillers: true,
     collapseRepeats: true,
     dropLowQuality: true,
-    // Opt-in for Bee only; limitless keeps the legacy default (issue #1811).
     preserveUtteranceBoundaries: false,
   });
 });
@@ -120,7 +119,6 @@ test("maxMemoriesPerDay honors the documented 0-disables value and bounds", () =
     sources: { limitless: { maxMemoriesPerDay: 0 } },
   });
   assert.equal(parsed.sources.limitless.maxMemoriesPerDay, 0);
-  // No ceiling: any non-negative integer cap is the operator's call.
   assert.equal(
     parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: 99999 } } })
       .sources.limitless.maxMemoriesPerDay,
@@ -134,8 +132,6 @@ test("maxMemoriesPerDay honors the documented 0-disables value and bounds", () =
     () => parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: "lots" } } }),
     /maxMemoriesPerDay/,
   );
-  // Fractional values must reject, not floor — 0.5 flooring to 0 would
-  // silently disable the cap.
   assert.throws(
     () => parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: 0.5 } } }),
     /maxMemoriesPerDay/,
@@ -151,7 +147,6 @@ test("source ids are validated against the path-safe pattern", () => {
     () => parseWearablesConfig({ sources: { "Bad Source!": {} } }),
     /lowercase source ids/,
   );
-  // Custom (non-built-in) ids are allowed — third-party connectors.
   const parsed = parseWearablesConfig({ sources: { "my-recorder": {} } });
   assert.ok(parsed.sources["my-recorder"]);
 });

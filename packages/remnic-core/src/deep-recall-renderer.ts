@@ -1,10 +1,3 @@
-/**
- * Shared markdown renderer for deep recall (issue #2332).
- *
- * Rule 22 (AGENTS.md): never fork formatting — CLI text output, MCP text
- * output, and any later surface all render through this one module.
- * Deterministic: entries in result order, trace in step order.
- */
 
 import type { DeepRecallResult } from "./deep-recall.js";
 

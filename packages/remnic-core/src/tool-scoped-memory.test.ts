@@ -8,24 +8,14 @@ import {
 } from "./tool-scoped-memory.js";
 
 // ---------------------------------------------------------------------------
-// referencesAgentSpecificTool — table-driven, both polarities.
-//
-// Tuning bias (issue #2183): a FALSE POSITIVE is cheap (the fact stays in the
-// narrower namespace — the documented safe default); a FALSE NEGATIVE is the
-// cross-integration tool-collision bug. Detection leans permissive but must not
-// fire on ordinary prose. Keywords and generic names are word-anchored so
-// "tooling"/"commander" and the "search" inside "research" do not match.
-// ---------------------------------------------------------------------------
 
 const REF_CASES: Array<{ content: string; expected: boolean; note: string }> = [
-  // ---- MUST match --------------------------------------------------------
   { content: "Prefer the search tool and provide a path when locating code.", expected: true, note: "generic name adjacent to 'tool'" },
   { content: "Use the `read` tool before editing a file.", expected: true, note: "backticked token adjacent to 'tool'" },
   { content: "The exec tool requires an absolute cwd.", expected: true, note: "generic name 'exec' adjacent to 'tool'" },
   { content: "Use `search` when locating code.", expected: true, note: "imperative invocation + backticked identifier" },
   { content: "Run `rg` before editing.", expected: true, note: "imperative invocation + backticked identifier" },
   { content: "Use /search with a path.", expected: true, note: "slash-command syntax" },
-  // ---- MUST NOT match ----------------------------------------------------
   { content: "User prefers dark mode in all editors", expected: false, note: "portable preference; no tool/command context" },
   { content: "PostgreSQL 15 requires the uuid-ossp extension for gen_random_uuid()", expected: false, note: "portable framework knowledge" },
   { content: "Magento 2.4.8 has a race condition in checkout", expected: false, note: "'condition' is not a keyword; 'checkout' is not generic" },
@@ -151,7 +141,6 @@ test("referencesAgentSpecificTool: empty/non-string input is false (no throw)", 
 });
 
 // ---------------------------------------------------------------------------
-// shouldPromoteGlobalFactToShared — composed scope-routing predicate.
 // ---------------------------------------------------------------------------
 
 const PROMOTION_CASES: Array<{ name: string; args: { scope: string | null | undefined; content: string; sourceConnector?: string; procedureSteps?: ReadonlyArray<{ intent?: string; toolCall?: { kind?: string; signature?: string } }> }; expected: boolean }> = [
@@ -170,9 +159,6 @@ for (const { name, args, expected } of PROMOTION_CASES) {
 }
 
 // ---------------------------------------------------------------------------
-// withholdToolScopedFromSharedNamespace — the SINGLE primitive every shared-
-// namespace promotion path consults. Includes structured procedure tool
-// identity (issue #2183 P2): a portable title + tool-bearing steps withholds.
 // ---------------------------------------------------------------------------
 
 const WITHHOLD_CASES: Array<{

@@ -1,19 +1,3 @@
-/**
- * Codex subscription extraction provider (issue #2784).
- *
- * Routes extraction/consolidation LLM calls through the `codex` CLI so the
- * operator's Codex subscription (ChatGPT OAuth login) authenticates the
- * request — no OpenAI API key and no codex-openai-proxy. Credentials stay in
- * the CLI's own auth store; this module never reads, accepts, or logs tokens.
- *
- * Transport contract mirrors `packages/bench/src/providers/codex-cli.ts`
- * (`codex exec --json --output-last-message`, env allowlist, login-status
- * precheck) but lives in core so the standalone daemon and host plugins get
- * a working `api: "codex-cli"` transport without importing the optional
- * bench package. Registered through the existing
- * `setCodexCliFallbackRunnerForProcess` seam, and only when no host or
- * benchmark runner has claimed it first.
- */
 
 import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
@@ -34,7 +18,6 @@ import { expandTildePath } from "../utils/path.js";
 
 export const CODEX_SUBSCRIPTION_PROVIDER_ID = "codex-subscription";
 
-/** Env var overriding the codex executable (mirrors the bench provider). */
 const CODEX_EXECUTABLE_ENV = "REMNIC_CODEX_EXECUTABLE";
 
 const DEFAULT_REASONING_EFFORT: CodexCliReasoningEffort = "medium";
@@ -43,19 +26,8 @@ const LOGIN_STATUS_TIMEOUT_MS = 10_000;
 const LOGIN_STATUS_CACHE_TTL_MS = 10 * 60_000;
 const STDIO_LIMIT = 64_000;
 const OUTPUT_SUMMARY_LIMIT = 500;
-/**
- * Env keys whose value is a filesystem path. Relative values resolve against
- * the original process cwd before either child launches, because the exec
- * child runs with cwd = the ephemeral workspace (same rule as executables).
- */
 const PATH_BEARING_ENV_KEYS: Readonly<Record<string, true>> = Object.freeze({ CODEX_HOME: true, HOME: true, USERPROFILE: true });
 
-/**
- * Environment keys forwarded to the codex child. Everything else — including
- * ambient `OPENAI_API_KEY` / `OPENAI_BASE_URL` — is stripped so the CLI cannot
- * silently fall back to metered API-key auth instead of the subscription
- * login. Mirrors the bench provider's allowlist.
- */
 const CODEX_RUNTIME_ENV_ALLOWLIST: Readonly<Record<string, true>> = Object.freeze({
   ALL_PROXY: true,
   APPDATA: true,
@@ -101,21 +73,15 @@ const CODEX_RUNTIME_ENV_ALLOWLIST: Readonly<Record<string, true>> = Object.freez
 
 const LOGIN_OK_PATTERN = /logged in using chatgpt/i;
 const LOGIN_API_KEY_PATTERN = /api key/i;
-/** CLI output shapes that mean the subscription session was rejected. */
 const AUTH_FAILURE_PATTERN =
   /\b401\b|\b403\b|unauthorized|forbidden|not logged in|no active|re-?authenticat|token expired|session expired|please log ?in/i;
 const TIMEOUT_PATTERN = /timed out after \d+ms/i;
-/** Secret shapes a codex CLI could echo into errors; replaced before surfacing. */
 const SECRET_ECHO_PATTERNS: readonly RegExp[] = [
   /sk-[A-Za-z0-9_-]{8,}/g,
   /Bearer\s+[A-Za-z0-9._-]{8,}/g,
   /eyJ[A-Za-z0-9._-]{10,}/g,
 ];
 
-/**
- * Built-in provider entry so `"codex-subscription/<model>"` chains resolve
- * with no models.json and no apiKey — the transport owns authentication.
- */
 export function codexSubscriptionBuiltinProviderConfig(): ModelProviderConfig {
   return {
     baseUrl: "codex-cli://subscription",
@@ -126,7 +92,6 @@ export function codexSubscriptionBuiltinProviderConfig(): ModelProviderConfig {
 
 export type CodexSubscriptionAuthReason = "unauthenticated" | "expired_or_revoked";
 
-/** Login/authorization failure with actionable re-auth guidance. */
 export class CodexSubscriptionAuthError extends Error {
   readonly reason: CodexSubscriptionAuthReason;
 
@@ -137,7 +102,6 @@ export class CodexSubscriptionAuthError extends Error {
   }
 }
 
-/** Provider config violated the no-raw-credentials contract. */
 export class CodexSubscriptionConfigError extends Error {
   constructor(message: string) {
     super(message);
@@ -174,7 +138,6 @@ export interface CodexSubscriptionExecResult {
 }
 
 export interface CodexSubscriptionRunnerDeps {
-  /** Runs `codex exec`. Default: isolated subprocess via launchProcess. */
   runCodexExec?: (request: CodexSubscriptionExecRequest) => Promise<CodexSubscriptionExecResult>;
   /** Runs `codex login status`. Default: isolated subprocess. Receives the
    * shared login-status ceiling (not any one caller's deadline) and the
@@ -185,7 +148,6 @@ export interface CodexSubscriptionRunnerDeps {
     timeoutMs: number,
     signal?: AbortSignal
   ) => Promise<{ status: number | null; stdout: string; stderr: string }>;
-  /** Environment the isolated child env is filtered from. Tests inject fakes. */
   env?: NodeJS.ProcessEnv;
   tmpdir?: () => string;
   now?: () => number;
@@ -201,9 +163,7 @@ interface CommandOutput {
 interface LoginStatusCacheEntry {
   at: number;
   promise: Promise<void>;
-  /** Auth-store fingerprint at check time; a mismatch invalidates the entry. */
   fingerprint: string | null;
-  /** Live waiters. The in-flight check aborts when the last waiter leaves. */
   waiters: number;
   settled: boolean;
   controller: AbortController;
@@ -248,7 +208,6 @@ export function createCodexSubscriptionRunner(deps: CodexSubscriptionRunnerDeps 
   return runner;
 }
 
-/** One runner per owning runtime/config object so teardown cannot cross instances. */
 export function getCodexSubscriptionRunnerForOwner(owner: object): CodexCliFallbackRunner {
   let runner = runnerByOwner.get(owner);
   const shutdown = runner ? shutdownByRunner.get(runner) : undefined;
@@ -259,20 +218,12 @@ export function getCodexSubscriptionRunnerForOwner(owner: object): CodexCliFallb
   return runner;
 }
 
-/** Shutdown signal for the owning runner, if this function is a core runner. */
 export function getCodexSubscriptionShutdownSignal(
   runner: CodexCliFallbackRunner,
 ): AbortSignal | undefined {
   return shutdownByRunner.get(runner)?.signal;
 }
 
-/**
- * Registers the core subprocess transport on the codex-cli seam, but only
- * when no runner is registered yet — a host or benchmark runner that claimed
- * the seam first always wins. If the seam was cleared afterwards
- * (setCodexCliFallbackRunnerForProcess(undefined)), the core runner is
- * re-registered so the next call still routes. Idempotent.
- */
 export function ensureCodexSubscriptionRunnerRegistered(deps: CodexSubscriptionRunnerDeps = {}): boolean {
   if (isCodexCliFallbackRunnerRegistered()) return false;
   defaultRegisteredRunner = createCodexSubscriptionRunner(deps);
@@ -281,7 +232,6 @@ export function ensureCodexSubscriptionRunnerRegistered(deps: CodexSubscriptionR
   return true;
 }
 
-/** True when the process seam still holds the core default runner. */
 export function isDefaultRegisteredCodexSubscriptionRunner(): boolean {
   return defaultRegisteredRunner !== undefined
     && getCodexCliFallbackRunnerForProcess() === defaultRegisteredRunner;
@@ -304,7 +254,6 @@ export function terminateActiveCodexSubscriptionChildren(
   }
 }
 
-/** SIGTERM now, SIGKILL after a bound, even if the caller later awaits drain. */
 export function beginCodexSubscriptionShutdown(
   runner?: CodexCliFallbackRunner,
   forceKillAfterMs = 1_000,
@@ -334,8 +283,6 @@ async function runCodexSubscriptionRequest(
     ? normalizeCodexCliTimeoutMs(config.retryOptions.timeoutMs)
     : undefined;
   const timeoutMs = request.options.timeoutMs ?? providerTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-  // The effective deadline starts BEFORE the login-status precheck: login
-  // consumes the same call/provider timeout budget, it is not additive.
   const now = deps.now ?? Date.now;
   const deadlineStartedAt = now();
   if (request.options.signal?.aborted) {
@@ -403,11 +350,6 @@ async function runCodexSubscriptionRequest(
   }
 }
 
-/**
- * This provider authenticates exclusively through the codex CLI login, so a
- * configured apiKey is a configuration mistake — reject it without echoing
- * the value.
- */
 export function assertNoApiKeyConfig(config: CodexCliFallbackConfig): void {
   if (config.apiKey !== undefined && config.apiKey !== "") {
     throw new CodexSubscriptionConfigError(
@@ -422,10 +364,6 @@ function resolveExecutable(config: CodexCliFallbackConfig, env: NodeJS.ProcessEn
   if (expanded.trim().length === 0) {
     throw new CodexSubscriptionConfigError(`${CODEX_EXECUTABLE_ENV} / executable must not be empty`);
   }
-  // The exec child runs with cwd = the temp workspace, and spawn resolves a
-  // relative executable against the CHILD cwd. Resolve relative paths against
-  // the original process cwd now so `./codex` stays valid; bare names keep
-  // PATH lookup.
   if (expanded.includes("/") || expanded.includes("\\")) {
     return path.resolve(expanded);
   }
@@ -444,11 +382,6 @@ function buildIsolatedEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return env;
 }
 
-/**
- * The exec child runs with cwd = the ephemeral workspace while the login
- * child runs with cwd = this process, so a relative HOME/CODEX_HOME would
- * resolve differently per child. Anchor both to the original process cwd.
- */
 function normalizePathEnvValue(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) {
@@ -464,20 +397,11 @@ function isAllowedEnvKey(key: string): boolean {
 
 interface LoginCheckContext {
   runner: CodexCliFallbackRunner;
-  /** The caller's overall effective deadline (login + exec). */
   callerTimeoutMs: number;
   deadlineStartedAt: number;
   signal?: AbortSignal;
 }
 
-/**
- * Verifies the operator's Codex subscription login via `codex login status`.
- * Success is cached briefly; failures are never cached so a re-login takes
- * effect on the next request. A cached success is also invalidated when the
- * auth store changes on disk (e.g. another process switches the same Codex
- * home from a ChatGPT login to an API key), so the cache can never mask a
- * later non-subscription login mode.
- */
 async function assertSubscriptionLogin(
   executable: string,
   env: NodeJS.ProcessEnv,
@@ -548,8 +472,6 @@ async function runLoginStatusCheck(
   const result = await runLoginStatus(executable, env, LOGIN_STATUS_TIMEOUT_MS, entry.controller.signal);
   const output = `${result.stdout}\n${result.stderr}`.trim();
   if (TIMEOUT_PATTERN.test(output)) {
-    // A login-status subprocess timeout is a deadline expiry, not an auth
-    // failure — never report it as "unauthenticated".
     throw new CodexSubscriptionTimeoutError(LOGIN_STATUS_TIMEOUT_MS);
   }
   if (result.status === 0 && LOGIN_OK_PATTERN.test(output)) {
@@ -565,13 +487,6 @@ async function runLoginStatusCheck(
   );
 }
 
-/**
- * Waits on a shared login check with this caller's own budget. A deadline or
- * caller abort rejects immediately — without cancelling the shared check
- * while other callers still wait on it. When the LAST waiter leaves an
- * in-flight check, the subprocess is aborted and the entry dropped so a later
- * caller starts a fresh check.
- */
 async function waitForLoginEntry(
   entry: LoginStatusCacheEntry,
   cacheKey: string,
@@ -587,15 +502,12 @@ async function waitForLoginEntry(
   const abortWait = new Promise<never>((_resolve, reject) => {
     rejectOnAbort = reject;
   });
-  // Identity matters: the same reference is removed in the finally below.
   const onAbort = (): void => {
     if (signal === undefined) return;
     rejectOnAbort(abortErrorOf(signal));
   };
   signal?.addEventListener("abort", onAbort, { once: true });
   entry.waiters++;
-  // The deadline timer intentionally holds the event loop: this caller's
-  // await is backed by nothing else while the shared check is in flight.
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -627,11 +539,6 @@ async function waitForLoginEntry(
   }
 }
 
-/**
- * `mtimeMs:size` of the Codex auth store, read as metadata only — the
- * provider never reads the store's contents. A change between the cached
- * check and now invalidates the cached login mode.
- */
 async function authStoreFingerprint(env: NodeJS.ProcessEnv): Promise<string | null> {
   const home = resolveCodexAuthHome(env);
   if (!home) {
@@ -673,10 +580,6 @@ function dropInFlightLogin(
   if (map?.get(cacheKey) === entry) map.delete(cacheKey);
 }
 
-/**
- * Args mirror the bench provider: fully sandboxed, ephemeral, no tools/hooks/
- * plugins/memories — extraction must behave as a plain completion endpoint.
- */
 function buildExecArgs(
   modelId: string,
   config: CodexCliFallbackConfig,
@@ -761,11 +664,6 @@ function readReasoningEffort(config: CodexCliFallbackConfig): CodexCliReasoningE
   return undefined;
 }
 
-/**
- * One JSON object per message: role boundaries are structural (JSON string
- * escaping), so literal `[system]`/role-marker text inside message content
- * can never forge another role's turn. Content stays model-visible verbatim.
- */
 function buildPrompt(messages: readonly CodexCliFallbackMessage[]): string {
   const transcript = messages
     .map((message) => JSON.stringify({ role: message.role, content: message.content }))
@@ -787,14 +685,10 @@ function execFailureError(
   env: NodeJS.ProcessEnv
 ): Error {
   const combined = `${result.stderr}\n${result.stdout}`;
-  // The authoritative timeout marker wins over auth-pattern text: a timed-out
-  // exec may have already printed model/diagnostic output containing 401/403
-  // before the deadline fired (issue #2833).
   if (TIMEOUT_PATTERN.test(combined)) {
     return new CodexSubscriptionTimeoutError(timeoutMs);
   }
   if (AUTH_FAILURE_PATTERN.test(combined)) {
-    // Re-check login on the next request; the cached status is now stale.
     loginStatusCache.delete(loginCacheKey(executable, env));
     return new CodexSubscriptionAuthError(
       "expired_or_revoked",
@@ -809,9 +703,6 @@ function execFailureError(
   );
 }
 
-/** Secret-redacted, then bounded tail of child output — the only child text
- * that ever reaches a thrown error. Redaction runs BEFORE bounding so a
- * secret straddling the cutoff cannot survive as an unmatchable fragment. */
 function summarizeOutput(stderr: string, stdout: string): string {
   const summary = [stderr.trim(), stdout.trim()].filter((part) => part.length > 0).join("\n");
   if (summary.length === 0) {
@@ -888,9 +779,6 @@ function abortErrorOf(signal: AbortSignal): Error {
   return reason;
 }
 
-/** Bounds streamed child output to STDIO_LIMIT, keeping the TAIL — codex
- * prints its final error or turn.completed result last. Secrets are redacted
- * BEFORE bounding so one straddling the cutoff cannot leak a fragment. */
 function appendBounded(existing: string, next: string): string {
   const redacted = redactSecretEchoes(existing + next);
   return redacted.length > STDIO_LIMIT ? redacted.slice(-STDIO_LIMIT) : redacted;

@@ -141,8 +141,6 @@ test("a source written after the rebuild stays found beyond two days, and unsafe
     const base = await storage.writeMemory("fact", "baseline harmonic anchor", { source: "test" });
     await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
 
-    // Written after the rebuild, then filed under a day three days back; the
-    // index was rebuilt four days ago, so that day is inside the probe window.
     const late = await storage.writeMemory("fact", "aged unindexed zebra source", { source: "test" });
     const lateMemory = (await storage.readAllMemories()).find((m) => m.frontmatter.id === late.id);
     if (!lateMemory) throw new Error("late source missing");
@@ -156,8 +154,6 @@ test("a source written after the rebuild stays found beyond two days, and unsafe
     const aged = await search(memoryDir, "aged unindexed zebra source");
     assert.equal(aged.some((r) => r.node.nodeId === "aged-node" && r.node.sourceMemoryIds?.includes(late.id)), true);
 
-    // Path traversal ids and question-queue ids are dropped, exactly as the
-    // corpus scan drops them.
     const questionId = await storage.writeQuestion("queued zebra question", "ctx", 1);
     await nodeFor(memoryDir, "unsafe-node", ["../facts/" + base.id, "../../etc/passwd"], "unsafe traversal cue");
     await nodeFor(memoryDir, "question-node", [questionId], "queue leak cue");
@@ -186,7 +182,6 @@ test("an index older than a week falls back to the corpus scan and still finds a
   }
 });
 
-// Counts hot-corpus scans while `run` executes.
 async function countCorpusScans<T>(run: () => Promise<T>): Promise<{ value: T; scans: number }> {
   const original = StorageManager.prototype.readAllMemories;
   let scans = 0;
@@ -209,20 +204,16 @@ test("a scoped or pre-complete projection is not trusted and falls back to the c
     const source = await storage.writeMemory("fact", "scoped rebuild okapi source", { source: "test" });
     await nodeFor(memoryDir, "okapi-node", [source.id], "scoped rebuild okapi source");
 
-    // First projection built with a scope that excludes the source: rebuiltAt is
-    // fresh but memory_current does not hold it.
     await rebuildMemoryProjection({ memoryDir, storage, dryRun: false, updatedBefore: "2000-01-01T00:00:00.000Z" });
     const scoped = await countCorpusScans(() => search(memoryDir, "scoped rebuild okapi source"));
     assert.equal(scoped.value.some((r) => r.node.nodeId === "okapi-node"), true, "out-of-scope source must still resolve");
     assert.equal(scoped.scans > 0, true, "an incomplete index must fall back to the scan");
 
-    // An unscoped rebuild is complete and takes the index path.
     await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
     const full = await countCorpusScans(() => search(memoryDir, "scoped rebuild okapi source"));
     assert.equal(full.value.some((r) => r.node.nodeId === "okapi-node"), true);
     assert.equal(full.scans, 0);
 
-    // A projection written before the `complete` flag existed has no such key.
     const db = openBetterSqlite3(getMemoryProjectionPath(memoryDir));
     try {
       db.prepare("DELETE FROM meta WHERE key = 'complete'").run();
@@ -277,10 +268,8 @@ test("direct probes reject symlinked and artifact sources like the scan, and an 
     await mkdir(path.join(memoryDir, "facts", day), { recursive: true });
     await mkdir(path.join(memoryDir, "artifacts", day), { recursive: true });
 
-    // A source file outside the namespace root, reachable through a symlink.
     await writeFile(path.join(outsideDir, "outside-sym.md"), memoryFileText("outside-sym", "symlink escape cue body"), "utf-8");
     await symlink(path.join(outsideDir, "outside-sym.md"), path.join(memoryDir, "facts", day, "outside-sym.md"));
-    // An artifact: outside the recall surface the corpus scan reads.
     await writeFile(path.join(memoryDir, "artifacts", day, "art-1.md"), memoryFileText("art-1", "artifact leak cue body"), "utf-8");
     await nodeFor(memoryDir, "symlink-node", ["outside-sym"], "symlink escape cue");
     await nodeFor(memoryDir, "artifact-node", ["art-1"], "artifact leak cue");
@@ -299,8 +288,6 @@ test("direct probes reject symlinked and artifact sources like the scan, and an 
     assert.deepEqual(indexed.value.artifact, scanArtifact);
     assert.equal(indexed.scans, 0, "this was the index path, not a fallback");
 
-    // Written after the rebuild but filed under a date far outside the probe
-    // window (an import that keeps its original created date).
     await mkdir(path.join(memoryDir, "facts", "2020-01-01"), { recursive: true });
     await writeFile(
       path.join(memoryDir, "facts", "2020-01-01", "imported-old.md"),
@@ -413,10 +400,6 @@ test("indexed source resolution overlaps per-source file reads (#3450)", async (
     });
     await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
 
-    // Every recalled build resolves thousands of sources; when each read is
-    // awaited in turn the build takes seconds on real disks (w91: ~19 s inside
-    // harmonicRetrieval). With a small per-read delay, serial code keeps
-    // maxInFlight at 1 while batched reads overlap.
     const originalRead = StorageManager.prototype.readMemoryByPath;
     let inFlight = 0;
     let maxInFlight = 0;

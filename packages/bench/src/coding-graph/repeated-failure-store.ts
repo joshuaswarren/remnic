@@ -36,11 +36,6 @@ export {
 } from "./repeated-failure-store-records.js";
 
 const DEFAULT_CLAIM_WAIT_TIMEOUT_MS = 30_000;
-// Lease must outlast the worst-case row: six attempts at the 180s request
-// timeout is 18 minutes of wall clock. The heartbeat timer is unref'd, so it
-// cannot be relied on to refresh the lease while a request is hung — the lease
-// itself has to cover the full retry budget or the row loses its claim
-// mid-flight and the run dies with "Claim token does not own".
 const DEFAULT_CLAIM_LEASE_MS = 30 * 60_000;
 const DEFAULT_CLAIM_HEARTBEAT_MS = 5_000;
 const DEFAULT_COMMIT_LEASE_MS = 30 * 60_000;

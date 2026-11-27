@@ -1,11 +1,3 @@
-/**
- * @remnic/core — Memory Extension Publisher Contract
- *
- * Defines the interface that every host-specific publisher must implement.
- * Each publisher knows how to write Remnic instruction files into the
- * host's extension directory so the host agent can discover and use
- * Remnic memories.
- */
 
 import type { TokenEntry } from "../tokens.js";
 
@@ -86,12 +78,8 @@ export interface PublishResult {
 export interface PublisherCapabilities {
   /** Whether the publisher is an intentional no-op stub (writes nothing). */
   readonly isStub: boolean;
-  /** Whether the publisher writes an instructions.md file. */
   readonly instructionsMd: boolean;
-  /** Whether the publisher populates a skills folder. */
   readonly skillsFolder: boolean;
-  /** Whether the publisher embeds citation format guidance. */
   readonly citationFormat: boolean;
-  /** Whether the publisher includes a read-path template for the host. */
   readonly readPathTemplate: boolean;
 }

@@ -78,8 +78,6 @@ export function detectLanguageHint(text: string): LanguageHint | undefined {
       }
     }
   }
-  // SCRIPT_RANGES is sorted by start codepoint, so `break` on the first
-  // range starting past the codepoint is exact — one range test per char.
   if (counts.has("kana")) return "jpan";
   let best: LanguageHint | undefined;
   let bestCount = 0;
@@ -113,7 +111,6 @@ export function corpusDominantLanguage(
   return best as LanguageHint | undefined;
 }
 
-/** Planner decision for one recall query. */
 export interface CrossScriptPlan {
   queryLanguage: LanguageHint | undefined;
   corpusLanguage: LanguageHint | undefined;
@@ -154,7 +151,6 @@ export function planCrossScript(input: {
   };
 }
 
-/** Corpus sample cap: dominant script stabilizes well below the full corpus. */
 const CORPUS_SAMPLE_CAP = 500;
 
 /** Memoized dominant corpus language per storage dir, keyed by corpus scan version. */

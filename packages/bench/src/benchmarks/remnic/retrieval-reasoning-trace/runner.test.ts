@@ -1,16 +1,3 @@
-/**
- * Tests for the reasoning-trace retrieval bench fixture + runner
- * (issue #564 PR 4).
- *
- * The fixture itself is synthetic, but we verify:
- * - fixture shape: 10+ cases, mix of positive and negative, unique ids, all
- *   cases reference the shared 15-memory pool with 2 reasoning traces.
- * - running the bench in full mode produces aggregates that show the boost
- *   lifts recall@1 above baseline on positive cases and leaves negative
- *   cases unchanged — i.e. the feature is actually doing something
- *   measurable.
- * - latency stays well under 1ms per case (pure helper call).
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -161,9 +148,6 @@ test("runner: quick mode exercises at least one positive AND one negative case",
     adapterMode: "direct",
   } as Parameters<typeof runRetrievalReasoningTraceBenchmark>[0]);
 
-  // In quick mode we should still see both `boost_recall_at_1` (from a
-  // positive case) and `boost_noop_preserved` (from a negative case) so a
-  // one-sided regression can't slip through a smoke run.
   assert.ok(
     result.results.aggregates.boost_recall_at_1,
     "quick mode must exercise the positive boost path",

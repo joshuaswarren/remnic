@@ -1,13 +1,3 @@
-/**
- * Index-status + git-invoker parser tests (issue #1553).
- *
- * index_status: stale index with autoIndex:"manual" reports its staleness
- * (last_indexed_head + dirty flag) via index_status rather than pretending
- * freshness.
- *
- * git-invoker parsers: parseNameStatus, parseHunks, parseLogFiles — pure
- * functions tested with synthetic output strings.
- */
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { execSync } from "node:child_process";
@@ -53,9 +43,6 @@ function mockGit(head: string | null): CodingGitInvoker {
     listTrackedFiles: () => ({ ok: true, paths: [] }),  };
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// index_status
-// ──────────────────────────────────────────────────────────────────────────
 
 test("index_status: empty store → mode 'empty'", async () => {
   const { store, dir } = await tempStore();
@@ -99,9 +86,6 @@ test("index_status: stale index → mode 'stale', dirty=true", async () => {
 test("index_status: repo with no commits but stored head → stale, not fresh (cursor Bugbot: 'Index status false fresh')", async () => {
   const { store, dir } = await tempStore();
   try {
-    // The index was built against a real HEAD, but the repo now reports
-    // no commits (unborn/reset HEAD). The index cannot match a repo with
-    // no commits — it must read as stale, not fresh.
     store.writeMeta(META_KEY_LAST_HEAD, SHA_A);
     const status = getIndexStatus(store, mockGit(null), dir);
     assert.equal(status.mode, "stale");
@@ -141,7 +125,6 @@ test("diffHunks: captures staged changes via git diff HEAD (chatgpt-codex-connec
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// git-invoker parsers
 // ──────────────────────────────────────────────────────────────────────────
 
 test("parseNameStatus: basic add/modify/delete", () => {
@@ -220,7 +203,6 @@ test("parseLogFiles: dedupes files within a commit", () => {
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// Round-2 review fixes — git-invoker parsers + index_status
 // ──────────────────────────────────────────────────────────────────────────
 
 test("parseLogFiles: real git layout (blank line after SHA) (chatgpt-codex-connector: 'Parse real git log records')", () => {
@@ -244,7 +226,6 @@ test("parseHunks: deletion-only hunk (zero new-count) covers the adjacent line (
   const hunks = parseHunks(stdout);
   assert.equal(hunks.length, 1);
   assert.equal(hunks[0]!.newRange.startLine, 1);
-  // Must be a non-empty range so it can overlap a symbol span.
   assert.ok(hunks[0]!.newRange.endLine > hunks[0]!.newRange.startLine);
 });
 
@@ -275,8 +256,6 @@ test("revParseHead: non-git directory returns git_error, not head:null (chatgpt-
 });
 
 test("parseHunks: deleted file (+++ /dev/null) does not leak its hunks to the previous file (chatgpt-codex-connector: 'Clear hunk path for deleted files')", () => {
-  // a.ts is modified, then b.ts is deleted (+++ /dev/null). A following
-  // @@ hunk for b.ts must NOT be attributed to a.ts.
   const stdout = [
     "diff --git a/src/a.ts b/src/a.ts",
     "+++ b/src/a.ts",
@@ -288,15 +267,10 @@ test("parseHunks: deleted file (+++ /dev/null) does not leak its hunks to the pr
     "@@ -1 +0,0 @@",
   ].join("\n");
   const hunks = parseHunks(stdout);
-  // b.ts's deletion hunk followed `+++ /dev/null`, which clears
-  // currentPath → the @@ hunk is dropped entirely, NOT attributed to
-  // a.ts. Exactly one hunk survives: a.ts's own +1,2 hunk.
   assert.equal(hunks.length, 1, "b.ts deletion hunk dropped after /dev/null");
   assert.equal(hunks[0].path, "src/a.ts");
   assert.equal(hunks[0].newRange.startLine, 1);
   assert.equal(hunks[0].newRange.endLine, 3); // +1,2 → [1,3)
-  // Defensive: no surviving hunk may carry a path that leaked from a
-  // prior file across a /dev/null boundary.
   assert.ok(
     hunks.every((h) => h.path === "src/a.ts"),
     "no hunk leaked a foreign path across /dev/null",

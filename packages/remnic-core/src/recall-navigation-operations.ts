@@ -1,24 +1,9 @@
-/**
- * Recall-navigation boundary operations (issue #1956).
- *
- * `memory_expand` / `memory_traverse` route MCP, HTTP, and CLI dispatch
- * through the shared validation + error-mapping layer (access-boundary.ts)
- * to the single `EngramAccessService.recallNavigate` implementation.
- * Sibling module so access-operations-batch.ts stays at its ceiling seam
- * (same layout as deep-recall's extraction).
- */
 
 import { z } from "zod";
 
 import { defineOperation } from "./access-boundary.js";
 import { EngramAccessInputError, rejectReservedArgumentKey } from "./access-errors.js";
 
-/**
- * Null-prototype accumulator for cleaned request arguments, matching the
- * batch preprocessors (issue #3225 B1): a copied own `__proto__` member on a
- * plain `{}` switches the accumulator's prototype and an inherited field then
- * reaches the zod parse.
- */
 function stripNulls(data: unknown): unknown {
   if (data !== null && typeof data === "object" && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>;

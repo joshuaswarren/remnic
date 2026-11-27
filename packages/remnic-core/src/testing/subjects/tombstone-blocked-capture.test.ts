@@ -1,8 +1,3 @@
-/**
- * Tombstone-blocked-capture lifecycle subject for the scenario-matrix harness
- * (issue #1993). Every row drives the real durable targeted index so coverage
- * cannot be satisfied by mapping this stateful path to an unrelated subject.
- */
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";

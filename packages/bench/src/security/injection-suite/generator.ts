@@ -1,4 +1,3 @@
-/** Deterministic synthetic H5 attack, benign-twin, benign-use, and adaptive corpora (#1962). */
 import { createHash } from "node:crypto";
 import { createSeededRandom, pickOne } from "../../seeded-random.js";
 import { INJECTION_PAYLOAD_TEMPLATES } from "../injection-templates/index.js";

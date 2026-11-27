@@ -27,9 +27,6 @@
 import type { MemoryFrontmatter } from "./types.js";
 
 export function effectiveValidAt(fm: Pick<MemoryFrontmatter, "valid_at" | "created">): string {
-  // `created` is required on every memory (see types.ts), so the fallback
-  // chain always terminates.  Trimming guards against whitespace-only
-  // overrides written by legacy tooling.
   const explicit = fm.valid_at?.trim();
   if (explicit && explicit.length > 0) return explicit;
   return fm.created;
@@ -40,27 +37,6 @@ export function effectiveInvalidAt(
 ): string | undefined {
   const explicit = fm.invalid_at?.trim();
   if (explicit && explicit.length > 0) return explicit;
-  // Cursor Medium rounds 1+2 on PR #713: legacy data written before
-  // #680 has `status: superseded` and `supersededAt` populated, but
-  // no `invalid_at`. With the new `as_of` filter bypassing the
-  // supersession status check, those legacy predecessors would
-  // otherwise be treated as "always valid" and surface alongside
-  // their successors at every historical pin. Fall back to
-  // `supersededAt` so the half-open `[valid_at, invalid_at)`
-  // interval still terminates for legacy supersedes without
-  // requiring a backfill migration.
-  //
-  // BOUNDARY APPROXIMATION: `supersededAt` is when the supersession
-  // write fired, which may post-date the successor's true
-  // `valid_at` (consolidation runs on its own cadence). So the
-  // legacy predecessor stays visible from `valid_at` through
-  // `supersededAt` rather than the tighter `valid_at` through
-  // successor-`valid_at` window. We accept this intentionally: the
-  // alternative — successor-aware coordination — would require
-  // threading the successor through every call site, and "show the
-  // legacy fact a bit too long" is a clear win over "drop legacy
-  // facts entirely from `as_of`". New data (post-#680) writes
-  // `invalid_at` directly and is unaffected.
   if (fm.status === "superseded") {
     const legacy = fm.supersededAt?.trim();
     if (legacy && legacy.length > 0) return legacy;
@@ -92,13 +68,6 @@ export function isValidAsOf(
   asOfMs: number,
 ): boolean {
   if (!Number.isFinite(asOfMs)) return true;
-  // Open-start bi-temporal interval (#1578 r3): an extracted end-only bound
-  // (eventTimeSource "extracted", no valid_at, has invalid_at) is true from
-  // the indefinite past. Without this, effectiveValidAt falls back to
-  // `created` and a historical as_of before ingestion hides a fact that was
-  // actually true up until invalid_at (chatgpt-codex thread on
-  // orchestrator.ts:15533). Gated on eventTimeSource so legacy memories
-  // (no bi-temporal provenance) keep the created-anchor fallback.
   const explicitValidAt = fm.valid_at?.trim();
   if (
     (!explicitValidAt || explicitValidAt.length === 0) &&
@@ -116,11 +85,7 @@ export function isValidAsOf(
   const invalidAt = effectiveInvalidAt(fm);
   if (invalidAt === undefined) return true;
   const invalidAtMs = Date.parse(invalidAt);
-  // Unparseable invalid_at — conservatively keep the fact (we can read
-  // valid_at, so we know the fact was at some point true; corrupt
-  // invalid_at is not a reason to hide it).
   if (!Number.isFinite(invalidAtMs)) return true;
-  // Half-open: at exactly invalid_at, the fact is no longer valid.
   return invalidAtMs > asOfMs;
 }
 
@@ -151,10 +116,7 @@ export function isValidityExpiredNow(
   const invalidAt = fm.invalid_at?.trim();
   if (!invalidAt || invalidAt.length === 0) return false;
   const invalidAtMs = Date.parse(invalidAt);
-  // Unparseable invalid_at — conservatively keep the fact (do not filter on
-  // corrupt data; the as_of path already handles malformed bounds).
   if (!Number.isFinite(invalidAtMs)) return false;
-  // Half-open interval end has passed: [valid_at, invalid_at) ended.
   return invalidAtMs <= nowMs;
 }
 

@@ -1,27 +1,3 @@
-/**
- * Architecture-card surface contract + handler (issue #1548 Track A PR 3).
- *
- * Mirrors the decision-surfaces pattern (PR 2): one shared implementation
- * behind the MCP, HTTP, and CLI surfaces. All three transports dispatch
- * through the `coding_architecture` boundary operation, which calls
- * {@link handleCodingArchitecture} via the service delegate.
- *
- * Gate (rule 39): `codingKnowledge.enabled + architectureCard + coding
- * context` — one predicate, identical on every surface. The tools/list
- * visibility gate checks conditions 1–2 only (config-level).
- *
- * Persistence (rule 43): the card is written through the storage
- * manager's normal persist pipeline (writeMemory for the initial card,
- * updateMemory for refreshes) so catalog recording + reindex fire. No
- * direct `fs` writes of memory content. Each refresh snapshots the
- * prior content via page-versioning before overwriting (rule 25 —
- * preserve the old before the new is ready).
- *
- * Subcommands:
- *  - `get`: return the current architecture card (or not-found).
- *  - `refresh`: build a fresh card from the repo, persist it, and
- *    snapshot the prior version.
- */
 import { codingContextLocalRoot } from "../access-coding-context-resolution.js";
 import type {
   CodingKnowledgeConfig,
@@ -38,9 +14,6 @@ import { log } from "../logger.js";
 import { composeMemoryEnvelope, type SealedMemoryEnvelope } from "../write-envelope.js";
 import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Subcommands
-// ──────────────────────────────────────────────────────────────────────────
 
 export const ARCHITECTURE_SUBCOMMANDS = ["get", "refresh"] as const;
 
@@ -48,18 +21,15 @@ export type ArchitectureSubcommand = (typeof ARCHITECTURE_SUBCOMMANDS)[number];
 
 const SUBCOMMAND_VALUES = ARCHITECTURE_SUBCOMMANDS as readonly string[];
 
-/** Type guard — narrows an unknown subcommand string. */
 export function isArchitectureSubcommand(value: unknown): value is ArchitectureSubcommand {
   return typeof value === "string" && SUBCOMMAND_VALUES.includes(value);
 }
 
-/** Human-readable subcommand list for error messages (rule 51). */
 export function formatArchitectureSubcommands(): string {
   return ARCHITECTURE_SUBCOMMANDS.join(", ");
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Surface request / response shapes
 // ──────────────────────────────────────────────────────────────────────────
 
 /** Canonical surface request — one shape for all three transports. */
@@ -69,7 +39,6 @@ export interface ArchitectureSurfaceRequest {
   namespace?: string;
 }
 
-/** Surface response — discriminated union on `subcommand`. */
 export type ArchitectureSurfaceResponse =
   | {
       subcommand: "get";
@@ -99,7 +68,6 @@ export type ArchitectureSurfaceResponse =
     };
 
 // ──────────────────────────────────────────────────────────────────────────
-// Storage contract — narrow subset of StorageManager
 // ──────────────────────────────────────────────────────────────────────────
 
 /** Tag identifying the architecture card memory (single card per namespace). */
@@ -108,11 +76,6 @@ export const ARCHITECTURE_CARD_TAG = "architecture-card";
 /** Structured attribute marking a memory as the architecture card. */
 export const ARCHITECTURE_CARD_KIND = "architecture";
 
-/**
- * Structural subset of StorageManager the architecture handler reads or
- * writes. Kept narrow so the module stays decoupled from storage.ts and
- * is unit-testable with a stub.
- */
 export interface ArchitectureSurfaceStorage {
   readonly dir: string;
   /** The resolved namespace — used for logging/observability. */
@@ -130,20 +93,10 @@ export interface ArchitectureSurfaceStorage {
   ): Promise<boolean>;
 }
 
-/**
- * Card-builder dependency. The handler delegates repo scanning to this
- * function so tests can inject a fixed card without touching the
- * filesystem.
- */
 export type ArchitectureCardBuilder = (
   repoRoot: string,
 ) => Promise<ArchitectureCardBuildResult>;
 
-/**
- * Page-versioning snapshot dependency. The handler calls this BEFORE
- * overwriting the card content so the prior version is preserved
- * (rule 25).
- */
 export interface ArchitectureVersioningHook {
   /**
    * Snapshot the current content of the card memory before refresh.
@@ -152,39 +105,20 @@ export interface ArchitectureVersioningHook {
   snapshotIfExists(memory: MemoryFile): Promise<void>;
 }
 
-/**
- * Dependencies the handler borrows from the service. The service
- * constructs this context per call; the handler never touches the
- * orchestrator directly.
- */
 export interface ArchitectureSurfaceContext {
   readonly codingKnowledge: CodingKnowledgeConfig;
   getCodingContext(sessionKey: string): CodingContext | null;
-  /** Resolve storage through the SAME namespace path as memory_store. */
   resolveStorage(request: ArchitectureSurfaceRequest): Promise<ArchitectureSurfaceStorage>;
-  /** Build the architecture card from a repo root. */
   buildCard: ArchitectureCardBuilder;
-  /** Snapshot the prior card version before refresh (rule 25). */
   versioning: ArchitectureVersioningHook;
-  /** Throw the surface-appropriate input-validation error. */
   throwInputError(message: string): never;
   /** Server-resolved connector identity for provenance. */
   readonly sourceConnector?: string;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Handler — the single shared implementation behind all three surfaces
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * The single shared implementation behind the MCP, HTTP, and CLI
- * architecture-card surfaces.
- *
- * Gate (rule 39): `codingKnowledge.enabled + architectureCard + coding
- * context`. Persistence (rule 43): cards are written through the storage
- * manager's normal persist pipeline. Refresh (rule 25): the prior card
- * is snapshotted via page-versioning BEFORE the content is overwritten.
- */
 export async function handleCodingArchitecture(
   request: ArchitectureSurfaceRequest,
   ctx: ArchitectureSurfaceContext,
@@ -192,8 +126,6 @@ export async function handleCodingArchitecture(
   const codingContext = request.sessionKey
     ? ctx.getCodingContext(request.sessionKey)
     : null;
-  // Rule 39 + type-guard narrowing: check `codingContext` inline so TS
-  // narrows it to CodingContext here, with no non-null assertion cast.
   if (
     codingContext === null ||
     !isCodingKnowledgeFeatureEnabled(ctx.codingKnowledge, "architectureCard", codingContext)
@@ -211,7 +143,6 @@ export async function handleCodingArchitecture(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Subcommand handlers
 // ──────────────────────────────────────────────────────────────────────────
 
 
@@ -232,9 +163,6 @@ async function architectureGet(
       content,
       generatedAt: existing.frontmatter.updated ?? existing.frontmatter.created,
       byteSize: Buffer.byteLength(content, "utf-8"),
-      // Derive truncation from the CONTENT marker, not a frontmatter tag —
-      // the refresh update path changes content without rewriting tags, so
-      // a tag-based check goes stale (cursor review: stale truncated tag).
       truncated: content.includes(ARCHITECTURE_CARD_TRUNCATION_MARKER),
     },
   };
@@ -246,21 +174,12 @@ async function architectureRefresh(
   codingContext: CodingContext,
 ): Promise<ArchitectureSurfaceResponse> {
   const repoRoot = codingContextLocalRoot(codingContext);
-  // Authorize the write + resolve storage BEFORE scanning the repo or
-  // invoking the summariser, so an unauthorized refresh fails fast instead
-  // of doing work (and an LLM call) it cannot persist (codex review: buildCard
-  // ran before the write ACL was enforced).
   const storage = await ctx.resolveStorage(request);
   const buildResult = await ctx.buildCard(repoRoot);
   if (!buildResult.ok) {
-    // A failed build is a tagged outcome, not a crash. Log the full detail
-    // for operators; it may include absolute paths / raw I/O messages that
-    // must NOT reach clients (cursor review: raw build errors reach clients).
     log.warn(
       `coding_architecture/refresh: card build failed (code=${buildResult.code}): ${buildResult.detail}`,
     );
-    // Persist nothing on build failure — no stale card left behind (rule 44).
-    // Client-facing error carries only the code.
     ctx.throwInputError(
       `coding_architecture refresh failed: card build returned ${buildResult.code}`,
     );
@@ -272,7 +191,6 @@ async function architectureRefresh(
 
   const existing = await findArchitectureCardMemory(storage);
   if (existing) {
-    // rule 25: snapshot the prior content BEFORE overwriting.
     await ctx.versioning.snapshotIfExists(existing);
     const updated = await storage.updateMemory(existing.frontmatter.id, cardContent, {
       actor: "coding-architecture-refresh",
@@ -282,8 +200,6 @@ async function architectureRefresh(
       log.warn(
         `coding_architecture/refresh: updateMemory returned false for id=${existing.frontmatter.id} — falling back to writeMemory`,
       );
-      // Sealed-envelope write (issue #1989 PR4): system-built card content —
-      // strict compose; an invalid card is a code bug that must surface.
       const fallbackWrite = await storage.writeSealedMemory(
         composeMemoryEnvelope(
           {
@@ -315,8 +231,6 @@ async function architectureRefresh(
     };
   }
 
-  // First card for this namespace — write a new memory.
-  // Sealed-envelope write (issue #1989 PR4): strict — see the fallback site.
   const newWrite = await storage.writeSealedMemory(
     composeMemoryEnvelope(
       {
@@ -338,7 +252,6 @@ async function architectureRefresh(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Local helpers
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -386,20 +299,13 @@ export async function findArchitectureCardMemory(
     if (m.frontmatter.category !== "fact") return false;
     const tags = m.frontmatter.tags ?? [];
     if (!tags.includes(ARCHITECTURE_CARD_TAG)) return false;
-    // Require the cardKind structured attribute so a user-created fact that
-    // merely happens to be tagged "architecture-card" is NOT mistaken for
-    // the managed card and overwritten on refresh (codex review).
     if (m.frontmatter.structuredAttributes?.cardKind !== ARCHITECTURE_CARD_KIND) return false;
-    // Any outer status other than undefined/"active" means retired.
     const outer = m.frontmatter.status;
     if (outer !== undefined && outer !== "active") return false;
-    // Also skip cards archived via archivedAt without an explicit status
-    // (cursor review: archived cards can still match the tag filter).
     if (m.frontmatter.archivedAt !== undefined && m.frontmatter.archivedAt !== null) return false;
     return true;
   });
   if (cards.length === 0) return null;
-  // Most recently updated wins (deterministic tie-break by id).
   cards.sort((a, b) => {
     const aUpdated = a.frontmatter.updated ?? a.frontmatter.created;
     const bUpdated = b.frontmatter.updated ?? b.frontmatter.created;
@@ -430,16 +336,6 @@ type CreatePageVersion = (
   memoryDir: string,
 ) => Promise<unknown>;
 
-/**
- * Build the page-versioning snapshot hook from operator config.
- *
- * - Skips entirely when versioning is disabled — no sidecars written for a
- *   feature the operator turned off (codex review: hardcoded config ignored
- *   operator settings).
- * - Reads the FULL file (frontmatter + body) from disk so a revert restores
- *   the complete memory, not just the body (codex review: snapshot was
- *   body-only).
- */
 export function createArchitectureVersioningHook(
   enabled: boolean,
   maxVersionsPerPage: number,

@@ -1,12 +1,3 @@
-/**
- * Pack assembly + deterministic agent simulation for bounded-memory-contracts.
- *
- * Everything here is a PURE function of (task, condition, contract, budget).
- * No I/O, no randomness, no LLM. This is what makes the benchmark offline and
- * reproducible: the "agent" is a fixed decision procedure over whatever
- * metadata the condition exposes, so the four conditions produce genuinely
- * different packs and decisions — the comparison is honest, not hard-coded.
- */
 
 import type {
   AgentDecision,
@@ -20,12 +11,6 @@ import type {
   SkillTriggerLogEntry,
 } from "./types.js";
 
-/**
- * The benchmark-local typed-retrieval contract. Mirrors the issue's
- * `MemoryContract` schema. maxTotalTokens is the SHARED budget under which C1
- * (raw transcript) and C2/C3 (typed) are compared — the budget-normalized
- * comparison the issue requires.
- */
 export const BOUNDED_MEMORY_CONTRACT: MemoryContract = {
   id: "bounded-memory-default",
   description:
@@ -92,17 +77,6 @@ function keywordOverlap(a: readonly string[], b: readonly string[]): number {
   return n;
 }
 
-/**
- * Assemble the memory pack for one (task, condition) pair.
- *
- * - C0: empty pack.
- * - C1: every item flattened into a transcript block (no metadata exposed),
- *   most-recent-first, truncated to the shared token budget.
- * - C2: items filtered to the task scope, active, non-superseded, organized
- *   into typed slots with citations. The boundary memory is lifted into a
- *   cited boundaryItem (rendered once, scored once). NO raw transcript is appended.
- * - C3: C2 plus skills whose trigger classifier fires.
- */
 export function assemblePack(
   task: BoundedMemoryTask,
   condition: BoundedMemoryConditionId,
@@ -123,7 +97,6 @@ export function assemblePack(
   }
 
   if (condition === "raw-transcript") {
-    // Most-recent-first so the budget favors recent context (fair to C1).
     const ordered = task.memoryItems.slice().sort((a, b) => b.turn - a.turn);
     const items: MemoryPackItem[] = [];
     let budget = contract.maxTotalTokens;
@@ -140,30 +113,18 @@ export function assemblePack(
       condition,
       slots: [{ id: "transcript", items }],
       transcriptBlock,
-      // Raw transcript buries any boundary prose; it is NOT surfaced as a
-      // structured boundary item, so the agent cannot reliably act on it.
       boundaryItem: null,
       totalTokens: items.reduce((s, it) => s + it.tokens, 0),
       fullTranscriptTokens,
     };
   }
 
-  // C2 / C3: typed contract. Each memory item is assigned to AT MOST ONE
-  // slot (no double-counting) and the shared token budget is enforced across
-  // the whole pack, so typed conditions are held to the same cap as C1.
   const inScope = task.memoryItems.filter((m) => m.scope === task.scope);
   const boundaryFixture = inScope.find(
     (m) => m.category === "boundary" && m.status === "active",
   );
-  // Lift the boundary into a cited MemoryPackItem so it is rendered WITH its
-  // mem:<id> citation and counted in retrieval/citation scoring. Pre-claimed
-  // below so it does not also occupy the boundaries slot (single render).
   const boundaryItem = boundaryFixture ? toPackItem(boundaryFixture, true) : null;
 
-  // Rank all in-scope, non-pending-review candidates once by relevance then
-  // recency. Each candidate is offered to the first accepting slot; an item
-  // already claimed by an earlier slot is skipped so cost metrics count each
-  // trace item exactly once.
   const rankedCandidates = inScope
     .filter((m) => m.status !== "pending_review")
     .slice()
@@ -198,7 +159,6 @@ export function assemblePack(
 
   let totalTokens = contract.maxTotalTokens - budget;
 
-  // C3: append triggered skills as a procedural slot, respecting the budget.
   if (condition === "typed-plus-skills" && injectSkills.length > 0) {
     const skillItems: MemoryPackItem[] = [];
     for (const skill of injectSkills) {
@@ -233,14 +193,6 @@ export function assemblePack(
   };
 }
 
-/**
- * Rule-based skill trigger classifier (C3 only).
- *
- * A skill is CONSIDERED when any appliesWhen keyword appears in the task. It
- * is INJECTED iff at least one appliesWhen keyword matches AND no
- * doesNotApplyWhen keyword matches. This is deliberately simple and
- * deterministic — it models a procedural recall gate, not a frontier model.
- */
 export function classifySkillTrigger(
   skill: FixtureSkill,
   task: BoundedMemoryTask,
@@ -282,15 +234,6 @@ interface RankedCandidate {
   turn: number;
 }
 
-/**
- * Rank pack candidates the way each condition's agent would:
- *
- * - C1 (no metadata): overlap desc, then tokens desc (longer / more repeated
- *   memory is more salient — a fair raw-transcript heuristic).
- * - C2/C3 (metadata exposed, already filtered): overlap desc, then recency.
- *
- * Returns the best candidate or null.
- */
 function rankCandidates(
   pack: AssembledMemoryPack,
   task: BoundedMemoryTask,
@@ -315,9 +258,6 @@ function rankCandidates(
   return candidates[0]!.item;
 }
 
-/**
- * Run the deterministic agent over the assembled pack.
- */
 export function simulateAgent(
   task: BoundedMemoryTask,
   pack: AssembledMemoryPack,
@@ -327,10 +267,7 @@ export function simulateAgent(
   const consideredSkillIds: string[] = [];
   const usedSkillIds: string[] = [];
 
-  // --- Boundary tasks: ask vs act ---
   if (task.shouldAsk === true) {
-    // Correct behavior is to ASK. Typed conditions surface a structured
-    // boundary note; C0/C1 do not → they act (a boundary violation).
     const asked = pack.boundaryItem !== null;
     return {
       answer: asked ? task.expectedAnswer : "act-without-confirmation",
@@ -344,7 +281,6 @@ export function simulateAgent(
     };
   }
   if (task.shouldAsk === false) {
-    // Correct behavior is to ACT (no unnecessary clarification).
     const best = rankCandidates(pack, task, allItems);
     const answer = best?.itemId ? deriveAnswer(best.itemId, allItems, injectedSkills, task) : (SELF_CONTAINED_ANSWERS[task.id] ?? "unknown");
     return {
@@ -359,8 +295,6 @@ export function simulateAgent(
     };
   }
 
-  // --- Recall / governance / skill tasks ---
-  // C3: record considered + injected skills (for the trigger log).
   for (const skill of injectedSkills) {
     consideredSkillIds.push(skill.id);
     usedSkillIds.push(skill.id);
@@ -368,7 +302,6 @@ export function simulateAgent(
 
   const best = rankCandidates(pack, task, allItems);
 
-  // Skill-positive: if a skill was injected, its steps determine the answer.
   if (task.family === "skill-positive" && injectedSkills.length > 0) {
     const answer = deriveAnswer(task.shouldUseSkillId ?? "", allItems, injectedSkills, task);
     return {
@@ -402,8 +335,6 @@ function deriveAnswer(
   skills: FixtureSkill[],
   task: BoundedMemoryTask,
 ): string {
-  // A skill answer takes precedence when the task is skill-positive and the
-  // injected skill is the one that should fire.
   if (task.family === "skill-positive") {
     const skill = skills.find((sx) => sx.id === task.shouldUseSkillId);
     if (skill) {
@@ -414,29 +345,16 @@ function deriveAnswer(
   return item?.answerToken ?? "unknown";
 }
 
-/**
- * Answer token each injected skill yields (synthesized from its steps). Kept as
- * a static Record so the mapping is discoverable and lint-clean.
- */
 const SKILL_ANSWER_TOKENS: Record<string, string> = {
   "skill:deploy-gateway": "run-deploy-checks-then-tag",
   "skill:rotate-api-keys": "dual-load-then-retire",
 };
 
-/**
- * Self-contained act-when-enough tasks derive the answer from the prompt
- * itself (no memory needed). Static Record keyed by task id.
- */
 const SELF_CONTAINED_ANSWERS: Record<string, string> = {
   "act-self-contained-greeting": "hello-acme",
   "act-self-contained-summarize": "the-sky-is-blue",
 };
 
-/**
- * Build the C3 skill-trigger log across a task set. One entry per (task,
- * considered skill). `outcome` is resolved against the task's expected skill
- * behavior.
- */
 export function buildSkillTriggerLog(
   tasks: readonly BoundedMemoryTask[],
 ): SkillTriggerLogEntry[] {
@@ -450,7 +368,6 @@ export function buildSkillTriggerLog(
         const shouldFire = task.shouldUseSkillId === skill.id;
         outcome = verdict.injected === shouldFire ? (shouldFire ? "helped" : "irrelevant") : "harmed";
       } else if (task.family === "skill-negative") {
-        // Correct outcome is to NOT inject.
         outcome = verdict.injected ? "harmed" : "irrelevant";
       }
       log.push({

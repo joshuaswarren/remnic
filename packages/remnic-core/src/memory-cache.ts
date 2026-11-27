@@ -6,10 +6,6 @@ interface CacheEntry {
   memories: Map<string, MemoryFile>; // keyed by file path
   version: number;
   loadedAt: number;
-  // Secure-store key identity that decrypted these memories (issue #1902, Codex
-  // P1). "" for plaintext/locked stores. A manager only reads an entry whose
-  // keyId matches its own, so a locked/unkeyed instance never sees content
-  // another instance decrypted under a key for the same baseDir.
   keyId: string;
   // Effective TTL (ms) this entry was stored under (issue #1902, Codex Medium),
   // so the opportunistic sweep can evict abandoned corpora that are never
@@ -17,7 +13,6 @@ interface CacheEntry {
   ttlMs: number;
 }
 
-// Module-level singleton — shared across all StorageManager instances and sessions
 const hotCacheByDir = new Map<string, CacheEntry>();
 const archiveCacheByDir = new Map<string, CacheEntry>();
 
@@ -82,16 +77,11 @@ export function setCachedMemories(
   for (const m of memories) map.set(m.path, m);
   const now = Date.now();
   hotCacheByDir.set(baseDir, { memories: map, version, loadedAt: now, keyId, ttlMs });
-  // Release abandoned corpora that expired but were never revisited (Codex Medium).
   sweepExpiredHotEntries(now);
 }
 
 export function updateCacheOnWrite(baseDir: string, memory: MemoryFile, keyId = ""): void {
   const entry = hotCacheByDir.get(baseDir);
-  // Only mutate an entry that belongs to THIS key identity (issue #1902, Codex
-  // Medium). A concurrent differently-keyed manager may have replaced the
-  // single hotCacheByDir slot during an awaited parse; inserting our decrypted
-  // MemoryFile into its entry would leak plaintext across the key boundary.
   if (entry && entry.keyId === keyId) entry.memories.set(memory.path, memory);
 }
 
@@ -99,14 +89,11 @@ export function updateCacheOnDelete(baseDir: string, filePath: string, keyId = "
   const entry = hotCacheByDir.get(baseDir);
   if (entry && entry.keyId === keyId) entry.memories.delete(filePath);
 }
-// Archive cache — same pattern, separate store
 export function getCachedArchivedMemories(
   baseDir: string,
   currentVersion: number,
   keyId = "",
 ): MemoryFile[] | null {
-  // ttlMs 0: the archive cache has no age TTL; it is version-keyed and cleared
-  // via invalidation.
   const entry = getVersionedCacheEntry(archiveCacheByDir, baseDir, currentVersion, keyId, 0);
   return entry ? [...entry.memories.values()] : null;
 }
@@ -119,12 +106,9 @@ export function setCachedArchivedMemories(
 ): void {
   const map = new Map<string, MemoryFile>();
   for (const m of memories) map.set(m.path, m);
-  // ttlMs: 0 — the archive cache has no age TTL; it is version-keyed and cleared
-  // via invalidation. The field satisfies the shared CacheEntry shape (#1902).
   archiveCacheByDir.set(baseDir, { memories: map, version, loadedAt: Date.now(), keyId, ttlMs: 0 });
 }
 
-// Entity cache — same pattern as memory cache, but keyed by schema-aware parse inputs.
 const entityCacheByDir = new Map<string, { entities: EntityFile[]; version: number; loadedAt: number }>();
 
 /**
@@ -177,8 +161,6 @@ export function invalidateCachedEntities(baseDir: string): void {
   }
 }
 
-// Derived caches — pre-filtered views invalidated alongside the main cache.
-// These avoid O(146K) filter+map on every verified recall/rules call.
 interface DerivedCacheEntry<T> {
   data: T;
   version: number; // matches the hot cache version it was derived from
@@ -199,7 +181,6 @@ export function getCachedEpisodeMap(
   return entry ? entry.data : null;
 }
 
-/** Build and cache the episode memory map from the full memory list. */
 export function setCachedEpisodeMap(
   baseDir: string,
   memories: MemoryFile[],
@@ -217,7 +198,6 @@ export function setCachedEpisodeMap(
   return map;
 }
 
-/** Get pre-filtered rule memories. Derived from hot cache. */
 export function getCachedRuleMemories(
   baseDir: string,
   currentVersion: number,
@@ -228,7 +208,6 @@ export function getCachedRuleMemories(
   return entry ? entry.data : null;
 }
 
-/** Build and cache the rule memories from the full memory list. */
 export function setCachedRuleMemories(
   baseDir: string,
   memories: MemoryFile[],
@@ -253,8 +232,6 @@ export function setCachedRuleMemories(
   return result;
 }
 
-// QMD search result cache — short-lived (60s TTL) to avoid stale results
-// while reducing redundant daemon calls for repeated/similar queries.
 interface QmdCacheEntry {
   results: unknown[];
   cachedAt: number;
@@ -331,9 +308,7 @@ export interface MemoryCacheLayer {
    *  `memory-mutate`/`entity-write`/`secure-key-change` evicts every layer whose
    *  content it can affect. Adding a layer REQUIRES declaring this. */
   readonly evictOn: Partial<Record<MemoryMutationScope, true>>;
-  /** Evict entries for baseDir ("dir" scope) or everything ("global" scope). */
   readonly invalidateForDir: (baseDir: string) => void;
-  /** Evict every entry across all dirs. */
   readonly clearAll: () => void;
   /** True when the layer still holds entries for baseDir ("dir" scope) or
    *  any entries at all ("global" scope). */
@@ -422,30 +397,12 @@ export function invalidateAllForDir(baseDir: string): void {
   }
 }
 
-/**
- * Scope-aware invalidation chokepoint (issue #1904). Evicts only the layers
- * whose `evictOn` includes `scope`, so the highest-frequency write
- * (`memory-create`, fired continuously by extraction) stops nuking the QMD
- * result caches and the version-keyed entity cache it cannot affect. This is
- * the single scoped entry point — like `invalidateAllForDir`, it iterates the
- * `ALL_CACHE_LAYERS` registry rather than clearing any layer ad hoc, so the
- * single-chokepoint invariant (#1535) holds: a new layer only participates by
- * declaring `evictOn`.
- */
 export function invalidateForScope(baseDir: string, scope: MemoryMutationScope): void {
   for (const layer of ALL_CACHE_LAYERS) {
     if (layer.evictOn[scope]) layer.invalidateForDir(baseDir);
   }
 }
 
-/**
- * Companion to {@link invalidateForScope} for the single-file write fast path
- * (issue #1902 + #1904): it patches the hot-memories entry in place and
- * re-keys it, so this evicts every OTHER layer the scope would clear but leaves
- * hot-memories alone. A `memory-create` thus evicts only the derived
- * episode/rule views (hot patched, QMD/entities/archive kept warm), which is
- * the whole point of #1904 — a create must not evict the QMD result caches.
- */
 export function invalidateForScopeExceptHot(baseDir: string, scope: MemoryMutationScope): void {
   for (const layer of ALL_CACHE_LAYERS) {
     if (layer.name === "hot-memories") continue;
@@ -453,24 +410,7 @@ export function invalidateForScopeExceptHot(baseDir: string, scope: MemoryMutati
   }
 }
 
-/**
- * Invalidate every cache layer for `baseDir` EXCEPT the hot-memories layer
- * (issue #1902). Single-file write paths use this instead of
- * `invalidateAllForDir` because they patch the hot-memories entry in place
- * (via `updateCacheOnWrite`/`updateCacheOnDelete`) and re-key it to the bumped
- * version — so dropping it here would defeat the whole warm-cache fast path.
- * The derived episode/rule views and the global QMD caches are cheap to
- * rebuild and are not patched, so they are still evicted here. Every other
- * layer remains reachable for the wholesale `invalidateAllForDir` /
- * `clearMemoryCache` chokepoint used by bulk/ambiguous mutations.
- */
 export function invalidateDerivedAndGlobalForDir(baseDir: string): void {
-  // Preserve the layers a single-file write intentionally keeps warm (issue
-  // #1902, Codex Medium): hot-memories is patched + re-keyed in place; the
-  // entities layer is keyed on memory-status, which plain create/content writes
-  // deliberately do NOT bump (so entity retrieval stays warm); and the
-  // archive-memories layer is version-keyed on the archive tier, untouched by a
-  // hot-tier write. Evict ONLY the derived (episode/rule) and global (QMD) views.
   for (const layer of ALL_CACHE_LAYERS) {
     if (
       layer.name === "hot-memories" ||
@@ -493,15 +433,6 @@ export function clearMemoryCache(baseDir?: string): void {
   }
 }
 
-/**
- * Clear ONLY the two global QMD result caches (qmd-search + qmd-recall), leaving
- * every dir-scoped layer (hot/archive/entities/derived) untouched. Called after
- * a successful QMD maintenance update+embed (#1904, Codex): a newly-persisted
- * fact becomes searchable at that moment, so any cached pre-index recall/search
- * bundle is now stale and must not be served. This lets the create path keep the
- * QMD caches warm during index lag (perf win) while guaranteeing invalidation
- * the moment the fact is actually indexed — no extended stale window.
- */
 export function clearQmdResultCaches(): void {
   qmdSearchCache.clear();
   clearQmdRecallCache();

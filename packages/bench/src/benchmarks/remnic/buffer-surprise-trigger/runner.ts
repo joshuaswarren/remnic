@@ -58,9 +58,6 @@ import {
   type BufferSurpriseTriggerCase,
 } from "./fixture.js";
 
-// ---------------------------------------------------------------------------
-// Metadata
-// ---------------------------------------------------------------------------
 
 export const bufferSurpriseTriggerDefinition: BenchmarkDefinition = {
   id: "buffer-surprise-trigger",
@@ -80,21 +77,9 @@ export const bufferSurpriseTriggerDefinition: BenchmarkDefinition = {
 };
 
 // ---------------------------------------------------------------------------
-// Deterministic word-bucket embedder
 // ---------------------------------------------------------------------------
 //
-// A purely character-frequency embedder (like the one in
-// `buffer-surprise.test.ts`) cannot distinguish topic shifts in English
-// prose — the character distribution converges quickly. For THIS
-// benchmark we want the embedder to respond to *vocabulary* differences
-// so that the surprise signal corresponds to something semantically
-// meaningful, while staying deterministic and free of network calls.
 //
-// We tokenize on non-alphanumeric boundaries, drop stopwords, and bucket
-// each token with djb2 into a fixed-width vector. Each token contributes
-// `1 + 0.01 * (position % 3)` so the embedder is mildly position-aware.
-// The result is a standard word-bag hash embedder — enough to
-// distinguish "pasta carbonara" from "Jupiter magnetic field" reliably.
 
 const STOPWORDS = new Set([
   "a",
@@ -198,7 +183,6 @@ function hasExplicitTopicPivotCue(text: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Runner
 // ---------------------------------------------------------------------------
 
 export async function runBufferSurpriseTriggerBenchmark(
@@ -283,7 +267,6 @@ export async function runBufferSurpriseTriggerBenchmark(
 }
 
 // ---------------------------------------------------------------------------
-// Per-case runner
 // ---------------------------------------------------------------------------
 
 interface CaseRunOutput {
@@ -303,10 +286,6 @@ async function runSingleCase(
   caseDef: BufferSurpriseTriggerCase,
   options: RunCaseOptions,
 ): Promise<CaseRunOutput> {
-  // Use a fresh on-disk buffer per case so state does not leak between
-  // runs. `bufferMaxTurns` is set high (50) so the baseline count-based
-  // flush does not fire within the fixture length — we want to isolate
-  // the surprise signal contribution.
   const memoryDir = path.join(
     options.tmpRoot,
     `${caseDef.id}-${options.label}`,
@@ -319,24 +298,12 @@ async function runSingleCase(
     workspaceDir,
     openaiApiKey: "bench-test-key",
     bufferSurpriseTriggerEnabled: options.surpriseEnabled,
-    // Benchmark threshold is tuned higher than the package default
-    // (0.35). The deterministic probe reserves scores above this line
-    // for explicit topic-pivot turns and very strong semantic novelty;
-    // weaker hash-semantic novelty is capped below it because sparse
-    // vocabulary overlap in short English turns otherwise over-fires on
-    // ordinary follow-ups.
     bufferSurpriseThreshold: 0.85,
     bufferSurpriseK: 3,
     bufferSurpriseRecentMemoryCount: 20,
     bufferMaxTurns: 50,
     bufferMaxMinutes: 60,
     triggerMode: "smart",
-    // Deliberately empty — we want surprise, not signal-word matches,
-    // to drive the candidate's decisions. The fixture texts are also
-    // verified to not match any BUILTIN_HIGH_PATTERNS (see signal.ts)
-    // so that both control and candidate runs are only ever flushed by
-    // the surprise gate or the count/timeout guards — never by a
-    // lexical signal pattern. This ensures the A/B delta is clean.
     highSignalPatterns: [],
   });
 
@@ -360,8 +327,6 @@ async function runSingleCase(
     },
   };
 
-  // Minimal in-memory storage double — we do not need persistence, and
-  // avoiding real `StorageManager` keeps the benchmark hermetic.
   const storage = new InMemoryBufferStorage();
   const buffer = new SmartBuffer(config, storage as any, probe);
 
@@ -384,17 +349,7 @@ async function runSingleCase(
   }
   const replayLatencyMs = Math.round(performance.now() - replayStart);
 
-  // Only count intervals between CONSECUTIVE flushes. The previous
-  // implementation seeded `prev` to `-1`, which mixed the "start of
-  // conversation → first flush" distance into the mean and silently
-  // skewed it downward.
   //
-  // When there are 0 or 1 flushes there are no consecutive-pair intervals
-  // to average. We emit 0 rather than reusing `caseDef.turns.length` so
-  // that "no flushes" and "one flush anywhere" are both reported as "no
-  // measurable cadence" instead of being conflated with a real interval.
-  // Downstream consumers should check `flush_count` before interpreting
-  // this metric: values are meaningful only when flush_count >= 2.
   const turnsBetween: number[] = [];
   for (let i = 1; i < flushTurnIndices.length; i += 1) {
     turnsBetween.push(flushTurnIndices[i]! - flushTurnIndices[i - 1]!);
@@ -412,7 +367,6 @@ async function runSingleCase(
 }
 
 // ---------------------------------------------------------------------------
-// Metric derivation
 // ---------------------------------------------------------------------------
 
 function buildTaskResult(
@@ -516,7 +470,6 @@ function maxBipartiteMatch(
   expected: readonly number[],
   tolerance: number,
 ): number {
-  // For each expected index, which predicted index currently claims it.
   const expectedOwner = new Array<number>(expected.length).fill(-1);
 
   const tryMatch = (
@@ -547,15 +500,10 @@ function maxBipartiteMatch(
 
 function buildAggregates(tasks: TaskResult[]): Record<string, MetricAggregate> {
   const base = aggregateTaskScores(tasks.map((t) => t.scores));
-  // aggregateTaskScores already produces mean/median/stdDev/min/max per
-  // metric key — no further work needed here, but keeping the helper
-  // boundary explicit so later bench features (stat tests, intervals)
-  // can compose in.
   return base;
 }
 
 // ---------------------------------------------------------------------------
-// In-memory storage double
 // ---------------------------------------------------------------------------
 
 /**
@@ -580,14 +528,11 @@ class InMemoryBufferStorage {
   }
 
   async appendBufferSurpriseEvents() {
-    // No-op in the benchmark — we measure flush decisions directly from
-    // the `addTurn` return value, not from the telemetry ledger.
     return 0;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Fixture loading
 // ---------------------------------------------------------------------------
 
 function loadCases(

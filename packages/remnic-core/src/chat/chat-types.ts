@@ -6,13 +6,7 @@
  * mutating tools, each a thin adapter over an existing access-service method.
  */
 
-// ---------------------------------------------------------------------------
-// LLM adapter — production signature (rule 33), stubbable for tests
-// ---------------------------------------------------------------------------
 
-/**
- * A single chat message in the LLM conversation.
- */
 export interface ChatLlmMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
@@ -64,7 +58,6 @@ export interface ChatLlmAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Tool schema + execution
 // ---------------------------------------------------------------------------
 
 /**
@@ -94,7 +87,6 @@ export interface ChatToolResult {
 }
 
 // ---------------------------------------------------------------------------
-// Chat session — transcript + pending-plan state
 // ---------------------------------------------------------------------------
 
 /**
@@ -137,12 +129,8 @@ export interface ChatSessionState {
 }
 
 // ---------------------------------------------------------------------------
-// Engine turn result
 // ---------------------------------------------------------------------------
 
-/**
- * What the engine returns for a single user message.
- */
 export interface ChatTurnResult {
   /** The assistant's text reply (may be partial on budget exhaustion). */
   reply: string;
@@ -160,8 +148,6 @@ export interface ChatTurnResult {
 }
 
 // ---------------------------------------------------------------------------
-// Chat config — re-exported from types.ts (canonical definition).
-// DEFAULT_CHAT_CONFIG lives in chat-config.ts.
 // ---------------------------------------------------------------------------
 
 export type { ChatConfig } from "../types.js";

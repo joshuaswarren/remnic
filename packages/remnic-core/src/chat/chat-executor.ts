@@ -1,15 +1,3 @@
-/**
- * Production chat-tool executor (issue #1583).
- *
- * Each method is a thin adapter over the corresponding EngramAccessService
- * method — zero new business logic (rule 22).  The executor carries the
- * session's principal/namespace/sessionKey so every tool call flows through
- * access-service with the caller's identity (rule 42).
- *
- * Correction tools (correction_plan / correction_apply / memory_promote)
- * delegate to the Correction Contract (#1580) plan/apply pipeline through
- * the access-service.
- */
 
 import type { EngramAccessService } from "../access-service.js";
 import type { ChatToolExecutor } from "./chat-engine.js";
@@ -21,9 +9,6 @@ export interface ChatExecutorBindings {
   sessionKey?: string;
 }
 
-/**
- * Create a production executor bound to the caller's identity.
- */
 export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExecutor {
   const { service, principal, namespace, sessionKey } = bindings;
   const correctionScope: Parameters<EngramAccessService["correctionListPending"]>[0] = {};
@@ -122,7 +107,6 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
     },
 
     async memoryPromote(memoryId: string): Promise<string> {
-      // Delegate to the existing memoryPromote service method if available.
       try {
         const serviceWithPromote = service as EngramAccessService & {
           memoryPromote?: (memoryId: string, namespace?: string, principal?: string) => Promise<unknown>;

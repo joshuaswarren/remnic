@@ -137,7 +137,6 @@ export function parseConfig(raw: unknown): WeCloneConnectorConfig {
 
   const obj = raw as Record<string, unknown>;
 
-  // --- Required fields ---
   if (typeof obj.wecloneApiUrl !== "string" || obj.wecloneApiUrl.length === 0) {
     throw new Error(
       "Config 'wecloneApiUrl' is required and must be a non-empty string"
@@ -161,7 +160,6 @@ export function parseConfig(raw: unknown): WeCloneConnectorConfig {
     );
   }
 
-  // --- Optional fields with validation ---
   let remnicAuthToken: string | undefined;
   if (obj.remnicAuthToken !== undefined) {
     if (typeof obj.remnicAuthToken !== "string" || obj.remnicAuthToken.length === 0) {
@@ -202,7 +200,6 @@ export function parseConfig(raw: unknown): WeCloneConnectorConfig {
     sessionStrategy = obj.sessionStrategy as typeof sessionStrategy;
   }
 
-  // --- Memory injection ---
   let memoryInjection = { ...DEFAULT_CONFIG.memoryInjection };
   if (obj.memoryInjection !== undefined) {
     if (typeof obj.memoryInjection !== "object" || obj.memoryInjection === null) {

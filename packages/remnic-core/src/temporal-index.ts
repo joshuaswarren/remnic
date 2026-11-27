@@ -1,19 +1,3 @@
-/**
- * Temporal and Tag Indexes (v8.1 — SwiftMem-inspired)
- *
- * Maintains two fast on-disk lookup structures in `state/`:
- *   index_time.json — maps YYYY-MM-DD date buckets to memory file paths
- *   index_tags.json — maps tag strings to memory file paths
- *
- * Used as an optional prefilter in the retrieval pipeline:
- * given a time range or a set of tags, narrow the candidate set
- * before the QMD hybrid search so we can pass a smaller pool to scoring.
- *
- * Design constraints:
- * - Must be fail-open (any error returns empty / unfiltered)
- * - Reads/writes are batched per extraction run
- * - Both indexes are plain JSON; no external dependencies
- */
 
 import { execFile } from "node:child_process";
 import * as crypto from "node:crypto";
@@ -38,11 +22,8 @@ export {
 } from "./temporal-index-batch.js";
 
 export interface TemporalIndex {
-  /** version bumped when schema changes */
   version: number;
-  /** Last full rebuild timestamp (ISO string) */
   lastRebuildAt?: string;
-  /** Map from YYYY-MM-DD → array of memory paths */
   dates: Record<string, string[]>;
   /**
    * Per-memory event-time rows used to reconstruct one chronology across
@@ -80,9 +61,7 @@ export interface TemporalIndexEntry {
 export interface TagIndex {
   version: number;
   lastRebuildAt?: string;
-  /** Map from canonical tag string → node metadata */
   tags: Record<string, TagNode | string[]>;
-  /** Map from alias string → canonical tags */
   aliases?: Record<string, string[]>;
 }
 
@@ -121,12 +100,6 @@ type IndexLoadResult<T> =
 
 const parsedIndexCache = new Map<string, CachedIndex<unknown>>();
 const writeChains = new Map<string, Promise<void>>();
-// Operation-level serialization keyed by memoryDir (issue #1911, Codex Medium):
-// a single logical index mutation touches TWO files (temporal + tag), each with
-// its own per-file writeChain. Without an outer lock, two overlapping
-// indexMemoryAsync calls could interleave so the temporal half of one commits
-// with the tag half of the other. This chain makes each public mutator's paired
-// writes atomic relative to other mutators on the same memoryDir.
 const opChains = new Map<string, Promise<void>>();
 let indexReadObserverForTest: (() => void) | undefined;
 
@@ -239,13 +212,6 @@ function withPathMutex<T>(filePath: string, update: () => Promise<T>): Promise<T
   return run;
 }
 
-/**
- * Operation-level mutex keyed by memoryDir (issue #1911, Codex Medium). Wraps a
- * whole logical index mutation (which writes BOTH the temporal and tag index
- * files) so overlapping mutators on the same memoryDir cannot interleave their
- * per-file writes and commit mismatched halves. The inner per-file writeChains
- * still protect each file; this outer chain just orders complete operations.
- */
 export function withMemoryDirMutex<T>(memoryDir: string, op: () => Promise<T>): Promise<T> {
   const previous = opChains.get(memoryDir) ?? Promise.resolve();
   const run = previous.then(op, op);
@@ -263,11 +229,6 @@ async function primeCacheAfterWrite(
 ): Promise<void> {
   try {
     const identity = identityFromStat(await fs.promises.stat(filePath));
-    // Derive currentSchema from the ACTUAL written index (issue #1911, Codex):
-    // hardcoding true let deindexMemoryAsync (which does not bump version) cache
-    // an old-schema index as current, so indexesExistAsync then skipped a
-    // needed rebuild. The tag index is always current (no version gate); the
-    // temporal index is current only when hasCurrentTemporalIndexSchema holds.
     parsedIndexCache.set(filePath, { identity, index, currentSchema: isCurrentSchema() });
   } catch {
     parsedIndexCache.delete(filePath);
@@ -442,10 +403,6 @@ async function writeJsonAtomic(filePath: string, data: unknown): Promise<boolean
       }
       await fs.promises.writeFile(tmp, payload, "utf8");
       await fs.promises.rename(tmp, filePath);
-      // The observer fires only after the committed rename. Isolate its
-      // exceptions so a test hook can never turn a successful write into a
-      // retry or a false (failed) result, which would clear the cache and
-      // skip the paired tag-index phase.
       try {
         indexWriteObserverForTest?.(filePath);
       } catch {
@@ -537,8 +494,6 @@ export async function updateTagIndex(memoryDir: string, update: (index: TagIndex
 
 export function isoDateFromTimestamp(isoString: string): string {
   if (typeof isoString !== "string" || isoString.length < 10) {
-    // Malformed frontmatter — fall back to today so the memory is still indexed.
-    // Log a warning to surface data-quality issues without aborting the write.
     console.warn(`[engram] temporal-index: malformed timestamp "${isoString}", falling back to today`);
     return new Date().toISOString().slice(0, 10);
   }
@@ -927,7 +882,6 @@ export function hasCurrentTemporalIndexSchemaForCompatibility(raw: unknown): boo
   return hasCurrentTemporalIndexSchema(raw);
 }
 
-// ─── Public API ────────────────────────────────────────────────────────────────
 
 /**
  * Add (or update) a memory file in both indexes.
@@ -949,9 +903,6 @@ export async function indexMemoryAsync(
 
     const dateKey = isoDateFromTimestamp(createdAt);
     await withMemoryDirMutex(memoryDir, async () => {
-      // Write the temporal half first; if its atomic write FAILS, do NOT commit
-      // the tag half (issue #1911, Cursor Medium) — committing tags while
-      // temporal stays unchanged leaves a durable mismatch until a later index.
       const temporalOk = await updateTemporalIndex(memoryDir, (index) => {
         index.version = INDEX_VERSION;
         removePathFromAllSets(index.dates, memoryPath);
@@ -979,9 +930,6 @@ export async function indexMemoryAsync(
   }
 }
 
-/**
- * Remove a memory file from both indexes (called on deletion/archival).
- */
 export async function deindexMemoryAsync(
   memoryDir: string,
   memoryPath: string,
@@ -1169,8 +1117,6 @@ export async function queryTemporalTimelineAsync(
         .sort(compareTemporalIndexEvents);
     }
 
-    // No lexical match (legacy rows or generic "first/last" query): retain
-    // both chronology edges so earliest and latest questions remain answerable.
     const earlyCount = Math.ceil(requestedLimit / 2);
     const lateCount = requestedLimit - earlyCount;
     const selected = [
@@ -1224,7 +1170,6 @@ function queryByTagsFromIndex(index: TagIndex, tags: string[]): Set<string> {
 export function extractTagsFromPrompt(prompt: string): string[] {
   const found = new Set<string>();
 
-  // Match #tag style tokens
   const hashMatches = prompt.matchAll(/#([a-zA-Z][\w-]{1,30})/g);
   for (const m of hashMatches) {
     const canonical = normalizeCanonicalTag(m[1]);
@@ -1291,19 +1236,6 @@ export async function resolvePromptTagPrefilterAsync(
   }
 }
 
-/**
- * Run a group of index reads as ONE consistent snapshot (issue #1911, Codex
- * Medium). The `read` callback executes inside a single withMemoryDirMutex
- * acquisition — the same in-memory op-lock every async mutator holds across its
- * paired temporal+tag writes — so no mutation can land between the reads inside
- * it. A recall that reads the temporal and tag indexes together therefore never
- * observes a half-updated state (e.g. a new temporal row with a not-yet-written
- * tag membership) that would let prefiltering drop the current memory. The
- * genuine-tag-miss contract is preserved: a truly absent tag still yields an
- * empty set, only now never as a transient artifact of an in-flight write.
- * Index reads are cache-backed (microseconds), so ordering them on the op-chain
- * is negligible beside the multi-second QMD phase.
- */
 export function readIndexSnapshotAsync<T>(
   memoryDir: string,
   read: () => Promise<T>,
@@ -1343,14 +1275,12 @@ export function recencyWindowFromPrompt(prompt: string, nowMs: number = Date.now
   } else if (/\blast month\b/.test(p)) {
     daysBack = 62;
   } else if (/\bthis year\b/.test(p)) {
-    // From Jan 1 of current year
     const jan1 = new Date(now.getFullYear(), 0, 1);
     return jan1.toISOString().slice(0, 10);
   } else if (/\blast year\b/.test(p)) {
     const jan1LastYear = new Date(now.getFullYear() - 1, 0, 1);
     return jan1LastYear.toISOString().slice(0, 10);
   } else {
-    // Try specific month references: "in March", "during January", "since February"
     const monthNames = [
       "january",
       "february",
@@ -1371,16 +1301,8 @@ export function recencyWindowFromPrompt(prompt: string, nowMs: number = Date.now
     if (monthMatch) {
       const monthIdx = monthNames.indexOf(monthMatch[1]);
       const year = monthMatch[2] ? Number.parseInt(monthMatch[2], 10) : now.getFullYear();
-      // "before <month>" means everything prior to that month: use 2-year lookback
-      // as fromDate so the window isn't unbounded. toDate is set to the month start
-      // in recencyWindowBoundsFromPrompt.
-      // IMPORTANT: when an explicit year is given, anchor the lookback to the named
-      // month start (not to today). "before January 2024" should produce
-      // fromDate ≈ 2022-01 — not today-730 days, which could land after 2024-01 and
-      // invert the window for any explicitly past month within the 730-day horizon.
       if (/\bbefore\b/.test(p)) {
         if (monthMatch[2]) {
-          // Explicit year: anchor fromDate 730 days before the named month start.
           const monthStart = new Date(year, monthIdx, 1);
           return new Date(monthStart.getTime() - 730 * 86_400_000).toISOString().slice(0, 10);
         }
@@ -1391,12 +1313,10 @@ export function recencyWindowFromPrompt(prompt: string, nowMs: number = Date.now
       }
     }
 
-    // Try "N weeks ago"
     const weekMatch = p.match(/(\d{1,5})\s*weeks?\s*ago/);
     if (weekMatch) {
       daysBack = Math.min(365, Number.parseInt(weekMatch[1], 10) * 7);
     } else {
-      // Try "N months ago"
       const monthsAgoMatch = p.match(/(\d{1,5})\s*months?\s*ago/);
       if (monthsAgoMatch) {
         daysBack = Math.min(730, Number.parseInt(monthsAgoMatch[1], 10) * 31);
@@ -1407,14 +1327,12 @@ export function recencyWindowFromPrompt(prompt: string, nowMs: number = Date.now
         } else {
           const hrMatch = p.match(/(\d{1,5})\s*hours?\s*ago/);
           if (hrMatch) {
-            // Convert hours to days (ceiling); at least 1 day window
             daysBack = Math.max(1, Math.ceil(Number.parseInt(hrMatch[1], 10) / 24));
           }
         }
       }
     }
 
-    // Try explicit date patterns: YYYY-MM-DD or MM/DD/YYYY
     const isoMatch = p.match(/(\d{4})-(\d{2})-(\d{2})/);
     if (isoMatch) {
       return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
@@ -1425,7 +1343,6 @@ export function recencyWindowFromPrompt(prompt: string, nowMs: number = Date.now
       return `${year}-${usMatch[1].padStart(2, "0")}-${usMatch[2].padStart(2, "0")}`;
     }
 
-    // Try "last Monday/Tuesday/etc"
     const dayOfWeekMatch = p.match(/\blast\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/);
     if (dayOfWeekMatch) {
       const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
@@ -1485,10 +1402,6 @@ export function recencyWindowBoundsFromPrompt(
   } else if (/\blast year\b/.test(p)) {
     toDate = `${now.getFullYear()}-01-01`; // exclusive: stop at Jan 1 of current year
   } else {
-    // Mirror the structure of recencyWindowFromPrompt's else branch:
-    // month name → early set (highest priority), then ago patterns set a
-    // working offset, then ISO/US/weekday patterns run AFTER ago patterns
-    // and can override them — matching the priority ordering in recencyWindowFromPrompt.
 
     const monthNames = [
       "january",
@@ -1508,9 +1421,6 @@ export function recencyWindowBoundsFromPrompt(
       /\b(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(\d{4}))?\b/
     );
     if (monthMatch) {
-      // "since <month>" / "after <month>" — open-ended: everything from that month to now.
-      // "before <month>" — closed upper bound: everything before that month starts.
-      // Plain "<month>" — just that calendar month.
       const monthIdx = monthNames.indexOf(monthMatch[1]);
       const year = monthMatch[2] ? Number.parseInt(monthMatch[2], 10) : now.getFullYear();
       const isSinceOrAfter = /\b(since|after)\b/.test(p);
@@ -1518,17 +1428,11 @@ export function recencyWindowBoundsFromPrompt(
       if (isSinceOrAfter) {
         toDate = tomorrow;
       } else if (isBefore) {
-        // "before <month>" means everything prior to that month.
-        // toDate = first day of that month (exclusive upper bound).
         toDate = new Date(year, monthIdx, 1).toISOString().slice(0, 10);
       } else {
-        // Closed window: first day of the NEXT month is the exclusive upper bound.
         toDate = new Date(year, monthIdx + 1, 1).toISOString().slice(0, 10);
       }
     } else {
-      // Ago patterns set a working offset (recent edge of the N-ago window).
-      // Same nesting order as recencyWindowFromPrompt.
-      // Sentinel -1 means "no ago pattern matched" → toDate falls back to tomorrow.
       let toDaysBack = -1;
       const weekMatch = p.match(/(\d{1,5})\s*weeks?\s*ago/);
       if (weekMatch) {
@@ -1540,22 +1444,16 @@ export function recencyWindowBoundsFromPrompt(
         } else {
           const numMatch = p.match(/(\d{1,5})\s*days?\s*ago/);
           if (numMatch) {
-            // (N-1) mirrors the weeks/months ago formula: "3 days ago" → window [today-3, today-2]
-            // N=1 → toDaysBack=0 → toDate=today (exclusive) → window [yesterday, today) = 1 day. ✓
             toDaysBack = Math.max(0, Math.min(365, Number.parseInt(numMatch[1], 10)) - 1);
           } else {
             const hrMatch = p.match(/(\d{1,5})\s*hours?\s*ago/);
             if (hrMatch) {
-              // Sub-day precision: keep sentinel -1 so toDate falls back to tomorrow,
-              // which includes today. fromDate = yesterday (recencyWindowFromPrompt uses ceiling).
               toDaysBack = -1;
             }
           }
         }
       }
 
-      // Explicit date/weekday patterns run AFTER ago patterns (same as recencyWindowFromPrompt)
-      // and override the ago-derived offset when present.
       const isoMatch = p.match(/(\d{4})-(\d{2})-(\d{2})/);
       if (isoMatch) {
         // +1 day: exclusive upper bound includes the named date
@@ -1579,10 +1477,6 @@ export function recencyWindowBoundsFromPrompt(
             // +1 day: exclusive upper bound includes the named weekday
             toDate = new Date(nowMs - (daysBack - 1) * 86_400_000).toISOString().slice(0, 10);
           } else {
-            // Use the ago-derived offset.
-            // toDaysBack=-1 means no pattern matched (or hours-ago): use tomorrow so today
-            // is included in the window. toDaysBack=0 means N=1 ago (e.g. "1 day ago"):
-            // toDate = today (exclusive) correctly creates a 1-day window [yesterday, today).
             toDate = toDaysBack < 0 ? tomorrow : new Date(nowMs - toDaysBack * 86_400_000).toISOString().slice(0, 10);
           }
         }
@@ -1590,9 +1484,6 @@ export function recencyWindowBoundsFromPrompt(
     }
   }
 
-  // Guard: if toDate would precede fromDate (inverted window from conflicting keywords),
-  // fall back to tomorrow (exclusive upper bound that covers today) so we never produce
-  // an empty window. Using `today` is insufficient because `date < today` excludes today.
   if (toDate <= fromDate) toDate = tomorrow;
 
   return { fromDate, toDate };

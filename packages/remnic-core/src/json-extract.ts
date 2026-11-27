@@ -1,18 +1,5 @@
-/**
- * Utilities for extracting JSON payloads from LLM outputs.
- *
- * We see common failure modes:
- * - "Here's an example: {..}\nHere's the real answer: {..}" (multiple JSON blocks)
- * - fenced ```json blocks
- * - leading/trailing prose around JSON
- *
- * These helpers attempt multiple candidates and let callers validate with schemas.
- */
 
 export function stripCodeFences(text: string): string {
-  // Drop the leading \s* before the lazy body: it overlapped the body and caused
-  // polynomial backtracking on unterminated fences (CodeQL js/polynomial-redos).
-  // inner is trimmed, so captured content is identical.
   return text.replace(/```(?:json)?([\s\S]*?)```/gi, (_m, inner) => String(inner).trim());
 }
 
@@ -21,16 +8,10 @@ export function extractJsonCandidates(text: string): string[] {
   const cleaned = stripCodeFences(trimmed);
   const candidates: string[] = [];
 
-  // Verbatim balanced blocks FIRST: stripCodeFences rewrites every ``` pair, so
-  // a stripped candidate can parse while carrying altered content (e.g. a
-  // patch value that embeds an inner code block). A string-aware balanced scan
-  // of the unstripped text yields the payload unmodified; stripped candidates
-  // remain as later fallbacks for shapes the raw scan cannot cut.
   candidates.push(...scanBalancedJsonBlocks(trimmed));
   if (cleaned.length > 0) candidates.push(cleaned);
   candidates.push(...scanBalancedJsonBlocks(cleaned));
 
-  // Legacy regex fallback (single object)
   const objMatch = cleaned.match(/\{[\s\S]*\}/);
   if (objMatch) candidates.push(objMatch[0]);
 

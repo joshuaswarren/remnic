@@ -54,7 +54,6 @@ test("dropExtractionChunk removes the matched prefix and the drop survives a res
       ["turn three"],
       "what a restart loads"
     );
-    // A drop is not an extraction: the extraction bookkeeping stays untouched.
     assert.equal(buffer.getExtractionCount("s1"), 0);
   });
 });
@@ -123,7 +122,6 @@ async function drainBehindPinnedCapture(
     runExtraction: async (turns, options) => {
       if (overrides.runExtractionOverride) return await overrides.runExtractionOverride();
       const result = results.shift() ?? DONE;
-      // A successful run clears its chunk the way the coordinator does for a native group: by identity.
       if (result.status === "completed")
         await buffer.clearAfterExtraction(
           "s1",
@@ -172,7 +170,6 @@ test("a failed chunk made only of deferred-retained turns can be dropped, and a 
     await buffer.addTurn("s1", live);
     await buffer.flushPendingSave();
 
-    // The window a trigger snapshot sees is the retained turns followed by the live ones; the first chunk is retained-only.
     const dropped = await buffer.dropExtractionChunk("s1", retained);
 
     assert.equal(dropped, 2);
@@ -212,7 +209,6 @@ test("deferred retention across chunks of one window stays within one retention 
   await withBuffer(async (buffer, restart) => {
     const window = Array.from({ length: 30 }, (_, i) => makeTurn("s1", `turn ${i}`));
     for (const turn of window) await buffer.addTurn("s1", turn);
-    // Three chunks of ten, each deferring all of its turns; every run names the whole window as the processed snapshot.
     for (let chunk = 0; chunk < 3; chunk++) {
       await buffer.retainDeferredTurns("s1", window.slice(chunk * 10, chunk * 10 + 10), 10, window);
     }
@@ -255,7 +251,6 @@ test("retention for an early chunk leaves the retained turns of a later, unproce
   await withBuffer(async (buffer, restart) => {
     const retained = [makeTurn("s1", "early retained"), makeTurn("s1", "late retained")];
     await buffer.retainDeferredTurns("s1", retained);
-    // Chunk 0 holds the first retained turn; nothing was deferred in it, so it clears the slot for the turns it processed.
     await buffer.retainDeferredTurns("s1", [], 0, retained.slice(0, 1));
     assert.deepEqual(
       buffer.getRetainedDeferredTurns("s1").map((turn) => turn.content),
@@ -307,11 +302,8 @@ test("a no-drop drain retains a repeatedly failing chunk as durable retryable ba
       forceExtractionAttempt: false,
     } as const;
 
-    // First window: the head chunk fails once (below the threshold) — it throws and stays.
     await assert.rejects(() => drain.run(window, runOptions), /provider down/);
     assert.equal(sideFiles, 0, "no recovery side-file below the threshold");
-    // Second window: the same head chunk reaches the drop threshold. The no-drop
-    // policy must RETAIN it — no side-file copy, no removal, no completion.
     await assert.rejects(() => drain.run(window, runOptions), /provider down/);
     assert.equal(sideFiles, 0, "a no-drop drain must never side-file a failed chunk");
     assert.deepEqual(
@@ -332,8 +324,6 @@ test("a failed chunk with NO recovery copy is kept as retryable backlog, not dro
       }),
     });
 
-    // dropFailedChunk returns false: the only buffered copy stays and the
-    // drain stops on that chunk (later chunks are not acked past it).
     assert.notEqual(result.status, "completed", "no silent drop without a recovery copy");
     assert.deepEqual(
       (await restart()).getTurns("s1").some((turn) => turn.content === "a".repeat(60)),
@@ -388,8 +378,6 @@ test("one failure below the drop threshold keeps the chunk (no drop, no side fil
 
 test("a thrown chunk dropped at the threshold must not end the drain: later chunks still run", async () => {
   await withBuffer(async (buffer, restart) => {
-    // chunk1 THROWS (model crash); at dropAfter 1 it is side-file-copied and
-    // dropped — the live drop policy then CONTINUES to the next chunk.
     let calls = 0;
     const result = await drainBehindPinnedCapture(buffer, [DONE], 1, {
       getStorage: async () => ({ saveDroppedExtractionChunk: async () => "/recovery/copy.json" }),

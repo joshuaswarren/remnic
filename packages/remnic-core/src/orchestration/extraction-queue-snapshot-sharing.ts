@@ -1,54 +1,14 @@
-/**
- * Bounded-queue retention for automatic extraction snapshots (#3324
- * follow-up).
- *
- * The coordinator's queue keeps every accepted task's own snapshot (that is
- * the #3324 contract: per-entry captured scope and settlement), but nothing
- * requires each queued snapshot to RETAIN its own turn objects. Automatic
- * triggers hand out prefix-extended snapshots of the same buffer (the buffer
- * clears only when extraction runs), so consecutive queued snapshots overlap
- * almost entirely while their drain is slow. Retaining one deep copy per
- * snapshot grows quadratic overhead (demonstrated: scaling exponent 1.89 on
- * main, 36× the unique content at 1000 turns for one session).
- *
- * This registry makes the OVERLAP shared without changing ANY task's
- * semantics: a queued snapshot is stored as a chain node
- * `{ base, tail }` whose turns are verified element-wise equivalent to the
- * base chain at admit time. Each task materializes its own fresh array at
- * run time — identical values, same windows, same chunking, same clear
- * matching, same settlements. Sharing is data-structure only.
- *
- * Safety properties:
- * - Equivalence is CONSUMER-equivalence, not `bufferTurnsEqual` alone: the
- *   five fields `bufferTurnsEqual` ignores (extractionContextOnly, parts,
- *   rawContent, sourceFormat, importProvenance) are compared strictly
- *   (objects by reference identity), so an aliased segment is
- *   indistinguishable from a private copy to every downstream reader.
- * - Turn objects are immutable by audit: no code path writes a BufferTurn
- *   field or a parts array in place (all writes go to freshly constructed
- *   objects: `copyBufferTurn`, the replay `pinned` spread). Audited across
- *   the extraction call graph.
- * - Distinct scope pins can never share: pins are turn fields covered by
- *   `bufferTurnsEqual`, and the scope-class bucket is a lookup heuristic
- *   only — a wrong pairing fails the element-wise check and simply does not
- *   share.
- * - Replay, bulk import, force flush, fail-closed callers, and claim-backed
- *   execution contexts are excluded (they are not automatic snapshots of the
- *   live buffer).
- */
 
 import type { BufferTurn } from "../types.js";
 import { bufferTurnsEqual, scopeProfilePlanIdentity } from "../buffer-turn-helpers.js";
 
 /** Option surface of `queueBufferedExtraction` relevant to eligibility. */
 export interface AutomaticSharingOptions {
-  /** Claim-backed backlog tasks own a different buffer view: never share. */
   execution?: unknown;
   /** Automatic trigger paths set this; forced replay/import do not. */
   preemptable?: boolean;
   failOnExtractionFailure?: boolean;
   forceExtractionAttempt?: boolean;
-  /** Fail-closed front flush: never share. */
   preemptRunning?: boolean;
 }
 
@@ -121,21 +81,12 @@ export interface SnapshotSharingStats {
   unsharedEquivalentRefs: number;
 }
 
-/** Iterative root-first walk: recursive `yield*` delegation costs O(depth)
- * per item and hangs production-scale chains (3,000+ turn sessions,
- * hours-long backlogs). Same order, bounded stack, no casts. */
 function chainNodes(chain: SnapshotChain): SnapshotChain[] {
   const nodes: SnapshotChain[] = [];
   for (let node: SnapshotChain | undefined = chain; node; node = node.base) nodes.push(node);
   return [...nodes].reverse();
 }
 
-/**
- * Element-wise consumer-equivalence of the chain's turns against a snapshot
- * prefix. Cost is O(chain.total) compares per admit — required to prove the
- * shared prefix is consumer-equivalent to the incoming snapshot — so a chain
- * build is O(depth^2) compares in total (measured, acknowledged in the PR).
- */
 export function chainPrefixEquivalent(chain: SnapshotChain, turns: readonly BufferTurn[]): boolean {
   let offset = 0;
   for (const node of chainNodes(chain)) {
@@ -161,23 +112,12 @@ export function materializeChain(chain: SnapshotChain): BufferTurn[] {
 export class ExtractionSnapshotSharingRegistry {
   private readonly buckets = new Map<string, SnapshotChain[]>();
 
-  /**
-   * Admit one automatic snapshot for `bufferKey`: chain it onto the newest
-   * queued same-scope snapshot when that is a verified prefix-extension,
-   * otherwise start a fresh chain. The caller's array is never mutated.
-   */
   admit(bufferKey: string, turns: readonly BufferTurn[]): SnapshotChain {
     const scopeClass = turns.length > 0 ? scopeClassKey(turns[0]) : "";
     const bucketKey = `${bufferKey}\u0000${scopeClass}`;
     const list = this.buckets.get(bucketKey);
     const base = list !== undefined && list.length > 0 ? list[list.length - 1] : undefined;
     if (base && base.total === turns.length && chainPrefixEquivalent(base, turns)) {
-      // Identical window: reuse the existing node. Creating a tail=[] node
-      // here would chain onto the base and grow reachable depth (and admit
-      // cost) by one per admission under continuous unchanged ingress, while
-      // stats showed only the newest node. Sharing is exact: the element-wise
-      // equivalence above proved this window equals the base's. The holder
-      // count keeps the node registered until the LAST sharer releases.
       base.holders += 1;
       return base;
     }
@@ -206,13 +146,6 @@ export class ExtractionSnapshotSharingRegistry {
     return node;
   }
 
-  /** Release one holder of a node when its task exits (or on enqueue
-   * refusal). CONTRACT: called EXACTLY ONCE per admit, by the task that
-   * admitted it — the registry has no task identity, so a second call by the
-   * same task would steal another holder's count. The only production caller
-   * (queueBufferedExtraction) enforces this structurally: the closure-finally
-   * and the enqueue-refusal branch are mutually exclusive. Defensively, a
-   * release past zero is a no-op. */
   release(node: SnapshotChain): void {
     if (node.holders <= 0) return;
     node.holders -= 1;
@@ -226,9 +159,6 @@ export class ExtractionSnapshotSharingRegistry {
 
   /** Proof seam: what the queue retains right now. */
   stats(): SnapshotSharingStats {
-    // Reachability-accurate accounting: a released ancestor can remain
-    // reachable through a queued descendant's `base`, so bucket-node sums
-    // under-report. Walk each chain once with a visited set of nodes.
     const visited = new Set<SnapshotChain>();
     let queuedNodes = 0;
     let queuedTailRefs = 0;

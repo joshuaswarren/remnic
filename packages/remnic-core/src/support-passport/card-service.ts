@@ -973,9 +973,6 @@ export class SupportPassportCardService {
     onCommitted?: () => void
   ): Promise<void> {
     if (!replacement.replacesDraftId) return;
-    // Tier-independent: an interrupted edit's rejected predecessor can be
-    // demoted to the cold tier before recovery runs; a hot-only lookup would
-    // mistake it for deleted and orphan the valid replacement (#2387).
     const replacedDraft = await storage.getMemoryByIdIncludingArchived(replacement.replacesDraftId);
     const projectedDraft = replacedDraft ? projectOwnedCard(replacedDraft, namespace, principal) : null;
     if (

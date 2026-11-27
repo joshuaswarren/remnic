@@ -67,7 +67,6 @@ describe("mem0 adapter shape", () => {
   });
 
   it("drives runImporter via the paginated record/replay fetch", async () => {
-    // Two-page recording → inject a replay fetch, simulate live-API mode.
     const raw = JSON.parse(loadFixture("two-page-recording.json")) as {
       pages: Array<{
         request: { url: string };
@@ -93,7 +92,6 @@ describe("mem0 adapter shape", () => {
     });
 
     const { target, received } = makeTarget();
-    // Live-API path: pass input=undefined.
     const result = await runImporter(adapter, undefined, target);
     assert.equal(result.memoriesPlanned, 3);
     assert.equal(result.memoriesWritten, 3);
@@ -122,8 +120,6 @@ describe("mem0 adapter shape", () => {
     assert.equal(received.length, 0);
   });
 
-  // Cursor review on PR #602 — `--rate-limit` must reach fetchAllMem0Memories,
-  // not be silently dropped after parse validation.
   it("forwards --rate-limit through runImporter to the fetch client", async () => {
     const raw = JSON.parse(loadFixture("two-page-recording.json")) as {
       pages: Array<{
@@ -155,9 +151,6 @@ describe("mem0 adapter shape", () => {
 
     const { target } = makeTarget();
     await runImporter(adapter, undefined, target, { rateLimit: 2 });
-    // With rateLimit=2 (500ms interval) across a 2-page walk → exactly
-    // one sleep between page 1 and page 2. If the CLI flag were dropped
-    // (the bug), no sleeps would occur.
     assert.equal(sleeps.length, 1);
     assert.equal(sleeps[0], 500);
   });

@@ -13,9 +13,6 @@ test("focus change between ax-snapshot and OCR: OCR targets the snapshot window 
   const config = defaultDaemonConfig();
   const processor = new CaptureProcessor(config);
   const calls: OcrWindowOptions[] = [];
-  // Simulate the focus flip: after the snapshot was taken the frontmost
-  // window became a different one, so the frontmost path would read
-  // WINDOW-B text while the candidate is stored under window A's identity.
   const helper: NativeHelper = new (class extends NativeHelper {
     constructor() {
       super("fake");
@@ -25,8 +22,6 @@ test("focus change between ax-snapshot and OCR: OCR targets the snapshot window 
       return opts.windowId === "A" ? "window A ocr text" : "WINDOW-B TEXT";
     }
   })();
-  // kitty is terminal-class (DEFAULT_TERMINAL_APPS) and the tree carries no
-  // text, so captureFromSnapshot must take the OCR path.
   const snap: AxSnapshot = {
     app: "kitty",
     windowTitle: "shell",
@@ -51,7 +46,6 @@ test("focus change between ax-snapshot and OCR: OCR targets the snapshot window 
 
 const AT = "2026-08-17T00:00:00.000Z";
 
-/** A helper whose every call is logged, so a test can prove which calls a window caused. */
 function loggedHelper(context: WindowContext, snap: AxSnapshot) {
   const calls: string[] = [];
   const helper: NativeHelper = new (class extends NativeHelper {

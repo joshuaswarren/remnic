@@ -20,8 +20,6 @@ test("QmdClient rechecks daemon availability before returning unavailable", asyn
     daemonUrl: "stdio://qmd",
     daemonRecheckIntervalMs: 0,
   });
-  // SAFETY: the stub drives private QmdClient fields by name; every member
-  // it touches is exercised below.
   const internals: DaemonCheckInternals = client as never;
   let probeCount = 0;
   internals.available = false;
@@ -306,8 +304,6 @@ test("subprocess fallback defaults to `qmd query` for scoped and global recall",
 });
 
 test("qmdSubprocessStrategy 'search' applies BM25 to scoped AND global recall (gotcha #39)", async () => {
-  // Cursor #1422 review: the gate must be uniform across every subprocess path,
-  // not just the scoped one.
   const client = new QmdClient("memories", 3, { qmdSubprocessStrategy: "search" });
   const calls = captureSubprocessArgs(client);
   const internals = client as unknown as SubprocessInternals;
@@ -317,13 +313,10 @@ test("qmdSubprocessStrategy 'search' applies BM25 to scoped AND global recall (g
 
   assert.equal(calls[0]?.[0], "search", "scoped fallback must honor BM25 opt-in");
   assert.equal(calls[1]?.[0], "search", "global fallback must honor BM25 opt-in");
-  // Global BM25 must NOT pass a collection flag.
   assert.ok(!calls[1]?.includes("-c"), "global BM25 search must not include -c");
 });
 
 test("QMD search cache key isolates results by strategy (codex review on #1422)", async () => {
-  // Two clients with different strategies must not serve each other's cached
-  // results for the same query/collection within the global cache TTL.
   function makeClient(opts: Record<string, unknown>): {
     client: QmdClient;
     calls: string[][];
@@ -342,7 +335,6 @@ test("QMD search cache key isolates results by strategy (codex review on #1422)"
     return { client, calls };
   }
 
-  // Unique query avoids colliding with cache entries from other tests.
   const query = "strategy-cache-isolation-probe-xyz";
   const a = makeClient({ qmdSearchStrategy: "hybrid" });
   const b = makeClient({ qmdSearchStrategy: "lex" });
@@ -350,8 +342,6 @@ test("QMD search cache key isolates results by strategy (codex review on #1422)"
   await a.client.search(query, "memories", 3);
   await b.client.search(query, "memories", 3);
 
-  // If the cache key ignored strategy, b would hit a's cached entry and never
-  // invoke the subprocess. Both must register their own subprocess call.
   assert.equal(a.calls.length, 1, "first strategy populates its own cache entry");
   assert.equal(b.calls.length, 1, "second strategy must NOT reuse the first's cached result");
 });

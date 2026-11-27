@@ -1,6 +1,3 @@
-/**
- * Enrichment pipeline barrel export (issue #365).
- */
 
 export type {
   EnrichmentCandidate,

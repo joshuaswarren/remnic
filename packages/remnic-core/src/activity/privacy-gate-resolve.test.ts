@@ -111,9 +111,6 @@ test("input gates object is not mutated", () => {
   assert.deepEqual(input, { analysis: "yes" });
 });
 
-// Review: Object.keys enumerates own properties only, so the unknown-key
-// check never saw an inherited "analysis"; reading by bracket would have
-// honored it anyway. Own-property reads close that.
 test("an inherited gate property is ignored, not honored", () => {
   const proto = { analysis: true } as Record<string, unknown>;
   const gates: Record<string, unknown> = Object.create(proto);
@@ -136,26 +133,20 @@ test("the exported gate registry resists runtime mutation", () => {
   );
 });
 
-// Round 2: an explicit `readonly string[]` widened the union to `string`.
 test("the frozen registry keeps its literal type", () => {
   const gates: readonly string[] = ACTIVITY_FEATURE_GATES;
-  // Compile-time narrowing is asserted via the resolver's own typing: at
-  // runtime, the frozen array rejects mutation and injection.
   assert.throws(() => (gates as string[]).push("bogus"), /not extensible|frozen|read only/i);
 });
 
-// Round 2: a present-but-undefined own value is invalid, not absent.
 test("an explicitly undefined gate value throws rather than reading as false", () => {
   assert.throws(
     () => resolveActivityGates({ enabled: true, gates: { analysis: undefined } }),
     /invalid value for activity gate "analysis"/,
   );
-  // An absent key is still a legitimate default-false.
   const resolved = resolveActivityGates({ enabled: true, gates: {} });
   assert.equal(resolved.analysis, false);
 });
 
-// Round 3: a non-enumerable own key must still hit the unknown-key check.
 test("a non-enumerable unknown gate key is rejected", () => {
   const gates: Record<string, unknown> = {};
   Object.defineProperty(gates, "sneaky", { value: true, enumerable: false });
@@ -165,9 +156,6 @@ test("a non-enumerable unknown gate key is rejected", () => {
   );
 });
 
-// Compile-time: the frozen registry must keep its literal type, so "bogus"
-// is not assignable to ActivityFeatureGate. This assertion fails the build
-// if a future annotation widens the union back to string.
 test("ActivityFeatureGate stays a literal union", () => {
   // @ts-expect-error "bogus" is not an ActivityFeatureGate
   const bogus: ActivityFeatureGate = "bogus";

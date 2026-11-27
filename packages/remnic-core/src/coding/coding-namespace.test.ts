@@ -1,10 +1,3 @@
-/**
- * Tests for `resolveCodingNamespaceOverlay` (issue #569 PR 2).
- *
- * All fixtures synthetic. These tests cover the resolver-level contract —
- * project overlay vs no-overlay, escape hatch, sanitization, read+write
- * symmetry invariant.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -38,13 +31,8 @@ function mode(overrides: Partial<CodingModeConfig> = {}): CodingModeConfig {
   };
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Name helpers
-// ──────────────────────────────────────────────────────────────────────────
 
 test("projectNamespaceName: stable form for origin-derived id (safe-route compatible)", () => {
-  // `:` is not in the router's safe-namespace alphabet, so it collapses to
-  // `-`. Resulting name must pass `isSafeRouteNamespace`.
   assert.equal(projectNamespaceName("origin:abcd1234"), "project-origin-abcd1234");
 });
 
@@ -71,10 +59,6 @@ test("projectNamespaceName: length-capped to 64 chars, no trailing dash", () => 
 });
 
 test("branchNamespaceName: capped distinct long branches stay distinct (hash suffix)", () => {
-  // Regression: raw truncation collapsed two branches whose sanitized forms
-  // shared a long prefix but differed near the end, silently mixing recall
-  // and write state. With a deterministic hash suffix applied on truncation,
-  // distinct inputs must map to distinct namespaces.
   const projectId = "origin:abcd1234";
   const longA = `feature/${"a".repeat(80)}-variant-one`;
   const longB = `feature/${"a".repeat(80)}-variant-two`;
@@ -132,8 +116,6 @@ test("branchNamespaceName: output satisfies isSafeRouteNamespace for typical bra
 });
 
 test("branchNamespaceName: simple all-lowercase branch needs no hash disambiguator", () => {
-  // `main` is already safe and lowercase — sanitization is a no-op, so the
-  // output is the plain project-id-branch form without a hash suffix.
   assert.equal(
     branchNamespaceName("origin:abcd1234", "main"),
     "project-origin-abcd1234-branch-main",
@@ -141,11 +123,6 @@ test("branchNamespaceName: simple all-lowercase branch needs no hash disambiguat
 });
 
 test("branchNamespaceName: lossy branch names get a deterministic hash suffix", () => {
-  // `feat/ui` sanitizes to `feat-ui` — different from the raw input — so
-  // the namespace must include a disambiguating hash of the raw branch.
-  // The same collision class: `feat-ui` would sanitize to `feat-ui`
-  // unchanged (no hash), so the two inputs produce distinct namespaces
-  // even though their sanitized forms coincide.
   const slashed = branchNamespaceName("origin:abcd1234", "feat/ui");
   const dashed = branchNamespaceName("origin:abcd1234", "feat-ui");
   assert.notEqual(
@@ -158,8 +135,6 @@ test("branchNamespaceName: lossy branch names get a deterministic hash suffix", 
 });
 
 test("branchNamespaceName: case-varying branches produce distinct namespaces", () => {
-  // Regression: `Feature` and `feature` both sanitize to `feature` without
-  // disambiguation. Including a hash of the raw input keeps them distinct.
   const titled = branchNamespaceName("origin:abcd", "Feature");
   const lowered = branchNamespaceName("origin:abcd", "feature");
   assert.notEqual(
@@ -170,14 +145,11 @@ test("branchNamespaceName: case-varying branches produce distinct namespaces", (
 });
 
 test("branchNamespaceName: sanitizes branch name (lowercase + unsafe → dash)", () => {
-  // With disambiguation, this also gains a hash suffix since the raw
-  // `FEAT/UI (wip)` is not equal to the sanitized `feat-ui-wip`.
   const ns = branchNamespaceName("origin:abcd", "FEAT/UI (wip)");
   assert.match(ns, /^project-origin-abcd-branch-feat-ui-wip-[0-9a-f]{8}$/);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// resolveCodingNamespaceOverlay — escape hatches
 // ──────────────────────────────────────────────────────────────────────────
 
 test("resolveCodingNamespaceOverlay: no context → null (connector didn't provide one)", () => {
@@ -204,7 +176,6 @@ test("resolveCodingNamespaceOverlay: empty projectId → null (defensive)", () =
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// resolveCodingNamespaceOverlay — project scope
 // ──────────────────────────────────────────────────────────────────────────
 
 test("resolveCodingNamespaceOverlay: projectScope=true + globalFallback=true (default) → includes empty sentinel", () => {
@@ -230,9 +201,6 @@ test("resolveCodingNamespaceOverlay: projectScope=true + globalFallback=true + d
 });
 
 test("resolveCodingNamespaceOverlay: projectScope=true + globalFallback=true → empty-string sentinel combines to principal self", () => {
-  // Verifies the fix for the P1 double-combination bug: "" as fallback
-  // causes combineNamespaces(principal, "") to return the principal's own
-  // namespace, not "principal-default" which would miss global memories.
   const overlay = resolveCodingNamespaceOverlay(
     ctx({ projectId: "origin:deadbeef" }),
     mode({ globalFallback: true }),
@@ -269,7 +237,6 @@ test("resolveCodingNamespaceOverlay: branchScope=true with branch=null → proje
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// resolveCodingNamespaceOverlay — branch scope (PR 3 preview, but logic is here)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("resolveCodingNamespaceOverlay: branchScope=true + branch set + globalFallback=true → project + root fallbacks", () => {
@@ -283,7 +250,6 @@ test("resolveCodingNamespaceOverlay: branchScope=true + branch set + globalFallb
     overlay!.namespace,
     /^project-origin-aaaa0000-branch-feat-x-[0-9a-f]{8}$/,
   );
-  // globalFallback defaults to true → project + empty sentinel for global.
   assert.deepEqual(overlay!.readFallbacks, ["project-origin-aaaa0000", ""]);
 });
 
@@ -320,12 +286,9 @@ test("resolveCodingNamespaceOverlay: branchScope=false → no branch layering ev
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// resolveCodingNamespaceOverlay — globalFallback edge cases
 // ──────────────────────────────────────────────────────────────────────────
 
 test("resolveCodingNamespaceOverlay: globalFallback=true + empty defaultNamespace → still includes empty sentinel", () => {
-  // The sentinel "" tells combineNamespaces to return the principal base
-  // unchanged, regardless of what defaultNamespace is configured.
   const overlay = resolveCodingNamespaceOverlay(
     ctx({ projectId: "origin:deadbeef" }),
     mode({ globalFallback: true }),
@@ -344,7 +307,6 @@ test("resolveCodingNamespaceOverlay: globalFallback=true + custom defaultNamespa
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Cross-project isolation invariant (the core requirement of PR 2)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("resolveCodingNamespaceOverlay: different projects resolve to different namespaces", () => {
@@ -355,8 +317,6 @@ test("resolveCodingNamespaceOverlay: different projects resolve to different nam
 });
 
 test("resolveCodingNamespaceOverlay: read path and write path see identical namespace (rule 42)", () => {
-  // Simulate the read and write paths in orchestrator consulting the same
-  // resolver with the same inputs. They must agree bit-for-bit.
   const input: [CodingContext, CodingModeConfig] = [
     ctx({ projectId: "origin:12345678", branch: "feat/y" }),
     mode({ branchScope: true }),
@@ -368,10 +328,6 @@ test("resolveCodingNamespaceOverlay: read path and write path see identical name
 
 test("#1505 codex P2: lcmReadSessionIdsForNamespaces preserves UNDEFINED for a sessionless read (never the literal 'default' session id)", async () => {
   const { lcmReadSessionIdsForNamespaces } = await import("./coding-namespace.js");
-  // Sessionless ⇒ a single archive-wide read (`undefined`), so the LCM builders
-  // run with no exact session_id filter — NOT filtered to a session literally
-  // named "default" (which would silently drop explicit-cue/targeted/focused/
-  // response/event LCM sections for every recall that omits a session key).
   assert.deepEqual(
     lcmReadSessionIdsForNamespaces(["default"], undefined, "default"),
     [undefined],
@@ -388,24 +344,16 @@ test("#1505 codex P2: lcmReadSessionIdsForNamespaces keeps the raw sessionKey + 
   const { lcmReadSessionIdsForNamespaces, lcmSessionKeyForNamespace } = await import(
     "./coding-namespace.js"
   );
-  // Shape-agnostic expectation: derive each expected key through the SAME shared
-  // encoder production uses (#1495 P1 made the namespaced encoding sentinel-framed
-  // and unforgeable; rule 22: never re-hardcode the join).
   const enc = (ns: string, sk: string) =>
     lcmSessionKeyForNamespace(ns, sk, "default") ?? sk;
-  // Single-store / default namespace ⇒ raw sessionKey (byte-for-byte prior).
   assert.deepEqual(
     lcmReadSessionIdsForNamespaces(["default"], "sk", "default"),
     ["sk"],
   );
-  // Non-default namespaces ⇒ sentinel-framed keys, deduped, ordered. The default
-  // key collapses to the raw `sk`, and the namespaced key is disjoint from it.
   assert.deepEqual(
     lcmReadSessionIdsForNamespaces(["acme", "default", "acme"], "sk", "default"),
     [enc("acme", "sk"), "sk"],
   );
-  // Security invariant: the namespaced key cannot equal a raw default key, so a
-  // forged default read can never collide with the overlay key.
   assert.notEqual(enc("acme", "sk"), "acme:sk");
   assert.notEqual(enc("acme", "sk"), "sk");
 });

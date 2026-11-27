@@ -34,9 +34,6 @@ import { expandTildePath } from "../utils/path.js";
 // lives in `utils/path.ts`.
 export { expandTildePath };
 
-// ──────────────────────────────────────────────────────────────────────────
-// Public types
-// ──────────────────────────────────────────────────────────────────────────
 
 export interface GitContext {
   /**
@@ -97,7 +94,6 @@ export interface SyncGitInvoker {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Default git invoker — spawns real `git` via the shared child-process helper
 // ──────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_GIT_TIMEOUT_MS = 2_000;
@@ -195,18 +191,8 @@ export function defaultGitInvoker(): GitInvoker {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Stable hashing
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * Non-cryptographic stable hash. Used only to derive a deterministic
- * `projectId` from either the origin URL or the root path. The hash does not
- * need to be collision-resistant against adversarial input — it is purely a
- * namespace discriminator.
- *
- * Uses FNV-1a 32-bit so we don't pull in `node:crypto` for a simple bucket
- * key. Output is lowercase hex, zero-padded to 8 characters.
- */
 export function stableHash(input: string): string {
   let hash = 0x811c9dc5;
   for (let i = 0; i < input.length; i++) {
@@ -217,7 +203,6 @@ export function stableHash(input: string): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Origin URL normalization
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -236,41 +221,17 @@ export function normalizeOriginUrl(rawUrl: string): string {
   let url = rawUrl.trim();
   if (!url) return "";
 
-  // Strip trailing `.git` case-insensitively — the whole result is
-  // lowercased at the end, so `.GIT` / `.Git` must be treated the same as
-  // `.git`. Previously the `.endsWith(".git")` check let `.GIT` leak
-  // through and appear in the output.
   if (/\.git$/i.test(url)) url = url.slice(0, -4);
 
-  // Windows drive-letter local path (e.g. `C:/repos/app`): detect here
-  // so the scp matcher below can accept single-character SSH host aliases
-  // (`h:foo/bar` from `.ssh/config`). A drive letter is exactly one ASCII
-  // letter followed by `:/` or `:\`; SSH aliases never have a slash
-  // immediately after the colon.
   if (/^[A-Za-z]:[\\/]/.test(url)) {
     return url.toLowerCase();
   }
 
-  // Protocol-prefixed: ssh://, https://, http://, git://, file://
-  // Must be tried FIRST so that scp-style detection below doesn't
-  // incorrectly swallow an ssh:// URL that happens to contain `:port/`.
   //
-  // Matches:
-  //   1: host — bracketed IPv6 `[2001:db8::1]`, plain host with no `:` / `/`,
-  //      OR empty (for `file:///path` which has no host component).
-  //   2: port (optional) — preserved in the output so two repos on the same
-  //      host under different ports get distinct project namespaces.
-  //      Losing the port risked false-coalescing separate repos on custom
-  //      SSH mesh setups.
-  //   3: path (optional)
   const protoMatch =
     /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?(\[[^\]]+\]|[^/:]*)(?::(\d+))?(\/.*)?$/i.exec(url);
   if (protoMatch) {
     let host = protoMatch[1] ?? "";
-    // Detect IPv6 via the bracketed input form BEFORE stripping brackets,
-    // so that when we later re-attach a port we can preserve the
-    // `[host]:port` boundary. Without the brackets, `host:2222` is
-    // ambiguous with a longer bare IPv6 address like `2001:db8::1:2222`.
     const wasBracketed =
       host.startsWith("[") && host.endsWith("]");
     if (wasBracketed) host = host.slice(1, -1);
@@ -281,67 +242,39 @@ export function normalizeOriginUrl(rawUrl: string): string {
         ? `[${host}]:${port}`
         : `${host}:${port}`
       : host;
-    // For protocols without a host component (file:///path), fall back to
-    // a stable prefix so distinct local paths don't collapse to "/path".
     const prefix = hostPort.length > 0 ? hostPort : "localhost";
     return `${prefix}/${repoPath}`.toLowerCase();
   }
 
-  // scp-like syntax: [user@]host:path. Protocol-prefixed URLs (`scheme://`)
-  // are handled above, so the scp branch below guards against them: a
-  // matched `host` of `scheme` followed by a path starting with `//` is
-  // a protocol URL that fell through and must NOT be parsed here.
-  // `user@` is optional — git also accepts userless scp forms like
-  // `host:org/repo`. Valid scp paths may start with digits (e.g.
-  // `git@host:123/repo.git`), so no numeric guard is needed: port-bearing
-  // URLs have the `://` prefix and match the protocol branch above before
-  // reaching here.
   //
-  // Windows drive letters were filtered above, so single-character SSH
-  // host aliases (`h:foo/bar`) are accepted here.
   //
-  // Bracketed IPv6 (`[2001:db8::1]`) is supported: the host alternative
-  // matches the bracketed literal up to `]` without splitting on internal
-  // `:`. Brackets are stripped in the normalised form so the scp and
-  // `ssh://` forms of the same IPv6 remote produce identical projectIds.
   const scpMatch =
     /^(?:([^@\s/]+)@)?(\[[^\]]+\]|[^:@\s/]+):(.+)$/.exec(url);
   if (scpMatch) {
     let host = scpMatch[2] ?? "";
     if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
     const repoPath = scpMatch[3] ?? "";
-    // Reject protocol-like leftovers (e.g. `file:///path` where the scp
-    // regex greedily matched `file` as host and `///path` as path).
     if (repoPath.startsWith("//")) {
       return url.toLowerCase();
     }
     return `${host}/${repoPath.replace(/^\/+/, "")}`.toLowerCase();
   }
 
-  // Fallback: use raw lowercased
   return url.toLowerCase();
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Resolver
 // ──────────────────────────────────────────────────────────────────────────
 
 export interface ResolveGitContextOptions {
-  /** Inject a git invoker (tests). Defaults to spawning real `git`. */
   invoker?: GitInvoker;
   abortSignal?: AbortSignal;
   /** Absolute epoch deadline shared with the extraction lifecycle. */
   deadlineMs?: number;
-  /** Injectable clock for deadline tests. */
   now?: () => number;
-  /**
-   * Share results across calls. Each miss costs up to five `git` spawns on the
-   * event loop, so per-request callers (recall, memory_store) pass one.
-   */
   cache?: GitContextCache;
 }
 
-/** Short-lived, bounded memo of git resolution per cwd (COS-666). */
 export class GitContextCache {
   private readonly entries = new Map<string, { value: GitContext | null; head?: string; at: number }>();
   private readonly ttlMs: number;
@@ -373,8 +306,6 @@ export class GitContextCache {
   }
 
   set(key: string, value: GitContext | null, head?: string): void {
-    // Negative-only caches never hold a branch, so a session snapshot taken
-    // from them cannot carry a stale one.
     if (value !== null && !this.cacheRepos) return;
     this.entries.delete(key);
     this.entries.set(key, { value, head, at: this.now() });
@@ -400,21 +331,13 @@ export async function resolveGitContext(
 ): Promise<GitContext | null> {
   const { cache } = options;
   if (!cache) return resolveGitContextUncached(cwd, options);
-  // A cache hit must not mask cancellation or an exhausted deadline.
   throwIfInterrupted(options);
   const hit = cache.get(cwd);
   if (hit?.value === null) return null;
-  // The branch picks the write/recall namespace and git alone decides it, so a
-  // hit is served only while HEAD is byte-identical to what git answered for.
   if (hit?.value && hit.head !== undefined && (await readHeadFile(hit.value.rootPath)) === hit.head) {
     return { ...hit.value };
   }
-  // Timeouts and spawn failures are not answers about the repo, so a lookup
-  // that hit one (even partially) is never cached.
   let inconclusive = false;
-  // HEAD is snapshotted once git names the root and BEFORE the branch probe: a
-  // checkout racing the probe then leaves the entry older than HEAD, so the
-  // next hit mismatches and re-resolves (never a stale branch pinned to a new HEAD).
   let head: string | undefined;
   const inner = options.invoker ?? defaultGitInvoker();
   const invoker: GitInvoker = async (probeCwd, args, invokeOptions) => {
@@ -474,19 +397,9 @@ async function resolveGitContextUncached(
   cwd: string,
   options: ResolveGitContextOptions,
 ): Promise<GitContext | null> {
-  // Wrap the whole body so the documented "Never throws" contract is
-  // enforced. Possible throw sites include:
-  //   - `expandTildePath` → `resolveHomeDir()` → `os.homedir()` when HOME
-  //     is unset (e.g. minimal containers)
-  //   - a custom `options.invoker` that raises instead of returning a
-  //     non-zero exitCode
-  //   - any future helper added to this chain
-  // All of those map to "not in a repo" / `null`.
   try {
-    // Validate input: must be a non-empty string.
     if (typeof cwd !== "string" || cwd.length === 0) return null;
 
-    // Expand `~` per CLAUDE.md #17, then require absolute path.
     const expanded = expandTildePath(cwd);
     if (!path.isAbsolute(expanded)) return null;
 
@@ -507,7 +420,6 @@ async function resolveGitContextUncached(
       });
     };
 
-    // 1. Locate the repo root.
     const topLevel = await invoke(expanded, ["rev-parse", "--show-toplevel"]);
     if (topLevel.exitCode !== 0) return null;
     const rootPath = topLevel.stdout.trim();
@@ -535,7 +447,6 @@ async function resolveGitContextUncached(
       }
     }
 
-    // 3. Origin URL — optional. Used to derive a stable `projectId`.
     const originResult = await invoke(rootPath, ["remote", "get-url", "origin"]);
     let projectId: string;
     if (originResult.exitCode === 0) {
@@ -545,7 +456,6 @@ async function resolveGitContextUncached(
       projectId = `root:${stableHash(rootPath)}`;
     }
 
-    // 4. Default branch — best effort.
     const headRef = await invoke(rootPath, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
     let defaultBranch: string | null = null;
     if (headRef.exitCode === 0) {
@@ -576,7 +486,6 @@ async function resolveGitContextUncached(
   }
 }
 
-/** Process-wide cache for per-request callers (recall scope). */
 export const sharedGitContextCache = new GitContextCache();
 
 /**

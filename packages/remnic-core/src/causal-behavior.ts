@@ -1,13 +1,3 @@
-/**
- * causal-behavior.ts — CMC Phase 4: Implicit Behavioral Preference Learning
- *
- * Extracts behavioral signals from causal chain analysis. Unlike explicit
- * preference extraction (which reads text), this derives preferences from
- * patterns of action: what goals recur, what actions succeed repeatedly,
- * what outcomes are consistently pursued.
- *
- * Key insight: "Preferences are recurring causal pathways."
- */
 
 import { resolveCausalTrajectoryStoreDir, type CausalTrajectoryRecord } from "./causal-trajectory.js";
 import type { CausalChainIndex } from "./causal-chain.js";
@@ -20,7 +10,6 @@ import type { ConsolidatedPreference } from "./compounding/preference-consolidat
 import path from "node:path";
 import { log } from "./logger.js";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 export type CausalBehaviorSignalType =
   | "topic_revisitation"
@@ -43,11 +32,7 @@ export interface BehaviorConfig {
   confidenceThreshold: number;
 }
 
-// ─── Signal Extraction ───────────────────────────────────────────────────────
 
-/**
- * Detect topic revisitation: same goal fingerprint appearing in 3+ sessions.
- */
 function detectTopicRevisitation(
   trajectories: CausalTrajectoryRecord[],
   config: BehaviorConfig,
@@ -81,9 +66,6 @@ function detectTopicRevisitation(
   return signals;
 }
 
-/**
- * Detect action patterns: same action with >= 80% success rate, 4+ occurrences.
- */
 function detectActionPatterns(
   trajectories: CausalTrajectoryRecord[],
   config: BehaviorConfig,
@@ -133,11 +115,6 @@ function detectActionPatterns(
   return signals;
 }
 
-/**
- * Detect outcome preferences: consistent retry patterns leading to success.
- * When a trajectory fails and is retried (via chain edges) successfully,
- * it indicates a strong preference for that outcome.
- */
 function detectOutcomePreferences(
   trajectories: CausalTrajectoryRecord[],
   chainIndex: CausalChainIndex,
@@ -192,12 +169,7 @@ function detectOutcomePreferences(
   return signals;
 }
 
-// ─── Preference Synthesis ────────────────────────────────────────────────────
 
-/**
- * Convert behavioral signals into ConsolidatedPreference entries
- * that can be merged with existing IRC preference output.
- */
 export function synthesizeCausalPreferences(
   signals: CausalBehaviorSignal[],
   confidenceThreshold: number,
@@ -235,7 +207,6 @@ export function synthesizeCausalPreferences(
   return preferences;
 }
 
-// ─── Causal Impact Score ─────────────────────────────────────────────────────
 
 /**
  * Compute the causal impact score for a memory based on its
@@ -247,20 +218,13 @@ export function computeCausalImpactScore(
   memoryId: string,
   chainIndex: CausalChainIndex,
 ): number {
-  // Memory IDs don't directly map to trajectory IDs, but trajectory-based
-  // memories may reference their source trajectory ID. For now, check
-  // if the memoryId appears as a trajectory ID in the chain index.
   const incoming = chainIndex.incoming[memoryId]?.length ?? 0;
   const outgoing = chainIndex.outgoing[memoryId]?.length ?? 0;
   const raw = 0.1 * incoming + 0.15 * outgoing;
   return Math.min(0.3, Math.max(0, raw));
 }
 
-// ─── Public API ──────────────────────────────────────────────────────────────
 
-/**
- * Extract all behavioral signals from causal trajectories and chain analysis.
- */
 export async function extractCausalBehaviorSignals(options: {
   memoryDir: string;
   causalTrajectoryStoreDir?: string;
@@ -269,7 +233,6 @@ export async function extractCausalBehaviorSignals(options: {
   try {
     const { memoryDir, causalTrajectoryStoreDir, config: behaviorConfig } = options;
 
-    // Read all trajectories
     const root = resolveCausalTrajectoryStoreDir(memoryDir, causalTrajectoryStoreDir);
     const trajectoriesDir = path.join(root, "trajectories");
     const files = await listJsonFiles(trajectoriesDir).catch(() => [] as string[]);
@@ -288,11 +251,9 @@ export async function extractCausalBehaviorSignals(options: {
 
     if (trajectories.length === 0) return [];
 
-    // Read chain index
     const chainsDir = resolveChainsDir(memoryDir, causalTrajectoryStoreDir);
     const chainIndex = await readChainIndex(chainsDir);
 
-    // Extract all signal types
     const signals: CausalBehaviorSignal[] = [
       ...detectTopicRevisitation(trajectories, behaviorConfig),
       ...detectActionPatterns(trajectories, behaviorConfig),

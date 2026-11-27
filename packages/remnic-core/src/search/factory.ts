@@ -145,7 +145,6 @@ export function createConversationSearchBackend(config: PluginConfig): SearchBac
     return undefined;
   }
 
-  // Conversation index is QMD-only — do not use lancedb/meilisearch/orama even if
   // searchBackend is set to one of those. Only respect "noop" to allow disabling.
   const backend = config.searchBackend ?? "qmd";
   if (backend === "noop") return undefined;

@@ -1,9 +1,3 @@
-/**
- * Recall-navigation config parse (issue #1956 / PR #2937).
- *
- * Unknown keys fail closed. Default parse keeps navigation on and display
- * handles off, and that pair still records authority history.
- */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

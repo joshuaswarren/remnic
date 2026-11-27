@@ -1,31 +1,6 @@
-/**
- * correction/correction-contract.ts — Types for the Correction Contract
- * (issue #1580).
- *
- * The Correction Contract is the SINGLE plan/apply pipeline every memory
- * correction flows through: supersession, invalidation, tombstone, edit,
- * rescope, redaction. A correction arrives as a plain-language statement
- * ("we migrated to MySQL in March"); the planner turns it into a structured
- * {@link CorrectionPlan}; the executor applies the plan in non-destructive
- * order through the existing storage/orchestrator chokepoints.
- *
- * This module is PURE types + validation helpers — no I/O, no side effects.
- * The planner and executor live in sibling modules and inject their own
- * collaborators so the contract is testable in isolation (rule 33).
- *
- * Design rules honored (issue #1580 design section):
- *   - Plans are per-request state on disk, never module-level (rules 11/47).
- *   - Caller-supplied namespaces are NEVER trusted raw — the service
- *     resolves them through the normal namespace policy (rule 42).
- *   - Bulk operations refuse past maxAffected (no silent truncation, §39).
- *   - `never_store` redaction patterns must be bounded and safe (§34).
- */
 
 import type { MemoryCategory, MemoryFrontmatter } from "../types.js";
 
-// ---------------------------------------------------------------------------
-// Request
-// ---------------------------------------------------------------------------
 
 /**
  * The user-facing input: a plain-language correction plus optional explicit
@@ -60,7 +35,6 @@ export interface CorrectionRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Classification + actions
 // ---------------------------------------------------------------------------
 
 export type CorrectionClassification =
@@ -132,7 +106,6 @@ export const CORRECTION_ACTION_KINDS: readonly CorrectionAction["kind"][] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Plan + outcome
 // ---------------------------------------------------------------------------
 
 /**
@@ -169,13 +142,6 @@ export interface CorrectionPlan {
   createdAt: string;
   /** ISO timestamp after which apply rejects the plan as expired. */
   expiresAt: string;
-  /**
-   * Lifecycle: `pending` → `applying` → `applied`|`partial` (or `discarded`).
-   * The executor flips a plan to `applying` BEFORE running any mutation
-   * (review thread OgIqt): if the process dies mid-apply, the plan stays
-   * `applying` and is NOT silently retryable — a partially-applied plan must
-   * never be re-applied wholesale (it would duplicate succeeded actions).
-   */
   status?: "pending" | "applying" | "applied" | "discarded" | "partial";
   /**
    * ISO timestamp recorded when the plan transitioned to `applying` (#1713
@@ -212,7 +178,6 @@ export interface CorrectionOutcome {
 }
 
 // ---------------------------------------------------------------------------
-// Validation helpers (pure) — shared by planner, executor, and surface tests
 // ---------------------------------------------------------------------------
 
 /** Maximum supported `text` length. Surfaces bound this earlier; the planner
@@ -304,9 +269,6 @@ export function validateRedactionPattern(pattern: string): string {
       `redaction_rule.pattern exceeds the ${REDACTION_PATTERN_MAX}-character bound.`,
     );
   }
-  // Reject patterns that could match an unbounded string (overly-broad) OR
-  // exhibit catastrophic backtracking (nested quantifiers like `(a+)+`). We do
-  // NOT execute the regex (that would be ReDoS itself); we only inspect shape.
   if (isRegexLike(trimmed) && isUnsafeRedactionRegex(trimmed)) {
     throw new CorrectionContractError(
       "redaction_rule.pattern is unsafe — use a bounded literal or a regex without nested quantifiers / overlapping alternation.",
@@ -333,32 +295,17 @@ export function validateRedactionPattern(pattern: string): string {
   return trimmed;
 }
 
-/** Only `/.../`-wrapped patterns are treated as regex; everything else is a
- *  literal (review thread P1 — consistent with extraction-redaction-rules.ts). */
 function isRegexLike(pattern: string): boolean {
   return pattern.startsWith("/") && pattern.endsWith("/") && pattern.length >= 2;
 }
 
-/**
- * Reject a regex that would either match an arbitrary-length run of any
- * character (overly-broad) OR exhibit catastrophic backtracking (ReDoS).
- * Mirrors the safe-regex heuristic in extraction-redaction-rules.ts so the
- * apply-time chokepoint and the extraction-time defense agree on what is
- * pathological — intentionally not imported to keep the two modules decoupled
- * (contract owns validation; extraction owns consultation).
- */
 function isUnsafeRedactionRegex(pattern: string): boolean {
   const body = pattern.startsWith("/") && pattern.endsWith("/")
     ? pattern.slice(1, -1)
     : pattern;
-  // `.*`, `.+`, `.`, or `(.*)` etc. anywhere → overly broad.
   if (/(?:^|[^\\])\(\.\*\)|(?:^|[^\\])\.\*|(?:^|[^\\])\.\+|^\.([^*+]?)$/.test(body)) {
     return true;
   }
-  // Nested quantifier: a group (...) whose body ends with a quantifier and
-  // which is itself quantified → exponential blowup on near-miss inputs
-  // (classic ReDoS shapes: (a+)+, (a*)*, (a?)+). Also catches overlapping
-  // alternation under repetition: (a|a)+ where branches share a prefix.
   if (body.length > 512) return true;
   for (let i = 0; i < body.length; i++) {
     if (body[i] !== "(") continue;
@@ -458,7 +405,6 @@ export function validateCorrectionAction(action: unknown): asserts action is Cor
   }
 }
 
-/** Validate a {@link MemoryDraft}. Throws on invalid shape. */
 export function validateMemoryDraft(draft: unknown): asserts draft is MemoryDraft {
   if (!draft || typeof draft !== "object") {
     throw new CorrectionContractError("MemoryDraft must be an object.");
@@ -485,11 +431,6 @@ export function validateMemoryDraft(draft: unknown): asserts draft is MemoryDraf
   }
 }
 
-/**
- * Deterministic fallback plan (rule 13): when the planner's LLM is
- * unavailable, the plan degrades to a search result, never an error page.
- * Classification `outdated`, confidence `0`, actions empty.
- */
 export function deterministicFallbackPlan(args: {
   request: CorrectionRequest;
   namespace: string;

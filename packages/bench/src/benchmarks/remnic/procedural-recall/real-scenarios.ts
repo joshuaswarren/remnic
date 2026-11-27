@@ -1,28 +1,3 @@
-/**
- * Real-fixture procedural-recall scenarios (issue #567 PR 2/5).
- *
- * 20 synthetic but realistic scenarios grouped across four categories:
- *
- *   - exact-re-run          prompt matches a stored procedure near-verbatim;
- *                           should recall when procedural is on.
- *   - parameter-variation   prompt references the same intent with different
- *                           nouns (service name, environment, ticket id);
- *                           should recall on overlap + intent compatibility.
- *   - decomposition         prompt starts a multi-step task whose steps match
- *                           a stored runbook; should recall.
- *   - distractor-rejection  prompt looks task-like but the stored procedure
- *                           is unrelated — the gate should REJECT (expectMatch
- *                           = false).
- *
- * All scenarios are deterministic and use ONLY token-overlap + intent
- * classification semantics (no LLM calls). The deterministic stub LLM
- * requirement from #567 is satisfied because `buildProcedureRecallSection`
- * is a pure function of storage + prompt + config. A human runbook for
- * exercising the gpt-4o-mini path lives in docs/benchmarks/procedural-recall.md.
- *
- * Scenarios are synthetic (no personal data), per CLAUDE.md public-repo
- * privacy policy.
- */
 import type { ProceduralAblationScenario } from "./ablation.js";
 
 export type ProceduralRealScenarioCategory =
@@ -37,7 +12,6 @@ export interface ProceduralRealScenario extends ProceduralAblationScenario {
 }
 
 export const PROCEDURAL_REAL_SCENARIOS: ProceduralRealScenario[] = [
-  // --- exact-re-run (5) ---------------------------------------------------
   {
     id: "rerun-deploy-gateway",
     category: "exact-re-run",
@@ -104,12 +78,9 @@ export const PROCEDURAL_REAL_SCENARIOS: ProceduralRealScenario[] = [
     expectMatch: true,
   },
 
-  // --- parameter-variation (5) --------------------------------------------
   {
     id: "paramvar-deploy-api",
     category: "parameter-variation",
-    // Stored procedure is about gateway; prompt is about the API — same verb
-    // + shared goal (deploy), different service noun.
     prompt: "Let's deploy the API service to production today.",
     procedurePreamble: "Service deploy runbook for production",
     procedureSteps: [
@@ -136,8 +107,6 @@ export const PROCEDURAL_REAL_SCENARIOS: ProceduralRealScenario[] = [
   {
     id: "paramvar-rotate-prod",
     category: "parameter-variation",
-    // Stored procedure is staging rotation; prompt targets production
-    // credentials. Same verb + tag overlap.
     prompt: "Rotate the production database credentials this morning.",
     procedurePreamble: "Database credential rotation",
     procedureSteps: [
@@ -175,7 +144,6 @@ export const PROCEDURAL_REAL_SCENARIOS: ProceduralRealScenario[] = [
     expectMatch: true,
   },
 
-  // --- decomposition (5) --------------------------------------------------
   {
     id: "decomp-incident-response",
     category: "decomposition",
@@ -249,10 +217,6 @@ export const PROCEDURAL_REAL_SCENARIOS: ProceduralRealScenario[] = [
     expectMatch: true,
   },
 
-  // --- distractor-rejection (5) -------------------------------------------
-  // The prompt looks task-like AND shares some vocabulary, but the stored
-  // procedure is intentionally off-topic. Either the intent classifier gates
-  // it out, or the composite score stays under the 0.04 threshold.
   {
     id: "distract-explain-question",
     category: "distractor-rejection",
@@ -308,9 +272,6 @@ export const PROCEDURAL_REAL_SCENARIOS: ProceduralRealScenario[] = [
   {
     id: "distract-off-topic-task",
     category: "distractor-rejection",
-    // Starts with "Let's" but about a completely unrelated domain; the stored
-    // procedure tags don't overlap, so even if the intent gate admits it the
-    // token-overlap score stays under threshold.
     prompt: "Let's grab coffee before the standup tomorrow.",
     procedurePreamble: "Pre-merge test suite procedure",
     procedureSteps: [

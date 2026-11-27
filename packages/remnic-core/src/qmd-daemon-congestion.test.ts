@@ -5,13 +5,6 @@ import test from "node:test";
 import { daemonCongestionForTest, QmdClient } from "./qmd.js";
 import type { QmdDaemonSession } from "./qmd-daemon-session.js";
 
-/**
- * Regression coverage for the recall stall fixed in #3476: when the shared
- * qmd mcp daemon's embedding backend is contended (e.g., another process
- * saturates the GPU), every hybrid lex+vec+hyde query waits behind it. The
- * client must degrade to a lex-only plan for a bounded window instead of
- * paying full-latency hybrid calls on every recall stage.
- */
 
 interface QmdMcpQueryArgs {
   searches?: Array<{ type: string; query: string }>;
@@ -65,8 +58,6 @@ function mcpOk(docs: Array<{ path: string }>): McpToolResult {
 
 function makeClient(callTool: CallToolFn) {
   const client = new QmdClient("memories", 3, { daemonUrl: "stdio://qmd" });
-  // SAFETY: the stub drives private QmdClient fields by name; every member it
-  // sets is exercised by the assertions below.
   const internals: CongestionInternals = client as never;
   internals.available = true;
   internals.daemonAvailable = true;
@@ -82,8 +73,6 @@ function makeClient(callTool: CallToolFn) {
     chunkStrategy: false,
     mcpIndexSelection: false,
   };
-  // SAFETY: the fake session stands in for a real QmdDaemonSession; tests
-  // only exercise callTool and use the object as a congestion-map key.
   internals.daemonSession = { isActive: () => true, callTool } as never;
   return { client, internals };
 }
@@ -96,7 +85,6 @@ test("slow hybrid daemon query degrades subsequent queries to lex-only for the w
   const calls: CapturedCall[] = [];
   const { client } = makeClient(async (name, args) => {
     calls.push({ name, args });
-    // First (hybrid) call is slow — marks congestion. Degraded calls are fast.
     if (calls.length === 1) await sleep(80);
     return mcpOk([{ path: `r${calls.length}.md` }]);
   });
@@ -105,8 +93,6 @@ test("slow hybrid daemon query degrades subsequent queries to lex-only for the w
   assert.deepEqual(legTypes(calls[0]!), ["lex", "vec", "hyde"]);
   assert.equal(first.length, 1);
 
-  // Different query text avoids the 60s result cache — the second call must
-  // reach the daemon but with the degraded lex-only plan.
   const second = await client.search("beta query", "memories", 3);
   assert.equal(second.length, 1);
   assert.deepEqual(legTypes(calls[1]!), ["lex"]);
@@ -167,12 +153,9 @@ test("degraded results cache under the degraded namespace only", async () => {
   await client.search("shared key", "memories", 3);
   assert.deepEqual(legTypes(calls[0]!), ["lex"]);
 
-  // Same query still congested → degraded-cache hit, no new daemon call.
   await client.search("shared key", "memories", 3);
   assert.equal(calls.length, 1);
 
-  // After expiry the same query must run the hybrid plan — the degraded
-  // result must not have been written into the std namespace.
   daemonCongestionForTest.set(internals.daemonSession, performance.now() - 1);
   await client.search("shared key", "memories", 3);
   assert.equal(calls.length, 2);
@@ -188,7 +171,6 @@ test("a congestion mark from one client gates siblings sharing the daemon sessio
   };
   const a = makeClient(sessionCallTool);
   const b = makeClient(sessionCallTool);
-  // Registry semantics: both clients retain the same shared session object.
   b.internals.daemonSession = a.internals.daemonSession;
 
   await a.client.search("slow seed", "memories", 3);

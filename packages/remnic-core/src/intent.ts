@@ -117,14 +117,10 @@ export function planRecallMode(prompt: string): RecallPlanMode {
     return "graph_mode";
   }
 
-  // Reserve no_recall for low-information acknowledgements; avoid broad regressions.
-  // Multilingual table (issue #2191): Japanese/Chinese/Korean/Russian/etc acks
-  // route the same way; the exact-match set cannot match longer English prompts.
   if (p.length <= 18 && isMultilingualAck(stripTrailingRecallNoise(p))) {
     return "no_recall";
   }
 
-  // Full recall for prompts that are explicitly memory-seeking or analytical questions.
   if (
     /\b(previous|earlier|remember|last time|did we|what did we decide|context|summarize|summary|recap|key points|decision)\b/i.test(p) ||
     endsWithQuestionMark(p) ||
@@ -133,7 +129,6 @@ export function planRecallMode(prompt: string): RecallPlanMode {
     return "full";
   }
 
-  // Minimal for short, non-question operational directives to keep latency/tokens down.
   if (
     p.length <= 100 &&
     /^(check|reload|restart|run|verify|show|status|sync|update|open|close|set|enable|disable|fix|patch)\b/i.test(p)

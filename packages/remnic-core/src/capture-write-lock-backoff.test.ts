@@ -99,8 +99,6 @@ test("capture write lock acquire succeeds after a brief hold", async () => {
         assert.equal(options.maxWaitMs, 1);
         assert.equal(options.pollMs, 1);
         probes += 1;
-        // The second lock in the chain stays busy for one attempt, while the
-        // first lock is already held. Sleep must observe that hold released.
         if (probes % 2 === 0 && busy) {
           return await task(false, { failure: "timeout", refresh: async () => false });
         }
@@ -282,13 +280,11 @@ test("abort is rechecked after the capture write lock is acquired", async () => 
 
 test("capture write lock backoff config rejects junk and inverted schedules", () => {
   assert.deepEqual(parseConfig({}).converge, { conflictPolicy: "newest-wins" });
-  // No lock-options source is a plain (non-converge) capture: short legacy bounds.
   assert.deepEqual(resolveCaptureWriteLockBackoffLimits(undefined), {
     initialDelayMs: LEGACY_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS,
     maxDelayMs: LEGACY_CAPTURE_WRITE_LOCK_MAX_DELAY_MS,
     deadlineMs: LEGACY_CAPTURE_WRITE_LOCK_DEADLINE_MS,
   });
-  // A converge source with no overrides gets the long converge defaults.
   assert.deepEqual(resolveCaptureWriteLockBackoffLimits({}), {
     initialDelayMs: DEFAULT_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS,
     maxDelayMs: DEFAULT_CAPTURE_WRITE_LOCK_MAX_DELAY_MS,
@@ -403,7 +399,6 @@ test("capture write lock deadline is checked before each lock probe", async () =
       now: () => now,
       random: () => 1,
       sleep: async (ms) => {
-        // The backoff itself pushes the clock past the deadline.
         now += 200 + ms;
       },
       withHeldFileLock: (async (_lockPath, _options, task) => {
@@ -416,8 +411,6 @@ test("capture write lock deadline is checked before each lock probe", async () =
       lock.withCaptureWriteLock(async () => "unreachable", "held-identity"),
       (error: unknown) => isTombstoneBlockedCaptureWriteLockBusy(error)
     );
-    // The first attempt probed once; the deadline must fail the second
-    // attempt before it probes the lock file again.
     assert.equal(probes, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -438,7 +431,6 @@ test("capture write lock deadline is checked right before the write", async () =
       }),
       now: () => now,
       withHeldFileLock: (async (_lockPath, _options, task) => {
-        // Waiting for the lock file consumed the whole deadline.
         now += 5_000;
         return await task(true, { refresh: async () => true });
       }) as typeof withHeldFileLock,
@@ -461,9 +453,6 @@ test("aborting capture write lock backoff cancels the pending timer", async () =
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-lock-timer-cancel-"));
   try {
     const controller = new AbortController();
-    // Real timers on purpose: this test observes that abort clears the live
-    // Timeout handle the default backoff sleep created (same approach as the
-    // sleepAbortable tests in console/trace.test.ts).
     const baseline = process.getActiveResourcesInfo().filter((entry) => entry === "Timeout").length;
     const lock = new TombstoneBlockedCaptureWriteLock({
       stateDir: dir,
@@ -523,8 +512,6 @@ test("a capture without lock options keeps the short legacy backoff", async () =
       lock.withCaptureWriteLock(async () => "unreachable", "held-identity"),
       (error: unknown) => isTombstoneBlockedCaptureWriteLockBusy(error)
     );
-    // Bounded legacy tolerance: short waits, the ~3s pre-backoff deadline,
-    // then the busy error — not the 60s converge deadline.
     assert.ok(sleeps.length >= 3);
     assert.ok(sleeps.every((ms) => ms >= 12 && ms <= 50), `sleeps out of legacy range: ${sleeps.join(",")}`);
     assert.ok(now >= 3_000 && now < 3_100, `expected the ~3s legacy deadline, stopped at ${now}`);

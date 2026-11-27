@@ -1,26 +1,3 @@
-/**
- * Process-wide rate-limit handling for the local LLM client (COS-447).
- *
- * A LiteLLM proxy in front of the local models answers `429 No deployments
- * available` (and `503`/`408`) when every deployment is busy or in cooldown.
- * Before this module the client returned on the first 429 and the caller
- * loop immediately issued the next request, so one daemon could hammer the
- * proxy with thousands of calls per hour while it was saturated.
- *
- * This module provides three pieces that the client composes:
- *
- * - classification of rate-limit responses and of the retry hint
- *   (`Retry-After` header as delta-seconds or HTTP-date, falling back to
- *   LiteLLM's `Try again in N seconds` body text);
- * - exponential backoff with full jitter;
- * - process-wide state shared by every `LocalLlmClient` instance: a
- *   concurrency semaphore for in-flight HTTP attempts and a per-endpoint
- *   "do not call before" deadline, so one client's 429 slows every client
- *   pointed at the same endpoint.
- *
- * State lives on `globalThis` so duplicated module copies in bundled output
- * still share one limiter.
- */
 
 export const RATE_LIMIT_STATUSES: ReadonlySet<number> = new Set([408, 429, 503]);
 
@@ -70,12 +47,6 @@ export function resolveRateLimitSettings(config: {
   };
 }
 
-/**
- * Pool-side refusals carry "pool missing or disabled" — a config failure,
- * not endpoint saturation. Recording backoff for one would throttle every
- * operation sharing the endpoint URL (e.g. extraction waits on a missing
- * recall pool).
- */
 const POOL_MISSING_PATTERN = /pool missing or disabled/i;
 
 /**
@@ -83,15 +54,11 @@ const POOL_MISSING_PATTERN = /pool missing or disabled/i;
  * 408/429/503, or a 5xx whose body carries LiteLLM's cooldown wording.
  * 400s are never rate limits (context-window errors mention fallbacks).
  */
-/** Proxy 503 with a pool-config error code is terminal; do not enter rate-limit retries. */
 const TERMINAL_PROXY_POOL_CODES: ReadonlySet<string> = new Set([
   "remnic_recall_pool_unavailable",
   "remnic_extraction_pool_unavailable",
 ]);
 
-/** Today's proxy answers {"error": "..."} with no code field, so the code path
- * parses the body instead of substring-matching JSON — spacing and key order
- * must not decide whether a terminal refusal retries (kilo on #3474). */
 function bodyHasTerminalPoolCode(bodyText: string): boolean {
   try {
     // SAFETY: the proxy body is an opaque JSON object and `code` is optional, so a
@@ -103,9 +70,6 @@ function bodyHasTerminalPoolCode(bodyText: string): boolean {
   }
 }
 
-/** The proxy answers pool-config refusals as {"error": "... pool missing or
- * disabled ..."} with no code field; the text shape is part of the terminal
- * contract, or the generic 5xx retry still fires (wAN review on #3474). */
 const TERMINAL_PROXY_POOL_TEXT = "pool missing or disabled";
 
 export function isTerminalLocalLlmProxyPoolError(status: number, bodyText: string): boolean {
@@ -118,8 +82,6 @@ export function isTerminalLocalLlmProxyPoolError(status: number, bodyText: strin
 
 export function isRateLimitedResponse(status: number, bodyText: string): boolean {
   if (isTerminalLocalLlmProxyPoolError(status, bodyText)) return false;
-  // Pool-side refusals carry "pool missing or disabled" as text: a config
-  // failure, not endpoint saturation. Substring check, no regex.
   if (bodyText.toLowerCase().includes("pool missing or disabled")) return false;
   if (RATE_LIMIT_STATUSES.has(status)) return true;
   return status >= 500 && RATE_LIMIT_BODY_PATTERN.test(bodyText);
@@ -291,7 +253,6 @@ export class LocalLlmConcurrencyLimiter {
 
   private pump(): void {
     while (this.waiters.length > 0) {
-      // An ineligible critical head must not strand the background permit.
       const criticalAllowed = this.canAcquire(true);
       const backgroundAllowed = this.canAcquire(false);
       const index = this.waiters.findIndex((waiter) => waiter.highPriority ? criticalAllowed : backgroundAllowed);
@@ -315,7 +276,6 @@ interface RateLimitGlobalState {
 }
 
 declare global {
-  // Shared across duplicated module copies in bundled output.
   var __remnicLocalLlmRateLimitState: RateLimitGlobalState | undefined;
 }
 
@@ -420,8 +380,6 @@ export class LocalLlmRateLimitSession {
 
   async beforeAttempt(signal?: AbortSignal): Promise<RateLimitAttemptGate> {
     const deadlineMs = Date.now() + Math.max(0, this.waitBudgetMs);
-    // Recheck the shared deadline after every async wait: another attempt may
-    // have recorded or extended a cooldown while this one slept or queued.
     for (;;) {
       const remainingMs = endpointBackoffRemainingMs(this.endpoint);
       if (remainingMs > 0) {

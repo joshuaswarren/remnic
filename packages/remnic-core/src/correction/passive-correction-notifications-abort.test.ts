@@ -9,8 +9,6 @@ import {
   enqueuePassiveCorrectionNotification,
 } from "./passive-correction-notifications.js";
 
-// Issue #3139 review: a briefing cancelled mid-drain must leave the queue
-// intact, because the caller never receives what the drain consumed.
 test("a drain cancelled after reading keeps the notification queue", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-3139-drain-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

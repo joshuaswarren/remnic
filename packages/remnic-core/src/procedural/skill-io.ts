@@ -104,7 +104,6 @@ export async function readSkillBundlesFromDir(dir: string): Promise<ReadSkillBun
   const bundles: ReadSkillBundle[] = [];
   const skipped: Array<{ entry: string; reason: string }> = [];
   const entries = await readdir(root, { withFileTypes: true });
-  // Stable order — readdir order is not guaranteed (§6).
   entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   for (const entry of entries) {
@@ -190,14 +189,12 @@ export async function persistImportedSkills(options: {
         tags: ["skill-import", "procedure"],
         structuredAttributes: {
           skill_slug: bundle.slug,
-          // Basename only — never an operator's absolute path.
           skill_source: `${bundle.slug}/${SKILL_FILE_NAME}`,
           ...(bundle.provenance.memoryId ? { skill_origin_memory_id: bundle.provenance.memoryId } : {}),
           ...(bundle.hasUnimportedResources ? { hasUnimportedResources: "true" } : {}),
         },
       },
       { source: SKILL_IMPORT_SOURCE },
-      // Machine-generated / externally authored input — salvage, warn on drops.
       { salvage: true },
     );
     if (envelope.salvageNotes.length > 0) {

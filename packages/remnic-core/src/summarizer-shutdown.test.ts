@@ -1,6 +1,3 @@
-// Shutdown-signal behavioral tests for HourlySummarizer: an aborted
-// summarizer must abort its in-flight local LLM call (the abort reaches the
-// client stub) and must refuse to start new summary work once aborted.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";

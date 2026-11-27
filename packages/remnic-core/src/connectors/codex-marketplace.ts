@@ -27,85 +27,56 @@ import { log } from "../logger.js";
 import type { PluginConfig } from "../types.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
 
-// ── Types ─────────────────────────────────────────────────────────────────
 
-/** Source type for marketplace installation. */
 export type MarketplaceInstallType = "github" | "git" | "local" | "url";
 
-/** A single plugin entry within a marketplace manifest. */
 export interface MarketplaceEntry {
-  /** Plugin name (e.g. "remnic"). */
   name: string;
-  /** Semver version string. */
   version: string;
-  /** Human-readable description. */
   description: string;
-  /** Repository identifier (e.g. "joshuaswarren/remnic"). */
   repository: string;
-  /** How this plugin should be installed. */
   installType: MarketplaceInstallType;
-  /** Optional direct URL to the plugin manifest. */
   manifestUrl?: string;
-  /** Optional entry point path within the repository. */
   entry?: string;
-  /** Optional config schema reference. */
   configSchema?: string;
 }
 
-/** Top-level marketplace manifest. */
 export interface MarketplaceManifest {
-  /** Schema version. Must be 1. */
   version: 1;
-  /** Marketplace name. */
   name: string;
-  /** Human-readable description. */
   description: string;
-  /** Available plugins. */
   plugins: MarketplaceEntry[];
 }
 
-/** Configuration for the marketplace subsystem. */
 export interface MarketplaceConfig {
   /** Whether marketplace features are enabled. Default: true. */
   enabled: boolean;
-  /** Local path where marketplace data is cached. */
   registryPath: string;
   /** Whether to auto-update marketplace data on install. Default: false. */
   autoUpdate: boolean;
 }
 
-/** Result of a marketplace install operation. */
 export interface MarketplaceInstallResult {
-  /** Whether the install succeeded. */
   ok: boolean;
-  /** Human-readable message. */
   message: string;
-  /** Source that was installed from. */
   source: string;
-  /** Source type. */
   sourceType: MarketplaceInstallType;
-  /** Plugins that were discovered. */
   pluginsFound: string[];
   /** Errors encountered (empty on success). */
   errors: string[];
 }
 
-/** Logger interface accepted by marketplace functions. */
 export interface MarketplaceLogger {
   info: (msg: string) => void;
   warn: (msg: string) => void;
   debug?: (msg: string) => void;
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────
 
-/** Current marketplace schema version. */
 export const MARKETPLACE_SCHEMA_VERSION = 1 as const;
 
-/** Default marketplace manifest filename. */
 export const MARKETPLACE_MANIFEST_FILENAME = "marketplace.json";
 
-/** Valid install types for validation. */
 const VALID_INSTALL_TYPES = new Set<string>(["github", "git", "local", "url"]);
 
 /** Bound on a manifest-fetching shallow clone (issue #3611). */
@@ -113,7 +84,6 @@ const GIT_CLONE_TIMEOUT_MS = 120_000;
 
 const execFileAsync = promisify(execFile);
 
-// ── Generate ──────────────────────────────────────────────────────────────
 
 /**
  * Generate a marketplace manifest describing Remnic as an installable plugin.
@@ -144,9 +114,7 @@ export function generateMarketplaceManifest(
   };
 }
 
-// ── Validate ──────────────────────────────────────────────────────────────
 
-/** Validation result with structured errors. */
 export interface MarketplaceValidation {
   valid: boolean;
   errors: string[];
@@ -180,22 +148,18 @@ export function checkMarketplaceManifest(manifest: unknown): MarketplaceValidati
 
   const obj = manifest as Record<string, unknown>;
 
-  // version
   if (obj.version !== MARKETPLACE_SCHEMA_VERSION) {
     errors.push(`version must be ${MARKETPLACE_SCHEMA_VERSION}, got ${JSON.stringify(obj.version)}`);
   }
 
-  // name
   if (typeof obj.name !== "string" || obj.name.trim().length === 0) {
     errors.push("name must be a non-empty string");
   }
 
-  // description
   if (typeof obj.description !== "string" || obj.description.trim().length === 0) {
     errors.push("description must be a non-empty string");
   }
 
-  // plugins
   if (!Array.isArray(obj.plugins)) {
     errors.push("plugins must be an array");
   } else if (obj.plugins.length === 0) {
@@ -233,7 +197,6 @@ export function checkMarketplaceManifest(manifest: unknown): MarketplaceValidati
         );
       }
 
-      // Optional fields — validate type when present (PR #427 post-merge fix).
       if ("manifestUrl" in plugin && plugin.manifestUrl !== undefined) {
         if (typeof plugin.manifestUrl !== "string" || (plugin.manifestUrl as string).trim().length === 0) {
           errors.push(`${prefix}.manifestUrl must be a non-empty string when provided`);
@@ -255,7 +218,6 @@ export function checkMarketplaceManifest(manifest: unknown): MarketplaceValidati
   return { valid: errors.length === 0, errors };
 }
 
-// ── Write ─────────────────────────────────────────────────────────────────
 
 /**
  * Write a marketplace manifest to disk atomically.
@@ -266,7 +228,6 @@ export async function writeMarketplaceManifest(
   outputDir: string,
   manifest: MarketplaceManifest,
 ): Promise<void> {
-  // Validate before writing — never write garbage to disk.
   const validation = checkMarketplaceManifest(manifest);
   if (!validation.valid) {
     throw new Error(
@@ -284,7 +245,6 @@ export async function writeMarketplaceManifest(
   fs.renameSync(tmpPath, destPath);
 }
 
-// ── Install ───────────────────────────────────────────────────────────────
 
 /**
  * Install from a marketplace source.
@@ -343,11 +303,7 @@ export async function installFromMarketplace(
   }
 }
 
-// ── Source resolution ─────────────────────────────────────────────────────
 
-/**
- * Resolve a marketplace manifest from the given source.
- */
 async function resolveManifest(
   source: string,
   sourceType: MarketplaceInstallType,
@@ -363,16 +319,12 @@ async function resolveManifest(
     case "git":
       return resolveGit(source, logger);
     default: {
-      // Exhaustive check — CLAUDE.md gotcha #51: reject invalid input.
       const _: never = sourceType;
       throw new Error(`Invalid source type: ${String(_)}`);
     }
   }
 }
 
-/**
- * Read marketplace.json from a local directory.
- */
 function resolveLocal(
   dirPath: string,
   logger: MarketplaceLogger,
@@ -393,7 +345,6 @@ function resolveLocal(
     throw new Error(`Invalid JSON in ${manifestPath}`);
   }
 
-  // CLAUDE.md gotcha #18: validate parse result type
   if (typeof parsed !== "object" || parsed === null) {
     throw new Error(`marketplace.json at ${manifestPath} is not a valid object`);
   }
@@ -401,9 +352,6 @@ function resolveLocal(
   return validateMarketplaceManifest(parsed);
 }
 
-/**
- * Fetch marketplace.json from a URL.
- */
 async function resolveUrl(
   url: string,
   logger: MarketplaceLogger,
@@ -439,7 +387,6 @@ async function resolveGithub(
   repo: string,
   logger: MarketplaceLogger,
 ): Promise<MarketplaceManifest> {
-  // Validate format: must be owner/repo
   if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/u.test(repo)) {
     throw new Error(`Invalid GitHub repo format: "${repo}" (expected owner/repo)`);
   }
@@ -531,15 +478,11 @@ async function resolveGit(
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────
 
 /**
  * Read the workspace root package.json version. Returns undefined if not found.
  */
 function readPackageVersion(): string | undefined {
-  // Walk up from this file to find the workspace root package.json
-  // This module lives at packages/remnic-core/src/connectors/codex-marketplace.ts
-  // so workspace root is 4 levels up.
   const candidates = [
     path.resolve(import.meta.dirname ?? ".", "../../../.."),
     path.resolve(import.meta.dirname ?? ".", "../../../../.."),

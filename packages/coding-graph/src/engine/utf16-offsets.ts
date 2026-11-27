@@ -34,8 +34,6 @@ export function buildUtf16ToByteOffsetMap(content: string): Uint32Array {
     } else if (code < 0x800) {
       byteOffset += 2;
     } else if (code >= 0xd800 && code <= 0xdbff) {
-      // High surrogate of a surrogate pair. The full code point encodes to
-      // 4 UTF-8 bytes; we charge all 4 here and skip the low surrogate.
       byteOffset += 4;
       // Both code units of the pair represent the SAME character, which
       // starts at map[i] (set at the top of the loop, before the increment).

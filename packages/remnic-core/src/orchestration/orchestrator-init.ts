@@ -1,21 +1,3 @@
-/**
- * Orchestrator-init coordinator — extracted from the orchestrator
- * (issue #1526, seam 22).
- *
- * Owns the startup lifecycle:
- *   - initialize(): directory/storage/alias/policy bring-up and the
- *     init gate that recall() awaits
- *   - deferredInitialize(): background QMD probe, warmup, caches, cron
- *     wiring, and the deferredReady gate
- *   - startupSearchSync(): the initial search-index reconciliation
- *
- * Behavior-preserving move from orchestrator.ts. The async init ORDERING
- * is part of the gateway_start contract — the move keeps every await in
- * place and mutates the orchestrator's own gate fields (initPromise,
- * deferredReady, resolveDeferredReady, deferredInitAbort,
- * deferredSyncSucceeded, …) through live get/set accessors, so
- * stop/start reuse of one Orchestrator instance behaves identically.
- */
 
 import { readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
@@ -118,15 +100,12 @@ export class OrchestratorInitCoordinator {
     | undefined;
   private readonly startupStorageWrites = new Set<Promise<void>>();
   private readonly startupWarmups = new Set<Promise<void>>();
-  /** Default-namespace collection state from the initialize() check,
-   *  epoch-scoped so a retired lifecycle's outcome cannot leak into the next. */
   private startupDefaultCollection: { epoch: number; state: SearchCollectionState } | undefined;
 
   constructor(
     private readonly deps: OrchestratorInitDeps,
   ) {}
 
-  /** Retire the current lifecycle without constructing a lazy coordinator. */
   retireStartupEpoch(): void {
     this.startupEpochAbort?.controller.abort();
     this.startupEpochAbort = undefined;
@@ -144,7 +123,6 @@ export class OrchestratorInitCoordinator {
     }
   }
 
-  /** Wait for background startup warm-ups; destroy() only, never the deferredReady gate. */
   async drainStartupWarmups(): Promise<void> {
     await Promise.allSettled([...this.startupWarmups]);
   }
@@ -161,9 +139,6 @@ export class OrchestratorInitCoordinator {
   private beginStartupEpoch(): number {
     this.startupEpochAbort?.controller.abort();
     this.startupEpochAbort = undefined;
-    // A replacement lifecycle owns new deferred work. Abort the previous
-    // controller before replacing it so stale warmup/cache/cron phases cannot
-    // continue after a same-instance re-initialize.
     this.deps.deferredInitAbort?.abort();
     this.deps.deferredInitAbort = null;
     this.deps.deferredSyncSucceeded = false;
@@ -305,11 +280,6 @@ export class OrchestratorInitCoordinator {
 
   async initialize(): Promise<void> {
     const epoch = this.beginStartupEpoch();
-    // Recreate the deferred-ready gate on every initialize() call.
-    // The same Orchestrator instance may be reused across stop/start cycles
-    // (src/index.ts does this). Without this reset, the second cycle's
-    // `await orchestrator.deferredReady` resolves immediately (already settled
-    // from the first cycle) while the new deferredInitialize() is still running.
     let resolveDeferred: (() => void) | undefined;
     this.deps.deferredReady = new Promise<void>((resolve) => {
       resolveDeferred = () => resolve();
@@ -359,19 +329,8 @@ export class OrchestratorInitCoordinator {
           if (exitIfStale()) return;
           await this.initializeStorage(sm);
         }
-        // Explicitly seed the catalog with all configured namespaces at startup
-        // (round 6, cursor Medium — NBLlR). The storageFor loop above fires the
-        // router's onResolve hook, but a warm router cache (reused instance
-        // across stop/start) can skip onResolve, leaving policy namespaces absent
-        // from the live catalog until an operator runs `rebuild --apply`. This
-        // call is cheap, idempotent, and best-effort: a catalog failure must
-        // never break initialization (rule #13, #40).
         await this.deps.namespaceCatalog.registerConfiguredNamespaces().catch(() => undefined);
       }
-      // #1713 Item 2: recover stale `applying` correction plans left behind
-      // by a process that died mid-apply. The raw catalog flight is per-startup
-      // epoch: fallback recovery stays bounded, while a guarded late result can
-      // recover dynamic plans without restarting any QMD work.
       try {
         const correctionNamespaces = new Set(this.deps.configuredNamespaceList());
         if (this.deps.namespaceCatalog.enabled) {
@@ -416,11 +375,6 @@ export class OrchestratorInitCoordinator {
         promotionByOutcomeEnabled: resolveUtilityLearningCapabilities(this.deps.config).promotionByOutcome,
       });
 
-      // Initialize the content-hash dedup index from the corpus-AUTHORITATIVE
-      // rebuild (issue #1909 review round 12) rather than a raw, possibly-stale
-      // fact-hashes.txt load — the orchestrator dedup layer and StorageManager
-      // share this one instance so a crash before a deferred batch save cannot
-      // leave the restart's dedup blind to a durable fact.
       if (resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication) {
         try {
           this.deps.contentHashIndex = await this.deps.storage.getAuthoritativeFactHashIndex();
@@ -428,11 +382,6 @@ export class OrchestratorInitCoordinator {
             `content-hash dedup: rebuilt authoritative index with ${this.deps.contentHashIndex.size} hashes`,
           );
         } catch (err) {
-          // PR #2016: the locked corpus rebuild could not run at init (transient
-          // cross-process contention). Pre-warm with the shared instance instead
-          // of failing init; the dedup consumers gate a MISS on
-          // isFactContentHashAuthoritative() and confirm against the corpus until
-          // a later rebuild acquires the lock.
           this.deps.contentHashIndex = await this.deps.storage.getSharedFactHashIndex();
           log.warn(
             `content-hash dedup: authoritative rebuild deferred at init (${err instanceof Error ? err.message : String(err)}); ` +
@@ -449,8 +398,6 @@ export class OrchestratorInitCoordinator {
         await this.deps.compounding.ensureDirs();
       }
 
-      // Buffer and compaction cleanup are fast and needed for basic operation —
-      // load them before the init gate so turn buffering works immediately.
       try {
         await this.deps.buffer.load();
       } catch (bufErr) {
@@ -477,23 +424,10 @@ export class OrchestratorInitCoordinator {
         }
       }
 
-      // QMD probe + collection check: determines the final QMD state (real
-      // client vs NoopSearchBackend). Must complete BEFORE the init gate opens
-      // so that recall() — which awaits initPromise — always observes the final
-      // QMD state. Without this ordering, a concurrent recall() could read
-      // this.deps.qmd while it's still the real client, then get errors when
-      // deferredInitialize() swaps it to NoopSearchBackend mid-query.
       try {
         const available = await this.probeForStartupEpoch(epoch);
         if (available) {
           log.info(`Search backend: available ${this.deps.qmd.debugStatus()}`);
-          // Ensure collections at startup for the catalog-union namespace set, not
-          // just the configured set (issue #1499 sweep, same class as NHZEV): a
-          // dynamic namespace that exists only in the persisted catalog must have
-          // its QMD collection checked/ensured on boot so recall against it works
-          // after a restart. `registerConfiguredNamespaces()` already seeded the
-          // catalog above, so `maintenanceNamespaces()` is readable here; it falls
-          // back to the configured set on any catalog read failure.
           const namespaceCapabilities = resolveNamespaceCapabilities(this.deps.config).namespaces;
           const discovery = await this.startupNamespaces(epoch);
           if (!this.isCurrentStartupEpoch(epoch)) {
@@ -569,28 +503,12 @@ export class OrchestratorInitCoordinator {
       }
       if (exitIfStale()) return;
 
-      // Open the init gate — essential state (storage, aliases, relevance,
-      // transcript, summarizer, buffer) is loaded AND QMD state is finalized
-      // (probe + collection check complete, NoopSearchBackend swap done if
-      // needed). Warmup, sync, caches, and remaining heavy operations run in
-      // the background after this point via deferredInitialize().
       if (this.deps.resolveInit) {
         this.deps.resolveInit();
         this.deps.resolveInit = null;
         log.info("init gate opened (essential state + QMD state loaded)");
       }
 
-      // Deferred init: QMD sync, warmup, conversation index, caches, cron.
-      // Runs in background so gateway_start returns fast. On low-power hardware
-      // (Umbrel, RPi) QMD warmup/sync alone can take 30-60s and cause gateway
-      // restart loops when they block the startup path. See issue #462.
-      // Note: QMD probe + collection check (including NoopSearchBackend swap)
-      // already ran above before the init gate, so this.deps.qmd is finalized.
-      //
-      // Capture the resolver by value so a concurrent re-initialize() cannot
-      // overwrite this.deps.resolveDeferredReady before .finally() runs — that would
-      // cause the first cycle's .finally() to resolve the *second* cycle's
-      // promise prematurely while leaving the first cycle's promise pending.
       if (this.deps.resolveDeferredReady === resolveDeferred) {
         this.deps.resolveDeferredReady = null;
       }
@@ -604,15 +522,7 @@ export class OrchestratorInitCoordinator {
           settleOwnDeferredReady();
         });
     } catch (err) {
-      // Resolve both gates so callers never hang on permanently-pending promises
-      // after catching the initialize() error:
       //
-      // - initPromise: recall(), generateDaySummary(), etc. await this as a
-      //   readiness gate with a 15s timeout. Leaving it pending means every
-      //   subsequent call pays that timeout penalty.
-      //
-      // - deferredReady: CLI callers await this for full QMD readiness. Without
-      //   resolution it hangs forever since deferredInitialize() never ran.
       if ((this.isCurrentStartupEpoch(epoch) || this.startupClosed) && this.deps.resolveInit) {
         this.deps.resolveInit();
         this.deps.resolveInit = null;
@@ -627,25 +537,8 @@ export class OrchestratorInitCoordinator {
     if (epoch === null) return;
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.deps.config);
 
-    // Sync QMD index with current disk state so recall finds recently-written
-    // facts. Without this, the index stays stale from the last extraction-
-    // triggered update — which can be days ago if the daemon restarted without
-    // new extractions. This is the root cause of "0 memories" recall results
-    // despite thousands of facts on disk.
     //
-    // The corpus-wide update is deliberately NOT awaited here (#3518): the
-    // probe and collection ensure already ran in initialize(), the model
-    // warm-up below is the last thing deferredReady waits on, and the update
-    // runs after the ready mark under the server retry loop, which sees
-    // deferredSyncSucceeded === false and calls startupSearchSync. The index
-    // lands atomically, so recall serves the previous index until the update
-    // commits rather than holding readiness for a full reindex.
     if (this.deps.qmd.isAvailable() && !resolveQmdCapabilities(this.deps.config).qmdMaintenance) {
-      // Available backend with maintenance disabled — no corpus update is
-      // owed, but probe availability alone is not sync-done: an "unknown"
-      // ensure must not stamp success, or ensureSearchReady would skip
-      // collection re-verification. Only a verified ensure — "present" or
-      // explicit "skipped" — disarms the retry loop.
       const collection = this.startupDefaultCollection;
       if (
         collection?.epoch === epoch &&
@@ -655,8 +548,6 @@ export class OrchestratorInitCoordinator {
       }
     }
     // Otherwise the flag stays false and the retry loop owns the
-    // sync: the corpus update when maintenance is on, backend recovery when
-    // the probe failed.
 
     // But only remnic-server runs a retry loop (#3525): the OpenClaw service,
     // `remnic` CLI invocations, and the bench adapter drive Orchestrator
@@ -689,27 +580,15 @@ export class OrchestratorInitCoordinator {
 
     if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
 
-    // Build the default namespace's authoritative fact-hash index now, in the
-    // background. The first explicit save otherwise pays the whole hot+cold
-    // corpus rebuild (measured 3.1 s CPU, 11 to 33 s wall on jarvis-ml). A save
-    // that arrives mid-build joins this same in-flight promise inside
-    // StorageManager, so the rebuild never runs twice. Not awaited: the
-    // deferredReady gate must not wait on it, and a failure only means the first
-    // save builds the index itself, as before.
     const factHashWarm = (async () => {
       const storage = await this.deps.storageRouter.storageFor(this.deps.config.defaultNamespace);
       await storage.isFactContentHashAuthoritative();
     })().catch((err) => {
       log.debug(`fact-hash index startup warm-up failed (non-fatal): ${err}`);
     });
-    // Tracked apart from startupStorageWrites: destroy() waits for it so the
-    // rebuild never touches state/ after teardown, but the deferredReady gate
-    // (which drains startupStorageWrites) must not.
     this.startupWarmups.add(factHashWarm);
     void factHashWarm.finally(() => this.startupWarmups.delete(factHashWarm));
 
-    // Warmup: run cheap searches to pre-load QMD embedding models and the
-    // embedding-fallback JSON index so the first real recall is fast.
     const warmupPromises: Promise<void>[] = [];
     if (this.deps.qmd.isAvailable()) {
       const warmupNs = this.deps.config.defaultNamespace;
@@ -742,9 +621,6 @@ export class OrchestratorInitCoordinator {
     await Promise.all(warmupPromises);
     if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
 
-    // Pre-warm knowledge index, memory, and entity caches.
-    // Awaited so callers of `deferredReady` can rely on warmups being complete
-    // and shutdown sequencing does not race with in-flight cache builds.
     const cacheWarmups: Promise<void>[] = [];
     if (resolveRecallAuxiliaryCapabilities(this.deps.config).knowledgeIndex) {
       cacheWarmups.push(
@@ -797,20 +673,8 @@ export class OrchestratorInitCoordinator {
 
     if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
 
-    // Await cron auto-registration so callers that `await deferredReady` can
-    // rely on cron jobs being registered when it resolves. Without this, the
-    // fire-and-forget pattern lets deferredReady settle while cron writes are
-    // still in flight. Errors are non-fatal — catch individually.
-    // Auto-register every cron job in one pass. Each registration is gated
-    // by its config flag inside the scheduler and individually non-fatal
-    // (issue #1526 PR1 — moved to MaintenanceScheduler).
     await this.deps.maintenanceScheduler.autoRegisterCrons(signal);
 
-    // First-start lifecycle migration (issue #686 retention-completion).
-    // When lifecyclePolicyEnabled is true and the memoryDir has never been
-    // touched by the lifecycle policy, run a one-time rate-limited demotion
-    // sweep (capped at 50 demotions) so the hot tier isn't flooded on the
-    // first real cron pass. Non-fatal — a failure here must not break init.
     if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
     if (lifecycleCaps.lifecyclePolicy && resolveQmdCapabilities(this.deps.config).qmdTierMigration) {
       try {
@@ -837,14 +701,6 @@ export class OrchestratorInitCoordinator {
       }
     }
 
-    // Wearables auto-sync: in-process periodic transcript refresh for
-    // long-lived hosts (default on). Today's transcript keeps growing
-    // while the wearable records; a once-per-local-day deep pass picks
-    // up late uploads and provider re-processing. Static config gate —
-    // sources can't appear at runtime, so checking once here is safe.
-    // The timer is unref'd, so one-shot CLI runs exit naturally without
-    // ever ticking; idempotent across stop/start cycles via the handle
-    // guard. Non-fatal: a failure to start must not break init.
     if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
     if (
       !this.deps.wearablesAutoSyncHandle &&
@@ -854,11 +710,6 @@ export class OrchestratorInitCoordinator {
     ) {
       try {
         const { startWearablesAutoSync } = await import("../wearables/auto-sync.js");
-        // Re-check after the await: destroy() may have aborted while
-        // the import was in flight, having found no handle to stop —
-        // starting now would leave a live interval on a destroyed
-        // orchestrator (Cursor review on PR #1464). Handle creation
-        // below is synchronous, so no further window exists.
         if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
         this.deps.wearablesAutoSyncHandle = startWearablesAutoSync(
           {
@@ -870,9 +721,6 @@ export class OrchestratorInitCoordinator {
               : {}),
           },
           {
-            // The shared wearables service fires its own meeting tail-step hook
-            // (wired in workspace-ops), so both this auto-sync path and the
-            // manual sync path rebuild affected meetings — no per-adapter fan-out.
             sync: (options) => this.deps.getWearablesService().sync(options),
             log: {
               info: (message) => log.info(message),

@@ -1,8 +1,3 @@
-/**
- * Isolated span clipper (issue #2333 leftover).
- *
- * Pure. Extraction wiring waits on the Phase A bench gate.
- */
 
 export type SpanClipOk = { ok: true; start: number; end: number };
 export type SpanClipErr = { ok: false; error: "empty" };

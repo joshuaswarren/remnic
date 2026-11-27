@@ -12,7 +12,6 @@ export interface WeekRange {
   endExclusive: string;
 }
 
-/** Parse `weekStartIso` as YYYY-MM-DD. Return `[start, start+7)`. */
 export function weekRange({ weekStartIso }: WeekRangeInput): WeekRange {
   if (!isValidActivityDate(weekStartIso)) {
     throw new RangeError(`Invalid week start "${weekStartIso}"; expected YYYY-MM-DD.`);

@@ -89,7 +89,6 @@ test("privacy boundary: default export omits observation-derived titles", () => 
   const json = JSON.stringify(recap);
   assert.equal(json.includes("Secret Window Title"), false);
   assert.equal(recap.cards[0].title, undefined);
-  // Evidence references survive: the export points at content, never copies it.
   assert.deepEqual(recap.cards[0].evidenceIds, [1]);
   assert.equal(recap.cards[0].dayKey, DATE);
 });

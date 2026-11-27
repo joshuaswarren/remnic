@@ -1,10 +1,3 @@
-/**
- * Assistant bench: proactive morning brief.
- *
- * Exercises whether the assistant can surface what the user should know and
- * act on first when they sit down in the morning. Scored by a sealed rubric
- * along identity_accuracy, stance_coherence, novelty, and calibration.
- */
 
 import type {
   BenchmarkDefinition,

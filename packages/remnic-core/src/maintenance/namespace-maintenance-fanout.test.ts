@@ -73,9 +73,6 @@ function record(
   };
 }
 
-// ---------------------------------------------------------------------------
-// runNamespaceMaintenanceFanout
-// ---------------------------------------------------------------------------
 
 test("fanout runs a job across all maintained namespaces (default + catalog)", async () => {
   const memoryDir = await mkMemoryDir();
@@ -101,7 +98,6 @@ test("fanout runs a job across all maintained namespaces (default + catalog)", a
       },
     });
 
-    // default + shared (configured) + project-alpha + team-pi-project-beta
     assert.ok(seen.includes("default"), "default namespace should be maintained");
     assert.ok(seen.includes("project-alpha"), "project namespace should be maintained");
     assert.ok(seen.includes("team-pi-project-beta"), "team-project namespace should be maintained");
@@ -345,7 +341,6 @@ test("fanout updates lastMaintenanceAt through the catalog", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Namespaces-disabled behavior (single-user compatibility)
 // ---------------------------------------------------------------------------
 
 test("fanout runs once against default when namespaces are disabled", async () => {
@@ -415,7 +410,6 @@ test("health summary aggregates per-job statuses and reports fanout config", asy
   try {
     const config = makeConfig(memoryDir);
 
-    // Run a job to generate status files.
     await runNamespaceMaintenanceFanout({
       config,
       jobName: "pattern-reinforcement",
@@ -525,7 +519,6 @@ test("fanout records runner-reported skip as skipped (cadence-skip accuracy, rev
       assert.equal(status.itemCount, undefined, `namespace ${status.namespace} no itemCount on skip`);
     }
 
-    // Health summary reflects the skips, not phantom runs.
     const health = await summarizeNamespaceMaintenanceHealth(config);
     assert.equal(health.totalRan, 0);
     assert.equal(health.totalSkipped, summary.statuses.length);
@@ -538,7 +531,6 @@ test("formatNamespaceMaintenanceHealthText surfaces failed namespace names and r
   const memoryDir = await mkMemoryDir();
   try {
     const config = makeConfig(memoryDir);
-    // Run a job that fails for one namespace and succeeds for another.
     const catalog = fakeCatalog([
       record(memoryDir, "default", "default", new Date().toISOString()),
     ]);
@@ -566,7 +558,6 @@ test("health summary lastRunAt survives a later skip via last-ran records (revie
   try {
     const config = makeConfig(memoryDir);
 
-    // First: a successful run writes both <ns>.json (ran) and <ns>.last-ran.json.
     await runNamespaceMaintenanceFanout({
       config,
       jobName: "semantic-consolidation",
@@ -574,7 +565,6 @@ test("health summary lastRunAt survives a later skip via last-ran records (revie
       runner: async () => ({ itemCount: 3 }),
     });
 
-    // Second: a skip overwrites <ns>.json with "skipped" but leaves last-ran.
     await runNamespaceMaintenanceFanout({
       config,
       jobName: "semantic-consolidation",

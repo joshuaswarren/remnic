@@ -350,10 +350,6 @@ test("a non-loopback remote origin refuses the local daemon lifecycle; loopback 
   assert.ok(refusedFromConfig, "non-loopback server.url must refuse the local daemon");
   assert.equal(refusedFromConfig.remoteUrl, "https://config.example.com");
 
-  // Loopback origins and no remote URL keep the local lifecycle allowed.
-  // The whole 127.0.0.0/8 range is loopback, not just the .1 literal — and
-  // so is the IPv4-mapped equivalent `::ffff:127.0.0.0/104`, which the URL
-  // parser hands back in compressed hex form (pinned below).
   assert.equal(new URL("http://[::ffff:127.0.0.2]:4318").hostname, "[::ffff:7f00:2]");
   assert.equal(
     new URL("http://[::ffff:127.255.255.254]:4318").hostname,
@@ -369,9 +365,6 @@ test("a non-loopback remote origin refuses the local daemon lifecycle; loopback 
     "http://[::ffff:127.0.0.1]:4318",
     "http://[::ffff:127.0.0.2]:4318",
     "http://[::ffff:127.255.255.254]:4318",
-    // Special-use localhost spellings the shared core helper already
-    // normalizes: a trailing dot (fully-qualified form) and the reserved
-    // `.localhost` suffix from RFC 6761.
     "http://localhost.:4318",
     "http://app.localhost:4318",
     "http://LOCALHOST:4318",
@@ -384,11 +377,6 @@ test("a non-loopback remote origin refuses the local daemon lifecycle; loopback 
     );
   }
 
-  // Lookalikes are remote: a hostname that merely starts with the loopback
-  // literal, a non-loopback quad whose digits resemble one, and mapped
-  // literals outside 127.0.0.0/8 — including the octet just below it. The
-  // refusal carries the resolved origin, so mapped spellings are named in
-  // the canonical hex form.
   for (const [remote, expected] of [
     ["http://127.0.0.1.example.com:4318", "http://127.0.0.1.example.com:4318"],
     ["http://12.7.0.1:4318", "http://12.7.0.1:4318"],

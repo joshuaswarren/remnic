@@ -16,7 +16,6 @@ export function wrapWorkLayerContext(content: string, options?: { linkToMemory?:
 export function applyWorkExtractionBoundary(conversation: string): string {
   if (conversation.trim().length === 0) return "";
 
-  // Replace work-layer blocks using indexOf to avoid backtracking regex.
   let bounded = conversation;
   const OPEN_TAG = "[WORK_LAYER_CONTEXT";
   const CLOSE_TAG = "[/WORK_LAYER_CONTEXT]";
@@ -24,7 +23,6 @@ export function applyWorkExtractionBoundary(conversation: string): string {
   while (true) {
     const openIdx = bounded.indexOf(OPEN_TAG, searchFrom);
     if (openIdx < 0) break;
-    // Require line-start anchor
     if (openIdx > 0 && bounded[openIdx - 1] !== "\n") {
       searchFrom = openIdx + OPEN_TAG.length;
       continue;
@@ -34,12 +32,10 @@ export function applyWorkExtractionBoundary(conversation: string): string {
     const header = bounded.substring(openIdx + OPEN_TAG.length, closeBracket);
     const closeIdx = bounded.indexOf(CLOSE_TAG, closeBracket + 1);
     if (closeIdx < 0) break;
-    // Parse attributes from header
     const flagMatch = header.match(/\blink_to_memory=(true|false)/);
     const encMatch = header.match(/\bencoding=(base64)/);
     const flag = flagMatch?.[1];
     const encoding = encMatch?.[1];
-    // Extract body (between ] and closer)
     let bodyStart = closeBracket + 1;
     if (bounded[bodyStart] === "\n") bodyStart++;
     let bodyEnd = closeIdx;
@@ -66,7 +62,6 @@ export function applyWorkExtractionBoundary(conversation: string): string {
     }
   }
 
-  // Defensive hardening: if a *real wrapper opener* survives without a closer (e.g., turn-level truncation),
   // strip everything from the opener onward to avoid leaking excluded work-layer payloads.
   // Keep literal "[WORK_LAYER_CONTEXT" text unless it contains wrapper metadata attributes.
   // Strip unterminated work-layer openers using indexOf for safety (avoids backtracking).

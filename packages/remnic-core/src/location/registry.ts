@@ -1,11 +1,3 @@
-/**
- * Location provider registry (issue #2044).
- *
- * In-memory only: host adapters register provider implementations at startup.
- * Core never statically imports an optional provider package — the registry
- * holds whatever the host wired in, and a configured source whose provider is
- * not registered is skipped (not an error), so partial installs keep working.
- */
 
 import type { LocationProvider } from "./types.js";
 

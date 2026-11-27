@@ -1,14 +1,3 @@
-/**
- * Shared harness for the caller-derived namespace-symmetry surface tests
- * (issue #2123). Builds a real Orchestrator + EngramAccessService with
- * namespaces enabled and a fake wearable connector, so wearablesSync +
- * meetingsBuild exercise the full source-transcript -> detect -> record ->
- * episode-memory path against per-namespace storage roots.
- *
- * Test-only: lives under testing/ so tsup (which entry-points only top-level
- * src/*.ts) never bundles it. Imported by the two-principal isolation test and
- * the meetings-namespace lifecycle-matrix subject.
- */
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -23,16 +12,8 @@ import {
 } from "../../wearables/registry.js";
 import type { WearableSourceConnector } from "../../wearables/types.js";
 
-/** Connector id every harness meeting is sourced from. */
 export const FAKE_WEARABLE_SOURCE = "faketest";
 
-/**
- * Register a deterministic fake wearable connector that returns one 30-minute
- * conversation with two distinct non-wearer speakers for whatever day is
- * requested — enough to fire audio-only meeting detection
- * (>= audioOnlyMinMinutes, >= 2 distinct non-wearer speakers). Clears the
- * registry first so repeated harness builds in one test process never collide.
- */
 export function registerFakeWearableConnector(): void {
   clearWearableConnectors();
   registerWearableConnector({
@@ -69,11 +50,6 @@ export function registerFakeWearableConnector(): void {
   });
 }
 
-/** Namespaces enabled; `pA` owns `nsA`, `pB` owns `nsB` (both NON-default) with
- *  full read+write; `pWO` can WRITE `nsWO` but is omitted from its readPrincipals
- *  (write-only, for the meetingsBuild read-authorization regression, #2123); the
- *  default namespace is writable/readable by any authenticated principal, so
- *  `op` acts as the machine owner. */
 function makeConfig(memoryDir: string): ReturnType<typeof parseConfig> {
   return parseConfig({
     openaiApiKey: "sk-test",
@@ -150,8 +126,6 @@ export async function buildMeetingsNamespaceHarness(): Promise<MeetingsNamespace
     async cleanup(): Promise<void> {
       await orchestrator.destroy();
       clearWearableConnectors();
-      // maxRetries absorbs a rare ENOTEMPTY when a background flush writes a
-      // state file as the recursive walk removes the tree (issue #2123 test).
       await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     },
   };

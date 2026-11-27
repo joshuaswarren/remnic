@@ -31,7 +31,6 @@ function makeConfig(memoryDir: string, overrides: Record<string, unknown> = {}) 
   });
 }
 
-// Outside HTTP dispatch (direct service calls) the id is a generated fallback, marked "local:" in the same field.
 const REQUEST_ID_PATTERN = /^local:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 test("authenticated recall timings route returns two recalls without user-correlatable inputs", async () => {
@@ -51,7 +50,6 @@ test("authenticated recall timings route returns two recalls without user-correl
   const started = await server.start();
   const url = `http://${started.host}:${started.port}/engram/v1/recall/timings`;
   try {
-    // Drive recalls through the service path (HTTP / MCP recall route) so the
     // records carry the attempt contract (requestId + outcome + httpTotalMs).
     await service.recall({ query: "private first query", sessionKey: "private:first:session" });
     await service.recall({ query: "private second query", sessionKey: "private:second:session", mode: "no_recall" });
@@ -106,7 +104,6 @@ test("authenticated recall timings route returns two recalls without user-correl
       authenticatedPrincipal: "operator",
       operatorPrincipal: "operator",
     }) as { result: { count: number; records: RecallTimingRecord[] } };
-    // generatedAt legitimately differs between the two calls; the data must not.
     assert.equal(operationOutput.result.count, payload.count);
     assert.deepEqual(operationOutput.result.records, payload.records);
     for (const record of payload.records) {
@@ -116,7 +113,6 @@ test("authenticated recall timings route returns two recalls without user-correl
       assert.ok(record.timingsMs.total >= 0);
       assert.equal(typeof record.recallPlan, "string");
       assert.equal(typeof record.queryPolicy, "string");
-      // Attempt contract (requestId + outcome + monotonic httpTotalMs).
       assert.match(record.requestId, REQUEST_ID_PATTERN);
       assert.equal(record.outcome, "ok");
       assert.ok(Number.isFinite(record.httpTotalMs) && record.httpTotalMs >= 0);
@@ -202,7 +198,6 @@ test("recall timing records expose only the fixed telemetry schema", () => {
     namespace: "default",
     recallPlan: "full",
     queryPolicy: "general/full",
-    // Attempt contract defaults for legacy emitters: no id, not an error,
     // no monotonic duration measured.
     requestId: "",
     outcome: "ok",
@@ -234,7 +229,6 @@ test("trustStage is allowlisted and its ms is parsed (issue #1905)", () => {
     queryPolicy: "general/full",
   });
   const records = getRecallTimings(config);
-  // newest-first ordering
   assert.equal(records[0]?.timingsMs.trustStage, 2, "\"2ms-cache\" parses to numeric 2");
   assert.equal(records[1]?.timingsMs.trustStage, 3, "\"3ms\" parses to numeric 3");
 });
@@ -312,7 +306,6 @@ test("configured operator principal outranks a divergent server principal overri
   const started = await server.start();
   const url = `http://${started.host}:${started.port}/engram/v1/recall/timings`;
   try {
-    // The server's own default identity is NOT the operator when the config
     // explicitly names a different one. Settled precedence: config first.
     const overrideOnly = await fetch(url, {
       headers: { Authorization: "Bearer secret-token" },
@@ -338,13 +331,11 @@ test("batch context without transport operator fails closed when config names no
   const service = new EngramAccessService(orchestrator);
   const operation = getOperation("recall_timings");
   assert.ok(operation);
-  // No config principal and no transport operator: nobody can pass the gate,
   // not even a caller whose authenticated principal would match elsewhere.
   await assert.rejects(
     operation.run({}, { service, authenticatedPrincipal: "operator" }),
     /configured operator principal/,
   );
-  // The same caller passes once the transport supplies the operator context,
   // as the HTTP route does by dispatching with operatorPrincipal set to the
   // server's own principal.
   const output = await operation.run({}, {
@@ -366,7 +357,6 @@ test("recall timing record allowlists requestId, outcome, and monotonic httpTota
     requestId: "attempt-1",
     outcome: "error",
     httpTotalMs: 123.5,
-    // Not part of the record contract: dropped by the sanitizer.
     query: "private user text",
     sessionKey: "private:session",
   });
@@ -401,12 +391,10 @@ test("attempt contract fields fail closed for legacy emitters and bad values", (
   });
   const [newest, oldest] = getRecallTimings(config);
   assert.ok(newest && oldest);
-  // Direct orchestrator callers (x-ray, daemon hooks) predate the contract:
   // their records carry neutral defaults, never a misleading id or duration.
   assert.equal(newest.requestId, "");
   assert.equal(newest.outcome, "ok");
   assert.equal(newest.httpTotalMs, 0);
-  // Parsed and sanitized: non-string requestId drops, unknown outcome fails
   // closed to "ok", "12ms" parses, negative durations floor to 0.
   assert.equal(oldest.requestId, "");
   assert.equal(oldest.outcome, "ok");
@@ -418,7 +406,6 @@ test("service recall records exactly one attempt in finally with contract fields
   const service = new EngramAccessService(new Orchestrator(config));
   await service.recall({ query: "contract probe", sessionKey: "contract:probe:session" });
   const records = getRecallTimings(config);
-  // One attempt, one record: the pipeline's per-phase payload folds into the
   // finally-record instead of pushing a second entry.
   assert.equal(records.length, 1);
   const record = records[0]!;
@@ -437,7 +424,6 @@ test("denied recall attempt still records outcome error in finally", async () =>
     /asOf/,
   );
   const records = getRecallTimings(config);
-  // The attempt failed before the pipeline ran: the finally-record is the
   // only trace, with the error outcome and the monotonic total it measured.
   assert.equal(records.length, 1);
   const record = records[0]!;
@@ -459,10 +445,8 @@ test("phase-2 await fields are allowlisted, enum-bounded, and carry no extra con
     phase2HarmonicStatus: "timeout",
     phase2HarmonicTotalMs: "30ms",
     phase2QuestionsMs: "2ms",
-    // A status outside the enum, and a total on an await that has none, drop.
     phase2QuestionsStatus: "private user question text",
     phase2QuestionsTotalMs: "5ms",
-    // Not part of the contract at all.
     phase2SecretMs: "1ms",
     phase2HarmonicQuery: "private query",
   });

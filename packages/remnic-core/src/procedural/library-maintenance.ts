@@ -1,37 +1,3 @@
-/**
- * Procedure library health maintenance (issue #2370).
- *
- * The library-health loop the agent-memory survey describes: consume the
- * telemetry Remnic already records (Memory Worth counters, access
- * timestamps, causal trajectories) and propose merge / repair-flag /
- * retire transitions for ACTIVE procedure memories.
- *
- * Shadow-first contract (mirrors `memory_governance_run`): the default run
- * mode produces a JSON report and writes NOTHING — not even the run
- * marker. Applying requires `apply: true` AND
- * `procedural.maintenance.enabled: true`.
- *
- * Actions, evaluated in this order per run:
- *   1. Merge   — cluster active procedures by normalized trigger phrase +
- *                step signature; most-recently-updated member becomes the
- *                canonical, the rest are superseded pointing at it. The
- *                canonical is stamped with the issue-#687 frontmatter
- *                contract (`reinforcement_count`, `last_reinforced_at`,
- *                `derived_via`, `derived_from`) so `patterns explain` reads
- *                procedure canonicals unchanged. A user-edited body never
- *                merges — the cluster is flagged instead.
- *   2. Repair  — flag (never rewrite) procedures whose `ProcedureStep`
- *                toolCall tools no longer appear in recent causal
- *                trajectories, via `structuredAttributes.needsRepair`.
- *   3. Retire  — demote to `archived` when failure-dominant past the
- *                configured thresholds, or idle past `retireIdleDays` with
- *                zero recorded outcomes. Demotion, never deletion; page
- *                versioning snapshots every overwrite. User-edited
- *                procedures are exempt and flagged instead.
- *
- * Deliberately NOT part of `runMemoryGovernance` — same isolation decision
- * as procedure mining (docs/procedural-memory.md).
- */
 
 import path from "node:path";
 import type { MemoryFile, PluginConfig } from "../types.js";
@@ -249,10 +215,6 @@ export async function runProcedureLibraryMaintenance(options: {
   const byId = new Map<string, MemoryFile>();
   for (const m of all) {
     if (m.frontmatter.category !== "procedure") continue;
-    // Only ACTIVE procedures are maintenance candidates. pending_review,
-    // rejected, quarantined, superseded, and archived are never merge or
-    // retire candidates (§41) — archived files live outside readAllMemories
-    // entirely.
     if (!isActiveMemoryStatus(m.frontmatter.status)) continue;
     if (typeof m.frontmatter.id === "string" && m.frontmatter.id.length > 0) {
       byId.set(m.frontmatter.id, m);
@@ -269,12 +231,9 @@ export async function runProcedureLibraryMaintenance(options: {
     applied: [],
     appliedCount: 0,
   };
-  // Empty library: nothing to propose. Shadow returns immediately; an apply
-  // run still falls through so the run marker records the pass.
   if (activeProcedures.length === 0 && mode === "shadow") return report;
 
 
-  // --- 1. Merge -------------------------------------------------------------
   const mergeConsumed = new Set<string>();
   if (maintenance.mergeEnabled) {
     const clusters = new Map<string, MemoryFile[]>();
@@ -314,9 +273,6 @@ export async function runProcedureLibraryMaintenance(options: {
     }
   }
 
-  // --- 2. Repair flag -------------------------------------------------------
-  // Only meaningful when the lookback window holds trajectory evidence: an
-  // empty window proves nothing about tool freshness.
   const trajectoryDir =
     typeof options.config.causalTrajectoryStoreDir === "string" &&
     options.config.causalTrajectoryStoreDir.trim().length > 0
@@ -360,7 +316,6 @@ export async function runProcedureLibraryMaintenance(options: {
     }
   }
 
-  // --- 3. Retire ------------------------------------------------------------
   const retireActions: ProcedureMaintenanceAction[] = [];
   const retireIds = new Set<string>();
   const idleMs = maintenance.retireIdleDays * 24 * 60 * 60 * 1000;
@@ -371,8 +326,6 @@ export async function runProcedureLibraryMaintenance(options: {
     const failureDominant =
       mwFail >= maintenance.retireMinOutcomes &&
       mwFail > mwSuccess * maintenance.retireFailRatio;
-    // Half-open idle window (§23): fresh means last signal in
-    // [now - idleMs, now); idle means strictly older than the window start.
     const lastSignalMs =
       tsMs(m.frontmatter.lastAccessed) ?? tsMs(m.frontmatter.updated);
     const idle =
@@ -409,8 +362,6 @@ export async function runProcedureLibraryMaintenance(options: {
     });
   }
 
-  // Repair flags after merge/retire exclusions land in the report in
-  // evaluation order (merge → repair → retire).
   for (const flag of repairFlags) {
     if (retireIds.has(flag.memoryIds[0]!)) continue;
     report.proposed.push(flag);
@@ -419,7 +370,6 @@ export async function runProcedureLibraryMaintenance(options: {
 
   if (mode === "shadow") return report;
 
-  // --- Apply ----------------------------------------------------------------
   const applied = report.proposed;
   let writes = 0;
   for (const action of applied) {
@@ -515,7 +465,6 @@ export async function runProcedureLibraryMaintenance(options: {
         );
         writes += 1;
       }
-      // flag_user_edited writes nothing — flags are report-only by design.
       report.applied.push(action);
     } catch (err) {
       log.warn(
@@ -526,9 +475,6 @@ export async function runProcedureLibraryMaintenance(options: {
   report.appliedCount = report.applied.length;
 
   if (writes > 0) {
-    // Corpus bump so hot caches observe the pass. Archive already moved the
-    // mention epoch when it removed the live file. Merge-supersede and repair
-    // stamps are metadata-only, so this bump must not move the epoch.
     bumpMemoryCorpusVersionForDir(options.memoryDir, { indexedText: false });
   }
   try {

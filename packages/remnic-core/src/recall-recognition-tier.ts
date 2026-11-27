@@ -1,51 +1,3 @@
-/**
- * Full-index recognition tier (issue #2975, foundation slice).
- *
- * distill-kura's recall does not search — it recognizes: the entire
- * namespace index (one line per memory: id + description) goes into a
- * single prompt and a small model names which entries bear on the
- * question. Keyword/vector search misses same-subject-different-words
- * cases; a recognizer that reads the whole index cannot miss what it
- * can see (~500 entries ≈ 6k tokens, sub-second locally).
- *
- * This slice ships the deterministic tier machinery only — nothing on
- * the live recall path reads it yet, so recall behavior is unchanged:
- *  - a compact per-namespace index persisted at
- *    `<namespace memoryDir>/state/index_recognition.json` with
- *    build/save/load; loading is total: missing, corrupt, wrong-shape,
- *    or future-version indexes all yield `null`, never an error;
- *  - the tier decision, pure on (index, maxEntries): index present and
- *    at or under the entry threshold → recognition; absent or above →
- *    the vector tier, no error thrown;
- *  - the runner: renders the FULL index into one prompt, asks the
- *    recognizer for ids, keeps only ids the index actually carries, and
- *    returns them in index order — never recognizer order;
- *  - loud degradation: a recognizer that fails falls back to vector
- *    search labeled `recognizer_unavailable` (quiet degradation is
- *    worse than degradation).
- *
- * Determinism rules:
- *  - the decision is a pure function of (index, maxEntries) — no clock,
- *    no I/O, no locale;
- *  - an empty index short-circuits: no model call, zero candidates;
- *  - the prompt and the returned ids are byte-identical across runs
- *    with unchanged inputs.
- *
- * Host contract for the wiring slices:
- *  - maintenance slice: build/save the index at memory write time from
- *    each memory's id + description line (a recognition trigger — proper
- *    nouns, numbers, landmines, the conclusion reached — not a summary),
- *    serializing writes the way temporal-index does (op chain + lock);
- *    saveRecognitionIndex here is single-writer and does not lock;
- *  - recall slice: for each recalled namespace call
- *    recallViaRecognitionTier with the recognizer (one small-model call)
- *    and the existing vector search as the fallback; expand picks
- *    through the graph neighborhood, merge through the normal pipeline
- *    (filters → rerank → budget), and record tier = recognition plus any
- *    degraded fallback in xray;
- *  - config keys recallRecognitionTier (default false) and
- *    recognitionIndexMaxEntries (default 500) gate the wiring.
- */
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { coerceBooleanLike, coerceNumber } from "./connectors/coerce.js";
@@ -73,10 +25,6 @@ export interface RecognitionIndex {
   entries: RecognitionIndexEntry[];
 }
 
-/**
- * Config fields this tier owns, mixed into `PluginConfig` (issue #2975) so
- * the keys live beside their parsers instead of growing `types.ts`.
- */
 export interface RecognitionTierSettings {
   /** Small namespaces recall by recognizing against the whole compact index instead of vector search; parsed now, wiring lands in a later slice. Default false. */
   recallRecognitionTier: boolean;
@@ -99,7 +47,6 @@ export function parseRecognitionIndexMaxEntries(raw: unknown): number {
   return Math.floor(n);
 }
 
-/** On-disk location of a namespace's recognition index. */
 export function recognitionIndexPath(memoryDir: string): string {
   return path.join(memoryDir, "state", RECOGNITION_INDEX_FILE);
 }
@@ -183,7 +130,6 @@ export interface RecognitionTierDecision {
   reason: RecognitionTierReason;
   /** Entries the decision considered; 0 when the index is absent. */
   entriesConsidered: number;
-  /** Threshold in force. */
   maxEntries: number;
 }
 
@@ -248,11 +194,6 @@ function dedupeOrdered(tokens: string[]): string[] {
 
 const TRAILING_PUNCTUATION: Record<string, true> = { ".": true, ",": true, ";": true, ":": true };
 
-/**
- * Strip trailing sentence punctuation in linear time. A quantified anchored
- * regex (`/[.,;:]+$/`) backtracks polynomially on recognizer output made of
- * many separators, and that output is uncontrolled model text.
- */
 function stripTrailingPunctuation(value: string): string {
   let end = value.length;
   while (end > 0 && TRAILING_PUNCTUATION[value.charAt(end - 1)]) end -= 1;

@@ -40,8 +40,6 @@ test("incompatible-module diagnostic: when the package is installed the loader r
   }
   const factory = await loadCodingGraphEngineFactory();
   assert.equal(typeof factory, "function");
-  // The placeholder throws a tagged CodingGraphError("not_implemented")
-  // on invocation. The install-hint path would never reach this.
   assert.throws(() => factory(), (err: unknown) => {
     if (!err || typeof err !== "object") return false;
     const e = err as { name?: unknown; code?: unknown; message?: unknown };
@@ -80,9 +78,6 @@ test("loader never reports a missing-install diagnostic when the package is pres
 });
 
 test("loadCodingGraphEngineFactory throws when package absent — install hint diagnostic", async () => {
-  // When the package is absent the loader throws the canonical
-  // install hint — proven via the message contains the install
-  // command and the package name.
   const installed = await isCodingGraphInstalled();
   if (installed) return;
   let message = "";

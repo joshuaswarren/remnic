@@ -156,7 +156,6 @@ function effectiveConfig(
     Number.isFinite(raw.hardLimit) &&
     raw.hardLimit >= 1
   ) {
-    // Floor the value, then defensively require the floored result is
     // still >= 1. `raw.hardLimit = 0.5` previously passed the `> 0`
     // gate and floored to 0, turning a minor misconfiguration into a
     // full denial of cross-namespace reads. Now we fall back to the
@@ -165,7 +164,6 @@ function effectiveConfig(
     if (floored >= 1) out.hardLimit = floored;
   }
   if (out.softLimit > out.hardLimit) {
-    // Inverted limits -> treat soft = hard so we never warn past the deny
     // threshold. Defensive, should never happen with well-formed config.
     out.softLimit = out.hardLimit;
   }
@@ -227,7 +225,6 @@ export class CrossNamespaceBudget {
     }
 
     if (typeof principal !== "string" || principal.length === 0) {
-      // A missing principal means "we can't attribute this call". Rather
       // than fail open, treat it as a cross-namespace event against a
       // shared bucket — denial-of-service risk is bounded because the
       // bucket is scoped per-process.
@@ -236,12 +233,10 @@ export class CrossNamespaceBudget {
 
     const bucket = this.buckets.get(principal) ?? { entries: [] };
     const cutoff = normalizedNow - windowMs;
-    // Drop entries that slid out of the window.
     while (bucket.entries.length > 0 && bucket.entries[0]!.ts < cutoff) {
       bucket.entries.shift();
     }
 
-    // Count the current call against the window BEFORE deciding — a call
     // that crosses the deny threshold should itself be denied, not the
     // next one. This is what the threat model calls "fail at the Nth,
     // not the (N+1)th".
@@ -251,11 +246,9 @@ export class CrossNamespaceBudget {
     const count = bucket.entries.length;
 
     if (count >= hardLimit) {
-      // Denied: roll back the entry we just added so a repeated denied
       // call does not push the bucket further into the future. This keeps
       // the limiter stateless with respect to denied attempts.
       bucket.entries.pop();
-      // Evict empty buckets (e.g. the first record after a long idle
       // rolled the only entry out, then got denied and rolled back).
       // Prevents unbounded map growth across many transient principals.
       if (bucket.entries.length === 0) {
@@ -269,8 +262,6 @@ export class CrossNamespaceBudget {
       };
     }
 
-    // Allowed: the entry stands as a reservation the caller can later release
-    // by token (issue #1906 review #4).
     const reservation: BudgetReservation = { principal, id };
     if (count > softLimit) {
       return {
@@ -320,7 +311,6 @@ export class CrossNamespaceBudget {
         },
       };
     }
-    // Cross-namespace: simulate what record() would do without the push.
     const { enabled, windowMs, softLimit, hardLimit } = this.config;
     const limit = { softLimit, hardLimit, windowMs };
     if (!enabled) {
@@ -358,7 +348,6 @@ export class CrossNamespaceBudget {
     queryNamespace: string;
     now?: number;
   }): BudgetDecision {
-    // Same-namespace short-circuit requires BOTH namespaces to be
     // non-empty strings. Two empty/undefined namespaces at runtime
     // would otherwise compare equal and fail-open — a critical bypass
     // in a security-critical module. Force the limiter to engage when

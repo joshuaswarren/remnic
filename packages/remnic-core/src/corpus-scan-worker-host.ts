@@ -1,27 +1,3 @@
-/**
- * Corpus-scan worker host (main-thread starvation fix).
- *
- * The periodic corpus maintenance scans are pure, read-only filesystem work
- * whose volume scales with the corpus (hundreds of thousands of files on a
- * large deployment). Running them on the daemon's main thread starves observe,
- * recall and the extraction queue: every awaited syscall is a main-thread
- * continuation.
- *
- * This host runs the scans in ONE `worker_threads` worker so the main thread
- * stays free. The worker entry is plain JavaScript
- * (`corpus-scan-worker.entry.mjs`, generated from the TypeScript source), so
- * it loads on every runtime the package supports — no TypeScript loader is
- * needed inside a worker thread.
- *
- * Lifecycle:
- *   - lazy spawn on the first job; `unref()`ed, so it never keeps the process
- *     alive;
- *   - a cancelled job is rejected on the main thread immediately and the
- *     worker is told to stop the walk at its next checkpoint;
- *   - a worker that cannot start (or dies before answering) makes the host run
- *     the SAME implementation inline, so the scan still happens;
- *   - `close()` terminates the worker and rejects in-flight jobs.
- */
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -34,23 +10,19 @@ import {
   statMtimes,
 } from "./corpus-scan.js";
 
-/** The scans the worker can run. */
 export type CorpusScanJobKind = "walk" | "entity-entries-fingerprint" | "stat-mtimes";
 
-/** Job payloads, one per kind. */
 export type CorpusScanPayload =
   | { kind: "walk"; baseDir: string; startDirs: string[]; propagateReadErrors: boolean }
   | { kind: "entity-entries-fingerprint"; entitiesDir: string }
   | { kind: "stat-mtimes"; paths: string[] };
 
-/** Result shape per job kind. */
 export interface CorpusScanResults {
   walk: string[];
   "entity-entries-fingerprint": string;
   "stat-mtimes": Array<number | null>;
 }
 
-/** Every result shape the worker can return, in one union. */
 export type CorpusScanResult = string[] | string | Array<number | null>;
 
 /** A worker-side failure, flattened for the thread boundary. */
@@ -60,7 +32,6 @@ export interface CorpusScanErrorPayload {
   code?: string;
 }
 
-/** A message posted back from the worker. */
 export interface CorpusScanReply {
   id: number;
   ok: boolean;
@@ -68,7 +39,6 @@ export interface CorpusScanReply {
   error?: CorpusScanErrorPayload;
 }
 
-/** Completed-job counters per kind. */
 export interface CorpusScanStats {
   jobs: number;
   byKind: Record<string, number>;
@@ -111,7 +81,6 @@ function toError(payload: CorpusScanErrorPayload, fallback: string): Error {
   return error;
 }
 
-/** Run the same scan inline (the fallback when no worker is available). */
 async function runInline(payload: CorpusScanPayload, checkCancelled?: () => void): Promise<CorpusScanResult> {
   switch (payload.kind) {
     case "walk":
@@ -171,15 +140,10 @@ export class CorpusScanWorkerHost {
     try {
       worker = this.ensureWorker();
     } catch (error) {
-      // No worker available (missing entry, unsupported runtime): the scan
-      // still happens, on this thread. Report the fallback once: every later
-      // scan would otherwise run inline silently.
       this.disableWorker(error instanceof Error ? error : new Error(String(error)));
       return await runInline(payload, this.cancellationCheck(signal));
     }
     const id = this.nextId++;
-    // Keep the process alive while a job is in flight; release it when the
-    // queue drains so an idle worker never holds the event loop open.
     this.setAttached(true);
     try {
       return await new Promise<CorpusScanResult>((resolve, reject) => {
@@ -187,8 +151,6 @@ export class CorpusScanWorkerHost {
         if (signal) {
           const onAbort = (): void => {
             this.cancelJob(id);
-            // Drop the job now: the worker's late reply is ignored, and the
-            // queue must not stay "busy" for a job nobody awaits.
             this.pending.delete(id);
             if (this.pending.size === 0) this.setAttached(false);
             reject(abortError("corpus read aborted"));
@@ -200,8 +162,6 @@ export class CorpusScanWorkerHost {
         worker.postMessage({ id, payload });
       });
     } catch (error) {
-      // A worker that died before answering leaves the scan undone: run it
-      // inline so the caller still gets its result.
       if (!this.pending.has(id) && this.workerUnavailable) {
         return await runInline(payload, this.cancellationCheck(signal));
       }
@@ -216,17 +176,10 @@ export class CorpusScanWorkerHost {
     };
   }
 
-  /** Tell the worker to abandon a job (its next checkpoint stops the walk). */
   private cancelJob(id: number): void {
     this.worker?.postMessage({ id, cancel: true });
   }
 
-  /**
-   * Attach/detach the worker's message listener. A worker with a `message`
-   * listener keeps the parent's event loop alive (the port stays ref'd), so an
-   * idle worker is detached: the daemon must be able to exit with a warm
-   * corpus-scan worker in memory.
-   */
   private setAttached(attached: boolean): void {
     const worker = this.worker;
     if (!worker) return;
@@ -256,11 +209,6 @@ export class CorpusScanWorkerHost {
     if (this.pending.size === 0) this.setAttached(false);
   };
 
-  /**
-   * Disable the worker and say why, exactly once: after this, every corpus
-   * scan runs inline on the main thread, which is the starvation this module
-   * exists to avoid. Silence here would hide the regression.
-   */
   private disableWorker(error: Error): void {
     if (this.workerUnavailable) return;
     this.workerUnavailable = true;
@@ -271,9 +219,6 @@ export class CorpusScanWorkerHost {
     if (this.worker) return this.worker;
     const worker = new Worker(resolveWorkerEntryUrl());
     worker.unref();
-    // Events from a worker that is no longer current (closed, replaced) must
-    // not touch jobs that belong to its successor: `exit` is delivered after
-    // `terminate()` resolves, by which time a new worker may own the queue.
     worker.on("error", (error: Error) => {
       if (this.worker !== worker) return;
       this.failAll(error);
@@ -310,5 +255,4 @@ export class CorpusScanWorkerHost {
   }
 }
 
-/** Process-wide corpus-scan worker. */
 export const corpusScanWorker = new CorpusScanWorkerHost();

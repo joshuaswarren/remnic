@@ -1,9 +1,3 @@
-/**
- * Select EXPAND node ids for deep recall (issue #2332).
- *
- * A foreign id refuses the whole selection; an oversized request truncates.
- * Duplicates collapse before the cap. Pure. Surfaces wait.
- */
 export const DEFAULT_MAX_EXPAND_PER_STEP = 3;
 
 export type ExpandSelectionResult =

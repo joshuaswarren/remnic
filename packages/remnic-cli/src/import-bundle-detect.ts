@@ -1,22 +1,6 @@
-// ---------------------------------------------------------------------------
-// `remnic import --all-from-bundle <dir>` auto-detect (issue #568 slice 7)
-// ---------------------------------------------------------------------------
 //
-// Given a directory, scan for known export-file names and match each one to
-// the correct importer adapter. This lets users drop an unzipped ChatGPT /
-// Claude / Takeout bundle into a single folder and run one command to
-// import everything.
 //
-// Detection is intentionally simple and file-name-based:
-//   - `memory.json`              → chatgpt (saved memories)
-//   - `conversations.json`       → chatgpt OR claude; we pick by sibling
-//                                  shape (prefer chatgpt mapping, else claude)
-//   - `projects.json`            → claude
-//   - `My Activity.json`         → gemini (also handles legacy `MyActivity.json`)
-//   - `mem0.json`                → mem0 (offline replay dump)
 //
-// The scan walks one level deep (plus a single nested directory like
-// `Takeout/Gemini/`) so users don't have to flatten their unzipped bundles.
 
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -43,7 +27,6 @@ export interface DetectedBundleEntry {
 }
 
 export interface BundleDetectOptions {
-  /** Override the default file walker for tests. */
   readdirImpl?: (dir: string) => string[];
   readFileImpl?: (p: string) => string;
   isDirectoryImpl?: (p: string) => boolean;
@@ -69,7 +52,6 @@ export function detectBundleEntries(
   const readdir = options.readdirImpl ?? defaultReaddir;
   const readFileImpl = options.readFileImpl ?? defaultReadFile;
   const isDirectory = options.isDirectoryImpl ?? defaultIsDirectory;
-  // Codex review on PR #610 — when callers inject readdir/isDirectory
   // (the testing seam), we must NOT fall back to `lstatSync`-on-disk for
   // isRegularFile. That probes the real filesystem and filters out the
   // virtual paths produced by the injected walker, breaking the seam.
@@ -84,7 +66,6 @@ export function detectBundleEntries(
       ? (p: string) => !isDirectory(p)
       : defaultIsRegularFile);
 
-  // Codex review on PR #610 — reject a bundle root that is itself a
   // symlink. Otherwise a user-supplied `--all-from-bundle <symlink>`
   // would silently traverse into the symlink target, picking up files
   // outside the intended bundle tree. Tests inject walkers and skip
@@ -123,7 +104,6 @@ export function detectBundleEntries(
     if (match) entries.push(match);
   }
 
-  // Stable sort by (adapter preference order, file path).
   const adapterOrder = {
     chatgpt: 0,
     claude: 1,
@@ -148,7 +128,6 @@ function collectCandidatePaths(
   isDirectory: (p: string) => boolean,
   isRegularFile: (p: string) => boolean,
 ): string[] {
-  // Validate top-level readability with a descriptive error; inner
   // directories that fail to read are skipped silently so a partial bundle
   // walk completes. Cursor's rule for CLAUDE.md rule 24: accept only real
   // directories; surfacing the failure here gives the user an immediate
@@ -175,7 +154,6 @@ function collectCandidatePaths(
       if (isDirectory(full)) {
         walk(full, depth + 1);
       } else if (isRegularFile(full)) {
-        // Codex review on PR #610 — reject symlink files as well as
         // symlink directories. A bundle containing e.g. a symlinked
         // `memory.json` could otherwise be followed to an arbitrary
         // filesystem location and imported as if it were part of the
@@ -207,7 +185,6 @@ function classifyFile(
     return { adapter: "mem0", filePath };
   }
   if (lower === "conversations.json") {
-    // ChatGPT vs Claude disambiguation: peek at the first element. ChatGPT
     // uses `mapping` objects; Claude uses `chat_messages` / `messages`.
     const adapter = disambiguateConversations(filePath, readFileImpl);
     return { adapter, filePath, includeConversations: true };
@@ -252,7 +229,6 @@ function defaultReadFile(p: string): string {
 
 function defaultIsDirectory(p: string): boolean {
   try {
-    // Use lstatSync so symlinks never report as directories — we refuse
     // to recurse through them so a bundle can't contain a symlinked
     // directory that escapes to arbitrary filesystem locations. Codex
     // review on PR #610.
@@ -266,7 +242,6 @@ function defaultIsDirectory(p: string): boolean {
 
 function defaultIsRegularFile(p: string): boolean {
   try {
-    // Use lstatSync so symlinks never report as regular files. Codex
     // review on PR #610: a bundle containing a symlinked `memory.json`
     // (or any other known filename) must NOT be followed — otherwise
     // the importer could be tricked into reading arbitrary filesystem

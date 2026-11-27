@@ -271,7 +271,6 @@ test("summarizeBenchScorecard rejects user-defined metric keys like client_alpha
   assert.equal(summary?.scores?.["some user note"], undefined, "free text key must not leak");
 });
 
-// ─── Public benchmark id list is exhaustive (#3042 P2) ──────────────────────
 
 test("summarizeBenchScorecard recognizes every registered benchmark id", () => {
   // The fixture list covers phase-1 plus remnic-native; any id not on

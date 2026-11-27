@@ -50,7 +50,6 @@ export class ContextSummaryUnavailableError extends Error {
 }
 
 const DEFAULT_DETERMINISTIC_MAX_TOKENS = 256;
-/** LLM output tolerance before an attempt is rejected as too long (LCM parity). */
 const OUTPUT_TOKEN_TOLERANCE = 1.5;
 const MIN_DETERMINISTIC_TOKENS = 1;
 
@@ -94,7 +93,6 @@ export async function summarizeContextPure(
     return { text: result, method: "llm", fallback: false, modelUsed: options.modelUsed };
   }
 
-  // auto
   if (options.telemetryPrefilterEnabled && looksLikeMechanicalTelemetryTranscript(text)) {
     return {
       text: deterministicTruncate(text, Math.min(targetTokens, deterministicMaxTokens)),

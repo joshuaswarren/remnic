@@ -54,15 +54,8 @@ export async function runLegacyEntityCanonicalIdMigration(
 ): Promise<string | undefined> {
   const readMigrationFingerprint = () =>
     getFingerprint(host.baseDir, host.entitiesDir, () => String(host.getEntityMutationVersion()));
-  // The migration bumps the status version only after a pass that rewrote
-  // references; a no-op replay must not ask search maintenance to run unless a
-  // previous run died owing it (issue #3286 pending marker).
   let rewroteReferences = false;
-  // Markers an earlier run left behind: this run owes (and may clear) exactly
-  // these plus its own, never a marker a concurrent run arms meanwhile.
   const owed = await listMaintenancePending(host.stateDir);
-  // Arm the marker before this run rewrites anything, so a crash between the
-  // rewrite and the hook leaves it behind. Idempotent per run.
   let armed: Promise<string> | undefined;
   const armPending = (): Promise<string> => (armed ??= writeMaintenancePending(host.stateDir));
   const completionFingerprint = await migrateLegacyEntityCanonicalIds({
@@ -104,23 +97,17 @@ export async function runLegacyEntityCanonicalIdMigration(
     readMigrationFingerprint,
   } satisfies EntityCanonicalIdMigrationDependencies);
   if (completionFingerprint !== undefined && (rewroteReferences || owed.length > 0) && host.onEntityMigrationComplete) {
-    // No hook wired (e.g. a CLI-only process) skips this block, keeping the markers too.
     const held = armed ? [...owed, await armed] : owed;
     try {
       const outcome = host.onEntityMigrationComplete();
       const settling = settleMaintenancePending(host.stateDir, held, outcome).catch(() => {
         log.warn("entity migration: search maintenance scheduling failed");
       });
-      // An async hook is served after a debounce: never hold startup for it.
       if (outcome instanceof Promise) trackMaintenanceSettlement(host.stateDir, settling);
       else await settling;
     } catch {
       log.warn("entity migration: search maintenance scheduling failed");
     }
   }
-  // An undefined completion fingerprint is a deliberate signal (issue #2213):
-  // a reconcile marker landed while the run scanned, and recomputing the
-  // fingerprint here would seal that pending request into the runner's
-  // completed state. Propagate it so the runner retries instead.
   return completionFingerprint;
 }

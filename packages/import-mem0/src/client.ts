@@ -1,22 +1,6 @@
-// ---------------------------------------------------------------------------
-// Mem0 REST client (issue #568 slice 5)
-// ---------------------------------------------------------------------------
 //
-// mem0.ai exposes a paginated memories list endpoint. A production user will
-// typically hit the hosted service at `https://api.mem0.ai/v1/memories/`,
-// supply a Bearer API key, and pull down their account's memories page by
-// page. Some users self-host and need a configurable base URL.
 //
-// This client is intentionally tiny:
-//   - fetch-based; no SDK dependency.
-//   - Injectable `fetch` impl so tests can replay a record/replay fixture.
-//   - Abort-signal aware for clean cancellation.
-//   - Rate-limit aware (sleeps between page requests when `rateLimit` is set
-//     on `RunImportOptions`).
 //
-// The adapter calls `fetchAllMem0Memories()` once; it walks pagination and
-// returns a flat array. The transform layer then maps each raw record to an
-// `ImportedMemory`.
 
 export interface Mem0Memory {
   /** Stable memory id. */
@@ -52,12 +36,6 @@ export interface Mem0ClientOptions {
   apiKey: string;
   /** Default: `https://api.mem0.ai`. Trailing slash tolerated. */
   baseUrl?: string;
-  /**
-   * Path prefix for the list endpoint. Defaults to `/v1/memories/` for
-   * the hosted API. Self-hosted mem0-oss deployments typically expose
-   * `/memories/` without the `/v1` prefix — set `MEM0_LIST_PATH` /
-   * pass this explicitly in that case. Codex review on PR #602.
-   */
   listPath?: string;
   /** Injected for tests. Falls back to `globalThis.fetch`. */
   fetchImpl?: typeof fetch;
@@ -108,11 +86,6 @@ export async function fetchAllMem0Memories(
 
   const all: Mem0Memory[] = [];
   const firstUrl = `${base}${listPath}`;
-  // Capture the allow-listed origin ONCE so cross-origin cursors can't
-  // tunnel the API key to an attacker-controlled host. Codex review on
-  // PR #602. We also validate that the configured base URL itself is a
-  // parseable absolute URL — mem0 servers that return relative cursors
-  // are then resolved against this origin.
   const allowedOrigin = safeUrlOrigin(firstUrl);
   let nextUrl: string | null = firstUrl;
   let pageIndex = 0;
@@ -202,15 +175,11 @@ function resolveNextUrl(
   pageSize: number,
   allowedOrigin: string | undefined,
 ): string | null {
-  // Has the server explicitly returned a next value?
   if ("next" in json) {
     if (json.next === null) return null; // authoritative stop
     if (typeof json.next === "string" && json.next.length > 0) {
       return resolveCursorOrThrow(json.next, firstUrl, allowedOrigin);
     }
-    // `next` was present but not a non-empty string or null (e.g. number).
-    // Don't fall through to numeric pagination — the server sent a signal
-    // we can't interpret. Treat as end-of-stream.
     return null;
   }
 
@@ -250,8 +219,6 @@ function resolveCursorOrThrow(
   allowedOrigin: string | undefined,
 ): string {
   if (!allowedOrigin) {
-    // Base URL wasn't parseable as an absolute URL; refuse to follow any
-    // cursor because we can't compare origins.
     throw new Error(
       `mem0 pagination cursor '${cursor}' cannot be followed: configured baseUrl is not an absolute URL.`,
     );

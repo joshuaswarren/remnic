@@ -119,7 +119,6 @@ test("vault journal round trip: pending_review only, journalSource=vault, hash-s
     assert.doesNotMatch(read.text, /published card/);
     assert.doesNotMatch(read.text, /sibling published/);
 
-    // First extraction: exactly one pending_review candidate.
     const first = await runJournalReviewExtraction({
       date: "2026-08-20",
       journalText: read.text,
@@ -141,7 +140,6 @@ test("vault journal round trip: pending_review only, journalSource=vault, hash-s
     assert.equal(memory.frontmatter.valid_at, "2026-08-20T00:00:00.000Z");
     assert.equal(memory.frontmatter.structuredAttributes?.journalSource, "vault");
 
-    // Hash-skip: unchanged note + stored hash → zero new candidates.
     const state = setJournalHash(readTimelineState(fx.memoryDir), "2026-08-20", hashJournalText(read.text));
     writeTimelineState(fx.memoryDir, state);
     assert.equal(journalUnchanged(readTimelineState(fx.memoryDir), "2026-08-20", read.text), true);
@@ -159,8 +157,6 @@ test("vault journal round trip: pending_review only, journalSource=vault, hash-s
     assert.equal(second.skipped, 1);
     assert.equal((await fx.storage.readAllMemories()).length, 1);
 
-    // Note edited: the changed hash re-runs the pass; the new fact lands
-    // pending_review, the old one is untouched (not active, not duplicated).
     writeNote(fx, "2026-08-20", [
       "## Journal",
       "I decided to move the parser to its own module.",
@@ -207,7 +203,6 @@ test("publisher and readback coexist byte-safely on the same note", async () => 
     ]);
     const before = readFileSync(notePath(fx, "2026-08-21"), "utf8");
 
-    // Publish a timeline region into the note (markers strategy).
     const status = publishVaultNote({
       vaultPath: fx.vault,
       notePathTemplate: "{yyyy}-{MM}-{dd}.md",
@@ -221,8 +216,6 @@ test("publisher and readback coexist byte-safely on the same note", async () => 
     assert.notEqual(afterPublish, before);
     assert.match(afterPublish, /remnic:timeline:start/);
 
-    // Readback returns the user text byte-identically; only Remnic's own
-    // region was added by the publish.
     const read = readJournalForDate({ vault: fx.config, date: "2026-08-21" });
     assert.ok(read.ok && read.exists);
     assert.equal(read.text, "user line one\nuser line two");

@@ -115,9 +115,6 @@ export function createCanaryAdapter(
       if (emptySearch) {
         return [];
       }
-      // Single decoy hit so benchmarks that expect at least one result
-      // still exercise their scoring pipeline without leaking anything
-      // useful.
       return [
         {
           turnIndex: 0,

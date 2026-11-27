@@ -1,20 +1,3 @@
-/**
- * First-start lifecycle migration (issue #686 retention-completion).
- *
- * When `lifecyclePolicyEnabled` is true but the memoryDir has never been
- * touched by the lifecycle policy (i.e. the state marker
- * `.lifecycle-init-done` does not exist), run a one-time, rate-limited
- * demotion sweep so the hot tier isn't flooded on the first real cron pass.
- *
- * Design constraints:
- *   - Capped at `FIRST_START_DEMOTION_CAP` (default 50) demotions per run
- *     so a large pre-existing corpus doesn't stall startup.
- *   - Resumable: subsequent invocations see the marker and skip.
- *   - The marker is written AFTER all mutations succeed so a crash during
- *     migration doesn't leave a false "done" marker (CLAUDE.md rule #12).
- *   - Dry-run mode reports candidates without mutating anything or writing
- *     the marker (safe to call from tests).
- */
 
 import path from "node:path";
 import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
@@ -249,14 +232,12 @@ export async function runFirstStartMigration(
     return abortedResult();
   }
 
-  // Find hot memories that should be demoted to cold
   const demotionCandidates = hotMemories.filter((m) => {
     const decision = decideTierTransition(m, "hot", policy, now);
     return decision.changed && decision.nextTier === "cold";
   });
 
   const candidateCount = demotionCandidates.length;
-  // Apply cap
   const batch = demotionCandidates.slice(0, demotionCap);
 
   if (dryRun) {
@@ -327,16 +308,10 @@ export async function runFirstStartMigration(
           continue;
         }
       }
-      // Non-fatal — individual migration failures are counted but do not abort
-      // the sweep. We track them so the marker is only written when ALL
-      // attempted demotions succeeded (CLAUDE.md rule #12: don't write a
-      // success marker after a partial failure).
       failureCount += 1;
     }
   }
 
-  // Write marker AFTER all mutations succeed (CLAUDE.md rule #12).
-  // If any demotion failed, skip the marker so the next start retries.
   if (signal?.aborted) {
     return abortedResult(candidateCount, demotedCount, failureCount);
   }

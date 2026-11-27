@@ -43,9 +43,6 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const manifestPath = join(repoRoot, "scripts", "native-dependent-tests.json");
 const tsxBin = process.platform === "win32" ? "tsx.cmd" : "tsx";
 
-// Resolve tsx regardless of how this script was launched: `node scripts/…`
-// has no package-manager PATH injection (unlike `pnpm test`), so prepend the
-// workspace bin dir explicitly. Fixes `spawn tsx ENOENT` under bare node.
 const workspaceBinDir = join(repoRoot, "node_modules", ".bin");
 process.env.PATH = `${workspaceBinDir}${path.delimiter}${process.env.PATH ?? ""}`;
 
@@ -54,16 +51,6 @@ process.env.NODE_OPTIONS = appendNodeOption(
   "--conditions=remnic-source",
 );
 
-// Sandbox TMPDIR for this run (#2083). os.tmpdir() reads TMPDIR/TMP/TEMP on
-// each call and child test processes inherit process.env, so pointing all
-// three at one per-run scratch dir makes every test's temp directory land
-// inside it. A single cleanup then reclaims them all, so leaked per-test dirs
-// cannot accumulate in the shared /tmp across runs and exhaust inodes on
-// long-lived (self-hosted) runners. The scratch dir is created via the current
-// tmpdir() BEFORE the override so it is not nested under itself. The prefix is
-// deliberately short: one test binds an AF_UNIX socket under os.tmpdir(), and
-// its path must stay within the ~107-byte sun_path limit even with this extra
-// nesting level.
 const testRunScratchDir = mkdtempSync(join(tmpdir(), "rt-"));
 process.env.TMPDIR = testRunScratchDir;
 process.env.TMP = testRunScratchDir;
@@ -78,9 +65,6 @@ function cleanupTestRunScratchDir() {
     // Best-effort cleanup — never mask the run's real exit status.
   }
 }
-// Normal termination emits `exit`; a signal (CI cancel/timeout, Ctrl-C) does
-// NOT, so clean up in the signal handler too, then re-raise with the default
-// disposition so the parent still observes the real signal termination.
 process.on("exit", cleanupTestRunScratchDir);
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
@@ -126,17 +110,6 @@ if (selectedShard !== null) {
   );
 }
 
-// Tests under packages/remnic-cli load @remnic/bench through the CLI's
-// optional-bench loader (packages/remnic-cli/src/optional-bench.ts). When
-// bench/dist is absent that loader falls back to tsx/esm/api's tsImport,
-// whose scoped-loader registration poisons subsequent dynamic .ts imports
-// in the same process — so tests/remnic-cli-dataset-resolution.test.ts
-// fails on a fresh clone that never built bench (#1609). Ensure bench dist
-// exists here so the fallback never fires in the test path. This makes the
-// runner self-sufficient: `pnpm test` and a direct
-// `node scripts/run-root-tests.mjs` both work without a prior
-// build side-effect. Idempotent — skips when dist exists and the recorded
-// source-tree fingerprint is unchanged (#2849).
 ensurePackageBuild(
   repoRoot,
   "@remnic/bench",
@@ -173,9 +146,6 @@ if (!probe.ok) {
   }
   const manifest = loadNativeManifest(manifestPath);
   const { run, excluded, stale } = partitionNativeDependent(files, manifest.files);
-  // Under --group sharding `files` is a subset of the tree, so manifest
-  // entries belonging to other groups are not stale — validate staleness
-  // against the full pattern expansion before failing.
   let staleEntries = stale;
   if ((selectedGroups.length > 0 || selectedShard !== null) && stale.length > 0) {
     const fullFiles = new Set(expandTestPatterns(repoRoot).files);
@@ -199,7 +169,6 @@ if (!probe.ok) {
   );
 }
 
-/** Run one tsx --test invocation, streaming output and parsing its TAP epilogue. */
 function runTsx(testArgs) {
   return new Promise((resolve) => {
     const child = spawn(tsxBin, ["--test", ...testArgs], {
@@ -208,7 +177,6 @@ function runTsx(testArgs) {
       stdio: ["inherit", "pipe", "inherit"],
     });
 
-    // Stream stdout live while keeping a bounded tail for the TAP summary parse.
     const TAIL_LIMIT = 64 * 1024;
     let tail = "";
     child.stdout.on("data", (chunk) => {
@@ -227,11 +195,6 @@ function runTsx(testArgs) {
   });
 }
 
-// Windows builds a single bounded command line per spawn, so hundreds of
-// explicit file arguments cannot ride one invocation. Healthy runs therefore
-// pass the selected pattern arguments (tsx expands them internally, and
-// expandTestPatterns above already proved none are vacuous); only exclusion
-// runs pass explicit relative paths, chunked under a conservative budget.
 const ARGV_CHAR_BUDGET = 6000;
 const runsArgs =
   selectedShard === null && filesToRun.length === files.length

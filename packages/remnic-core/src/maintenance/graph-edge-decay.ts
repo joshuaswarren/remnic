@@ -1,18 +1,3 @@
-/**
- * Graph-edge decay maintenance job (issue #681 PR 2/3).
- *
- * For each edge in the on-disk JSONL graph stores
- * (`<memoryDir>/state/graphs/{entity,time,causal}.jsonl`) call
- * {@link decayEdgeConfidence} from PR 1/3 and write the decayed edge
- * back to disk via the temp+rename atomic-replace pattern (CLAUDE.md
- * gotcha #54: never delete-before-write).
- *
- * Emits a structured telemetry record per run that the doctor surface
- * (`remnic doctor`) and a tail of the maintenance ledger can consume.
- *
- * Pure-helper-style API (the function takes a `memoryDir` + opts and
- * returns a record); callers wire the cron / MCP tool / CLI surfaces.
- */
 
 import {
   mkdir,
@@ -49,7 +34,6 @@ export const DEFAULT_VISIBILITY_THRESHOLD = 0.2;
 
 const GRAPH_TYPES: readonly GraphType[] = ["entity", "time", "causal"] as const;
 
-/** Per-edge-type breakdown emitted by {@link runGraphEdgeDecayMaintenance}. */
 export interface GraphEdgeDecayPerTypeStats {
   type: GraphType;
   edgesTotal: number;
@@ -57,7 +41,6 @@ export interface GraphEdgeDecayPerTypeStats {
   edgesBelowVisibilityThreshold: number;
 }
 
-/** Top-decayed-entity entry (label + total confidence drop summed across edges). */
 export interface GraphEdgeDecayTopEntity {
   label: string;
   totalDrop: number;
@@ -92,7 +75,6 @@ export interface GraphEdgeDecayOptions extends DecayOptions {
   dryRun?: boolean;
 }
 
-/** Path of the latest-run status file. */
 export function graphEdgeDecayStatusPath(memoryDir: string): string {
   return path.join(memoryDir, "state", "graph-edge-decay-status.json");
 }
@@ -127,11 +109,6 @@ export async function runGraphEdgeDecayMaintenance(
   await mkdir(graphsDir(memoryDir), { recursive: true });
 
   const perType: GraphEdgeDecayPerTypeStats[] = [];
-  // Aggregate per-label decay drops across ALL graph types so the
-  // "top decayed entities" list reflects whichever label dominated
-  // each edge (entity name, threadId, or causal phrase). Sorting by
-  // total confidence drop highlights the edges decay actually moved
-  // most in this pass.
   const dropByLabel = new Map<string, { totalDrop: number; edgeCount: number }>();
 
   let edgesTotal = 0;
@@ -141,13 +118,6 @@ export async function runGraphEdgeDecayMaintenance(
   for (const type of GRAPH_TYPES) {
     const filePath = graphFilePath(memoryDir, type);
 
-    // Hold the per-graph-file write lock across BOTH the read-snapshot
-    // and the atomic rewrite so concurrent `appendEdge()` calls cannot
-    // sneak in between (issue #729 / Codex P1, line 224). Without this
-    // lock the snapshot rewrite would silently drop any edge appended
-    // by extraction during the same window. Read failures other than
-    // ENOENT are surfaced via `readEdgesStrict` so I/O outages cannot
-    // be reported as "no edges to decay" (Codex P1, line 120).
     const {
       typeDecayed,
       typeBelow,
@@ -161,9 +131,6 @@ export async function runGraphEdgeDecayMaintenance(
       let localChangedAny = false;
 
       for (let i = 0; i < edges.length; i += 1) {
-        // Round N+19 A: the per-edge decay pass is CPU-bound; yield
-        // periodically so the lock's mtime heartbeat timer can fire and a
-        // peer does not judge the lock stale mid-run.
         if (i > 0 && i % 5_000 === 0) await yieldForLockHeartbeat();
         const edge = edges[i];
         const before = readEdgeConfidence(edge);
@@ -194,8 +161,6 @@ export async function runGraphEdgeDecayMaintenance(
           localBelow += 1;
         }
         updated[i] = decayed;
-        // Detect any structural change (confidence OR lastReinforcedAt anchor advance)
-        // so we only rewrite the JSONL when there's something to persist.
         if (
           decayed.confidence !== edge.confidence ||
           decayed.lastReinforcedAt !== edge.lastReinforcedAt
@@ -205,13 +170,6 @@ export async function runGraphEdgeDecayMaintenance(
       }
 
       if (!dryRun && localChangedAny && edges.length > 0) {
-        // Round N+19 A: revalidate ownership before the rename-backed
-        // replace — a peer that stale-broke this lock during the (yielding)
-        // decay pass owns the file now. Leave it untouched; the next run
-        // re-decays from whatever the peer published. The pass reports zero
-        // decayed edges for this type so the telemetry never claims a
-        // rewrite that did not land (per-label drop totals may still include
-        // the skipped pass — the warning names it).
         try {
           await assertGraphLockHeld(filePath, lock);
         } catch (err) {
@@ -241,8 +199,6 @@ export async function runGraphEdgeDecayMaintenance(
     });
   }
 
-  // Stable secondary key on label keeps ordering deterministic when two
-  // labels happen to have exactly the same totalDrop (gotcha #19).
   const topDecayedEntities: GraphEdgeDecayTopEntity[] = [...dropByLabel.entries()]
     .map(([label, agg]) => ({ label, totalDrop: agg.totalDrop, edgeCount: agg.edgeCount }))
     .sort((a, b) => {
@@ -279,8 +235,6 @@ async function persistTelemetry(
   const statusPath = graphEdgeDecayStatusPath(memoryDir);
   await mkdir(path.dirname(statusPath), { recursive: true });
   const tempPath = `${statusPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-  // Wrap I/O in try/catch (gotcha #13) — failing to persist telemetry must
-  // not blow up the maintenance run; the in-memory record is still returned.
   try {
     await writeFile(tempPath, JSON.stringify(telemetry, null, 2) + "\n", "utf-8");
     await rename(tempPath, statusPath);
@@ -289,7 +243,6 @@ async function persistTelemetry(
   }
 }
 
-/** Read the last persisted decay-run telemetry, if any. */
 export async function readGraphEdgeDecayStatus(
   memoryDir: string,
 ): Promise<GraphEdgeDecayTelemetry | null> {
@@ -351,7 +304,6 @@ export async function discoverGraphNamespaceRoots(
   try {
     entries = await readdir(namespacesDir, { withFileTypes: true });
   } catch {
-    // No namespaces dir yet — only the default namespace exists.
     return [...seen.entries()].map(([namespace, storageRoot]) => ({ namespace, storageRoot }));
   }
   for (const entry of entries) {

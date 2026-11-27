@@ -1,17 +1,3 @@
-/**
- * Per-principal write rate limiter for the access HTTP surface
- * (issues #1937 / #2029).
- *
- * Extracted from access-http.ts so the limiter is a cohesive unit. Each
- * principal (authenticated caller identity) gets its own rolling-window
- * bucket, so one chatty connector cannot starve writes for the others;
- * requests with no resolved principal share a single global bucket.
- *
- * Deliberately transport-agnostic: it never throws `HttpError` — callers
- * translate a refusal into their own 429. It logs a sampled warning when it
- * refuses a write, so a sustained limit condition is diagnosable server-side
- * (previously the refusal was a bare throw with no trace).
- */
 
 import { log } from "./logger.js";
 
@@ -19,10 +5,8 @@ import { log } from "./logger.js";
 // through the server's `writeRateLimit*` settings).
 const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_MAX_REQUESTS = 30;
-// At most one rejection warning per this interval, carrying a rejected-count,
 // so a storm is visible without flooding the log.
 const LOG_INTERVAL_MS = 10_000;
-// Bucket key for requests with no resolved principal.
 const GLOBAL_BUCKET = "";
 
 type Slot = { readonly recordedAt: number };
@@ -39,7 +23,6 @@ function sanitizePositiveInteger(value: number | undefined, fallback: number): n
 export class WriteRateLimiter {
   readonly maxRequests: number;
   readonly windowMs: number;
-  // One rolling window per principal. Empty buckets are pruned so the map does
   // not grow without bound.
   private readonly buckets = new Map<string, Slot[]>();
   private readonly inFlight = new Map<string, number>();
@@ -61,7 +44,6 @@ export class WriteRateLimiter {
     }
   }
 
-  /** Prune every bucket to the current window; drop buckets that go empty. */
   private sweep(now: number): void {
     for (const [key, slots] of this.buckets) {
       this.prune(slots, now);

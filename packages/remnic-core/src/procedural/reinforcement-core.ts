@@ -1,12 +1,3 @@
-/**
- * Generic reinforcement-core primitives extracted from `procedure-miner.ts`
- * (issue #687 PR 1/4). Procedure-specific scoring (success rate, step
- * normalization) intentionally stays in the miner — this module only
- * exposes category-agnostic clustering and cluster summarization helpers
- * so future PRs can run reinforcement across non-procedural categories.
- *
- * Pure refactor — no behavior change.
- */
 
 /**
  * Group `items` into clusters keyed by `keyFn(item)`.
@@ -37,7 +28,6 @@ export function clusterByKey<T>(items: readonly T[], keyFn: (item: T) => string)
 }
 
 export interface ClusterSummary {
-  /** Number of items in the cluster. */
   count: number;
   /** Earliest timestamp seen in the cluster (string min via `localeCompare`). */
   firstSeen: string;

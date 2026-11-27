@@ -1,7 +1,3 @@
-/**
- * Tests for the disclosure auto-escalation policy (issue #677 PR 4/4).
- * Pure helper, exhaustive coverage of the decision tree.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -133,8 +129,6 @@ test("auto + non-finite topK confidence does not escalate", () => {
 });
 
 test("auto + invalid threshold falls back to default and still uses confidence signal", () => {
-  // threshold out of range → fallback to DEFAULT_DISCLOSURE_ESCALATION_THRESHOLD (0.5).
-  // Confidence 0.3 < 0.5 → escalate.
   const decision = decideDisclosureEscalation({
     mode: "auto",
     threshold: -1,
@@ -175,8 +169,6 @@ test("auto + zero confidence (no results) escalates", () => {
 });
 
 test("decision.reason is always a non-empty string", () => {
-  // Guard against accidentally returning an empty reason — operator
-  // telemetry depends on it.
   const branches = [
     { mode: "manual" as const, callerProvidedDisclosure: false, topKConfidence: 0.3 },
     { mode: "auto" as const, callerProvidedDisclosure: true, topKConfidence: 0.3 },

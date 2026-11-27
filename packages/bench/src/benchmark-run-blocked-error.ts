@@ -36,11 +36,6 @@ export class BenchmarkRunBlockedError extends Error {
   }
 }
 
-/**
- * Find a run-terminal marker in an error's cause chain. The structural check
- * keeps the contract usable across duplicate package instances; the visited
- * set prevents hostile or accidentally cyclic cause graphs from looping.
- */
 export function findBenchmarkRunBlockedError(
   error: unknown,
 ): BenchmarkRunBlockedError | undefined {

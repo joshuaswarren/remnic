@@ -1459,9 +1459,6 @@ test("replacement recovery reads a cold-tier rejected predecessor (#2387)", asyn
     );
     subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = originalWrite;
 
-    // Interrupted state: the prior draft is durably rejected while the
-    // replacement still carries its prepared marker. Simulate tier
-    // migration demoting the rejected predecessor to the cold tier.
     const beforeRecovery = await subject.aliceStorage.readAllMemories();
     const replacement = beforeRecovery.find((memory) => memory.frontmatter.id !== draft.cardId);
     assert.ok(replacement);

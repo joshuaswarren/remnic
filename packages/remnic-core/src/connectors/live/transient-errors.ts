@@ -1,34 +1,3 @@
-/**
- * Shared transient-error classifier for live connectors.
- *
- * All three connectors (Drive, Notion, Gmail) need to distinguish transient
- * errors (re-throw so the pass stops without advancing the cursor — the next
- * poll retries the same batch) from terminal errors (skip-and-continue — the
- * resource is gone, inaccessible, or malformed in a non-recoverable way).
- *
- * Having three independent copies of this logic caused divergent edge-case
- * handling (Cursor thread PRRT_kwDORJXyws59sdH4 / #745). This module is the
- * single source of truth; all three connectors import from here.
- *
- * Transient classes:
- *   - 429  (rate-limit / quota — retry after backoff)
- *   - 5xx  (backend error — retry)
- *   - AbortError / cancelled requests
- *   - Network errors with no HTTP status (ECONNRESET, ETIMEDOUT, ENOTFOUND, EAI_AGAIN, …)
- *   - Bare `Error` with no metadata (plain network failures)
- *
- * Terminal classes (skip-and-continue):
- *   - 400  (bad request — won't be fixed by retrying)
- *   - 403  (permission denied)
- *   - 404  (resource gone or not shared)
- *   - 410  (gone)
- *   - Any other 4xx that isn't 429
- *
- * Connector-specific status properties are resolved via the `statusProps`
- * parameter. Connectors attach their own status property name (e.g.
- * `gmailStatus`, `notionStatus`) so the classifier can resolve it without
- * knowing the error shape in detail.
- */
 
 /**
  * Duck-typed error shape that all three connector error types share.
@@ -43,11 +12,6 @@ interface ErrorLike {
   [key: string]: unknown;
 }
 
-/**
- * Set of Node.js network-layer error codes we treat as transient.
- * Explicitly enumerated (not a denylist) so unknown codes don't accidentally
- * get swallowed.
- */
 const TRANSIENT_NODE_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",
@@ -78,22 +42,18 @@ function resolveHttpStatus(
   e: ErrorLike,
   statusProps: readonly string[],
 ): number | undefined {
-  // Connector-specific properties first.
   for (const prop of statusProps) {
     const v = e[prop];
     if (typeof v === "number" && Number.isFinite(v)) return v;
   }
 
-  // response.status (canonical GaxiosError / fetch-compatible).
   const responseStatus = e.response?.status;
   if (typeof responseStatus === "number" && Number.isFinite(responseStatus)) {
     return responseStatus;
   }
 
-  // Top-level status.
   if (typeof e.status === "number" && Number.isFinite(e.status)) return e.status;
 
-  // Numeric code.
   if (typeof e.code === "number" && Number.isFinite(e.code)) return e.code;
 
   // String-numeric codes ("429" / "503" — older googleapis / older Node HTTP).
@@ -127,7 +87,6 @@ export function isTransientHttpError(
   // AbortError — always transient.
   if (typeof e.name === "string" && e.name === "AbortError") return true;
 
-  // Resolve HTTP status.
   const status = resolveHttpStatus(e, statusProps);
   if (status !== undefined) {
     if (status === 429) return true;
@@ -136,15 +95,10 @@ export function isTransientHttpError(
     return false;
   }
 
-  // Network-layer codes.
   if (typeof e.code === "string") {
     if (TRANSIENT_NODE_CODES.has(e.code)) return true;
-    // Unknown string code with no HTTP status: conservative terminal to avoid
-    // looping on a permanent error. Callers can override if needed.
     return false;
   }
 
-  // No status, no code — likely a plain `Error` from a fetch-layer network
-  // failure. Treat as transient.
   return true;
 }

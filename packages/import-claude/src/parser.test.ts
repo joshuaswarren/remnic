@@ -78,9 +78,6 @@ describe("parseClaudeExport", () => {
     assert.ok(turns[0]?.content.includes("bundle-world"));
   });
 
-  // Cursor review on PR #598 — strict mode should reject object payloads
-  // that have none of the recognized Claude export sections rather than
-  // silently returning an empty struct.
   it("strict mode rejects unknown object shapes", () => {
     assert.throws(
       () => parseClaudeExport({ foo: "bar" }, { strict: true }),
@@ -119,16 +116,11 @@ describe("parseClaudeExport", () => {
     );
   });
 
-  // Codex review on PR #598 — when `--file` is omitted, the parser receives
-  // `undefined`; we must throw a user-facing hint instead of returning an
-  // empty result that looks like a successful zero-memory import.
   it("throws when called without any input (undefined / null)", () => {
     assert.throws(() => parseClaudeExport(undefined), /requires a --file/);
     assert.throws(() => parseClaudeExport(null), /requires a --file/);
   });
 
-  // Codex review on PR #598 — primitive payloads (numbers, booleans,
-  // strings) must always throw regardless of strict mode.
   it("rejects primitive (non-object, non-array) input in every mode", () => {
     assert.throws(() => parseClaudeExport(42), /must be a JSON array or object/);
     assert.throws(() => parseClaudeExport(true), /must be a JSON array or object/);
@@ -138,17 +130,11 @@ describe("parseClaudeExport", () => {
     );
   });
 
-  // Codex review on PR #598 — the `name`-only project fallback is too
-  // loose for strict mode; an arbitrary `[{"name": "foo"}]` would slip past
-  // strict validation. In strict mode we require an unambiguous project
-  // signal (`prompt_template` or `docs`).
   it("strict mode rejects name-only project fallback", () => {
     assert.throws(
       () => parseClaudeExport([{ name: "foo" }], { strict: true }),
       /Unknown Claude export array shape/,
     );
-    // Object form: an array of `name`-only entries under `projects` must
-    // also be rejected in strict mode.
     assert.throws(
       () =>
         parseClaudeExport({ projects: [{ name: "foo" }] }, { strict: true }),
@@ -161,9 +147,6 @@ describe("parseClaudeExport", () => {
     assert.equal(parsed.projects.length, 1);
   });
 
-  // Cursor review on PR #598 — collectHumanTurnsFromConversation must fall
-  // back to `messages` when `chat_messages` is an empty array (not just
-  // when it's undefined).
   it("falls back to `messages` when `chat_messages` is an empty array", () => {
     const conv = {
       uuid: "legacy",

@@ -1,17 +1,3 @@
-/**
- * Issue #1533 — Phase A contract test: namespace routing.
- *
- * NamespaceStorageRouter must route the SAME operation through the correct
- * on-disk root for default vs named namespaces, while rejecting escaping paths
- * (the containment invariants from #1506 — a FILE at the namespaces root or at
- * a token dir is rejected via statSync().isDirectory(), not existsSync; rule 24).
- *
- * Contracts pinned:
- *  - default namespace → memoryDir (legacy root)
- *  - named namespace → memoryDir/namespaces/<token>
- *  - unsafe namespace segments (/, \, .., absolute) are rejected
- *  - writes in one namespace are invisible to another
- */
 
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -145,10 +131,6 @@ test("namespace-routing: hotMemoriesCacheEnabled=false propagates to namespace c
     await sm.readAllMemories();
     await sm.readAllMemories();
     const root = await resolveNamespaceStorageRoot(config, "team-alpha");
-    // Gate propagated to the child: with caching disabled the child storage
-    // never populates the module-level hot cache, so getCachedMemories stays
-    // null even after reads. Before the fix the child fell back to the
-    // process-wide default (true) and would have cached the corpus.
     assert.equal(
       getCachedMemories(root, sm.getMemoryCorpusVersion()),
       null,

@@ -81,10 +81,6 @@ Resolve a drifted item with the existing review surface:
     memoryDirOverridden ? memoryDirOverride : config.memoryDir ?? resolveMemoryDir(),
   );
 
-  // A real orchestrator, not a bare StorageManager: classification needs the
-  // embedding lookup and judge LLM it owns. Without them every preference
-  // reports `skipped: backend_unavailable`, which is an honest refusal but not
-  // a working scan.
   const orchestrator = new Orchestrator(
     memoryDirOverridden ? { ...config, memoryDir } : config,
   );
@@ -98,9 +94,6 @@ Resolve a drifted item with the existing review surface:
     storage,
     config: orchestrator.config,
     memoryDir,
-    // Deliberately NOT wrapped in a swallowing try/catch: the drift scan's
-    // §22 contract is that a thrown lookup means `backend_unavailable`, and
-    // returning `[]` on failure would misreport a live preference as stale.
     embeddingLookupFactory: (scanStorage) => (content, limit) =>
       orchestrator.semanticDedupLookup(content, limit, scanStorage),
     storageForNamespace: async (namespace) => {

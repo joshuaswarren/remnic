@@ -1,6 +1,3 @@
-/**
- * Package-owned Remnic adapters used by the phase-1 benchmark CLI surface.
- */
 
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -175,13 +172,6 @@ type OrchestratorTeardownView = {
   deferredReady: Promise<void>;
   lcmEngine: { close(): void } | null;
   qmd: { dispose?(): void | Promise<void> };
-  /**
-   * Maintenance scheduler owns the QMD debounce timer after the #1526 PR1
-   * extraction. The orchestrator used to expose qmdMaintenanceTimer /
-   * qmdMaintenancePending / qmdMaintenanceInFlight directly; disposing the
-   * scheduler here clears the live timer so no maintenance pass fires after
-   * the QMD sandbox is torn down.
-   */
   maintenanceScheduler?: { dispose(): Promise<void> };
 };
 
@@ -192,17 +182,11 @@ type OrchestratorDrainDiagnosticsView = {
   } | null;
   extractionQueue?: unknown[];
   queueProcessing?: boolean;
-  /** Maintenance scheduler owns consolidation cadence AND QMD debounce state
-   *  after the #1526 PR1 extraction; read both through the scheduler's public
-   *  accessors (the orchestrator no longer exposes these fields directly). */
   maintenanceScheduler?: {
     isConsolidationInFlight(): boolean;
     isQmdMaintenancePending(): boolean;
     isQmdMaintenanceInFlight(): boolean;
   };
-  /** Tier migration coordinator owns the in-flight guard after the #1526
-   *  extraction; read it through the coordinator's public accessor (the
-   *  orchestrator no longer exposes this field directly). */
   tierMigrationCoordinator?: {
     isInFlight(): boolean;
   };
@@ -835,7 +819,6 @@ function benchCoreMemorySource(sessionId: string): string {
   return `bench-replay-${createHash("sha256").update(sessionId).digest("hex").slice(0, 16)}`;
 }
 
-/** Structural view of a correction plan for session-scoping decisions. */
 export interface SessionScopedCorrectionPlanView {
   affected: ReadonlyArray<{ memoryId: string }>;
   actions: ReadonlyArray<
@@ -856,25 +839,6 @@ export type SessionScopedCorrectionDecision =
   /** The plan drafts mutations against foreign-session memories. */
   | { kind: "foreign-actions"; foreignIds: string[] };
 
-/**
- * Decide how a correction plan may proceed under the bench session-scoping
- * contract (codex P1 ×2 + cursor Medium on PR #1862). Bench "namespaces" are
- * distinct session ids inside ONE store (real namespaces are disabled), so a
- * plan must never mutate memories that were not extracted for the calling
- * session:
- *
- *   - initial phase, everything located is foreign → `no-owned-target`
- *     (for THIS session the correction has no target; turn-path fallback).
- *   - initial phase, mixed ownership → `replan` with the owned subset as
- *     explicit target ids.
- *   - ANY phase, an action targets a foreign memory (the planner's neighbor
- *     expansion can pull same-`entityRef` siblings from another session even
- *     under explicit targetIds) → `foreign-actions`; the caller must fail
- *     loudly, never apply, never silently downgrade to the turn path.
- *
- * `redaction_rule` actions are targetless (future-extraction rules) and are
- * never treated as foreign.
- */
 export function resolveSessionScopedCorrectionDecision(
   plan: SessionScopedCorrectionPlanView,
   ownedIds: ReadonlySet<string>,
@@ -1719,11 +1683,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       const orchestrator = state.orchestrator as unknown as OrchestratorTeardownView;
 
       orchestrator.abortDeferredInit();
-      // The QMD debounce timer lives on MaintenanceScheduler after the #1526
-      // PR1 extraction (the orchestrator no longer exposes
-      // qmdMaintenanceTimer/Pending/InFlight). Dispose the scheduler so the
-      // live timer is cleared and no maintenance pass runs against the QMD
-      // sandbox once it is torn down below.
       await orchestrator.maintenanceScheduler?.dispose();
       await Promise.race([
         orchestrator.deferredReady.catch(() => undefined),
@@ -1755,10 +1714,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         !state.ownsTempDir && rebuildOptions.clearCallerOwnedBenchState === true;
       const callerOwnedMemoryDir = state.tempDir;
       await cleanup();
-      // A full reset wipes memory files out-of-band (below / in cleanup), so
-      // clear the module-level StorageManager caches — including the version-keyed
-      // hot-memories result cache (issue #1902) — so a fresh read after the reset
-      // never serves pre-reset memories from a warm cache.
       StorageManager.clearAllStaticCaches();
       if (shouldClearCallerOwnedBenchState) {
         await clearCallerOwnedBenchState(callerOwnedMemoryDir);
@@ -1833,10 +1788,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       void trackedCleanup;
     };
 
-    // Correction-contract surface (issue #1584 plan item 2a). Built lazily and
-    // rebound whenever rebuild() swaps the orchestrator; this is the same
-    // public access layer the MCP/HTTP memory_correct_plan/apply tools use,
-    // so the benchmark exercises the real correction path, not internals.
     let correctionAccess:
       | { service: EngramAccessService; orchestrator: unknown }
       | undefined;
@@ -2608,9 +2559,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 (message) => `[${message.role}]: ${message.content}`,
               );
               const rawSection = `${prefix}${rows.join("\n")}`;
-              // Row ranges are computed on the unsecured section and mapped
-              // through the fence's offset map, so recorded evidence points
-              // at the post-fence body the responder actually sees.
               const securedRawSection = appendSection("raw-messages", "raw-row", rawSection);
               if (securedRawSection !== null) {
                 let rowStart = prefix.length;
@@ -2809,9 +2757,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         _at?: string,
         control?: BenchPhaseControl,
       ): Promise<{ applied: boolean }> {
-        // The correction executor stamps its own audit timestamps; the seeded
-        // corpus timestamp (`_at`) is honored by the turn-path fallback the
-        // caller runs when this resolves `{ applied: false }`.
         throwIfBenchPhaseAborted(control, "correct");
         sessionId = normalizeBenchSessionId(sessionId);
         const access = getCorrectionAccess();
@@ -2825,18 +2770,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           control,
           "correct",
         );
-        // Bench "namespaces" are distinct session ids inside ONE store (real
-        // namespaces are disabled), but the correction planner searches the
-        // whole default namespace — restrict the plan to memories extracted
-        // for THIS session (their frontmatter.source carries the per-session
-        // replay tag) so a correction can never plan/apply against another
-        // benchmark session's memories and corrupt scope_precision /
-        // collateral measurements (codex P1). The scoping decisions live in
-        // resolveSessionScopedCorrectionDecision (pure, unit-tested).
-        // Limitation: replacement memories written by a previous correction
-        // carry the executor's source, not the session tag; MemCorrect
-        // issues one correct() per scenario, so no scenario re-corrects its
-        // own replacement.
         const sessionSource = benchCoreMemorySource(sessionId);
         const owned = new Set(
           (await readBenchCoreMemories(state.orchestrator))
@@ -2846,14 +2779,10 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         let replanned = false;
         const decision = resolveSessionScopedCorrectionDecision(plan, owned, "initial");
         if (decision.kind === "no-owned-target") {
-          // Everything the planner located belongs to another benchmark
-          // session — for THIS session the correction has no target.
           await discardPlan(plan.planId);
           return { applied: false };
         }
         if (decision.kind === "replan") {
-          // Re-plan restricted to this session's memories via explicit
-          // target ids (the planner resolves those directly).
           await discardPlan(plan.planId);
           replanned = true;
           plan = await withBenchPhaseAbort(
@@ -2866,12 +2795,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             "correct",
           );
         }
-        // Re-check ownership on the FINAL plan: even under explicit
-        // targetIds the planner's neighbor expansion can pull same-entityRef
-        // siblings from another session into the drafted actions (codex P1).
-        // Applying such a plan would mutate a foreign session; silently
-        // falling back to the turn path would mislabel the measurement —
-        // fail loudly instead.
         const finalDecision = resolveSessionScopedCorrectionDecision(
           plan,
           owned,
@@ -2886,20 +2809,10 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         if (plan.actions.length === 0) {
           await discardPlan(plan.planId);
           if (replanned || plan.affected.length > 0) {
-            // Session-owned targets were identified (or candidates were
-            // located and the classify LLM drafted nothing — the
-            // deterministic manual-selection fallback). Silently falling
-            // back to the turn path here would measure non-contract
-            // behavior while labeling the run contract-routed (codex P1 +
-            // cursor Medium on the empty re-plan) — fail loudly instead so
-            // a degraded lab run cannot mismeasure.
             throw new Error(
               `correction planner drafted no applicable action (${replanned ? "re-planned with explicit session-owned targets" : `${plan.affected.length} candidate(s) located`}; warnings: ${plan.warnings.join("; ") || "none"}) — refusing to measure the turn path as contract behavior`,
             );
           }
-          // Planner found nothing to change (no matching memory yet, or a
-          // purely additive correction). Report not-applied so the caller
-          // can deliver the correction through the plain turn path instead.
           return { applied: false };
         }
         const outcome = await withBenchPhaseAbort(
@@ -2910,11 +2823,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           control,
           "correct",
         );
-        // A `partial` outcome means at least one action failed — report
-        // not-fully-applied so the MemCorrect wrapper also delivers the
-        // correction through the turn path (mirrors a user restating after a
-        // partial fix) instead of counting a partial apply as full uptake
-        // (cursor Medium).
         return { applied: outcome.status === "applied" };
       },
 

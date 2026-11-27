@@ -67,13 +67,8 @@ import {
   tokenCapabilityStore,
   type TokenCapabilities,
 } from "./access-token-capabilities.js";
-// Importing access-operations registers the pilot boundary operations
-// (memory_get / memory_store) as a side effect; the HTTP handlers below
-// dispatch the migrated routes through the registry (issue #1525).
 import "./access-operations.js";
 import { handleChatMessage, handleChatEventsSSE } from "./chat/chat-http.js";
-// cleanupExpiredChatSessions wires the chat session TTL sweep into the
-// server lifecycle (issue #1685 item 1 / #1687 Thread 21).
 import { cleanupExpiredChatSessions, enforceChatSessionNamespace } from "./chat/chat-session.js";
 import { isDefaultReviewNamespace, listPairs, readPair } from "./contradiction/contradiction-review.js";
 import { isValidResolutionVerb, executeResolution } from "./contradiction/resolution.js";
@@ -235,11 +230,6 @@ function parseMemorySort(raw: string | null): "updated_desc" | "updated_asc" | "
   throw new HttpError(400, "sort must be one of updated_desc|updated_asc|created_desc|created_asc", "invalid_sort");
 }
 
-/**
- * Decode a `:peerId` URL path segment, converting malformed percent-encoded
- * input (e.g., `%E0%A4%A`) into a 400 client error rather than letting
- * `URIError` bubble up as a 500 `internal_error`.
- */
 function decodePeerIdSegment(raw: string): string {
   try {
     return decodeURIComponent(raw);
@@ -263,18 +253,11 @@ function rejectBlankRelayNamespace(value: string | null | undefined): void {
 }
 
 const PRINCIPAL_HEADER_MAX_CHARS = 128;
-// Principals are durable identity strings (sessionOwnerPrincipal, scope-group
-// keys, derived namespaces): no whitespace, control characters, or path
-// separators; `..` is refused so a value can never collide with traversal
-// shapes anywhere downstream.
 const INVALID_PRINCIPAL_HEADER_CHARS = /[\s\/\\]|\.{2}/;
 
 function isValidPrincipalHeaderValue(value: string): boolean {
   if (value.length === 0 || Array.from(value).length > PRINCIPAL_HEADER_MAX_CHARS) return false;
   if (INVALID_PRINCIPAL_HEADER_CHARS.test(value)) return false;
-  // Control characters are refused: C0 (<0x20) plus DEL and the C1 range
-  // (0x7f-0x9f, which \s does not cover — e.g. U+0085 NEL). Printable/unicode
-  // otherwise fine.
   for (const ch of value) {
     const code = ch.codePointAt(0) ?? 0;
     if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return false;
@@ -319,32 +302,15 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
   private readonly resourceMetadataUrl?: string;
   private readonly externalRequestHandler?: SupportPassportExternalRequestHandler;
   private readonly writeLimiter: WriteRateLimiter;
-  // Reservations taken by ensureWriteRateLimitAvailable and not yet committed
-  // by recordWriteRateLimitHit, keyed by request. The per-request release in
-  // the connection callback covers every early return and error path, so a
-  // failed or exempt write never leaks its slot (issue #3225 C4).
   private readonly pendingWriteQuotas = new WeakMap<IncomingMessage, WriteRateLimitReservation>();
   private readonly mcpServer: EngramMcpServer;
   private server: Server | null = null;
   private boundPort = 0;
-  /** Active SSE response objects for /engram/v1/graph/events. */
   private readonly sseClients = new Set<ServerResponse>();
-  /** Throttle batch: pending SSE event batches per client. */
   private readonly sseBatchTimers = new Map<ServerResponse, ReturnType<typeof setTimeout>>();
   private readonly ssePendingBatches = new Map<ServerResponse, GraphEvent[]>();
-  /**
-   * Per-client cleanup callbacks: clear heartbeat interval, flush timer,
-   * unsubscribe from bus, and end the response.  Stored here so `stop()`
-   * can invoke them even when the client hasn't disconnected yet
-   * (Cursor review thread `access-http.ts:232`).
-   */
   private readonly sseCleanupFns = new Set<() => void>();
 
-  /**
-   * Periodic chat-session TTL sweep handle (issue #1685 item 1 /
-   * #1687 Thread 21).  unref'd so it never blocks process exit
-   * (rule 47); cleared in `stop()`.
-   */
   private chatTtlTimer: NodeJS.Timeout | null = null;
 
   constructor(options: EngramAccessHttpServerOptions) {
@@ -467,8 +433,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         }).finally(() => {
           req.off("aborted", abortDisconnectedRequest);
           res.off("close", abortDisconnectedRequest);
-          // A counted write that failed or was exempt (dry run, replay) must
-          // not hold its reserved slot past the request (issue #3225 C4).
           this.releasePendingWriteQuota(req);
         });
       });
@@ -497,11 +461,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     const address = server.address();
     this.boundPort = typeof address === "object" && address ? address.port : this.requestedPort;
 
-    // ── Chat session TTL sweep (issue #1685 item 1 / #1687 Thread 21) ──
-    // Expire idle chat sessions so the JSONL store cannot grow unbounded.
-    // A one-shot sweep runs on startup; a periodic re-sweep follows on an
-    // unref'd 1-hour cadence (rule 47 — never blocks process exit).  Both
-    // are no-ops when chat is disabled (no TTL configured).
     this.scheduleChatSessionTtlSweep();
 
     return this.status();
@@ -509,8 +468,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
 
   async stop(): Promise<void> {
     if (!this.server) return;
-    // Release the chat-session TTL sweep timer (issue #1685) alongside
-    // the SSE cleanups below.
     if (this.chatTtlTimer) {
       clearInterval(this.chatTtlTimer);
       this.chatTtlTimer = null;
@@ -518,16 +475,10 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     const server = this.server;
     this.server = null;
     this.boundPort = 0;
-    // Invoke each SSE client's cleanup callback so heartbeat intervals,
-    // batch timers, and graph-bus subscriptions are all released before the
-    // HTTP server closes.  Without this, long-running SSE connections leak
-    // setInterval handles and EventEmitter listeners (Cursor review thread
-    // `access-http.ts:232`).
     for (const cleanup of this.sseCleanupFns) {
       try { cleanup(); } catch { /* ignore */ }
     }
     this.sseCleanupFns.clear();
-    // Belt-and-suspenders: clear any state not yet reached by cleanup fns.
     for (const [res, timer] of this.sseBatchTimers.entries()) {
       clearTimeout(timer);
       this.sseBatchTimers.delete(res);
@@ -537,10 +488,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       try { res.end(); } catch { /* ignore */ }
     }
     this.sseClients.clear();
-    // server.close() waits for every open request. An in-flight recall or
-    // observe (extraction can run for minutes) kept it open until systemd's
-    // 700 s stop timeout killed the process. Let requests finish for the grace
-    // period, then cut their connections; that also aborts their signals.
     const closed = new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
@@ -552,17 +499,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     }
   }
 
-  /**
-   * Schedule the chat-session TTL sweep: one immediate pass plus a
-   * recurring hourly pass (issue #1685 item 1 / #1687 Thread 21).  Both
-   * are skipped when chat is disabled.  The recurring timer is unref'd
-   * so it never keeps the event loop alive on its own (rule 47).  The
-   * sweep itself is best-effort — cleanup failures are swallowed inside
-   * `cleanupExpiredChatSessions`.
-   */
   private scheduleChatSessionTtlSweep(): void {
-    // Clear any prior handle so a second start() without an intervening
-    // stop() cannot leak a dangling setInterval (Kilo review thread).
     if (this.chatTtlTimer) {
       clearInterval(this.chatTtlTimer);
       this.chatTtlTimer = null;
@@ -572,9 +509,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     const ttlHours = typeof chat.sessionTtlHours === "number" && chat.sessionTtlHours > 0
       ? chat.sessionTtlHours
       : 72;
-    // Startup sweep — fire and forget; failures never block the server.
     void cleanupExpiredChatSessions(this.service.memoryDir, ttlHours).catch(() => { /* best-effort */ });
-    // Hourly re-sweep (unref'd — rule 47).
     const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
     this.chatTtlTimer = setInterval(() => {
       void cleanupExpiredChatSessions(this.service.memoryDir, ttlHours).catch(() => { /* best-effort */ });
@@ -598,9 +533,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
    */
   resolveAdapterIdentity(req: IncomingMessage): ResolvedIdentity | null {
     if (!this.adapterRegistry) return null;
-    // Look up clientInfo for this specific MCP session to avoid cross-session leaks.
-    // Non-MCP requests (no mcp-session-id header) get undefined clientInfo and
-    // rely on HTTP headers for adapter matching.
     const sessionId = (() => {
       const raw = req.headers["mcp-session-id"];
       return typeof raw === "string" ? raw.trim() : undefined;
@@ -611,10 +543,8 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     });
   }
 
-  /** Cache for per-request identity resolution (avoids double adapter resolution) */
   private identityCache = new WeakMap<IncomingMessage, { principal?: string; namespace?: string; sessionKey?: string }>();
 
-  /** Resolve principal, namespace, and session key from request headers and adapter identity */
   private resolveRequestIdentity(req: IncomingMessage): { principal?: string; namespace?: string; sessionKey?: string } {
     const cached = this.identityCache.get(req);
     if (cached) return cached;
@@ -622,16 +552,12 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     let namespace: string | undefined;
     let sessionKey: string | undefined;
 
-    // Explicit header override takes priority for principal
     if (this.trustPrincipalHeader) {
       const headerVal = req.headers["x-engram-principal"];
       const raw = Array.isArray(headerVal) ? headerVal[0] : headerVal;
       if (typeof raw === "string") {
         const trimmed = raw.trim();
         if (trimmed.length > 0) {
-          // Trust boundary (issue #3460): once the header is honored, a client
-          // could stamp any value as sessionOwnerPrincipal on durable records.
-          // Reject malformed identities instead of storing them verbatim.
           if (!isValidPrincipalHeaderValue(trimmed)) {
             throw new EngramAccessInputError(
               `invalid x-engram-principal header value: must be 1-128 chars with no whitespace, control chars, or path separators`,
@@ -646,8 +572,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       principal = this.authenticatedPrincipal;
     }
 
-    // Try adapter-based identity resolution for namespace and, only when no
-    // server principal is configured, an adapter-owned default principal.
     const adapterIdentity = this.resolveAdapterIdentity(req);
     if (adapterIdentity) {
       if (!principal) {
@@ -673,45 +597,16 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     return this.resolveRequestIdentity(req).principal;
   }
 
-  /** Caller scope for wearables/meetings ops (issue #2123): request principal +
-   *  gated namespace + optional sessionKey, so reads/writes resolve to the caller
-   *  namespace instead of the machine default. */
   private wearablesScope(req: IncomingMessage, namespace?: string, sessionKey?: string): WearablesMeetingsScope {
     return { authenticatedPrincipal: this.resolveRequestPrincipal(req), namespace: this.resolveNamespace(req, namespace), ...(sessionKey ? { sessionKey } : {}) };
   }
 
-  /** Resolve namespace: only use the explicit body value. Adapter-inferred namespace
-   *  is intentionally NOT used as a fallback for REST requests — omitting namespace
-   *  should default to the server's global namespace, not silently scope to an adapter. */
   protected resolveNamespace(_req: IncomingMessage, bodyNamespace?: string): string | undefined {
     const namespace = bodyNamespace || undefined;
-    // Per-token namespace enforcement (issues #1837/#1850): every HTTP
-    // namespace-scoped route routes through this helper so none can dodge the
-    // allow-list by dropping the param. The check is delegated to the SINGLE
-    // chokepoint (`enforceNamespaceAllowList`) shared with the MCP dispatch
-    // and the id-loaded contradiction routes — one rule, every surface. The
-    // effective namespace (explicit OR server default) must be a member; fail
-    // closed. No-op for unrestricted tokens (no namespaces allow-list).
     enforceNamespaceAllowList(tokenCapabilityStore.getStore(), namespace, this.service.configRef?.defaultNamespace);
     return namespace;
   }
 
-  /**
-   * Resolve + enforce the `namespace` field carried in a POST request body,
-   * returning a shallow-copied envelope with the gated namespace stamped on.
-   * Used by the coding/correction POST routes that pass `body` straight to
-   * `op.run`: the body `namespace` is a user-controlled field that MUST flow
-   * through the same effective-namespace allow-list gate as the query-param
-   * routes, otherwise a scoped bearer can scope its call to another tenant
-   * by setting `body.namespace` (issue #1850 finding 2). Throws 403 for a
-   * scoped token whose allow-list does not cover the effective namespace.
-   *
-   * A `namespace` that is neither a string nor `null` is REJECTED here rather
-   * than coerced to `undefined`: silently reinterpreting it would default the
-   * request to the principal's namespace set and answer 200, hiding the
-   * caller's mistake behind a plausible result (AGENTS.md pattern 39). `null`
-   * and an absent field keep their documented "no explicit namespace" meaning.
-   */
   private gatedBodyNamespace(
     req: IncomingMessage,
     body: Record<string, unknown>,
@@ -722,25 +617,11 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         `namespace must be a string or null (got: ${typeof requested})`,
       );
     }
-    // Trim BEFORE the allow-list gate: the operation schemas normalize
-    // `namespace` with `.trim()`, so checking the raw value would 403 a
-    // `" team "` that the MCP path accepts as `team` — the same envelope
-    // succeeding or failing on harmless whitespace. The trimmed value is what
-    // gets stamped, so the gate and the operation see one namespace.
     const trimmed = typeof requested === "string" ? requested.trim() : undefined;
     const namespace = this.resolveNamespace(req, trimmed || undefined);
     return { ...body, namespace };
   }
 
-  /**
-   * Resolve the recall disclosure depth from the request (issue #677 PR
-   * 2/4).  Explicit body value wins; otherwise we accept a
-   * `?disclosure=...` query parameter so curl/browser tooling can use the
-   * three-tier surface without rewriting JSON.  Invalid query values
-   * throw `EngramAccessInputError` (CLAUDE.md rule 51 — no silent
-   * fallback).  An absent body field AND an absent query param yields
-   * `undefined`, which the service maps to `DEFAULT_RECALL_DISCLOSURE`.
-   */
   private resolveRecallDisclosure(
     bodyDisclosure: RecallDisclosure | undefined,
     parsed: URL,
@@ -783,16 +664,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     }
 
     if (await this.handleSupportPassportPublicRequest(req, res)) return;
-    // Run any host-supplied pre-auth request handler after public UI assets and before the
-    // operator bearer gate. The handler decides whether it has fully
-    // owned the response (return true) or wants the request to fall
-    // through to the normal pipeline. `ctx.authorized` is computed
-    // here so the handler can implement operator-only endpoints
-    // (e.g. /oauth/pending) without owning token validation.
     if (this.externalRequestHandler) {
-      // Operator-only endpoints (OAuth pending/approve/deny) must only pass
-      // for unrestricted tokens — a scoped (least-privileged) token must NOT
-      // reach operator surfaces (issue #1837).
       const tokenAuthorized = this.isAuthorized(req, pathname);
       const capabilities = this.resolveTokenCapabilities(req, pathname);
       const authorized = tokenAuthorized && !isCapabilityRestricted(capabilities);
@@ -813,15 +685,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // Bind the presenting token's capabilities to this request's async
-    // context via run() (NOT enterWith). enterWith mutates the CURRENT async
-    // resource and does NOT reliably isolate the store across the awaits and
-    // concurrent requests that fill this handler — the store could read
-    // undefined mid-handler, and undefined caps == unrestricted/legacy,
-    // which would SILENTLY FAIL OPEN, bypassing the op + namespace gates.
-    // run() establishes a fresh, request-private async scope for the WHOLE
-    // dispatch so concurrent requests never bleed capabilities and the store
-    // stays bound across every await (issue #1850 round 7).
     const caps = this.resolveTokenCapabilities(req, pathname);
     await tokenCapabilityStore.run(caps, async () => {
       await this.dispatchAuthorizedRequest(req, res, parsed, pathname, correlationId, abortSignal);
@@ -836,10 +699,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     correlationId: string,
     abortSignal: AbortSignal,
   ): Promise<void> {
-    // Method-conformance for the streamable-HTTP MCP endpoint (issue #2718):
-    // DELETE → 204, GET upgrades to the comment-only SSE stream in
-    // access-mcp-sse.ts when the client accepts text/event-stream, else 405
-    // with the full method set. POST continues to the handler below.
     if (pathname === "/mcp" && req.method === "DELETE") { res.writeHead(204); res.end(); return; }
     if (pathname === "/mcp" && req.method === "GET") {
       if ((req.headers.accept ?? "").includes("text/event-stream"))
@@ -940,23 +799,10 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       (pathname === "/engram/v1/memories/search" ||
         pathname === "/remnic/v1/memories/search")
     ) {
-      // Semantic memory search over HTTP. `GET /engram/v1/memories` is a
-      // substring browse; this is the QMD-backed ranked search the MCP
-      // `memory_search` tool already exposes, reachable by HTTP-only clients.
       this.enforceTokenOp("memory_search"); // boundary dispatch (issue #1525)
       const operation = getOperation("memory_search");
       if (!operation) throw new EngramAccessInputError("access-boundary: operation not registered: memory_search");
-      // The body `namespace` is user-controlled, so it must pass the same
-      // effective-namespace allow-list gate as every other namespace-scoped
-      // route (issue #1850 finding 2); the authenticated principal — never a
-      // client-supplied value — then scopes the readable namespace fan-out.
       const body = this.gatedBodyNamespace(req, await this.readJsonBody(req));
-      // memory_search is a FAN-OUT: an absent namespace searches everything
-      // the principal can read. A namespace-scoped bearer may read fewer
-      // namespaces than its principal, so leaving it absent would return
-      // results the token was never authorized for. The allow-list gate above
-      // already proved the server default is permitted for such a token, so
-      // binding the effective namespace explicitly is both safe and closed.
       if (body.namespace === undefined && tokenCapabilityStore.getStore()?.namespaces !== undefined) {
         body.namespace = this.service.configRef?.defaultNamespace ?? "";
       }
@@ -971,17 +817,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     if (req.method === "POST" && pathname === "/engram/v1/recall") {
       this.enforceTokenOp("recall"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "recall");
-      // `codingContext` presence (null = explicit clear vs absent = untouched)
-      // is preserved by spreading the parsed body into the boundary envelope.
-      // Disclosure resolution (issue #677 PR 2/4): accept the value from
-      // the validated body OR the `?disclosure=` query parameter, with
-      // the body taking precedence so an explicit JSON payload is never
-      // silently overridden by a stale URL.  CLAUDE.md rule 51: invalid
-      // query-param values throw, never fall back silently.
       const disclosure = this.resolveRecallDisclosure(body.disclosure, parsed);
-      // Issue #680 — historical recall pin (`asOf`). Body field wins
-      // over `?as_of=` query param. Empty query is rejected only when
-      // the body didn't supply a valid pin (codex P2 + cursor Medium).
       const asOfQueryRaw = parsed.searchParams.get("as_of");
       const bodyHasAsOf =
         typeof body.asOf === "string" && body.asOf.length > 0;
@@ -999,9 +835,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         (asOfQueryRaw !== null && asOfQueryRaw.length > 0
           ? asOfQueryRaw
           : undefined);
-      // Tag filter (issue #689). Body presence wins over query params
-      // — explicit `tags: []` in body clears the filter even with
-      // stale `?tag=` URLs.
       const bodyHasTagsField =
         body !== null &&
         typeof body === "object" &&
@@ -1035,9 +868,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
           tagMatch = queryTagMatch;
         }
       }
-      // Issue #681 — `?include_low_confidence=true|false` mirrors the CLI
-      // `--include-low-confidence` flag. Body field wins so a JSON payload can
-      // explicitly clear a stale query parameter.
       const bodyIncludeLowConfidence =
         (body as { includeLowConfidence?: unknown }).includeLowConfidence;
       const queryIncludeLowConfidence = parsed.searchParams.get("include_low_confidence");
@@ -1055,9 +885,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         bodyIncludeLowConfidence === true ||
         (bodyIncludeLowConfidence === undefined &&
           queryIncludeLowConfidence === "true");
-      // Boundary dispatch (issue #2482): same registry path as memory_store —
-      // the canonical recallRequestSchema re-validates the envelope the
-      // transport assembled (resolved namespace + query-param overlays).
       const op = getOperation("recall");
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: recall");
@@ -1097,7 +924,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       this.service.setCodingContext({
         sessionKey: body.sessionKey,
         codingContext,
-        // Caller-supplied root: bind to the transport principal and mark it
         // remote — it was resolved on the caller's host, not this filesystem.
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
         remote: true,
@@ -1456,14 +1282,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // Recall diagnostics (issues #570, #3033). Bearer auth is enforced by
-    // the surrounding handler and namespace scope is enforced inside the
-    // service before the recall fires (rule 42). Both routes are thin: param
-    // parsing and 400 mapping live in access-recall-diagnostics.ts, which
-    // keeps them unit-testable without booting an HTTP server.
-    //
-    // `xray` explains the results a recall DID return; `why` explains the
-    // ones it did not. Query comes from `q` so GET stays cacheable.
     if (req.method === "GET" && pathname === "/engram/v1/recall/xray") {
       this.enforceTokenOp("recall_xray"); // boundary dispatch (issue #1525)
       const outcome = await handleRecallXrayHttpQuery({
@@ -1493,8 +1311,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // who_knows (issue #2057): deterministic entity expertise ranking.
-    // Thin route — param parsing + 400 mapping live in who-knows.ts.
     if (req.method === "GET" && (pathname === "/engram/v1/who-knows" || pathname === "/remnic/v1/who-knows")) {
       this.enforceTokenOp("who_knows");
       const outcome = await handleWhoKnowsHttpQuery({
@@ -1636,7 +1452,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     const meetingGetRemnic = /^\/remnic\/v1\/meetings\/([^/]+)$/.exec(pathname); if (req.method === "GET" && meetingGetRemnic) { this.enforceTokenOp("meetings_get"); await respondMeetingsGet(res, this.respondJson.bind(this), this.service, meetingGetRemnic[1] ?? "", this.wearablesScope(req, parsed.searchParams.get("namespace") ?? undefined, parsed.searchParams.get("sessionKey") ?? undefined)); return; }
     if (req.method === "POST" && (pathname === "/engram/v1/recall/deep" || pathname === "/remnic/v1/recall/deep")) { this.enforceTokenOp("deep_recall"); await respondDeepRecall(req, res, this.respondJson.bind(this), this.readJsonBody.bind(this), this.service, (ns, sk) => this.wearablesScope(req, ns ?? parsed.searchParams.get("namespace") ?? undefined, sk ?? parsed.searchParams.get("sessionKey") ?? undefined), abortSignal); return; }
     if (await maybeRespondRecallNavigation(req, res, pathname, req.method, (op) => this.enforceTokenOp(op), this.respondJson.bind(this), this.readJsonBody.bind(this), this.service, (ns, sk) => this.wearablesScope(req, ns ?? parsed.searchParams.get("namespace") ?? undefined, sk ?? parsed.searchParams.get("sessionKey") ?? undefined))) return; if (await maybeRespondMemoryBrowse(req, res, pathname, req.method, (op) => this.enforceTokenOp(op), this.respondJson.bind(this), this.readJsonBody.bind(this), this.service, (ns) => this.wearablesScope(req, ns ?? parsed.searchParams.get("namespace") ?? undefined))) return;
-    // Location sync surfaces (issue #2047): thin branches; bodies + boundary dispatch live in location/http-glue.ts.
     if (req.method === "GET" && (pathname === "/engram/v1/location/status" || pathname === "/remnic/v1/location/status")) {
       this.enforceTokenOp("location_status"); await respondLocationStatus(res, this.respondJson.bind(this), this.service); return; }
     if (req.method === "GET" && (pathname === "/engram/v1/location/check" || pathname === "/remnic/v1/location/check")) {
@@ -1653,13 +1468,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     if (req.method === "POST" && pathname === "/engram/v1/observe") {
       this.enforceTokenOp("observe"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "observe");
-      // Boundary dispatch (issue #2482): same registry path as memory_store.
-      // The write-quota hook is forwarded via ctx.hooks so it fires INSIDE
-      // the service's idempotency lock (beforeExecute, only on a real miss).
-      // A retried observe that hits the replay path must NOT be rejected with
-      // 429 — the original attempt may have consumed the last quota slot; the
-      // retry returns the cached response without requiring another (#1434
-      // invariant, preserved by the boundary migration).
       const op = getOperation("observe");
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: observe");
@@ -1670,13 +1478,9 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
           service: this.service,
           authenticatedPrincipal: this.resolveRequestPrincipal(req),
           hooks: { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(req) },
-          // Phase 1 provenance: server-resolved connector identity from the
-          // bearer token (REST path, mirroring the MCP tools/call dispatch).
           sourceConnector: this.resolveConnector(req),
         },
       )) as { result: { dryRun?: boolean; idempotencyReplay?: boolean } };
-      // A replayed (deduplicated) observe must not consume a second write-quota
-      // slot — same invariant as memory_store/suggestion_submit (#1434).
       if (this.shouldCountWriteRateLimit(output.result)) {
         this.recordWriteRateLimitHit(req);
       }
@@ -1708,10 +1512,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // Remnic Relay mission receipts (issue #1966). These two routes share the
-    // access-boundary schemas and namespace-resolved storage contract. The
-    // browser receives an already-reduced snapshot; it never scans general
-    // memories, recall logs, or production state.
     const relayEventMatch = /^\/engram\/v1\/relay\/missions\/([^/]+)\/events$/.exec(pathname);
     if (req.method === "POST" && relayEventMatch) {
       const missionId = decodeRelayMissionIdSegment(relayEventMatch[1] ?? "");
@@ -1800,9 +1600,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       res.setHeader("cache-control", "no-store");
       if (authenticatedPrincipal !== undefined) {
         try {
-          // Percent-encode so every configured principal remains a valid HTTP
-          // header value. Mission Control decodes this before constructing the
-          // server-validated human approval envelope.
           res.setHeader("x-remnic-authenticated-principal", encodeURIComponent(authenticatedPrincipal));
         } catch {
           // An invalid Unicode principal cannot be represented as a Relay actor
@@ -1814,13 +1611,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/memories") {
-      // Migrated through the access boundary (issue #1525): the registry
-      // entry owns schema validation, normalization, and service dispatch.
-      // The HTTP transport resolves the request-scoped namespace and principal
-      // BEFORE the boundary re-validates the cleaned envelope. The write-quota
-      // hook is forwarded via ctx.hooks so it still fires atomically inside
-      // the service's idempotent-write lock — never before, never on a replay
-      // (#1434 invariant preserved by the boundary migration).
       const body = await this.readValidatedBody(req, "memoryStore");
       const envelope = {
         ...body,
@@ -1832,8 +1622,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
         hooks: { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(req) },
-        // Phase 1 provenance: server-resolved connector identity from the
-        // bearer token (REST path, mirroring the MCP tools/call dispatch).
         sourceConnector: this.resolveConnector(req),
       })) as { result: EngramAccessWriteResponse };
       const response = output.result;
@@ -1845,13 +1633,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/coding/decisions") {
-      // Migrated through the access boundary (issue #1525/#1548): the
-      // registry entry owns schema validation and service dispatch. HTTP
-      // resolves the request principal; the boundary re-validates the
-      // cleaned envelope. record/supersede persist decision memories, so they
-      // are gated by the same 30/min write quota as /engram/v1/memories,
-      // suggestions, and observe; list/get are pure reads and stay uncounted
-      // (review P2: apply write quotas to decision writes).
       const body = await this.readJsonBody(req);
       const isWriteSubcommand =
         body.subcommand === "record" || body.subcommand === "supersede";
@@ -1873,9 +1654,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/coding/architecture") {
-      // Migrated through the access boundary (issue #1525/#1548 PR3):
-      // refresh persists the card, so it is gated by the 30/min write quota;
-      // get is a pure read and stays uncounted.
       const body = await this.readJsonBody(req);
       const isWriteSubcommand = body.subcommand === "refresh";
       if (isWriteSubcommand) {
@@ -1896,11 +1674,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/coding/delta") {
-      // Migrated through the access boundary (issue #1525/#1548 PR4):
-      // get is read-only with respect to user memory content. It DOES write
-      // the operator-side state file (last-seen-head marker), but that is
-      // bookkeeping — the same way calibration.ts writes are uncounted. No
-      // write-quota enforcement.
       const body = await this.readJsonBody(req);
       const op = getOperation("coding_delta");
       if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: coding_delta");
@@ -1912,8 +1685,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // Daily briefing — pure read through the registered `briefing` boundary
-    // operation (sibling module; see access-http-briefing.ts).
     if (req.method === "POST" && pathname === "/engram/v1/briefing") {
       await respondBriefingHttp({
         gatedBody: this.gatedBodyNamespace(req, await this.readJsonBody(req)),
@@ -1925,15 +1696,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // ── Correction Contract (issue #1580) — plan / apply / pending ─────────
-    // All three routes dispatch through the boundary operations so schema
-    // validation + namespace policy reach every correction path (rule 22/39).
     if (req.method === "POST" && pathname === "/engram/v1/correction/plan") {
-      // Planning persists a pending plan JSON file on every successful call
-      // (review thread UhA), so it is a state write for rate-limit purposes —
-      // mirror the apply route's precheck + accounting to bound files under
-      // state/corrections/pending instead of letting an HTTP client create
-      // unbounded plan files without consuming write quota.
       this.ensureWriteRateLimitAvailable(req);
       const body = await this.readJsonBody(req);
       const op = getOperation("memory_correct_plan");
@@ -2002,15 +1765,11 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         sourceReason: body.sourceReason,
         cwd: body.cwd,
         projectTag: body.projectTag,
-        // #2829: raw alias spelling retained by the schema transform.
         ...(body.rawCategory !== undefined ? { rawCategory: body.rawCategory } : {}),
         // Phase 1 provenance: server-resolved connector identity from the
         // bearer token (REST path, mirroring the MCP tools/call dispatch).
         sourceConnector: this.resolveConnector(req),
       };
-      // Quota enforcement is solely authoritative inside suggestionSubmit
-      // (enforceWriteQuota), atomic with the real miss and never on a replay; no
-      // HTTP pre-check, so a stale peek can't 429 a safe replay (#1434 Codex review).
       const response = await this.service.suggestionSubmit(request, {
         enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(req),
       });
@@ -2045,13 +1804,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       if (!op) {
         throw new Error("access-boundary: operation not registered: recall_timings");
       }
-      // Live diagnostic route; no response (success or denial) is cacheable.
-      // Set before dispatch so the 403 path carries the header too.
       res.setHeader("cache-control", "no-store");
-      // Dispatch through the registered operation so the HTTP route and the
-      // boundary registration share one gate. The server's own principal is
-      // the transport-level operator fallback; a configured
-      // agentAccessHttp.principal outranks it.
       const output = (await op.run({}, {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
@@ -2065,18 +1818,11 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     if (req.method === "GET" && memoryMatch) {
       const memoryId = decodeURIComponent(memoryMatch[1] ?? "");
       const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
-      // Issue #1582 — thread the transport session key so a `[m:xxxx]` handle in
-      // the path resolves against this session's recall history (codex review).
-      // resolveRequestIdentity reads it from adapter identity / request headers.
       const sessionKey =
         this.resolveRequestIdentity(req).sessionKey
         ?? parsed.searchParams.get("session")
         ?? parsed.searchParams.get("sessionKey")
         ?? undefined;
-      // Migrated through the access boundary (issue #1525): the registry
-      // entry owns memoryId presence/shape validation (rule 51: reject empty
-      // ids loudly instead of silently passing "" into the service) and the
-      // service dispatch.
       const op = getOperation("memory_get");
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: memory_get");
@@ -2160,9 +1906,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // Procedural memory stats (issue #567 PR 5/5). Read-only; namespace is
-    // scoped via the same resolver used by recall/trust-zones so cross-
-    // tenant reads aren't possible (CLAUDE.md rule 42).
     if (req.method === "GET" && pathname === "/engram/v1/procedural/stats") {
       this.enforceTokenOp("procedural_stats"); // boundary dispatch (issue #1525)
       const namespaceParam = parsed.searchParams.get("namespace");
@@ -2264,7 +2007,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // Citation usage tracking (issue #379)
     if (req.method === "POST" && pathname === "/v1/citations/observed") {
       this.enforceTokenOp("citations_observed"); // boundary dispatch (issue #1525)
       const body = await this.readJsonBody(req);
@@ -2308,10 +2050,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         }
       }
 
-      // Record usage: for each citation entry, try to increment usage on the
-      // matching memory. The service exposes recordAccess for this purpose.
-      // Pass authenticatedPrincipal so namespace ACL checks use the same
-      // identity resolution as other write endpoints (Finding #1, issue #379).
       let matched = 0;
       let submitted = 0;
       if (typeof this.service.recordCitationUsage === "function") {
@@ -2336,7 +2074,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // ── Contradiction Review (issue #520) ─────────────────────────────────────
     if (req.method === "GET" && pathname === "/engram/v1/review/contradictions") {
       this.enforceTokenOp("review_list"); // boundary dispatch (issue #1525)
       const VALID_FILTERS = new Set(["all", "unresolved", "contradicts", "independent", "duplicates", "needs-user"]);
@@ -2371,18 +2108,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         this.respondJson(res, 404, { error: "pair_not_found" });
         return;
       }
-      // Per-token namespace enforcement (issues #1850 round 2 / round 4): the
-      // pair is fetched BY ID, so its namespace comes from the record — NOT a
-      // query param that resolveNamespace() already gates. A namespace-scoped
-      // bearer that knows a pair id must not read contradiction data in a
-      // namespace outside its allow-list. Fail closed (403) before the
-      // principal-storage check so the token's declared scope is the
-      // outermost gate. Legacy pairs carry no namespace (undefined), which
-      // downstream storage maps to the server DEFAULT — route the record
-      // namespace through the SAME effective-namespace chokepoint
-      // (enforceNamespaceAllowList maps undefined → default) so a scoped token
-      // whose allow-list INCLUDES the default can read/resolve a legacy pair,
-      // while one that does NOT is still denied. No-op for unrestricted tokens.
       enforceNamespaceAllowList(
         tokenCapabilityStore.getStore(),
         pair.namespace,
@@ -2411,20 +2136,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         this.respondJson(res, 400, { error: `Invalid verb: ${verb}. Must be one of: keep-a, keep-b, merge, both-valid, needs-more-context` });
         return;
       }
-      // Per-token namespace enforcement (issues #1850 round 2 / round 4): the
-      // resolution target is selected BY pairId, so the affected namespace
-      // comes from the record — NOT a request param that resolveNamespace()
-      // already gates. A namespace-scoped bearer must not mutate a
-      // contradiction pair in a namespace outside its allow-list. Load the
-      // pair to learn its namespace, enforce the token's scope, and fail
-      // closed (403) BEFORE dispatching the (mutating) resolution. Legacy
-      // pairs carry no namespace (undefined), which downstream storage maps to
-      // the server DEFAULT — use the SAME effective-namespace chokepoint
-      // (enforceNamespaceAllowList maps undefined → default) as the detail
-      // route so a scoped token whose allow-list INCLUDES the default can
-      // resolve a legacy pair. A missing pair falls through to
-      // executeResolution's existing not-found result. No-op for unrestricted
-      // tokens.
       const targetPair = readPair(this.service.memoryDir, pairId);
       if (targetPair) {
         enforceNamespaceAllowList(
@@ -2441,10 +2152,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
           const resolved = await this.service.getWritableStorageForNamespace(namespace, principal);
           return resolved.storage;
         },
-        // Catalog write touch (issue #1499 sweep): a contradiction merge writes a
-        // new memory directly to the resolved namespace storage, bypassing the
-        // extraction write path. Record it so QMD maintenance / writtenSince
-        // don't miss the write. Best-effort and failure-tolerant.
         onMergedMemoryWritten: (namespace, storageDir) => {
           // #1522: catalog touch handled at the storage chokepoint.
         },
@@ -2453,10 +2160,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // Graph snapshot (issue #691 PR 2/5) — read-only adjacency view used by
-    // the admin-pane scaffold shipped in PR 1/5.  All filters are query
-    // params so the surface stays cacheable; invalid values yield 400 with
-    // a descriptive body (CLAUDE.md rule 51 — never silently default).
     if (req.method === "GET" && pathname === "/engram/v1/graph/snapshot") {
       this.enforceTokenOp("graph_snapshot"); // boundary dispatch (issue #1525)
       const limitRaw = parsed.searchParams.get("limit");
@@ -2480,10 +2183,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       const sinceRaw = parsed.searchParams.get("since");
       let since: string | undefined;
       if (sinceRaw !== null && sinceRaw.length > 0) {
-        // Validate up-front so the access service can stay focused on the
-        // pure snapshot logic (parser also runs there as a defense in
-        // depth, but rejecting at the boundary preserves the
-        // "invalid_since" error code instead of leaking a generic 500).
         if (!Number.isFinite(Date.parse(sinceRaw))) {
           this.respondJson(res, 400, {
             error: "invalid_since",
@@ -2533,10 +2232,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         );
         this.respondJson(res, 200, snapshot);
       } catch (err) {
-        // As with recallXray above: surface only the deliberately-prefixed
-        // graphSnapshot validation Error.message, never String(err) of an
-        // arbitrary throw (CodeQL js/stack-trace-exposure). Validation errors are
-        // always Error instances; anything else is rethrown as a 500.
         if (err instanceof Error && err.message.startsWith("graphSnapshot:")) {
           this.respondJson(res, 400, {
             error: "invalid_request",
@@ -2571,7 +2266,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     }
 
     // ── Graph mutation event stream (issue #691 PR 5/5) ──────────────────────
-    //
     // GET /engram/v1/graph/events
     //
     // Server-Sent Events stream that emits graph mutation events in real time.
@@ -2595,26 +2289,13 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // ── Chat endpoints (issue #1583) ────────────────────────────────────────
     if (req.method === "POST" && pathname === "/engram/v1/chat/message") {
       this.enforceTokenOp("chat_message"); // boundary dispatch (issue #1525)
       const body = await this.readJsonBody(req) as Record<string, unknown>;
-      // Issue #1850 round 5 (finding 2): a resumed chat session is an
-      // id-loaded record whose namespace bypassed the token allow-list. Gate
-      // its stored namespace before posting (fail closed; no-op unrestricted).
       const resumeChatSessionId = typeof body.chatSessionId === "string" ? body.chatSessionId : undefined;
       if (resumeChatSessionId) {
         await enforceChatSessionNamespace(this.service, resumeChatSessionId);
       } else {
-        // NEW chat session (no chatSessionId): processChatMessage will mint a
-        // fresh session under the effective namespace. The HTTP chat handler
-        // does not forward a request namespace, so the new session inherits
-        // the server DEFAULT — route that effective namespace through the
-        // SAME chokepoint as the resume path (enforceNamespaceAllowList maps
-        // undefined → default) so a namespace-scoped token CANNOT start a
-        // chat in a namespace outside its allow-list (its server default may
-        // be unlisted, or the server may carry no configured default). Fail
-        // closed; no-op for unrestricted/legacy tokens (issue #1850 round 7).
         enforceNamespaceAllowList(
           tokenCapabilityStore.getStore(),
           undefined,
@@ -2631,9 +2312,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     const chatEventsMatch = /^\/engram\/v1\/chat\/events\/([^/]+)$/.exec(pathname);
     if (req.method === "GET" && chatEventsMatch) {
       this.enforceTokenOp("chat_events"); // boundary dispatch (issue #1525)
-      // Issue #1850 round 5 (finding 2): the SSE target is an id-loaded chat
-      // session whose namespace bypassed the token allow-list. Gate its stored
-      // namespace before streaming (fail closed; no-op unrestricted).
       await enforceChatSessionNamespace(this.service, chatEventsMatch[1] ?? "");
       await handleChatEventsSSE(
         req, res, chatEventsMatch[1] ?? "",
@@ -2641,11 +2319,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
           service: this.service,
           config: this.service.configRef?.chat,
           memoryDir: this.service.memoryDir,
-          // Register the chat-SSE disconnect cleanup with this server's
-          // stop() set so an HTTP shutdown forcibly releases the heartbeat
-          // and transcript subscription even when a lingering client never
-          // emits 'close' (cursor Medium review; mirrors handleGraphEventsSSE
-          // which registers in sseCleanupFns at access-http.ts:2604).
           registerSseCleanup: (cleanup) => {
             this.sseCleanupFns.add(cleanup);
             return () => { this.sseCleanupFns.delete(cleanup); };
@@ -2656,10 +2329,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // ── Peer Registry endpoints (issue #679) ─────────────────────────────────
-    // GET /engram/v1/console/state — operator console engine-state snapshot (issue #688 PR 2/3).
-    // Read-only; namespace-aware via resolveRequestPrincipal so cross-tenant
-    // reads are not possible (CLAUDE.md rule 42).
     if (req.method === "GET" && pathname === "/engram/v1/console/state") {
       this.enforceTokenOp("console_state"); // boundary dispatch (issue #1525)
       const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
@@ -2668,12 +2337,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    //   GET    /engram/v1/peers              — list all peers
-    //   GET    /engram/v1/peers/:id          — get one peer
-    //   PUT    /engram/v1/peers/:id          — upsert (create/update)
-    //   DELETE /engram/v1/peers/:id          — delete identity only (idempotent)
-    //   DELETE /engram/v1/peers/:id?forget=true — destructive full purge (issue #679 completion)
-    //   GET    /engram/v1/peers/:id/profile  — get peer profile
     if (req.method === "GET" && pathname === "/engram/v1/peers") {
       const op = getOperation("peer_list"); // boundary dispatch (issue #1525)
       if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_list");
@@ -2735,13 +2398,9 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         const body = await this.readJsonBody(req) as Record<string, unknown>;
         const op = getOperation("peer_set"); // boundary dispatch (issue #1525)
         if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_set");
-        // The operation schema strips nulls as "absent", so an explicit null
-        // must fail here or the peer would register with default fields.
         for (const field of ["kind", "displayName", "notes"]) {
           if (body[field] === null) throw new EngramAccessInputError(`${field} must be a string when provided`);
         }
-        // Raw body fields: the operation schema rejects malformed types with an
-        // input error instead of silently defaulting them (rule 51).
         // SAFETY: the registered peer_set handler returns { result } with the upsert outcome.
         const output = (await op.run({
           id: peerId,
@@ -2758,10 +2417,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       }
 
       if (req.method === "DELETE") {
-        // `?forget=true` triggers the destructive full-purge path (issue #679
-        // completion). The caller must also pass `confirm=yes` in the request
-        // body; absent confirmation yields 400. Plain DELETE (no ?forget) keeps
-        // the existing soft-delete behaviour (identity.md only).
         const forgetParam = parsed.searchParams.get("forget");
         if (forgetParam === "true") {
           const body = await this.readJsonBody(req) as Record<string, unknown>;
@@ -2801,7 +2456,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // ── Dreams telemetry (issue #678 PR 3+4) ──────────────────────────────────
 
     if (req.method === "GET" && pathname === "/engram/v1/dreams/status") {
       this.enforceTokenOp("dreams_status"); // boundary dispatch (issue #1525)
@@ -2876,14 +2530,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // ── Admin console surfaces (issue #1502) ──────────────────────────────
     //
-    // All five routes live under /engram/v1/admin/* which the access-surface
-    // catalog treats as infrastructure (no boundary migration required; the
-    // static-completeness fitness test excludes this prefix). They still
-    // require bearer auth (enforced above) and delegate to core APIs via the
-    // pure admin-surfaces module — the dashboard never re-resolves scope or
-    // re-lists namespaces.
     if (pathname.startsWith("/engram/v1/admin/scope/inspect")) {
       if (req.method !== "GET" && req.method !== "POST") {
         this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
@@ -3006,9 +2653,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         });
       }
       try {
-        // Rate-limit the promotion write, matching every other write route
-        // (observe, trust-zone promotion, etc.). The check throws on limit
-        // exceeded; the hit is recorded after the write succeeds.
         this.ensureWriteRateLimitAvailable(req);
         const result = await this.service.adminPromoteMemory({
           sourceMemoryId: body.sourceMemoryId,
@@ -3018,7 +2662,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
           targets,
           reason: body.reason,
         });
-        // actor is derived from the authenticated principal inside adminPromoteMemory;
         this.recordWriteRateLimitHit(req);
         this.respondJson(res, 200, result);
       } catch (err) {
@@ -3068,17 +2711,9 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
    *     client never disconnects (Cursor review thread `access-http.ts:232`).
    */
   private async handleGraphEventsSSE(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    // Resolve namespace from the ?namespace= query parameter (same pattern
-    // as graphSnapshot and other read endpoints).  Falls back to the
-    // default namespace when absent.
     const parsed = new URL(req.url ?? "/", `http://${hostToUrlAuthority(this.host)}`);
     const namespaceParam = parsed.searchParams.get("namespace");
     const namespace = this.resolveNamespace(req, namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined);
-    // Resolve to the per-namespace storage directory so the bus subscription
-    // is scoped to the correct tenant (CLAUDE.md rule 42).
-    // Pass the request principal so namespace ACL is enforced — without it,
-    // resolveReadableNamespace throws when namespacesEnabled=true (Cursor
-    // thread PRRT_kwDORJXyws59snoR / Codex thread PRRT_kwDORJXyws59soGJ).
     const principal = this.resolveRequestPrincipal(req);
     const memoryDir = await this.service.getMemoryDirForNamespace(namespace, principal);
 
@@ -3090,7 +2725,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       "transfer-encoding": "chunked",
     });
 
-    // Send initial "connected" frame so the client knows the stream is live.
     const writeSSE = (payload: unknown): void => {
       try {
         res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -3103,7 +2737,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
 
     this.sseClients.add(res);
 
-    // --- 200 ms batch throttle -----------------------------------------------
     const flushBatch = (): void => {
       const batch = this.ssePendingBatches.get(res);
       if (!batch || batch.length === 0) return;
@@ -3124,12 +2757,10 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       }
     });
 
-    // --- 25 s heartbeat -------------------------------------------------------
     const heartbeatInterval = setInterval(() => {
       writeSSE({ type: "heartbeat" });
     }, 25_000);
 
-    // --- Cleanup on client disconnect -----------------------------------------
     const cleanup = (): void => {
       clearInterval(heartbeatInterval);
       const timer = this.sseBatchTimers.get(res);
@@ -3144,9 +2775,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       try { res.end(); } catch { /* ignore */ }
     };
 
-    // Register so stop() can invoke cleanup even when the client is still
-    // connected (releases the heartbeat interval and bus subscription
-    // before the HTTP server is torn down).
     this.sseCleanupFns.add(cleanup);
 
     req.once("close", cleanup);
@@ -3158,12 +2786,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     res: ServerResponse,
     abortSignal: AbortSignal,
   ): Promise<void> {
-    // Reject requests that advertise an unknown MCP protocol version in
-    // the streamable-HTTP `MCP-Protocol-Version` header. Absent or
-    // valid → proceed. Unknown → 400 with a JSON-RPC-shaped error so
-    // the client surfaces a clear message. The supported set is
-    // exported by @remnic/core's access-mcp module to keep the
-    // version policy in a single place.
     const headerVersion = req.headers["mcp-protocol-version"];
     if (typeof headerVersion === "string" && headerVersion.length > 0) {
       if (!(MCP_SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(headerVersion)) {
@@ -3211,10 +2833,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     const codingArchitectureWrite =
       (toolName === "engram.coding_architecture" || toolName === "remnic.coding_architecture") &&
       toolArgsSubcommand === "refresh";
-    // codegraph parity tools (issue #1554): only mutating tools count as
-    // writes — index, delete_project, ingest_traces, and manage_adr
-    // (record|supersede). Read-only tools (search_graph, get_schema,
-    // list_projects, etc.) must NOT hit the write quota.
     const CODEGRAPH_WRITE_TOOLS = new Set([
       "engram.codegraph_index", "remnic.codegraph_index",
       "engram.codegraph_delete_project", "remnic.codegraph_delete_project",
@@ -3299,16 +2917,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     })();
     const mcpCorrelationId = currentCorrelationId() ?? randomUUID();
     const requestIdentity = this.resolveRequestIdentity(req);
-    // Per-token namespace enforcement on the MCP dispatch path (issue #1850
-    // finding 1): MCP `tools/call` previously never applied the namespace
-    // allow-list, so a namespace-scoped bearer could reach another tenant via
-    // tool args or the adapter `namespaceOverride`. Run the SAME effective-
-    // namespace chokepoint the REST surface runs. The effective namespace is
-    // the explicit tool arg, else the adapter override, else the server
-    // default (op.run with no namespace reaches the default tenant). Only
-    // namespace-scoped tools are gated — namespace-agnostic tools (peer/
-    // wearables) stay ungated, matching the REST surface. Fail closed (403)
-    // BEFORE op.run; no-op for unrestricted tokens.
     if (request.method === "tools/call" && this.mcpServer.toolAcceptsNamespace(toolName)) {
       const mcpExplicitNamespace =
         toolArgs !== null && typeof toolArgs === "object" && !Array.isArray(toolArgs)
@@ -3345,16 +2953,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       const structured = result?.structuredContent as
         | { dryRun?: boolean; idempotencyReplay?: boolean; ok?: boolean }
         | undefined;
-      // Rejected codegraph calls carry { ok: false } in structuredContent
-      // (confirm_required, package_missing, runtime_unavailable, ...). The
-      // MCP layer sets isError:false for these, so without this guard they
-      // would consume the write quota despite no mutation occurring
-      // (issue #1554 review thread: don't bill rejected calls as writes).
       const isRejectedCodegraph = structured?.ok === false;
-      // A write tool that succeeded without structuredContent (e.g.
-      // memory_correct_apply, which returns a CorrectionOutcome) still
-      // consumed a write — count it. Tools WITH structuredContent use the
-      // dryRun/idempotencyReplay guards.
       const counts = structured ? this.shouldCountWriteRateLimit(structured) : true;
       if (!writeRateLimitRecorded && !isError && !isRejectedCodegraph && counts) {
         if (supportPassportQuota) {
@@ -3367,9 +2966,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       }
     }
     supportPassportQuota?.release();
-    // A mutating tool may have committed just before the client disconnected.
-    // Record that side effect above, then honor cancellation before emitting
-    // any response. Read-only calls reach this guard without accounting.
     if (abortSignal.aborted) {
       throw isAbortError(abortSignal.reason)
         ? abortSignal.reason
@@ -3380,8 +2976,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       res.end();
       return;
     }
-    // If this was an initialize response, pop the session ID keyed by
-    // correlation ID (unique per HTTP request, not client-chosen JSON-RPC id).
     const assignedSessionId = this.mcpServer.popInitSessionId(mcpCorrelationId);
     if (assignedSessionId) {
       res.setHeader("mcp-session-id", assignedSessionId);
@@ -3673,24 +3267,11 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     return this.resolveAuthorizedEntry(req, pathname) !== null;
   }
 
-  /**
-   * Per-request cache of the matched token entry (the entry whose token
-   * matched the bearer credential, BEFORE any path-policy check). Pinning
-   * the entry to the first read means authorization, capability
-   * enforcement, and connector provenance all observe the SAME token-store
-   * snapshot — a rotation between the auth check and the write handler can
-   * no longer stamp the wrong connector (PR #1852 race).
-   */
   private matchedEntryCache = new WeakMap<
     IncomingMessage,
     { token: string; connector?: string; capabilities?: TokenCapabilities } | null
   >();
 
-  /**
-   * Resolve the matched token entry for this request, caching the result so
-   * every downstream consumer (authorization, capability enforcement,
-   * connector provenance) sees the same snapshot entry (PR #1852).
-   */
   private resolveMatchedEntry(
     req: IncomingMessage,
     pathname?: string,
@@ -3703,14 +3284,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     return entry;
   }
 
-  /**
-   * Find the entry whose token matches the request's bearer credential.
-   * Static operator tokens (`authToken`/`authTokens`) and the string-token
-   * getter carry no capabilities ⇒ unrestricted. Dynamic entry-based tokens
-   * capture connector identity and capabilities. A corrupt or unreadable
-   * token store returns null rather than propagating an error — provenance
-   * must never block an already-authenticated request.
-   */
   private computeMatchedEntry(
     req: IncomingMessage,
     pathname?: string,
@@ -3723,7 +3296,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     ) {
       return null;
     }
-    // Primary path: Authorization: Bearer <token> header.
     const raw = req.headers.authorization;
     let candidate: string | null = null;
     if (raw) {
@@ -3735,14 +3307,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         }
       }
     }
-    // Fallback: ?token= query parameter — ONLY accepted for the SSE
-    // endpoint (/engram/v1/graph/events).  EventSource cannot set request
-    // headers, so SSE clients must pass the token via the query string.
-    // Allowing this fallback on every endpoint would let a CSRF attacker
-    // embed a credentialed URL anywhere — restricting it to SSE limits the
-    // attack surface (Codex P2 review thread `access-http.ts:1406`; Cursor
-    // review thread `access-http.ts:1412`).  Authorization header always
-    // wins; timing-safe compare used below.
     if (!candidate && pathname === "/engram/v1/graph/events") {
       try {
         const parsed = new URL(req.url ?? "/", `http://${hostToUrlAuthority(this.host)}`);
@@ -3756,21 +3320,12 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     }
     if (!candidate) return null;
     const token = candidate;
-    // Check primary token (static operator token — no capabilities ⇒ unrestricted)
     if (this.authToken && this.timingSafeStringEqual(token, this.authToken)) {
       return { token };
     }
-    // Check static multi-connector tokens
     for (const valid of this.authTokens) {
       if (this.timingSafeStringEqual(token, valid)) return { token: valid };
     }
-    // Entry-based dynamic tokens are AUTHORITATIVE when configured: the
-    // dynamic-token decision ends here (no fall-through to the string
-    // getter, which carries no identity and would bypass the policy).
-    // Validation and connector identity come from the same snapshot entry,
-    // so a scope policy can never observe a token fresher than the
-    // identity it scopes (mint/revoke coherence). Capabilities ride on the
-    // same entry so enforcement can never lag the token that validated.
     if (this.authTokenEntriesGetter) {
       try {
         for (const entry of this.authTokenEntriesGetter()) {
@@ -3782,8 +3337,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       }
       return null;
     }
-    // String-token getter (no identity, no policy) — only consulted when
-    // no entry getter is configured.
     if (this.authTokensGetter) {
       for (const valid of this.authTokensGetter()) {
         if (this.timingSafeStringEqual(token, valid)) return { token: valid };
@@ -3792,35 +3345,19 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     return null;
   }
 
-  /**
-   * Resolve the presenting token's entry for an authorized request, or null.
-   * Applies the path-policy gate (if configured) on top of the per-request
-   * cached matched entry so the identity that is authorized is the same one
-   * whose connector later stamps frontmatter. Static operator tokens and the
-   * string-token getter carry no capabilities ⇒ unrestricted.
-   */
   private resolveAuthorizedEntry(
     req: IncomingMessage,
     pathname?: string,
   ): { token: string; connector?: string; capabilities?: TokenCapabilities } | null {
     const matched = this.resolveMatchedEntry(req, pathname);
     if (!matched) return null;
-    // Apply the path-policy gate for dynamic entry-based tokens.
     if ("connector" in matched && this.tokenPathPolicy) {
-      // Fail closed: a policy without a connector identity denies.
       if (typeof matched.connector !== "string" || matched.connector.length === 0) return null;
       return this.tokenPathPolicy(matched.connector, pathname) ? matched : null;
     }
     return matched;
   }
 
-  /**
-   * Resolve the presenting token's capabilities for this request, or
-   * undefined when the token is unrestricted (legacy / static operator /
-   * explicit-unrestricted record). Reads from the per-request cached matched
-   * entry so capabilities come from the same snapshot as authorization and
-   * connector provenance (PR #1852).
-   */
   private resolveTokenCapabilities(
     req: IncomingMessage,
     pathname?: string,
@@ -3849,11 +3386,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     );
   }
  
-  /**
-   * Operator/admin routes are unrestricted-only surfaces: a scoped
-   * (least-privileged) token must NOT reach them (issue #1837). Legacy and
-   * explicit-unrestricted tokens pass. Throws EngramAccessForbiddenError (→403).
-   */
   private requireOperatorToken(): void {
     if (isCapabilityRestricted(tokenCapabilityStore.getStore())) {
       throw new EngramAccessForbiddenError(
@@ -3861,14 +3393,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       );
     }
   }
-  /**
-   * Resolve the connector identity for the request's bearer token (Phase 1
-   * provenance). Reuses the per-request cached matched entry so a token
-   * rotation between the auth check and the write handler cannot stamp the
-   * wrong connector (PR #1852 race). Returns `undefined` for operator-
-   * supplied static tokens or when no entry getter is configured — those
-   * writes are operator-initiated.
-   */
   private resolveConnector(req: IncomingMessage): string | undefined {
     return this.resolveMatchedEntry(req)?.connector;
   }
@@ -3895,14 +3419,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     return 200;
   }
 
-  /**
-   * Admit a quota-counted write by RESERVING a limiter slot for the request
-   * (issue #3225 C4). A bare hasCapacity check admits N concurrent requests
-   * against the same committed count; the reservation holds in-flight
-   * capacity until the write commits at recordWriteRateLimitHit or the
-   * request ends. Idempotent per request, so a quota hook that fires after
-   * an earlier reservation is a no-op.
-   */
   protected ensureWriteRateLimitAvailable(req?: IncomingMessage): void {
     if (!req) {
       if (!this.writeLimiter.hasCapacity()) {
@@ -3918,7 +3434,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     this.pendingWriteQuotas.set(req, reservation);
   }
 
-  /** Commit a counted write at the durable boundary; consumes the request's reservation. */
   protected recordWriteRateLimitHit(req?: IncomingMessage): void {
     const pending = req ? this.pendingWriteQuotas.get(req) : undefined;
     if (pending && req) {
@@ -3929,7 +3444,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     this.writeLimiter.record(this.principalForRateLimit(req));
   }
 
-  /** Release an uncommitted reservation after a rejection, failure, or exempt outcome. */
   private releasePendingWriteQuota(req: IncomingMessage): void {
     const pending = this.pendingWriteQuotas.get(req);
     if (!pending) return;
@@ -3947,9 +3461,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
 
   private principalForRateLimit(req?: IncomingMessage): string | undefined {
     if (!req) return undefined;
-    // Fall back to the authenticated connector identity when no principal is
-    // resolved, so per-connector bearer tokens are isolated from each other
-    // even without a principal header/server principal (issue #2029 review).
     return this.resolveRequestPrincipal(req) ?? this.resolveConnector(req);
   }
 
@@ -3957,7 +3468,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     return response.dryRun !== true && response.idempotencyReplay !== true;
   }
 
-  /** Map wearables validation errors to 400 (body lives in wearables/http-glue.ts). */
   private respondWearablesError(res: ServerResponse, err: unknown): boolean {
     return respondWearablesErrorGlue(this.respondJson.bind(this), res, err);
   }

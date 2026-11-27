@@ -113,7 +113,6 @@ test("timed-out section metric reports the breach instead of a plain duration", 
   });
 
   assert.equal(timings.entityRetrieval, "timeout(75004ms)");
-  // A breach is not a success, so it must not be logged as one.
   assert.equal(calls[0]?.level, "debug");
 });
 
@@ -121,8 +120,6 @@ test("recall section deadline degrades to the fallback and cancels the section",
   let observedSignal: AbortSignal | undefined;
   let cancelledDuringWork = false;
 
-  // A real timer is the subject here, not a guessed wait: the section below
-  // never settles on its own, so the deadline always wins regardless of load.
   const outcome = await runRecallSectionWithinDeadline({
     deadlineMs: 15,
     fallback: "degraded",
@@ -169,8 +166,6 @@ test("a zero deadline disables the bound rather than failing every section", asy
     },
   });
 
-  // Two full event-loop turns: any 0ms timer would already have fired, so a
-  // still-pending section proves the bound was disabled rather than instant.
   for (let turn = 0; turn < 2; turn += 1) {
     const turned = Promise.withResolvers<void>();
     setImmediate(turned.resolve);
@@ -241,8 +236,6 @@ test("a section rejection surfaces to the caller instead of being swallowed", as
 });
 
 test("the default core section budget is capped below the remaining request budget", () => {
-  // Both settings default to 75s. Taken at face value the section deadline could
-  // never fire first, so degradation would be unreachable on default config.
   assert.equal(
     resolveRecallCoreSectionDeadlineMs({
       configuredCoreDeadlineMs: 75_000,
@@ -253,8 +246,6 @@ test("the default core section budget is capped below the remaining request budg
 });
 
 test("the core section budget shrinks with the request budget already spent", () => {
-  // A section that starts 20s into a 75s request must finish inside the 55s left,
-  // not inside the original ceiling — otherwise the request is aborted wholesale.
   assert.equal(
     resolveRecallCoreSectionDeadlineMs({
       configuredCoreDeadlineMs: 75_000,
@@ -296,7 +287,6 @@ test("a zero budget on either side keeps the configured value", () => {
     resolveRecallCoreSectionDeadlineMs({ configuredCoreDeadlineMs: 0, remainingOuterMs: 75_000 }),
     0,
   );
-  // No request ceiling means nothing to reserve headroom against.
   assert.equal(
     resolveRecallCoreSectionDeadlineMs({ configuredCoreDeadlineMs: 75_000, remainingOuterMs: null }),
     75_000,
@@ -308,7 +298,6 @@ test("a bounded core section resolves its budget from the budget left when it st
   const clockMs = 1_000_000;
   const runSection = createBoundedCoreSectionRunner({
     configuredDeadlineMs: 75_000,
-    // 75s request that started 20s ago: 55s left, so the section gets 80% of 55s.
     outerDeadlineAtMs: clockMs + 55_000,
     record: (metric) => metrics.push(metric),
     logger: { warn: () => {} },
@@ -321,8 +310,6 @@ test("a bounded core section resolves its budget from the budget left when it st
 });
 
 test("a bounded core section degrades on cancellation rather than rejecting", async () => {
-  // The phase this section belongs to is awaited through a race the caller's
-  // abort also wins, so a rejection here would be an unhandled rejection.
   const metrics: RecallSectionMetric[] = [];
   const caller = new AbortController();
   const runSection = createBoundedCoreSectionRunner({
@@ -362,8 +349,6 @@ test("a bounded core section still surfaces a non-abort failure", async () => {
 });
 
 test("yieldToEventLoop lets a pending timer run", async () => {
-  // The guarantee corpus scans depend on: without a yield the timer that carries
-  // a section deadline cannot fire while the scan holds the loop.
   let timerFired = false;
   const timer = setTimeout(() => {
     timerFired = true;
@@ -377,14 +362,9 @@ test("yieldToEventLoop lets a pending timer run", async () => {
 });
 
 test("an enrichment abort handle fires its deadline without a parent abort (#3499)", async () => {
-  // Enrichment sections (harmonic retrieval, QMD, native knowledge) only followed
-  // the parent signal, so their deadlineMs was a metric label — a slow section ran
-  // past the client's budget with nothing to cut it. A real timer is the subject.
   const handle = createEnrichmentAbortHandle(undefined, 15);
   const fired = Promise.withResolvers<void>();
   handle.signal.addEventListener("abort", () => fired.resolve());
-  // The deadline timer is unref'd so a stale budget never holds the process;
-  // this ref'd wait is only the test keeping the loop alive for it to fire.
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal(handle.signal.aborted, true);
   await fired.promise;

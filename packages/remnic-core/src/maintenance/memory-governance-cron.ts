@@ -226,28 +226,16 @@ export async function ensureDaySummaryCron(
       },
       sessionTarget: "isolated",
       wakeMode: "now",
-      // Mirror model at job root for backward compat with older OpenClaw
-      // builds that read root model instead of payload.model.
       ...(options.model ? { model: options.model } : {}),
       payload,
       delivery: { mode: "none" },
     }),
-    // Reconcile on every startup so model/timezone changes propagate.
-    // Issue #1474 (model reconcile) + #1475 (timezone reconcile).
-    // Only update managed leaves to avoid clobbering user edits to
-    // schedule.expr, payload.message, payload.timeoutSeconds, etc.
-    // Only reconcile agentId when explicitly provided, so manually-set
-    // cron personas are preserved.
     {
       updateExisting: true,
       updateFields: options.hasExplicitAgentId ? ["agentId"] : [],
       deepMerge: {
         schedule: { tz: options.timezone },
-        // Mirror model at job root for backward compat with older OpenClaw
-        // builds that read root model instead of payload.model.
         model: options.model ?? null,
-        // Always write model/fallbacks so stale values are cleared when
-        // an operator removes summaryModel or taskModelChain from config.
         payload: {
           model: options.model ?? null,
           fallbacks: (options.fallbacks && options.fallbacks.length > 0)
@@ -477,9 +465,6 @@ export async function ensureGraphEdgeDecayCron(
     () => ({
       id: GRAPH_EDGE_DECAY_CRON_ID,
       agentId,
-      // Schedule label reflects the actual cron expression (`daily` /
-      // `weekly` / `custom`) so cron dashboards do not show "weekly"
-      // when the schedule is in fact daily — Cursor review on PR #729.
       name: `Remnic Graph Edge Decay (${scheduleLabel})`,
       enabled: true,
       schedule: {

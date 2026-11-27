@@ -1,13 +1,3 @@
-/**
- * Phase 1 connector-provenance tests.
- *
- * Verifies that a server-resolved `sourceConnector` identity threads through
- * the memory_store and suggestion_submit write paths — from the MCP request
- * boundary, through the operation handler (where it overrides any client-
- * supplied value), down to YAML frontmatter on disk.
- *
- * All fixtures are synthetic — no real user data.
- */
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -26,9 +16,6 @@ import type {
 } from "./access-service.js";
 import { StorageManager } from "./storage.js";
 
-// ---------------------------------------------------------------------------
-// Mock service that captures memoryStore calls
-// ---------------------------------------------------------------------------
 
 function makeCaptureService(): {
   captured: EngramAccessMemoryStoreRequest[];
@@ -74,7 +61,6 @@ function memoryStoreRequest(
 }
 
 // ---------------------------------------------------------------------------
-// Tests 1–3: MCP layer threads sourceConnector to the service
 // ---------------------------------------------------------------------------
 
 test("memory_store via MCP with sourceConnector 'chatgpt' → service receives it", async () => {
@@ -140,7 +126,6 @@ test("recall operation forwards only the server-resolved connector", async () =>
 });
 
 // ---------------------------------------------------------------------------
-// Test 4: client-supplied sourceConnector in args is IGNORED
 // ---------------------------------------------------------------------------
 
 test("client-supplied sourceConnector in args → IGNORED, server value wins", async () => {
@@ -160,9 +145,6 @@ test("client-supplied sourceConnector in args → IGNORED, server value wins", a
     },
   } as unknown as EngramAccessService;
 
-  // Call the handler directly, simulating a malicious client that managed to
-  // inject sourceConnector: "evil" into the parsed input. The handler must
-  // override it with the server-resolved ctx.sourceConnector.
   await memoryStoreOperation.spec.handler(
     {
       content: "The user prefers vim over emacs",
@@ -185,7 +167,6 @@ test("client-supplied sourceConnector in args → IGNORED, server value wins", a
 });
 
 // ---------------------------------------------------------------------------
-// Tests 5–6: StorageManager.writeMemory persists sourceConnector to frontmatter
 // ---------------------------------------------------------------------------
 
 test("StorageManager.writeMemory with sourceConnector 'omp' → frontmatter contains it", async () => {

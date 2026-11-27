@@ -1,14 +1,3 @@
-// Stale closed-issue claim detector (parallel-run defect, 2026-08).
-//
-// A PR whose body claims `Fixes #N` for an issue that is ALREADY closed, with
-// a base far behind main, is a revert bomb: the three-dot diff looks like the
-// fix, but a two-dot diff against current main deletes every commit that
-// landed after the issue closed. Rebase before review, or re-verify the issue
-// is really the same defect.
-//
-// Pure evaluator (unit-tested); the review-thread-guard workflow job
-// `closed-issue-base` feeds it GitHub API data. The module is also runnable:
-// pipe the same JSON object to stdin for a local check.
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +18,6 @@ export function parseFixNumbers(body) {
   return numbers;
 }
 
-// A base this far behind main makes a closed-issue claim stale enough to fail.
 export const STALE_BASE_COMMIT_THRESHOLD = 15;
 
 /**

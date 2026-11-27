@@ -125,11 +125,6 @@ for (const includeFact of [false, true]) {
 }
 
 test("#3231: entity failure after a committed fact still runs deferred post-write maintenance", async () => {
-  // Partial-success path: fact (preference) is durable, later writeEntity throws.
-  // Batch-end finalization in persistExtraction (hash flush, behavior ledger,
-  // harmonic construction, temporal/tag index) and runExtraction's
-  // requestQmdMaintenance must still cover the earlier durable write. Retry
-  // exact-dedupes the fact (`continue`), so those effects are not re-queued.
   const memoryDir = await mkTempMemoryDir("entity-write-failure-maintenance");
   const preference =
     "Prefers terse queue names for background jobs in Project Alpha.";
@@ -145,7 +140,6 @@ test("#3231: entity failure after a committed fact still runs deferred post-writ
   const storage = await orchestrator.getStorageForNamespace();
   const writeEntity = storage.writeEntity.bind(storage);
   const temporalIdBatches: string[][] = [];
-  // Bracket access is TypeScript's typed escape hatch for the private method; the spy only wraps and restores it.
   const originalTemporal = orchestrator["updateTemporalTagIndexes"].bind(orchestrator);
   orchestrator["updateTemporalTagIndexes"] = async (target, persistedIds) => {
     temporalIdBatches.push([...persistedIds]);
@@ -231,9 +225,6 @@ test("#3231: entity failure after a committed fact still runs deferred post-writ
       "partial durable writes must still schedule QMD reindex before the entity error propagates",
     );
 
-    // Retry exact-dedupes the preference (`continue`), so missing deferred
-    // effects are not re-queued. Prove the failure-path finalization is the
-    // only chance they have to land.
     storage.writeEntity = writeEntity;
     const retried = await orchestrator.runExtraction(turns, { bufferKey });
     assert.equal(retried.status, "completed");
@@ -266,10 +257,6 @@ test("#3231: entity failure after a committed fact still runs deferred post-writ
 });
 
 test("#3231 P2: a post-write contradiction-resolve failure still finalizes the durable fact", async () => {
-  // The fact is durable (writeSealedMemory returned) when
-  // applyDeferredContradictionResolve rejects. Its behavior signal, harmonic
-  // node, temporal/tag index entry and QMD request must not depend on code
-  // that runs after that catch; retry exact-dedupes the fact.
   const memoryDir = await mkTempMemoryDir("contradiction-resolve-failure-maintenance");
   const preference = "Prefers terse queue names for background jobs in Project Beta.";
   const config = makeHarmonicLifecycleConfig(memoryDir, {

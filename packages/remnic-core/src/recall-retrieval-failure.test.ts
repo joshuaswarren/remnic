@@ -1,12 +1,3 @@
-/**
- * #3082: recall must distinguish a QMD daemon timeout from a genuine
- * empty retrieval. Internally the pipeline already collected the
- * degradation; this file asserts it is no longer flattened away by
- * the time it reaches orchestrator.recall / EngramAccessService.recall
- * / the MCP tool payload.
- *
- * Fixture data is synthetic and the store is an empty temp directory.
- */
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -100,8 +91,6 @@ async function withOrchestrator(
     }),
   );
   const observed = { calls: 0 };
-  // Unchecked cast with reason: `qmd` is assigned post-construction because the
-  // backend is built by the search factory, which would reach for a real daemon.
   const withBackend = orchestrator as unknown as { qmd: SearchBackend };
   withBackend.qmd = searchBackend(observed, degrade);
   try {
@@ -667,9 +656,6 @@ test("MCP recall payload keeps retrievalFailure so a tool caller can branch on i
       recall: (_req: EngramAccessRecallRequest) => Promise.resolve(response),
     } as unknown as EngramAccessService;
     const server = new EngramMcpServer(service);
-    // Unchecked cast with reason: handleRequest is a JSON-RPC envelope; this
-    // test owns both the spy recall result and the tool name, so the payload
-    // shape is the MCP recall structuredContent, not untrusted input.
     const rpc = (await server.handleRequest({
       jsonrpc: "2.0",
       id: 1,

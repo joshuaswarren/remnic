@@ -130,18 +130,6 @@ export function formatConsoleArgs(args: unknown[]): string {
   return `${format(...args)}\n`;
 }
 
-/**
- * Module-level re-entry guard. runCli swaps process-wide globals
- * (`process.stdout` / `process.stderr` / `process.exit` / `process.argv`,
- * `console.*`, cwd, env). Two concurrent invocations would snapshot each
- * other's fakes and restore in the wrong order, attributing output to the
- * wrong result and leaving subsequent writes captured by a stale fake. The
- * guard makes that hazard a loud failure instead of silent corruption:
- * the second concurrent caller gets a clear error pointing at the fix
- * (await each runCli call before starting the next). Node's single-threaded
- * event loop guarantees the guard check + set are atomic (no `await` between
- * them), so there is no TOCTOU window.
- */
 let activeRun = false;
 
 /**
@@ -194,7 +182,6 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     },
   };
 
-  // ── Snapshot everything we override so `finally` can restore it. ──
   // We swap `process.stdout` / `process.stderr` themselves (not just their
   // `.write` methods) because the test runner's TAP reporter caches a
   // reference to `process.stdout.write` at startup; replacing only the
@@ -213,13 +200,11 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   const originalConsoleError = console.error;
   const originalConsoleWarn = console.warn;
   const originalConsoleInfo = console.info;
-  // Snapshot env values we will touch (only the keys the caller asked us to
   // touch). Anything else stays untouched.
   const envBackups: Array<[string, string | undefined, boolean]> = options.env
     ? Object.entries(options.env).map(([key, value]) => [key, process.env[key], key in process.env])
     : [];
 
-  // Build minimal Writable replacements. We need `.write()` for the CLI's
   // output paths (Node's Console checks for `.write` on its bound streams)
   // AND `.fd` so commands that hand process.stdout / process.stderr to
   // child_process stdio are accepted (see the note on fakeStdout below).
@@ -271,7 +256,6 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     }) as typeof process.exit;
 
     if (options.cwd !== undefined) {
-      // Use process.chdir (not process.cwd = () => ...) so that filesystem
       // APIs receiving relative paths resolve against the override directory,
       // not the test runner's real cwd. Restored in finally via chdir back.
       process.chdir(options.cwd);
@@ -321,7 +305,6 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     };
   } catch (error) {
     if (error instanceof CliExitSignal) {
-      // The dispatcher (or a transitive call) asked to exit. The buffered
       // output is what the user would have seen — including any error
       // message it wrote before the exit call.
       return {

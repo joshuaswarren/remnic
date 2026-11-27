@@ -1,17 +1,3 @@
-/**
- * Meetings caller-namespace subject for the scenario-matrix harness (issue
- * #2123). Exercises the caller-derived namespace meeting build/read path: a
- * principal on a NON-default namespace syncs wearables and builds meetings, and
- * the record must be readable in that caller namespace while a different
- * namespace stays empty.
- *
- * Most canonical rows probe session/provider-identity/compaction/dedupe
- * dimensions the meetings-namespace path has no honest analogue for — those are
- * skipped via `appliesTo` (never faked). The two realized rows map cleanly:
- *   - explicit-provider-identity → a straight caller-namespace build;
- *   - restart-reload-recovery    → reopen a fresh service over the same on-disk
- *     memoryDir and re-read the persisted caller-namespace record.
- */
 import assert from "node:assert/strict";
 
 import {
@@ -58,20 +44,17 @@ const subject: LifecycleSubject<MeetingsNamespaceState> = {
     await state.harness.service.wearablesSync({ date: state.date, ...CALLER });
     const build = await state.harness.service.meetingsBuild(state.date, CALLER);
     assert.equal(build.meetings.length, 1, "caller namespace detects one audio meeting");
-    // restart/reload row: reopen a fresh service over the same on-disk state.
     if (row.dimensions.restart) {
       await state.harness.reopen();
     }
   },
 
   async invariants(state): Promise<void> {
-    // Caller namespace still reads its record (survives a restart when reopened).
     assert.equal(
       await meetingCountFor(state.harness, CALLER, state.date),
       1,
       "caller namespace reads its own meeting record",
     );
-    // A different namespace never observes the caller's meeting.
     assert.equal(
       await meetingCountFor(state.harness, OTHER, state.date),
       0,

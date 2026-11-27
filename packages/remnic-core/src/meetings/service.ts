@@ -96,9 +96,6 @@ export class MeetingsService {
     if (date === null) {
       throw new MeetingsInputError(`invalid meeting id '${id}' — expected mtg-YYYY-MM-DD-<hash>`);
     }
-    // A syntactically valid id can still embed an impossible calendar date
-    // (mtg-2026-13-40-...); surface that as a clean input error, not a 500 from
-    // the store's path validator.
     if (!isValidTranscriptDate(date)) {
       throw new MeetingsInputError(`invalid meeting id '${id}' — '${date}' is not a real calendar date`);
     }

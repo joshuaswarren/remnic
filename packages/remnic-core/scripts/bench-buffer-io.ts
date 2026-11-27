@@ -136,7 +136,6 @@ async function main(): Promise<void> {
       void sessionIndex;
     }
 
-    // Seed the store the way the running revision persists it.
     const seedStart = now();
     const perSessionFiles = "saveBufferSession" in storage;
     if (perSessionFiles) {
@@ -154,13 +153,11 @@ async function main(): Promise<void> {
     }
     const seedMs = msSince(seedStart);
 
-    // RECALL: load the buffer back from disk.
     const recallStart = now();
     const recalled = new SmartBuffer(config, storage);
     await recalled.load();
     const recallMs = msSince(recallStart);
 
-    // STORE: append one turn per session (the observe path).
     const storeStart = now();
     const perObserve: number[] = [];
     for (let i = 0; i < options.observes; i++) {

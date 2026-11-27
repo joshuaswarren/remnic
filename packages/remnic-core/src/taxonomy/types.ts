@@ -1,10 +1,3 @@
-/**
- * Taxonomy types for the MECE knowledge directory.
- *
- * A taxonomy defines a set of categories that partition the knowledge
- * space so that every memory maps to exactly one category (Mutually
- * Exclusive, Collectively Exhaustive).
- */
 
 /**
  * A single category in the taxonomy.
@@ -28,9 +21,6 @@ export interface TaxonomyCategory {
   memoryCategories: string[];
 }
 
-/**
- * A versioned taxonomy comprising an ordered list of categories.
- */
 export interface Taxonomy {
   version: number;
   categories: TaxonomyCategory[];

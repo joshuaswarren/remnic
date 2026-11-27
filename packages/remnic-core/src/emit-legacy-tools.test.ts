@@ -9,13 +9,6 @@ import {
   resolveNamespaceCatalogEnabled,
 } from "./emit-legacy-tools.js";
 
-/**
- * Run `body` with XDG_CONFIG_HOME pointing at a throwaway dir so the
- * sticky-legacy `hasLegacyConnectorEntries()` check inside the resolvers
- * never reads the real machine state. `withLegacyEntry` seeds one
- * persisted connector file under the standard
- * `$XDG_CONFIG_HOME/engram/.engram-connectors/connectors/` layout.
- */
 function withIsolatedConnectorsDir<T>(
   withLegacyEntry: boolean,
   body: () => T,
@@ -37,12 +30,8 @@ function withIsolatedConnectorsDir<T>(
   }
 }
 
-// ============================================================================
-// resolveEmitLegacyTools
-// ============================================================================
 
 test("resolveEmitLegacyTools: fresh install with absent raw falls through to sticky-legacy (false)", () => {
-  // No legacy connector evidence on disk → sticky-legacy returns false.
   withIsolatedConnectorsDir(false, () => {
     assert.equal(resolveEmitLegacyTools(false, {}), false);
     // Same shape with legacy connector evidence → sticky-legacy true.
@@ -53,7 +42,6 @@ test("resolveEmitLegacyTools: fresh install with absent raw falls through to sti
 });
 
 test("resolveEmitLegacyTools: explicit operator opt-out via raw honored", () => {
-  // Raw has the key with a real value (false) and configValue agrees.
   withIsolatedConnectorsDir(false, () => {
     assert.equal(
       resolveEmitLegacyTools(false, { emitLegacyTools: false }),
@@ -73,7 +61,6 @@ test("resolveEmitLegacyTools: explicit operator opt-out via raw honored", () => 
 
 test("resolveEmitLegacyTools: raw null/undefined treated as absent (round-2 review)", () => {
   withIsolatedConnectorsDir(false, () => {
-    // Fresh install: raw null + merged null → sticky-legacy false.
     assert.equal(
       resolveEmitLegacyTools(null, { emitLegacyTools: null }),
       false,
@@ -91,7 +78,6 @@ test("resolveEmitLegacyTools: raw null/undefined treated as absent (round-2 revi
     );
   });
   withIsolatedConnectorsDir(true, () => {
-    // Upgraded install: raw null + sticky evidence → true.
     assert.equal(
       resolveEmitLegacyTools(null, { emitLegacyTools: null }),
       true,
@@ -106,17 +92,12 @@ test("resolveEmitLegacyTools: raw null/undefined treated as absent (round-2 revi
 });
 
 test("resolveEmitLegacyTools: runtime true overrides schema default (round-2 review)", () => {
-  // Schema default is `false`. When raw is missing the key but merged
-  // carries `true` (runtime gateway set it), the resolver honors the
-  // runtime override instead of dropping it as schema-default
-  // materialization.
   withIsolatedConnectorsDir(false, () => {
     assert.equal(
       resolveEmitLegacyTools(true, {}),
       true,
       "merged true with empty raw treated as runtime operator intent",
     );
-    // Merged false (the schema default) with empty raw → sticky fallback.
     assert.equal(
       resolveEmitLegacyTools(false, {}),
       false,
@@ -127,13 +108,11 @@ test("resolveEmitLegacyTools: runtime true overrides schema default (round-2 rev
 
 test("resolveEmitLegacyTools: null raw passed directly (not via undefined) is normalized (round-3 review)", () => {
   withIsolatedConnectorsDir(false, () => {
-    // Null raw + merged schema-default false → sticky-legacy fallback (no throw).
     assert.equal(
       resolveEmitLegacyTools(false, null),
       false,
       "null raw with emitLegacyTools merged schema default falls through to sticky-legacy",
     );
-    // Null raw + emitLegacyTools merged true (runtime intent) → honored.
     assert.equal(
       resolveEmitLegacyTools(true, null),
       true,
@@ -150,14 +129,12 @@ test("resolveEmitLegacyTools: null raw passed directly (not via undefined) is no
 });
 
 test("resolveEmitLegacyTools: runtime-over-file precedence (round-4 review)", () => {
-  // File says false, runtime sets true → merged configValue (true) wins.
   withIsolatedConnectorsDir(false, () => {
     assert.equal(
       resolveEmitLegacyTools(true, { emitLegacyTools: false }),
       true,
       "runtime true overrides file false (rawOperatorConfig has the key)",
     );
-    // Symmetric: file says true, runtime says false → merged false wins.
     assert.equal(
       resolveEmitLegacyTools(false, { emitLegacyTools: true }),
       false,
@@ -167,7 +144,6 @@ test("resolveEmitLegacyTools: runtime-over-file precedence (round-4 review)", ()
 });
 
 test("resolveEmitLegacyTools: raw has key with non-boolean value coerced or throws", () => {
-  // Boolean-like strings coerce; garbage throws via coerceBooleanLikeOrThrow.
   assert.equal(
     resolveEmitLegacyTools("true", {}),
     true,
@@ -222,7 +198,6 @@ test("resolveEmitLegacyTools: env var overrides (REMNIC_ preferred, ENGRAM_ lega
 });
 
 // ============================================================================
-// resolveNamespaceCatalogEnabled
 // ============================================================================
 
 test("resolveNamespaceCatalogEnabled: default is true when absent", () => {
@@ -244,9 +219,6 @@ test("resolveNamespaceCatalogEnabled: default is true when absent", () => {
 });
 
 test("resolveNamespaceCatalogEnabled: merged false (different from schema default) honored as runtime intent", () => {
-  // Schema default is true. A merged `false` from the runtime API is
-  // operator intent to disable → honor it even though the schema default
-  // would be `true`.
   assert.equal(
     resolveNamespaceCatalogEnabled(false, {}),
     false,
@@ -268,14 +240,11 @@ test("resolveNamespaceCatalogEnabled: runtime (merged) value wins over raw file 
 });
 
 test("resolveNamespaceCatalogEnabled: null raw normalized (round-3 review)", () => {
-  // Schema default true. Merged false with null raw differs from default →
-  // runtime intent honored.
   assert.equal(
     resolveNamespaceCatalogEnabled(false, null),
     false,
     "null raw with merged false (runtime intent) honored",
   );
-  // Merged true (schema default) with null raw → fall through to default.
   assert.equal(
     resolveNamespaceCatalogEnabled(true, null),
     true,

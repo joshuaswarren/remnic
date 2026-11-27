@@ -1,18 +1,3 @@
-/**
- * Tests for the surprise-gated flush trigger wired into SmartBuffer
- * (issue #563 PR 2).
- *
- * The surprise probe is injected — these tests use a deterministic fake so
- * the buffer's decision logic is exercised without touching embeddings,
- * storage, or QMD.  Two invariants drive the suite:
- *
- *  1. When `bufferSurpriseTriggerEnabled` is `false`, the probe must not be
- *     consulted at all and the buffer must behave exactly like pre-#563
- *     code.
- *  2. When enabled, a score strictly greater than the threshold upgrades
- *     `keep_buffering` → `extract_now`.  A score at or below threshold, a
- *     `null` score, or a thrown error must fall through unchanged.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -80,9 +65,6 @@ function throwingProbe(message = "embedder offline"): RecordingProbe {
   return probe;
 }
 
-// ---------------------------------------------------------------------------
-// Flag gating
-// ---------------------------------------------------------------------------
 
 test("flag off: probe is not consulted, behavior matches pre-#563 baseline", async () => {
   const storage = new FakeStorage(emptyBuffer());
@@ -104,8 +86,6 @@ test("flag off: probe is not consulted, behavior matches pre-#563 baseline", asy
 });
 
 test("flag off: high signal still flushes immediately", async () => {
-  // Guards against a refactor that accidentally routes high-signal decisions
-  // through the surprise branch.
   const storage = new FakeStorage(emptyBuffer());
   const probe = fixedScoreProbe(0);
   const config = parseConfig({
@@ -125,7 +105,6 @@ test("flag off: high signal still flushes immediately", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Threshold behavior
 // ---------------------------------------------------------------------------
 
 test("flag on: surprise above threshold upgrades to extract_now", async () => {
@@ -149,7 +128,6 @@ test("flag on: surprise above threshold upgrades to extract_now", async () => {
 
 test("flag on: surprise at or below threshold keeps buffering", async () => {
   const storage = new FakeStorage(emptyBuffer());
-  // Exactly the threshold must NOT flush — decision is strictly greater-than.
   const probe = fixedScoreProbe(0.35);
   const config = parseConfig({
     bufferSurpriseTriggerEnabled: true,
@@ -186,7 +164,6 @@ test("flag on: low-surprise turn does not flush", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Failure isolation
 // ---------------------------------------------------------------------------
 
 test("flag on: probe rejection is swallowed and existing decision stands", async () => {
@@ -226,8 +203,6 @@ test("flag on: probe returning null is treated as 'no score, use existing trigge
 });
 
 test("flag on: surprise does not suppress existing extract_batch flushes", async () => {
-  // If the turn-count rule already says flush, surprise must not demote to
-  // keep_buffering. Documented as additive-only in buffer.ts.
   const storage = new FakeStorage(emptyBuffer());
   const probe = fixedScoreProbe(0); // would "not flush" if consulted
   const config = parseConfig({
@@ -252,12 +227,9 @@ test("flag on: surprise does not suppress existing extract_batch flushes", async
 });
 
 // ---------------------------------------------------------------------------
-// Trigger mode isolation
 // ---------------------------------------------------------------------------
 
 test("flag on: non-smart modes ignore surprise", async () => {
-  // D-MEM-style novelty only makes sense inside the smart decision tree.
-  // `every_n` / `time_based` are explicit operator choices — do not override.
   const storage = new FakeStorage(emptyBuffer());
   const probe = fixedScoreProbe(0.99);
   const config = parseConfig({
@@ -277,7 +249,6 @@ test("flag on: non-smart modes ignore surprise", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Corpus exclusion
 // ---------------------------------------------------------------------------
 
 test("flag on: probe never sees the turn being scored in the corpus", async () => {
@@ -293,12 +264,10 @@ test("flag on: probe never sees the turn being scored in the corpus", async () =
   await buffer.addTurn("sess-1", makeTurn("sess-1", "first"));
   await buffer.addTurn("sess-1", makeTurn("sess-1", "second"));
   await buffer.addTurn("sess-1", makeTurn("sess-1", "third"));
-  // prior length at third call must be 2 (first + second), not 3.
   assert.equal(probe.lastPriorLength, 2);
 });
 
 // ---------------------------------------------------------------------------
-// Probe-returned garbage handling
 // ---------------------------------------------------------------------------
 
 test("flag on: non-finite probe scores are ignored, not treated as 'always flush'", async () => {
@@ -321,8 +290,6 @@ test("flag on: non-finite probe scores are ignored, not treated as 'always flush
 
 test("flag on: probe score >1 is clamped, >threshold still flushes", async () => {
   const storage = new FakeStorage(emptyBuffer());
-  // A misbehaving probe returning 1.5 should still flush (surprise > 0.35),
-  // not crash, and not silently turn into "never flush".
   const probe = fixedScoreProbe(1.5);
   const config = parseConfig({
     bufferSurpriseTriggerEnabled: true,
@@ -340,7 +307,6 @@ test("flag on: probe score >1 is clamped, >threshold still flushes", async () =>
 });
 
 // ---------------------------------------------------------------------------
-// Defensive: non-Error throw values in the probe
 // ---------------------------------------------------------------------------
 
 async function assertProbeRejectionHandled(
@@ -361,9 +327,6 @@ async function assertProbeRejectionHandled(
   });
   const buffer = new SmartBuffer(config, storage as any, probe);
 
-  // Must NOT itself throw when logging the failure. The decision falls
-  // through to the existing triggers and the turn is still saved. The
-  // "sess-1" buffer key lives under `entries`, not the default bucket.
   const decision = await buffer.addTurn(
     "sess-1",
     makeTurn("sess-1", "turn content"),
@@ -393,13 +356,9 @@ test("flag on: non-Error probe rejections do not crash addTurn (plain object)", 
 });
 
 // ---------------------------------------------------------------------------
-// Boolean config coercion
 // ---------------------------------------------------------------------------
 
 test("config: string 'true' for bufferSurpriseTriggerEnabled enables the flag", async () => {
-  // `--config bufferSurpriseTriggerEnabled=true` passes the literal
-  // string "true" through parseConfig. The strict `=== true` form would
-  // leave the flag off and silently drop the operator's intent.
   const storage = new FakeStorage(emptyBuffer());
   const probe = fixedScoreProbe(0.9);
   const config = parseConfig({
@@ -458,14 +417,10 @@ test("config: threshold is clamped to [0, 1]", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Probe timeout
 // ---------------------------------------------------------------------------
 
 test("flag on: probe that never resolves is timed out, turn is still saved", async () => {
   const storage = new FakeStorage(emptyBuffer());
-  // A probe that resolves well after the configured timeout. We clear
-  // the underlying timer explicitly at the end of the test so node:test
-  // does not wait for it during teardown.
   let slowTimer: NodeJS.Timeout | null = null;
   const slowResolver = new Promise<number | null>((resolve) => {
     slowTimer = setTimeout(() => resolve(0.99), 5_000);
@@ -757,7 +712,6 @@ test("flag on: stale snapshot clears do not mark live turns as freshly extracted
 });
 
 // ---------------------------------------------------------------------------
-// Issue #1909 (review finding 1) — surprise promotion forces a durable flush
 // ---------------------------------------------------------------------------
 
 test("debounce on: surprise-promoted extract_now flushes the buffer before extraction", async () => {
@@ -766,8 +720,6 @@ test("debounce on: surprise-promoted extract_now flushes the buffer before extra
   const config = parseConfig({
     bufferSurpriseTriggerEnabled: true,
     bufferSurpriseThreshold: 0.35,
-    // High turn cap so the built-in trigger keeps buffering; only the surprise
-    // probe promotes. Large debounce so a scheduled save would NOT have landed.
     bufferMaxTurns: 100,
     triggerMode: "smart",
     bufferSaveDebounceMs: 10_000,

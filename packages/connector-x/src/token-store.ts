@@ -122,10 +122,6 @@ export class XTokenStore {
     return refreshed;
   }
 
-  /**
-   * Refreshes the token pair under the file lock. When another owner
-   * holds the lock, waits for it, then adopts the pair it wrote.
-   */
   async refresh(): Promise<XTokenPair> {
     const pair = await this.refreshWithLock();
     this.cached = pair;
@@ -143,7 +139,6 @@ export class XTokenStore {
       throw err;
     }
     try {
-      // Re-read under the lock: another owner may have rotated while we waited.
       const underLock = await this.readTokenFile();
       if (underLock !== null && underLock.expiresAt - EXPIRY_MARGIN_MS > this.now()) {
         return underLock;
@@ -205,13 +200,11 @@ export class XTokenStore {
     }
   }
 
-  /** Steals the lock when its mtime is older than lockStaleMs. */
   private async stealStaleLock(lockPath: string): Promise<boolean> {
     let mtimeMs: number;
     try {
       mtimeMs = (await stat(lockPath)).mtimeMs;
     } catch {
-      // Lock vanished between open(EEXIST) and stat — retry create.
       return true;
     }
     if (this.now() - mtimeMs < this.lockStaleMs) return false;
@@ -293,7 +286,6 @@ export class XTokenStore {
     return { accessToken, refreshToken, expiresAt };
   }
 
-  /** Atomic 0600 write; preserves unknown top-level fields from the prior file. */
   private async writeTokenFile(pair: XTokenPair): Promise<void> {
     let previous: Record<string, unknown> = {};
     try {

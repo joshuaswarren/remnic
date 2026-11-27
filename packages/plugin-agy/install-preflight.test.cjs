@@ -1,11 +1,5 @@
 "use strict";
 
-// Issue #3451: the agy install completed green while the bundled
-// mcp-server-stdio refused to start — a non-loopback plain-http daemon URL
-// exits 2 without REMNIC_MCP_ALLOW_CLEARTEXT_HTTP=1, so remember/recall
-// tools never registered. install-preflight.cjs must catch the same fatal
-// config conditions at install time: fleet http fails loudly and names the
-// opt-in, loopback and https pass clean.
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
@@ -14,9 +8,6 @@ const { spawnSync } = require("node:child_process");
 
 const SCRIPT = path.join(__dirname, "install-preflight.cjs");
 
-// The child sees only the daemon-url env vars under test; everything else
-// that could satisfy the credential or opt-in checks is scrubbed so a
-// developer's own shell env never leaks into the result.
 function runPreflight(env = {}) {
   const clean = { ...process.env };
   for (const key of [

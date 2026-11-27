@@ -1,18 +1,3 @@
-/**
- * Credential-channel resolution for CLI commands that talk to a remote
- * Remnic peer (#2823, #2831).
- *
- * argv tokens are visible to any process listing for the lifetime of a run —
- * hours at boot scale, exactly when operators take ps snapshots. Token-file
- * and env are the operator-safe channels; --token still works but callers
- * should warn once per invocation and never echo the value.
- *
- * Precedence (--token > --token-file > env chain) is presence-tracked: an
- * EMPTY higher-precedence source is a hard error, never a silent fall-through
- * to a lower-precedence channel. `envNames` lets each command declare its own
- * chain (converge: REMNIC_CONVERGE_PEER_TOKEN; offline: REMNIC_OFFLINE_TOKEN
- * > REMNIC_AUTH_TOKEN > ENGRAM_AUTH_TOKEN).
- */
 import * as fs from "node:fs";
 
 export interface CredentialChannelInput {

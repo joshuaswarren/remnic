@@ -1,20 +1,3 @@
-/**
- * Tests for the subprocess structural-context provider (issue #1548 Track A
- * PR 5).
- *
- * Exercises the full 4-state failure matrix mandated by the issue's PR 5
- * acceptance:
- *   (a) provider unavailable → {ok:false, code:"provider_unavailable"}
- *   (b) provider returns symbols → {ok:true, symbols:[...]}
- *   (c) provider times out     → {ok:false, code:"provider_timeout"}
- *   (d) provider returns malformed JSON → {ok:false, code:"provider_malformed"}
- *
- * The spawn boundary is injected (rule 33 — mock matches production
- * signature) so no real subprocess is ever launched. No filesystem touched
- * for real binaries; `statSync` is bypassed by pointing the command at a
- * path that exists (the repo's package.json) when an "available" probe is
- * needed, or a nonexistent path when "unavailable" is needed.
- */
 import assert from "node:assert/strict";
 import path from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -28,10 +11,6 @@ import {
 } from "./structural-subprocess-provider.js";
 import type { PluginConfig } from "../types.js";
 
-// Machine-independent fixture paths: a temp dir is created in `before`
-// with a real (executable) dummy binary and a path that never exists. This
-// keeps the probe tests CI-portable (no hard-coded checkout path) and follows
-// the synthetic-test-data-only policy.
 let REPO_ROOT = "";
 let EXISTING_FILE = "";
 let MISSING_FILE = "";
@@ -42,11 +21,8 @@ before(() => {
   tempDir = mkdtempSync(path.join(tmpdir(), "structural-provider-"));
   REPO_ROOT = tempDir;
   EXISTING_FILE = path.join(tempDir, "existing-bin");
-  // Mode 0o755 so the POSIX executable-access probe reports available.
   writeFileSync(EXISTING_FILE, "#!/bin/sh\necho ok\n", { mode: 0o755 });
   MISSING_FILE = path.join(tempDir, "definitely-missing-bin");
-  // A regular file WITHOUT the executable bit — used to assert the probe
-  // rejects non-executable files on POSIX (P2 hardening).
   NON_EXECUTABLE_FILE = path.join(tempDir, "non-executable-bin");
   writeFileSync(NON_EXECUTABLE_FILE, "not executable", { mode: 0o644 });
 });
@@ -78,7 +54,6 @@ function configWith(
   } as unknown as PluginConfig;
 }
 
-/** Build a fake spawn that responds based on the argv[0] subcommand map. */
 function fakeSpawn(
   responses: Record<string, () => { stdout: string; stderr: string }>,
 ): StructuralSpawnFn & { calls: Array<{ argv: readonly string[] }> } {
@@ -95,9 +70,6 @@ function fakeSpawn(
   return Object.assign(fn, { calls });
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Probe — cached once per instance (rule 11)
-// ──────────────────────────────────────────────────────────────────────────
 
 test("probe: missing binary → unavailable, detail names the path", async () => {
   const provider = createSubprocessStructuralProvider({ command: MISSING_FILE });
@@ -137,8 +109,6 @@ execCheckTest("probe: non-executable regular file → unavailable (P2 hardening,
 });
 
 test("probe: tilde-prefixed command is expanded (rule 17)", async () => {
-  // A tilde path pointing at the existing fixture must resolve after
-  // expansion. We point HOME at the temp dir so ~/existing-bin resolves.
   const previousHome = process.env.HOME;
   process.env.HOME = tempDir;
   try {
@@ -151,7 +121,6 @@ test("probe: tilde-prefixed command is expanded (rule 17)", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// symbolsForDiff — 4-state matrix (issue PR 5 acceptance)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("symbolsForDiff (a): unavailable binary → provider_unavailable, never throws", async () => {
@@ -334,7 +303,6 @@ test("symbolsForDiff: extra args are appended after the payload", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// architectureHints (optional) — same matrix, lighter
 // ──────────────────────────────────────────────────────────────────────────
 
 test("architectureHints: returns hints array on success", async () => {
@@ -369,7 +337,6 @@ test("architectureHints: malformed (non-array) → provider_malformed", async ()
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// close() resets the probe cache
 // ──────────────────────────────────────────────────────────────────────────
 
 test("close: resets probe cache so the next probe re-checks", async () => {
@@ -382,7 +349,6 @@ test("close: resets probe cache so the next probe re-checks", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// probeStructuralProviderForDoctor (config → live probe)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("doctor probe: inactive config returns inactive status, no probe", async () => {

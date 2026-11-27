@@ -1,17 +1,3 @@
-/**
- * MemCorrect corpus schema validation (issue #1584 PR 1).
- *
- * The issue specifies that the generated corpus must validate against a
- * schema and contain no real-world PII by construction. Rather than pull
- * `zod` into `@remnic/bench` (which has no schema-validation dependency
- * today), this module implements an equivalent explicit validator: it
- * checks the structural shape, the cross-field invariants, and that every
- * name/subject/value token is drawn from the generator's synthetic pools.
- *
- * The validator is the contract — anything it accepts is a legal corpus,
- * and CI asserts the corpus hash is stable, so a drift in shape is caught
- * at the determinism check.
- */
 
 import {
   PERSONAS,
@@ -136,13 +122,6 @@ function isIso(value: unknown): boolean {
   return Number.isFinite(ms);
 }
 
-/**
- * Validate one scenario's value-level invariants (non-empty fields, enum
- * membership, cross-field requirements like scoped-requires-twin). The
- * scenario is already typed at the corpus boundary; this enforces the
- * constraints the type system cannot (empty strings, enum values, shape
- * coupling). Returns a list of errors (empty when well-formed).
- */
 function validateScenario(scenario: MemCorrectScenario): CorpusValidationError[] {
   const errors: CorpusValidationError[] = [];
   const id = scenario.id;
@@ -253,7 +232,6 @@ export function validateCorpus(corpus: MemCorrectCorpus): CorpusValidationResult
     }
     seenIds.add(scenario.id);
     errors.push(...validateScenario(scenario));
-    // no-PII: every fact token must originate from a synthetic pool.
     const factTokens = [
       ...(scenario.correction?.retiredContent ?? []),
       ...(scenario.correction?.correctedContent ?? []),
@@ -272,5 +250,4 @@ export function validateCorpus(corpus: MemCorrectCorpus): CorpusValidationResult
   return { ok: errors.length === 0, errors };
 }
 
-/** Re-export the phase allowlist for downstream schema consumers. */
 export const MEMCORRECT_PROBE_PHASES = ALLOWED_PHASES;

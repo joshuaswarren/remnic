@@ -226,14 +226,7 @@ export class SessionContextCoordinator {
         : this.deps.resolvePrincipal(sessionKey);
     const base = defaultNamespaceForPrincipal(principal, this.deps.config);
     const overlaid = this.deps.applyCodingNamespaceOverlay(sessionKey, base);
-    // No overlay → collapse to the default store so the LCM key is the raw
-    // sessionKey, exactly what an unqualified observe archived under.
     if (overlaid === base) return this.deps.config.defaultNamespace;
-    // Overlay applied. Only honour it when the principal SELF base is in the
-    // readable recall set (same gate the recall namespace set uses to
-    // substitute the overlay). Otherwise the overlay rows are unauthorized for
-    // this reader — fall back to the default store so the LCM read matches
-    // what QMD/file recall would surface.
     const selfReadableInRecall = recallNamespacesForPrincipal(
       principal,
       this.deps.config,
@@ -252,10 +245,6 @@ export class SessionContextCoordinator {
    */
   setCodingContextForSession(sessionKey: string, codingContext: CodingContext | null, owner?: string): void {
     if (typeof sessionKey !== "string" || sessionKey.length === 0) return;
-    // Defensive init — `Object.create(Orchestrator.prototype)` stubs in
-    // legacy tests skip class-field initializers. The init runs on the
-    // ORCHESTRATOR via deps (PR #1802 review: writing here would create
-    // the map on the coordinator while reads keep going through deps).
     this.deps.ensureSessionBindingMaps();
     if (codingContext === null) {
       this.deps._codingContextBySession.delete(sessionKey);
@@ -335,16 +324,11 @@ export class SessionContextCoordinator {
    */
   setPeerIdForSession(sessionKey: string, peerId: string | null): void {
     if (typeof sessionKey !== "string" || sessionKey.length === 0) return;
-    // Defensive init — mirrors setCodingContextForSession (rule 16);
-    // runs on the orchestrator via deps (PR #1802 review).
     this.deps.ensureSessionBindingMaps();
     if (peerId === null) {
       this.deps._peerIdBySession.delete(sessionKey);
       return;
     }
-    // Basic pattern guard — full validation lives in peers/storage.ts.
-    // Invalid input is fail-closed: clear the existing mapping so stale
-    // peer context can't bleed in after a bad metadata update (Codex P1).
     if (
       typeof peerId !== "string" ||
       peerId.length === 0 ||
@@ -420,19 +404,6 @@ export class SessionContextCoordinator {
     sessionKey: string,
     options: SessionFlushOptions,
   ): Promise<void> {
-    // Force any pending debounced buffer save to land durably BEFORE we read
-    // and (via clearBufferAfterExtraction below) clear turns (issue #1909, PR
-    // #2016). In steady-state buffering a `keep_buffering` turn only SCHEDULES a
-    // trailing-edge save (see SmartBuffer.scheduleSave), so the newest turns
-    // live only in memory behind an unref'd timer. This lifecycle drain
-    // (before_reset / session_end / explicit flush) queues extraction with
-    // clearBufferAfterExtraction; if that extraction fails or times out and the
-    // host then exits, the debounce timer never fires and those turns are lost.
-    // Flushing first makes the in-memory turns durable, so a failed or aborted
-    // extraction leaves them on disk for re-extraction on next startup.
-    // Durability-preserving AND fail-closed: pass throwOnFailure so a failed
-    // durable save stops this lifecycle drain BEFORE any extraction runs
-    // flushPendingSave retains pending state and re-arms a retry on failure.
     if (typeof this.deps.buffer.flushPendingSave === "function") {
       await awaitSessionFlushPhase(
         () => this.deps.buffer.flushPendingSave!({ throwOnFailure: true }),
@@ -487,11 +458,6 @@ export class SessionContextCoordinator {
       ownershipEnforced &&
       ownerPrincipal !== undefined &&
       (resolvedSessionPrincipal === undefined || resolvedSessionPrincipal === "default");
-    // #3251: the flush's effective write namespace. An explicit override pins
-    // it; otherwise it is the session principal's default store. Only PINNED
-    // captures are namespace-compared — legacy unpinned turns keep their
-    // prior semantics (any flush of their session drains them), while a
-    // pinned capture is never drained under a different namespace.
     const flushNamespace =
       options.writeNamespaceOverride !== undefined
         ? options.writeNamespaceOverride
@@ -507,8 +473,6 @@ export class SessionContextCoordinator {
       ) {
         return false;
       }
-      // Existing profile pins require the same profile and project binding.
-      // Accepted no-plan captures stay unprofiled within the matching namespace.
       const flushPlanIdentity = scopeProfilePlanIdentity(options.scopeProfileWritePlan);
       if (flushPlanIdentity !== "" && hasPinnedCaptureScope(turn)) {
         if (
@@ -517,8 +481,6 @@ export class SessionContextCoordinator {
         ) {
           return false;
         }
-        // Compare bindings only when the ORIGINAL capture is context-bound —
-        // an unbound capture must not be orphaned by a project attached later.
         if (
           options.codingContext &&
           turn.codingContext &&
@@ -552,13 +514,9 @@ export class SessionContextCoordinator {
     }
     for (const bufferKey of bufferKeys) {
       const turns = this.deps.buffer.getTurns(bufferKey);
-      // #3251: EVERY flush filters — unqualified lifecycle drains must not
-      // clear another namespace's pinned capture; single-store mode no-ops
-      // the filter (namespacesEnabled gate inside belongsToSession).
       const turnsForSession = turns.filter(belongsToSession);
       if (turnsForSession.length === 0) continue;
       const scopeGroups = groupTurnsByExtractionScope(turnsForSession);
-      // Filtered or grouped slices need identity clearing rather than prefix clearing.
       const needsIdentityClear =
         turnsForSession.length < turns.length || scopeGroups.length > 1;
       const namespacesOn = this.deps.config
@@ -569,8 +527,6 @@ export class SessionContextCoordinator {
           group.writeNamespaceOverride !== undefined ||
           group.principalOverride !== undefined ||
           group.scopeProfileWritePlan !== undefined;
-        // Preserve groups captured under another profile or project binding;
-        // the binding compares only when the ORIGINAL group is context-bound.
         if (
           group.scopeProfileWritePlan &&
           options.scopeProfileWritePlan &&
@@ -585,7 +541,6 @@ export class SessionContextCoordinator {
         ) {
           continue;
         }
-        // Force-flush must reject preserved work before retained-turn cleanup can run.
         if (
           groupPinned &&
           !namespacesOn &&
@@ -650,8 +605,6 @@ export class SessionContextCoordinator {
         typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.trim().length > 0
           ? options.writeNamespaceOverride.trim()
           : undefined;
-      // Same precedence as the extraction write path: explicit override →
-      // scope-profile plan → principal + coding overlay.
       const namespace =
         explicitNamespace ??
         options.scopeProfileWritePlan?.writeNamespace ??
@@ -684,11 +637,6 @@ export class SessionContextCoordinator {
     if (this.deps._passiveCorrectionService) return this.deps._passiveCorrectionService;
     this.deps._passiveCorrectionService = createCorrectionService({
       orchestrator: this.deps.orchestratorSelf,
-      // Session-scoped write ACL (review: "passive capture bypasses write
-      // ACL"). A correction detected in session S plans only against S readable
-      // namespaces and applies only to writable ones (rule 42) — passive
-      // capture never becomes a cross-tenant mutation vector. Mirrors the
-      // access-service createCorrectionService wiring rather than bypassing it.
       resolveAuthorizedNamespace: async (req) => {
         const principal = req.principal || resolvePrincipal(req.sessionKey, this.deps.config);
         const ns = req.namespace ?? defaultNamespaceForPrincipal(principal, this.deps.config);

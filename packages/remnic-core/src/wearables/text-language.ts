@@ -104,7 +104,6 @@ function boundaryLookaheadFor(edge: BoundaryScript): string {
   return `(?![${boundaryCharacterClass(edge)}])`;
 }
 
-/** Phrase edge scripts that use conventional word guards. */
 const PREFIXABLE_EDGE_CHAR =
   /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Hangul}\p{N}]/u;
 const SUFFIXABLE_EDGE_CHAR =
@@ -184,7 +183,6 @@ export function buildPhraseMatcher(
   const seen = new Set<string>();
   for (const raw of phrases) {
     if (typeof raw !== "string") continue;
-    // Folded on both sides (the tester folds its input too): an ASR that
     // emits decomposed or Turkic-uppercase text would otherwise never match
     // its marker, and the span would be persisted (issue #2196).
     const phrase = foldForMatching(raw.trim());

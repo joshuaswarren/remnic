@@ -1,7 +1,6 @@
 // Benchmark dataset store: downloaded-content markers and the read-side
 // discovery seam shared by `remnic bench datasets status`,
 // `remnic bench datasets download`, and `remnic bench run` auto-selection.
-// Extracted from the CLI entrypoint (issue #1995 line ratchet, #2867).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -83,10 +82,6 @@ type DownloadedDatasetMarker = {
 const DOWNLOADED_DATASET_MARKERS: Record<string, DownloadedDatasetMarker> = {
   "ama-bench": { anyOf: ["open_end_qa_set.jsonl"] },
   longmemeval: {
-    // Keep this list in lock-step with `LONG_MEM_EVAL_DATASET_FILENAMES`
-    // in packages/bench/src/benchmarks/published/dataset-loader.ts so
-    // `datasets status` never disagrees with the runner about what
-    // counts as "downloaded".
     anyOf: [
       "longmemeval_s_cleaned.json",
       "longmemeval_s.json",
@@ -375,7 +370,6 @@ export function isDatasetDownloaded(datasetPath: string, benchmarkId: string): b
   }
   const marker = DOWNLOADED_DATASET_MARKERS[benchmarkId];
   if (!marker) {
-    // Unknown benchmark: fall back to "directory has at least one file".
     try {
       return fs.readdirSync(datasetPath).length > 0;
     } catch {
@@ -417,16 +411,10 @@ export function isDatasetDownloaded(datasetPath: string, benchmarkId: string): b
   return false;
 }
 
-// After #2798 the canonical root is ~/.remnic/bench/datasets in both
-// repo checkouts and published installs. The repo-local evals/datasets
-// tree is reserved for read-only fallback discovery (#2867).
 export function resolveRepoDatasetRoot(): string {
   return path.join(resolveHomeDir(), ".remnic", "bench", "datasets");
 }
 
-// Pre-#2798 repo-local dataset store. After #2798 the canonical root is
-// ~/.remnic/bench/datasets everywhere; datasets already downloaded to the
-// legacy location stay readable until the operator re-downloads (#2867).
 const LEGACY_EVALS_DATASET_ROOT = path.join(CLI_REPO_ROOT, "evals", "datasets");
 
 type BenchDatasetSource = "canonical" | "legacy-evals";
@@ -438,11 +426,6 @@ interface DiscoveredBenchDataset {
 
 const warnedLegacyDatasetBenchmarkIds = new Set<string>();
 
-// Containment guard for legacy discovery: the resolved (real) path of
-// `candidate` must be a strict subdirectory of the resolved `root`.
-// Rejects `..` traversal, absolute-path smuggling, a symlink anywhere in
-// the unresolved root/parent chain (evals -> outside/datasets), and a
-// candidate that realpath-escapes the root.
 function pathHasSymlinkComponent(target: string): boolean {
   let current = path.resolve(target);
   // Bound the walk to the dataset root, its parent (`evals`), and the
@@ -504,9 +487,6 @@ function datasetTreeHasSymlink(root: string): boolean {
 }
 
 // Single seam for read-side dataset discovery (#2867): canonical root wins;
-// a dataset left at the legacy evals/datasets/<benchmark> location is used
-// read-only with a once-per-process migration hint. Never moves, links, or
-// otherwise mutates either tree. `roots` is injectable for tests only.
 export function discoverBenchDatasetDir(
   benchmarkId: string,
   roots?: { canonicalRoot?: string; legacyRoot?: string },
@@ -519,7 +499,6 @@ export function discoverBenchDatasetDir(
 
   const legacyRoot = roots?.legacyRoot ?? LEGACY_EVALS_DATASET_ROOT;
   const legacyDir = path.join(legacyRoot, benchmarkId);
-  // Identical roots have nothing to fall back to (already probed above).
   if (legacyDir === canonicalDir) {
     return undefined;
   }
@@ -533,8 +512,6 @@ export function discoverBenchDatasetDir(
 
   if (!warnedLegacyDatasetBenchmarkIds.has(benchmarkId)) {
     warnedLegacyDatasetBenchmarkIds.add(benchmarkId);
-    // Keep real filesystem paths out of the hint: name the command and the
-    // path category, not the host-resolved locations.
     console.error(
       `Warning: benchmark "${benchmarkId}" dataset found at the legacy location ` +
         `"evals/datasets/${benchmarkId}" and will be used read-only. Re-download it to the ` +
@@ -549,7 +526,6 @@ export function listDownloadableBenchmarks(): string[] {
   return [...DOWNLOADABLE_BENCHMARK_DATASETS];
 }
 
-// Test seam: reset the once-per-process legacy-location warning state.
 export function resetLegacyDatasetWarningState(): void {
   warnedLegacyDatasetBenchmarkIds.clear();
 }

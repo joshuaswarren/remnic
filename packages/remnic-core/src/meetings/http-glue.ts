@@ -1,15 +1,3 @@
-/**
- * Meetings HTTP route glue (issue #1900) — the route bodies extracted from
- * access-http.ts so the surface file stays under its structural ceiling. The
- * thin inline hooks in access-http.ts keep the pathname/method match + the
- * `enforceTokenOp("meetings_*")` boundary-dispatch marker (required by the
- * surface-catalog fitness test) and delegate the body here.
- *
- * `MeetingsInputError` (invalid dates/ids) maps to a 400; everything else
- * rethrows so backend faults keep flowing to the global 500 handler. Behaviour,
- * validation, and `meetings.enabled` gating live in MeetingsService — these
- * functions only translate transport shape.
- */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { EngramAccessInputError, type WearablesMeetingsScope } from "../access-service.js";
@@ -18,7 +6,6 @@ import { MeetingsInputError } from "./errors.js";
 type RespondJson = (res: ServerResponse, status: number, payload: unknown) => void;
 type ReadJsonBody = (req: IncomingMessage) => Promise<unknown>;
 
-/** Minimal meetings surface the HTTP glue drives (satisfied by EngramAccessService). */
 export interface MeetingsHttpService {
   meetingsList(date?: string, scope?: WearablesMeetingsScope): Promise<unknown>;
   meetingsGet(id: string, scope?: WearablesMeetingsScope): Promise<unknown>;
@@ -33,12 +20,6 @@ function respondMeetingsError(respondJson: RespondJson, res: ServerResponse, err
   return false;
 }
 
-/**
- * Decode a meeting `:id` URL path segment, mapping malformed percent-encoded
- * input (e.g. `%E0%A4%A`) to a 400 `MeetingsInputError` rather than letting the
- * `URIError` bubble up to the global 500 handler — mirrors the access-http
- * `decode*Segment` helpers.
- */
 function decodeMeetingIdSegment(raw: string): string {
   try {
     return decodeURIComponent(raw);
@@ -106,10 +87,6 @@ export async function respondMeetingsBuild(
   if (date === undefined) {
     throw new EngramAccessInputError("date is required (YYYY-MM-DD)");
   }
-  // Build persists/deletes records, writes memories, and reindexes — a mutating
-  // route, so it carries the same per-principal write quota as every other
-  // write (capsule import/export, admin promote). Enforce before the write,
-  // account the hit after it succeeds (issue #1937).
   quota.enforceQuota();
   const scope = scopeFor?.(
     typeof body.namespace === "string" ? body.namespace : undefined,

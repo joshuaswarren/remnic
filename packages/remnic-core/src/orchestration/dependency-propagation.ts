@@ -94,8 +94,6 @@ export function findDependents(
   const ids = new Set<string>();
   const byId = new Map(memories.map((memory) => [memory.frontmatter.id, memory]));
 
-  // Forward: supports and references edges on the dying memory point to
-  // dependents that lose evidence or a referenced anchor.
   for (const link of oldMemory.frontmatter.links ?? []) {
     if (link.linkType !== "supports" && link.linkType !== "references") continue;
     if (!allowed.has(link.linkType)) continue;
@@ -203,9 +201,6 @@ export async function propagateInvalidation(
     logResult(event, result);
     return result;
   }
-  // Cold-tier active dependents are not scanned in v1: the supersede and
-  // frontmatter write paths operate on hot storage. Cold discovery without
-  // cold write support would surface dependents it cannot act on.
 
   const discovered = findDependents(
     memories,

@@ -23,9 +23,7 @@ import { checkMergedContent } from "./merge-content.js";
 import type { SemanticDedupHit, SemanticDedupLookup } from "./semantic.js";
 import { normalizeConnectorScope } from "./connector-scope.js";
 
-// ── Public types ──────────────────────────────────────────────────────────────
 
-/** An existing memory considered as a merge target. */
 export interface MergeCandidate {
   memoryId: string;
   content: string;
@@ -59,7 +57,6 @@ export type MergeCandidateResolver = (
   memoryId: string,
 ) => Promise<{ content: string; category: string; status: string } | null>;
 
-/** Why a candidate fell through to the unchanged create path. */
 export type MergeCreateReason =
   | "disabled"
   | "no_candidates"
@@ -75,13 +72,6 @@ export type MergeDecision =
       action: "merge";
       targetId: string;
       mergedContent: string;
-      /**
-       * The target body the judge actually merged. The persist side must
-       * compare it against the target it is about to write and fall back to
-       * create when it differs: in a multi-writer deployment another
-       * extraction can update the target between this decision and the write,
-       * and `mergedContent` was computed from the older body.
-       */
       targetContent: string;
       reason: "judge_merge";
     };
@@ -106,9 +96,7 @@ export interface DecideSemanticMergeOptions {
   sourceConnector?: string;
 }
 
-// ── Decision function ─────────────────────────────────────────────────────────
 
-/** Total order: similarity desc, then memoryId asc (checklist #12). */
 function compareMergeCandidates(a: MergeCandidate, b: MergeCandidate): number {
   if (a.similarity !== b.similarity) return b.similarity - a.similarity;
   return a.memoryId < b.memoryId ? -1 : a.memoryId > b.memoryId ? 1 : 0;
@@ -128,7 +116,6 @@ export async function decideSemanticMerge(
   const trimmed = typeof options.content === "string" ? options.content.trim() : "";
   if (!trimmed) return { action: "create", reason: "no_candidates" };
 
-  // Lookup throws = backend down (distinct from an empty index, #22).
   // Round N+17 (A): the fetch deliberately OVERSHOOTS maxCandidates. The
   // eligibility predicates below (band, connector scope, category, active
   // status) run after the lookup, so fetching exactly maxCandidates let
@@ -206,7 +193,6 @@ export async function decideSemanticMerge(
   if (verdict.decision === "create") return { action: "create", reason: "judge_create" };
   if (verdict.decision === "contradicts") return { action: "create", reason: "judge_contradicts" };
 
-  // Hard post-validation: never trust the model to echo ids.
   const target =
     typeof verdict.targetId === "string"
       ? limited.find((c) => c.memoryId === verdict.targetId)
@@ -227,7 +213,6 @@ export async function decideSemanticMerge(
   };
 }
 
-// ── Config parsing ────────────────────────────────────────────────────────────
 
 export const DEFAULT_SEMANTIC_MERGE_CATEGORIES = [
   "fact",
@@ -251,13 +236,6 @@ export const MERGEABLE_MEMORY_CATEGORIES: readonly string[] = MEMORY_CATEGORIES.
 export const DEFAULT_SEMANTIC_MERGE_MIN = 0.8;
 export const DEFAULT_SEMANTIC_MERGE_CANDIDATES = 3;
 
-/**
- * Round N+17 (A): the neighbor fetch overshoots `maxCandidates` by this
- * factor so eligibility filtering happens BEFORE truncation. Bounded
- * ceiling: a corpus holding more than this many consecutive ineligible
- * neighbors above the valid target still crowds it out; raise only with
- * evidence of that corpus shape.
- */
 const CANDIDATE_OVERFETCH_FACTOR = 4;
 
 function describeValue(value: unknown): string {

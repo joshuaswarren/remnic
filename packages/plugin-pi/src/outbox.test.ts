@@ -39,8 +39,6 @@ test("enqueue persists entries durably and preserves arrival order", async () =>
   assert.equal(await outbox.size(), 3);
   const raw = fs.readFileSync(outbox.filePath, "utf8");
   const lines = raw.trim().split("\n");
-  // SAFETY: each line was serialized by enqueue from a known entry shape; the
-  // assertions below re-verify exactly the fields they read.
   const parsedLines = lines.map(
     (line) => JSON.parse(line) as { id: string; queuedAt: string; messages: ObserveMessage[] }
   );
@@ -48,7 +46,6 @@ test("enqueue persists entries durably and preserves arrival order", async () =>
     parsedLines.map((parsed) => parsed.messages[0].content),
     ["first", "second", "third"]
   );
-  // Every entry carries a stable identity for idempotent replay.
   for (const parsed of parsedLines) {
     assert.ok(parsed.id && parsed.id.length > 0);
     assert.ok(!Number.isNaN(Date.parse(parsed.queuedAt)));
@@ -61,7 +58,6 @@ test("outbox survives a process restart: entries reload and drain in order", asy
   await before.enqueue(entryInput("alpha"));
   await before.enqueue(entryInput("beta"));
 
-  // Simulated restart: a brand-new instance over the same file.
   const after = new ObserveOutbox(filePath);
   const delivered: string[] = [];
   const result = await after.drain(async (entry) => {
@@ -190,7 +186,6 @@ test("drain retries capacity refusals honoring Retry-After with capped, jittered
 
   assert.equal(result.delivered, 1);
   assert.deepEqual(delays, [5000, 5000]);
-  // Retry-After is capped at maxRetryAfterMs even when the server asks for more.
   const outbox2 = new ObserveOutbox(tmpOutboxPath("retry-capped"));
   await outbox2.enqueue(entryInput("queued"));
   const cappedDelays: number[] = [];
@@ -315,7 +310,6 @@ test("classifyObserveFailure separates retryable backpressure from permanent rej
     classifyObserveFailure(new RemnicHttpError(500, "storage target missing", "storage_target_missing")),
     "retry-ambiguous"
   );
-  // Unknown failures are ambiguous: bounded retry with a stable idempotency key is safe.
   assert.equal(classifyObserveFailure(new Error("something unexpected")), "retry-ambiguous");
 });
 
@@ -443,7 +437,6 @@ function readContents(file: string): string[] {
     .readFileSync(file, "utf8")
     .split("\n")
     .filter((line) => line.trim().length > 0);
-  // SAFETY: every line was written by ObserveOutbox in this test and is read back only for messages[0].content.
   const entries = lines.map((line) => JSON.parse(line) as ObserveOutboxEntry);
   return entries.map((entry) => entry.messages[0].content);
 }
@@ -490,7 +483,6 @@ test("a drain removes only the entry it delivered and keeps what another process
   const procB = new ObserveOutbox(file);
   await procA.enqueue(entryInput("first"));
   await procA.drain(async () => {
-    // Another pi process queues a capture while A is mid-send; A then gets rate limited.
     await procB.enqueue(entryInput("queued-by-B"));
     throw new RemnicHttpError(429, "write_rate_limited", "write_rate_limited");
   }, { maxAttempts: 1, jitterRatio: 0, sleep: async () => undefined });
@@ -690,8 +682,6 @@ test("read-only views of an unreadable outbox keep the last known entries instea
   assert.equal(await outbox.size(), 1);
   fs.chmodSync(file, 0o000);
   try {
-    // Force a re-read by changing the signature through another writer is not possible while the
-    // file is unreadable, so the cached view is what the live hook sees.
     assert.equal(await outbox.size(), 1);
     assert.deepEqual([...(await outbox.pendingHashes())], ["hash-known"]);
   } finally {
@@ -721,7 +711,6 @@ test("#3381: queued captures stay private: file 0600 and a created directory 070
   const outbox = new ObserveOutbox(nested);
   await outbox.enqueue(entryInput("secret"));
 
-  // Entries carry rawContent of tool results - private to the owner's account.
   assert.equal(fs.statSync(nested).mode & 0o777, 0o600, "the queue file must not be group/world readable");
   assert.equal(fs.statSync(path.dirname(nested)).mode & 0o777, 0o700, "a directory the outbox creates is private");
 });
@@ -734,8 +723,6 @@ test("#3381: a looser file is tightened on write; a pre-existing directory keeps
   await outbox.enqueue(entryInput("new"));
 
   assert.equal(fs.statSync(filePath).mode & 0o777, 0o600, "the rewritten queue file is owner-only");
-  // observeOutboxPath may point into a shared directory; the outbox must not
-  // chmod a parent it did not create (Codex P2 on #3503).
   assert.equal(fs.statSync(path.dirname(filePath)).mode & 0o777, 0o755, "a directory the outbox did not create is left alone");
 });
 
@@ -758,8 +745,6 @@ test("repeated 500 responses never discard a queued capture", async () => {
 });
 
 test("a drain only sends entries queued for its own daemon and leaves the rest for their destination", async () => {
-  // #3381 item 6: the outbox file is shared per machine; a pane repointed at a
-  // second daemon must not replay the first daemon's conversations to it.
   const filePath = tmpOutboxPath("destination");
   const outbox = new ObserveOutbox(filePath);
   await outbox.enqueue({ ...entryInput("foreign-capture"), destination: "http://daemon-a:4318" });
@@ -781,8 +766,6 @@ test("a drain only sends entries queued for its own daemon and leaves the rest f
 });
 
 test("a drain with no destination delivers every queued entry, including bound ones", async () => {
-  // The DrainOptions contract: omitting destination makes every entry
-  // eligible, same as before the field existed (coderabbit on #3504).
   const filePath = tmpOutboxPath("destination-omitted");
   const outbox = new ObserveOutbox(filePath);
   await outbox.enqueue({ ...entryInput("bound-capture"), destination: "http://daemon-a:4318" });
@@ -798,9 +781,6 @@ test("a drain with no destination delivers every queued entry, including bound o
 });
 
 test("enqueue bounds a large rawContent so the durable replay stays small but keeps its identity", async () => {
-  // #3381 item 11: rawContent is the original Pi message and can be megabytes;
-  // a 200-entry bound is not a byte bound, so the persisted representation is
-  // bounded while the replay identity (hashes + nonce) survives.
   const filePath = tmpOutboxPath("bounded");
   const outbox = new ObserveOutbox(filePath);
   const notifications: string[] = [];
@@ -814,7 +794,6 @@ test("enqueue bounds a large rawContent so the durable replay stays small but ke
     },
     (message) => notifications.push(message)
   );
-  // SAFETY: this test's drain wrote the entry itself, so the file holds { messages, messageHashes }; the assertions below verify the shape.
   const persisted = JSON.parse(fs.readFileSync(filePath, "utf8").trim()) as { messages: ObserveMessage[]; messageHashes: string[] };
   assert.equal(persisted.messageHashes[0], "hash-big", "the replay identity is preserved");
   assert.equal(persisted.messages[0].content, "a turn with a huge tool result", "the rendered text still replays");
@@ -823,8 +802,6 @@ test("enqueue bounds a large rawContent so the durable replay stays small but ke
 });
 
 test("pendingHashes only suppresses captures a drain on this destination would deliver", async () => {
-  // #3504 CodeRabbit: switching daemon URLs with a foreign entry queued must not
-  // suppress the new live capture — that entry is never delivered to this daemon.
   const outbox = new ObserveOutbox(tmpOutboxPath("pending-dest"));
   await outbox.enqueue({ ...entryInput("foreign-capture"), destination: "http://daemon-a:4318" });
   await outbox.enqueue({ ...entryInput("own-capture"), destination: "http://daemon-b:4318" });

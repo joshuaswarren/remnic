@@ -1,55 +1,3 @@
-/**
- * @remnic/core — Notion live connector (issue #683 PR 3/N)
- *
- * Concrete `LiveConnector` implementation that incrementally imports text
- * content from Notion database pages into Remnic. Built on top of the
- * framework shipped in PR 1/N (`framework.ts` / `registry.ts` /
- * `state-store.ts`) and mirrors the structure of the Google Drive connector
- * (PR 2/N).
- *
- * Design notes:
- *
- *   - **Auth.** Integration token from config (`connectors.notion.token`).
- *     The token is accepted at config-parse time but never logged. Operators
- *     must populate it from a secret store; per the repo-wide privacy policy
- *     no real value may appear in tests or comments.
- *
- *   - **Scope.** `databaseIds` in config limits the import to the listed
- *     Notion databases. The connector queries each database for pages whose
- *     `last_edited_time` is after a per-page high-water mark stored in the
- *     cursor. When `databaseIds` is empty the connector does nothing (safe
- *     default — no credentials → no import).
- *
- *   - **Cursor semantics.** The cursor is a JSON string encoding a
- *     `NotionCursorPayload`: a map from page-id to last-seen
- *     `last_edited_time` ISO string. On the first sync (cursor=null) we
- *     seed the payload from the current state of each database WITHOUT
- *     importing any content, so "first install" doesn't re-ingest history.
- *     Each subsequent pass only imports pages edited after the stored
- *     watermark.
- *
- *   - **Block extraction.** Page content is fetched via
- *     `blocks.children.list` recursively up to `MAX_BLOCK_DEPTH` levels.
- *     Block text is extracted to Markdown-ish plain text (no raw JSON blobs).
- *     Only text-bearing block types are included; unsupported types are
- *     silently skipped.
- *
- *   - **Raw `fetch`.** We call the Notion REST API directly rather than using
- *     `@notionhq/client` — there is no optional-peer-dep machinery needed and
- *     the API surface we consume is tiny. The `fetchFn` argument is the test
- *     hook allowing stubbing without network access.
- *
- *   - **Idempotency.** `ConnectorDocument.source.externalId` is the page id
- *     and `externalRevision` is `last_edited_time`, so downstream dedup can
- *     recognise repeat fetches if the cursor is rewound.
- *
- *   - **Privacy.** No page content is ever logged. Database ids and counts
- *     may be logged. The integration token is never exposed in logs, state,
- *     or error messages.
- *
- *   - **Read-only.** This connector only reads. It never modifies pages,
- *     databases, or any other Notion resource.
- */
 
 import type {
   ConnectorConfig,
@@ -62,9 +10,6 @@ import type {
 import { isTransientHttpError } from "./transient-errors.js";
 import { throwIfAborted } from "../../abort-error.js";
 
-// ---------------------------------------------------------------------------
-// Public constants
-// ---------------------------------------------------------------------------
 
 /** Stable connector id. Lives in the registry under this exact string. */
 export const NOTION_CONNECTOR_ID = "notion";
@@ -75,43 +20,20 @@ export const NOTION_CONNECTOR_ID = "notion";
  */
 export const NOTION_CURSOR_KIND = "notionWatermark";
 
-/**
- * Default poll interval (5 minutes). Notion's API has no push capability;
- * polling sub-minute wastes quota for a personal memory layer.
- */
 export const NOTION_DEFAULT_POLL_INTERVAL_MS = 5 * 60 * 1000;
 
 /** Hard cap on poll interval: 24 hours. */
 const NOTION_MAX_POLL_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Hard cap on individual page text size. Notion pages can be very long;
- * we skip rather than blow the importer's heap.
- */
 const MAX_TEXT_BYTES = 5 * 1024 * 1024;
 
-/**
- * Maximum recursion depth when fetching block children. Notion pages can
- * nest blocks (e.g. toggle → bulleted list → quote). We cap depth so a
- * pathologically deep page doesn't exhaust the call stack or quota.
- */
 const MAX_BLOCK_DEPTH = 5;
 
-/**
- * Maximum number of pages we import in a single `syncIncremental` pass
- * across all databases. Prevents one runaway pass from monopolising the
- * scheduler.
- */
 const MAX_PAGES_PER_PASS = 200;
 
-/**
- * Notion integration tokens always start with `secret_`. We validate this
- * prefix so a typo (e.g. pasting an OAuth token instead) is caught early.
- */
 const NOTION_TOKEN_PREFIX = "secret_";
 
 // ---------------------------------------------------------------------------
-// Config types
 // ---------------------------------------------------------------------------
 
 /**
@@ -140,7 +62,6 @@ interface NotionCursorPayload {
 }
 
 // ---------------------------------------------------------------------------
-// Notion API response shapes (only the fields we consume)
 // ---------------------------------------------------------------------------
 
 /** Minimal Notion page shape from `databases/{id}/query`. */
@@ -162,7 +83,6 @@ export interface NotionBlock {
   readonly id: string;
   readonly type: string;
   readonly has_children?: boolean;
-  // We index by `type` to extract text.
   readonly [key: string]: unknown;
 }
 
@@ -175,7 +95,6 @@ interface NotionApiError {
 }
 
 // ---------------------------------------------------------------------------
-// Fetch abstraction (test hook)
 // ---------------------------------------------------------------------------
 
 /**
@@ -197,7 +116,6 @@ export type NotionFetchFn = (
 }>;
 
 // ---------------------------------------------------------------------------
-// Config validation
 // ---------------------------------------------------------------------------
 
 /**
@@ -212,7 +130,6 @@ export function validateNotionConfig(raw: unknown): NotionConnectorConfig {
   }
   const r = raw as Record<string, unknown>;
 
-  // token
   if (typeof r.token !== "string") {
     throw new TypeError(`notion: token must be a string (got ${typeof r.token})`);
   }
@@ -226,7 +143,6 @@ export function validateNotionConfig(raw: unknown): NotionConnectorConfig {
     );
   }
 
-  // pollIntervalMs
   let pollIntervalMs: number;
   if (r.pollIntervalMs === undefined) {
     pollIntervalMs = NOTION_DEFAULT_POLL_INTERVAL_MS;
@@ -246,7 +162,6 @@ export function validateNotionConfig(raw: unknown): NotionConnectorConfig {
     pollIntervalMs = r.pollIntervalMs;
   }
 
-  // databaseIds
   let databaseIds: readonly string[] = [];
   if (r.databaseIds !== undefined) {
     if (!Array.isArray(r.databaseIds)) {
@@ -285,7 +200,6 @@ export function validateNotionConfig(raw: unknown): NotionConnectorConfig {
  * accept both and reject everything else to surface config typos.
  */
 function isValidNotionId(value: string): boolean {
-  // Standard UUID with dashes.
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
     return true;
   }
@@ -297,7 +211,6 @@ function isValidNotionId(value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Cursor helpers
 // ---------------------------------------------------------------------------
 
 function makeCursor(payload: NotionCursorPayload): ConnectorCursor {
@@ -335,7 +248,6 @@ function parseCursorPayload(cursor: ConnectorCursor): NotionCursorPayload {
 }
 
 // ---------------------------------------------------------------------------
-// Error classification
 // ---------------------------------------------------------------------------
 
 /**
@@ -357,7 +269,6 @@ export function isTransientNotionError(err: unknown): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Notion API client helpers
 // ---------------------------------------------------------------------------
 
 const NOTION_BASE_URL = "https://api.notion.com/v1";
@@ -408,7 +319,6 @@ async function notionFetch(
     ) {
       throw makeNotionApiError(data as NotionApiError);
     }
-    // Unexpected non-error-shaped body.
     const err = new Error(`notion: HTTP ${res.status}`) as Error & { notionStatus: number };
     err.notionStatus = res.status;
     throw err;
@@ -452,12 +362,8 @@ async function notionGet(
 }
 
 // ---------------------------------------------------------------------------
-// Block text extraction
 // ---------------------------------------------------------------------------
 
-/**
- * Extract all `rich_text[].plain_text` segments from a rich-text array.
- */
 function extractRichText(richText: unknown): string {
   if (!Array.isArray(richText)) return "";
   return richText
@@ -484,7 +390,6 @@ function extractBlockText(block: NotionBlock): string {
   if (Array.isArray(data.rich_text)) {
     const text = extractRichText(data.rich_text);
     if (text.length > 0) {
-      // Prefix heading blocks with Markdown syntax.
       if (type === "heading_1") return `# ${text}`;
       if (type === "heading_2") return `## ${text}`;
       if (type === "heading_3") return `### ${text}`;
@@ -526,7 +431,6 @@ async function fetchPageText(
   const lines: string[] = [];
   let cursor: string | undefined = undefined;
 
-  // Page through block children.
   while (true) {
     throwIfAborted(signal, "notion: sync aborted");
     const pathQuery = cursor
@@ -546,7 +450,6 @@ async function fetchPageText(
       const text = extractBlockText(block);
       if (text.length > 0) lines.push(text);
 
-      // Recurse into nested blocks.
       if (block.has_children && depth < MAX_BLOCK_DEPTH) {
         const childText = await fetchPageText(
           fetchFn,
@@ -558,7 +461,6 @@ async function fetchPageText(
         if (childText.length > 0) lines.push(childText);
       }
 
-      // Guard against oversized pages.
       const currentSize = lines.reduce((acc, l) => acc + l.length + 1, 0);
       if (currentSize >= MAX_TEXT_BYTES) break;
     }
@@ -573,7 +475,6 @@ async function fetchPageText(
 }
 
 // ---------------------------------------------------------------------------
-// Page title extraction
 // ---------------------------------------------------------------------------
 
 /**
@@ -593,7 +494,6 @@ function extractPageTitle(page: NotionPage): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Sync result type
 // ---------------------------------------------------------------------------
 
 /**
@@ -607,7 +507,6 @@ export interface NotionSyncResult extends SyncIncrementalResult {
 }
 
 // ---------------------------------------------------------------------------
-// Connector factory
 // ---------------------------------------------------------------------------
 
 /**
@@ -660,14 +559,11 @@ export function createNotionConnector(
         return result;
       }
 
-      // Parse or seed the cursor.
       const isFirstSync = args.cursor === null;
       const payload: NotionCursorPayload = isFirstSync
         ? { pages: {}, databases: {} }
         : parseCursorPayload(args.cursor);
 
-      // On first sync we seed the watermark WITHOUT importing any content
-      // (mirrors Drive's getStartPageToken bootstrap pattern).
       if (isFirstSync) {
         const seedPayload = await seedWatermark(
           fetchFn,
@@ -684,14 +580,12 @@ export function createNotionConnector(
         } as NotionSyncResult;
       }
 
-      // Incremental pass.
       return await incrementalSync(fetchFn, config, payload, args.abortSignal);
     },
   };
 }
 
 // ---------------------------------------------------------------------------
-// First-sync seeding
 // ---------------------------------------------------------------------------
 
 /**
@@ -755,7 +649,6 @@ async function seedWatermark(
 }
 
 // ---------------------------------------------------------------------------
-// Incremental sync
 // ---------------------------------------------------------------------------
 
 async function incrementalSync(
@@ -780,20 +673,8 @@ async function incrementalSync(
     const dbWatermark = payload.databases[dbId];
     let notionCursor: string | undefined = undefined;
     let latestInDb = dbWatermark ?? "";
-    // Track whether we fully drained this database during the pass.
     //
-    // Why this matters (codex review P1): we sort the query descending by
-    // `last_edited_time` and filter `after: dbWatermark`. If we hit
-    // MAX_PAGES_PER_PASS or get aborted mid-database, the pages we
-    // *haven't* seen yet are *older* than the ones we have seen. Advancing
-    // `databases[dbId]` to the highest `last_edited_time` we saw would set
-    // the next pass's `after` filter past those still-pending older pages
-    // and skip them forever (they only resurface if re-edited).
     //
-    // Solution: only persist the new database watermark when the database
-    // was fully drained for this pass. If we cut off early, leave
-    // `databases[dbId]` at its previous value so the next pass re-queries
-    // the same `after` filter and finishes the leftovers.
     let databaseFullyDrained = false;
 
     while (true) {
@@ -809,7 +690,6 @@ async function incrementalSync(
           },
         ],
       };
-      // Filter to pages edited after the database watermark.
       if (dbWatermark) {
         body.filter = {
           timestamp: "last_edited_time",
@@ -842,7 +722,6 @@ async function incrementalSync(
 
         if (typeof pageId !== "string" || typeof lastEdited !== "string") continue;
 
-        // Skip pages that haven't changed since we last saw them.
         const knownRevision = payload.pages[pageId];
         if (knownRevision && knownRevision >= lastEdited) {
           skippedUnchanged++;
@@ -858,7 +737,6 @@ async function incrementalSync(
         }
         totalConsumed++;
 
-        // Fetch and build the document.
         const doc = await fetchPageDocument(
           fetchFn,
           config.token,
@@ -869,32 +747,23 @@ async function incrementalSync(
 
         if (doc === "too-large") {
           skippedTooLarge++;
-          // Codex review P2: record the revision so we don't re-fetch this
-          // oversized page on every subsequent poll. If the page shrinks
-          // below the limit on a future edit, `last_edited_time` will
-          // advance and the watermark check above will let it through.
           updatedPages[pageId] = lastEdited;
           if (!latestInDb || lastEdited > latestInDb) {
             latestInDb = lastEdited;
           }
         } else if (doc === "empty") {
           skippedEmpty++;
-          // Codex review P2: same reasoning as too-large — record the
-          // revision so we don't re-fetch an empty page indefinitely.
           updatedPages[pageId] = lastEdited;
           if (!latestInDb || lastEdited > latestInDb) {
             latestInDb = lastEdited;
           }
         } else if (doc !== null) {
           newDocs.push(doc);
-          // Advance watermarks.
           updatedPages[pageId] = lastEdited;
           if (!latestInDb || lastEdited > latestInDb) {
             latestInDb = lastEdited;
           }
         } else {
-          // null = terminal skip (404/403). Record the version so we
-          // don't repeatedly attempt a permanently-inaccessible page.
           updatedPages[pageId] = lastEdited;
           if (!latestInDb || lastEdited > latestInDb) {
             latestInDb = lastEdited;
@@ -908,32 +777,20 @@ async function incrementalSync(
       }
 
       if (cutoffMidPage) {
-        // Hit the per-pass cap inside this database's results. The
-        // database is NOT fully drained; leave its watermark intact so
-        // the next pass re-queries the same `after` filter.
         break;
       }
 
       if (pageResp.has_more === true) {
-        // Notion claims there are more pages.
         if (typeof pageResp.next_cursor === "string" && pageResp.next_cursor.length > 0) {
-          // Continue paging.
           notionCursor = pageResp.next_cursor;
           continue;
         }
-        // Defensive bail: has_more=true but no usable next_cursor. We do
-        // NOT mark the database fully drained — the next pass must retry
-        // the same `after` filter and pick up whatever we missed.
         break;
       }
-      // has_more is false (or absent): the database is fully drained for
-      // this pass. Safe to advance the database watermark below.
       databaseFullyDrained = true;
       break;
     }
 
-    // Only advance the database watermark when we fully drained the
-    // database. See the long comment above on `databaseFullyDrained`.
     if (databaseFullyDrained && latestInDb) {
       updatedDatabases[dbId] = latestInDb;
     }
@@ -950,7 +807,6 @@ async function incrementalSync(
 }
 
 // ---------------------------------------------------------------------------
-// Per-page document fetch
 // ---------------------------------------------------------------------------
 
 async function fetchPageDocument(
@@ -969,7 +825,6 @@ async function fetchPageDocument(
     if (isTransientNotionError(err)) {
       throw err;
     }
-    // Terminal (404/403/400): skip this page.
     return null;
   }
 

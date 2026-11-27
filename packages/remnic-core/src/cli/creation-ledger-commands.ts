@@ -34,10 +34,6 @@ import {
   runWorkProductRecallSearchCliCommand,
 } from "../cli.js";
 
-/**
- * Register the creation-memory ledger command group on the parent `engram`
- * command. Extracted verbatim from registerCli; behaviour-preserving.
- */
 export function registerCreationLedgerCommands(
   cmd: CliCommand,
   orchestrator: Orchestrator,

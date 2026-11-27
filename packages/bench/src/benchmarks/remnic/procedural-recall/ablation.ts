@@ -1,19 +1,3 @@
-/**
- * Procedural recall ablation harness (issue #567 PR 1/5).
- *
- * Runs the same fixture twice — once with `procedural.enabled=false`, once
- * with `procedural.enabled=true` — and emits a diff artifact:
- *
- *   { onScore, offScore, lift, confidenceInterval }
- *
- * The harness is deterministic and uses no LLM calls: the "stub LLM adapter"
- * requirement is satisfied because the scoring function is a pure, local
- * check (`buildProcedureRecallSection` returns markdown when gating + token
- * overlap thresholds pass). Downstream slices (PR 2) plug in a stub response
- * adapter via `StubLlmAdapter` for scenarios that need free-form generation.
- *
- * CLI: `remnic bench procedural-ablation --fixture <path> --out <path>`
- */
 import { mkdir, mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -102,8 +86,6 @@ export function fixtureToAblationScenarios(
 ): ProceduralAblationScenario[] {
   const scenarios: ProceduralAblationScenario[] = [];
   for (const c of fixture) {
-    // Skip rows whose `expectNonNullSection` only expresses gate-off
-    // behavior — we cannot derive ON-side ground truth from them.
     if (c.proceduralEnabled === false) continue;
     scenarios.push({
       id: c.id,
@@ -111,8 +93,6 @@ export function fixtureToAblationScenarios(
       procedurePreamble: c.procedurePreamble,
       procedureSteps: c.procedureSteps,
       procedureTags: c.procedureTags,
-      // `proceduralEnabled` was true (or undefined), so
-      // `expectNonNullSection` reflects the ON-side ground truth.
       expectMatch: c.expectNonNullSection === true,
     });
   }
@@ -137,7 +117,6 @@ async function runSide(
       const storage = new StorageManager(dir);
       await storage.ensureDirectories();
       const body = buildProcedureMarkdownBody(scenario.procedureSteps);
-      // Sealed-envelope write (issue #1989 PR4): bench-built corpus.
       await storage.writeSealedMemory(
         composeMemoryEnvelope(
           {
@@ -359,11 +338,6 @@ export async function loadAblationFixture(
         );
       }
       const obj = s as Record<string, unknown>;
-      // Reject non-integer / non-positive `order` values explicitly instead
-      // of coercing via Math.floor or defaulting to positional index. Step
-      // order is load-bearing for serialized procedure bodies; a silently
-      // rounded 1.7 → 1 changes both the written markdown and the recall
-      // scoring text.
       let order: number;
       if (obj.order === undefined) {
         order = j + 1;

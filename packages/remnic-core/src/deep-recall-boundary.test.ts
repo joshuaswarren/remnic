@@ -1,11 +1,3 @@
-/**
- * Deep-recall MCP operation boundary regressions (issue #2915).
- *
- * `deep_recall` runs through the shared operation registry (the dispatch the
- * MCP server uses). At this boundary a malformed `maxSteps` must be REJECTED
- * — `"abc"` previously fell back to the configured default and `""` coerced
- * to 0 (§39) — and the request's cancellation signal must reach the service.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";

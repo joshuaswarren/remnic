@@ -144,7 +144,6 @@ function resolveCitedSources(
     return "";
   }
 
-  // Fall back to a source whose basename matches the page path
   const pageBase = path.basename(pageRef).toLowerCase();
   for (const [relativePath, content] of sourceContentMap) {
     if (path.basename(relativePath).toLowerCase() === pageBase) {
@@ -261,7 +260,6 @@ export async function runIngestionCitationAccuracyBenchmark(
 
     const judge: BenchJudge | undefined = options.system?.judge;
 
-    // Build a map from relativePath → content for citation-aware source resolution
     const sourceContentMap = new Map<string, string>(
       fixture.files.map((f) => [f.relativePath, f.content]),
     );
@@ -308,7 +306,6 @@ export async function runIngestionCitationAccuracyBenchmark(
       }
     }
 
-    // Total latency includes both ingestion and judge scoring time
     const totalDurationMs = Math.round(performance.now() - benchmarkStart);
 
     const citationAccuracy = scoredClaims > 0 ? validCitations / scoredClaims : -1;

@@ -63,10 +63,6 @@ function canonicalInputsKey(
   // `|`/newline-delimited form could collide: a speaker label or segment
   // text containing `|` (or a newline plus a forged `seg|…`/`conv|…`
   // prefix) could make two DISTINCT inputs serialize to identical bytes,
-  // hashing alike — so fuseDay wrongly took the idempotent-skip path and
-  // kept serving a stale artifact. JSON string quoting makes every field
-  // boundary unforgeable, and the positional array order is the
-  // deterministic key order (no object keys to sort).
   const record = [
     date,
     sorted.map((conv) => [
@@ -106,8 +102,6 @@ function configFingerprint(
     options.windowToleranceMs ?? DEFAULT_WINDOW_TOLERANCE_MS;
   const trustMap = options.sourceTrust ?? {};
   // JSON form so a source id (or future field) containing `|` cannot forge
-  // a trust-entry boundary and collide two distinct effective configs into
-  // one day hash.
   const trustEntries = [...new Set(sources)]
     .sort()
     .map((source) => [source, trustMap[source] ?? DEFAULT_SOURCE_TRUST]);

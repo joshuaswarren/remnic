@@ -18,7 +18,6 @@ import { SpeakerClusterer, type Embedding } from "./diarization.js";
 import { CaptureConfigError } from "./errors.js";
 import type { Spool } from "./spool.js";
 
-/** The stable speaker id for the enrolled wearer. */
 export const SELF_SPEAKER_ID = "self";
 
 export interface EnrollSelfInput {
@@ -53,8 +52,6 @@ export function enrollSelf(input: EnrollSelfInput): EnrollSelfResult {
         throw new CaptureConfigError("enroll-self embedding must contain only finite numbers");
       }
     }
-    // Build the canonical self cluster through the diarizer so the stored shape
-    // (id/centroid/examples/count) matches what live diarization seeds from.
     const clusterer = new SpeakerClusterer(0.5);
     clusterer.enrollSelf(input.embedding);
     const self = clusterer.clusters().find((c) => c.isSelf);
@@ -73,8 +70,6 @@ export function enrollSelf(input: EnrollSelfInput): EnrollSelfResult {
   }
 
   input.spool.upsertSpeaker({ id: SELF_SPEAKER_ID, isSelf: true, label });
-  // upsertSpeaker preserves any prior centroid; report what is actually stored
-  // so a relabel doesn't falsely claim no embedding exists.
   const stored = input.spool.readSpeakerClusters().find((c) => c.id === SELF_SPEAKER_ID);
   const dimensions = stored?.centroid.length ?? 0;
   return { speakerId: SELF_SPEAKER_ID, label, hasEmbedding: dimensions > 0, dimensions };

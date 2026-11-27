@@ -17,7 +17,6 @@ export interface InjectionScreenGateResult {
   tags: string[];
 }
 
-/** Serialize the body fields that the persistence path will store. */
 export function serializeInjectionScreenCandidate(candidate: InjectionScreenCandidate): string {
   const body =
     candidate.category === "procedure"
@@ -38,7 +37,6 @@ export function serializeInjectionScreenCandidate(candidate: InjectionScreenCand
     : body;
 }
 
-/** Screen one candidate and assemble the persistence effects. */
 export function evaluateInjectionScreen(
   candidate: InjectionScreenCandidate | string,
   enabled: boolean,

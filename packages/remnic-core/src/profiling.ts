@@ -1,5 +1,3 @@
-// Performance profiling collector for recall and extraction traces.
-// Zero external dependencies — uses only node:fs and node:path.
 
 import {
   existsSync,
@@ -12,9 +10,6 @@ import { join } from "node:path";
 import { log } from "./logger.js";
 import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export interface ProfileSpan {
   name: string;
@@ -64,7 +59,6 @@ export interface ProfilingStats {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
 function percentile(sorted: number[], p: number): number {
@@ -90,7 +84,6 @@ function aggregateStats(values: number[]): { count: number; avgMs: number; p50Ms
 let traceCounter = 0;
 
 // ---------------------------------------------------------------------------
-// ProfilingCollector
 // ---------------------------------------------------------------------------
 
 export class ProfilingCollector {
@@ -100,7 +93,6 @@ export class ProfilingCollector {
   private traces: ProfileTrace[] = [];
   private prunePromise: Promise<void> | null = null;
 
-  // Active trace state — keyed by traceId so concurrent pipelines are isolated.
   private activeTraces = new Map<
     string,
     {
@@ -125,7 +117,6 @@ export class ProfilingCollector {
     return this.enabled;
   }
 
-  // ---- Trace lifecycle ---------------------------------------------------
 
   startTrace(kind: "recall" | "extraction", sessionKey?: string, configSnapshot?: Record<string, unknown>): string {
     if (!this.enabled) return "";
@@ -172,7 +163,6 @@ export class ProfilingCollector {
     const t = tid ? this.activeTraces.get(tid) : undefined;
     if (!t) return null;
 
-    // Auto-close any spans still open when the trace finalizes.
     const now = Date.now();
     for (const [name, start] of t.spanStarts) {
       const duration = now - start;
@@ -198,7 +188,6 @@ export class ProfilingCollector {
       trace.parallelGroups = t.parallelGroups;
     }
 
-    // Remove from active map.
     this.activeTraces.delete(tid);
 
     if (!this.enabled) {
@@ -206,18 +195,13 @@ export class ProfilingCollector {
       return null;
     }
 
-    // Persist.
     this.persistTrace(trace);
 
-    // Buffer in memory (FIFO).
     this.traces.push(trace);
     if (this.traces.length > this.maxTraces) {
       this.traces.shift();
     }
 
-    // Single-flight: if a prune is already running, piggyback on it;
-    // otherwise start one.  This prevents concurrent prunes from racing
-    // on stale directory snapshots.
     if (!this.prunePromise) {
       this.prunePromise = this.pruneFiles().finally(() => {
         this.prunePromise = null;
@@ -227,7 +211,6 @@ export class ProfilingCollector {
     return trace;
   }
 
-  // ---- Parallel group tracking -------------------------------------------
 
   startParallelGroup(name: string, traceId?: string): ParallelGroupHandle {
     const tid = traceId ?? this.latestTraceId;
@@ -284,7 +267,6 @@ export class ProfilingCollector {
     log.debug(`profiling: parallel group ${handle.name} wallMs=${wallMs} (trace=${tid})`);
   }
 
-  // ---- Query methods -----------------------------------------------------
 
   getRecentTraces(limit?: number): ProfileTrace[] {
     if (limit === undefined || limit === Infinity) {
@@ -335,15 +317,11 @@ export class ProfilingCollector {
     return slowest.name;
   }
 
-  // ---- Persistence -------------------------------------------------------
 
   private persistTrace(trace: ProfileTrace): void {
     const filename = `${trace.kind}-${trace.traceId}.jsonl`;
     const filepath = join(this.storageDir, filename);
     try {
-      // Created on first persist, never at construction: constructing a
-      // collector (plugin registration, a discovery pass, CLI metadata) must
-      // not touch the operator's memory dir when no trace is ever written.
       if (!existsSync(this.storageDir)) {
         mkdirSync(this.storageDir, { recursive: true });
         log.debug(`profiling: created storage dir ${this.storageDir}`);
@@ -380,7 +358,6 @@ export class ProfilingCollector {
 }
 
 // ---------------------------------------------------------------------------
-// ASCII formatter
 // ---------------------------------------------------------------------------
 
 export function formatProfileTraceAscii(trace: ProfileTrace): string {
@@ -393,7 +370,6 @@ export function formatProfileTraceAscii(trace: ProfileTrace): string {
   if (trace.sessionKey) lines.push(`Session  : ${trace.sessionKey}`);
   lines.push("");
 
-  // Identify bottleneck.
   let bottleneckName: string | null = null;
   if (trace.spans.length > 0) {
     let slowest = trace.spans[0];
@@ -403,7 +379,6 @@ export function formatProfileTraceAscii(trace: ProfileTrace): string {
     bottleneckName = slowest.name;
   }
 
-  // Spans.
   if (trace.spans.length > 0) {
     const maxDuration = Math.max(...trace.spans.map((s) => s.durationMs), 1);
     lines.push("Spans:");
@@ -416,7 +391,6 @@ export function formatProfileTraceAscii(trace: ProfileTrace): string {
     lines.push("");
   }
 
-  // Parallel groups.
   if (trace.parallelGroups && trace.parallelGroups.length > 0) {
     lines.push("Parallel Groups:");
     for (const group of trace.parallelGroups) {

@@ -49,10 +49,6 @@ function placeLabel(place: ReittiSignificantPlace): string {
   return place.name ?? place.address ?? place.city ?? `Place ${place.id ?? "?"}`;
 }
 
-/**
- * `fallbackKey` discriminates places Reitti left without an id: a shared
- * `unknown` id would let core's segment merging join two distinct places.
- */
 function namedPlace(place: ReittiSignificantPlace, fallbackKey: string): LocationPlace {
   return {
     id: place.id !== null ? `reitti:place:${place.id}` : `reitti:place:unresolved:${fallbackKey}`,

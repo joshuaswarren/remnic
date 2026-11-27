@@ -1,22 +1,3 @@
-/**
- * Deep-recall surface regressions (issue #2332 review).
- *
- * 1. HTTP body namespace: a namespace-scoped bearer that passes an allowed
- *    `?namespace=` while setting a DIFFERENT `namespace` in the JSON body must
- *    be refused, because the body value is what the service ends up scoped to.
- * 2. Seed routing: a non-default namespace must search ITS OWN collection, not
- *    the base (default-namespace) collection.
- * 3. Graph routing: a non-default namespace must read ITS OWN abstraction-node
- *    and cue-anchor store, never the default namespace's configured override.
- * 4. Degradation: an unavailable namespace index is a `backend_unavailable`
- *    failure, never a healthy empty result.
- * 5. Principal: authorization derives from the presenting authenticated
- *    principal, never from the client-supplied `sessionKey`.
- * 6. Governance: graph nodes and anchors are projected against the current
- *    active memories BEFORE anything reaches the policy LLM's state prompt.
- *
- * All paths are synthetic temp dirs; no operator data.
- */
 
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -39,11 +20,6 @@ import { StorageManager } from "./storage.js";
 import type { PluginConfig } from "./types.js";
 import type { SearchBackend } from "./search/port.js";
 
-/**
- * Real QMD result resolver over the test's real on-disk storage — the member
- * the seed search now reads off the orchestrator. Wires only the lookups
- * readQmdResultMemory needs; single-namespace fixtures have one storage.
- */
 function testSeedResultResolver(
   config: PluginConfig,
   storage: StorageManager,
@@ -58,11 +34,6 @@ function testSeedResultResolver(
 }
 
 test("HTTP deep recall authorizes with the presenting principal, not the client's sessionKey (issue #2332 review)", async () => {
-  // The route dropped `scope.authenticatedPrincipal`, so the service fell back
-  // to deriving the principal from the client-supplied `sessionKey`. Both
-  // directions broke: a crafted key matching another principal's rule read
-  // that principal's namespace, and a legitimate namespace-enabled request
-  // carrying no session key was refused as unauthenticated.
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-principal-"));
   try {
     const namespaceDir = path.join(memoryDir, "namespaces", "ns_alice");
@@ -121,8 +92,6 @@ test("HTTP deep recall authorizes with the presenting principal, not the client'
         body: JSON.stringify({ query: "who owns the routing decision", ...body }),
       });
     try {
-      // The escalation this fix closes: principal `bob` presents a session key
-      // whose configured rule names `alice`, and asks for alice's namespace.
       const escalation = await postDeep("bob", {
         namespace: "ns_alice",
         sessionKey: "crafted-alice-key",
@@ -134,8 +103,6 @@ test("HTTP deep recall authorizes with the presenting principal, not the client'
       );
       assert.deepEqual(storageCalls, [], "the denied namespace must never be opened");
 
-      // The other direction: an authenticated principal with NO session key is
-      // authenticated, and must not be refused for lack of one.
       const legitimate = await postDeep("alice", { namespace: "ns_alice" });
       assert.equal(
         legitimate.status,
@@ -158,12 +125,6 @@ test("HTTP deep recall authorizes with the presenting principal, not the client'
 });
 
 test("deep recall projects graph nodes against active memories before the policy prompt (issue #2332 review)", async () => {
-  // `loadGraph` read nodes and anchors raw, so a node built from a memory that
-  // was later rejected still carried its stored title and its anchor value.
-  // Both reached the policy LLM through the frontier in the state prompt, long
-  // before `loadMemory(...).active` could drop the memory from the entries:
-  // governed metadata left the store anyway. The graph now flows through the
-  // SAME active-source projection `searchHarmonicRetrieval` uses.
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-governed-"));
   try {
     const config = parseConfig({
@@ -277,12 +238,6 @@ test("deep recall projects graph nodes against active memories before the policy
   }
 });
 test("deep recall reports private support-passport records as absent, in entries and the policy prompt (issue #2332)", async () => {
-  // `loadMemory` handed back the memory view for an ACTIVE private record —
-  // the same record memoryGet and the recall pipeline report as absent — so a
-  // QMD hit on a `support-passport-card` tag or a `support-passport-*`
-  // attribute carried owner-private content into the working set, the state
-  // prompt, and the final entries. Private records must behave exactly like
-  // the other read surfaces: absent, never an error and never content.
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-private-"));
   try {
     const config = parseConfig({
@@ -314,7 +269,6 @@ test("deep recall reports private support-passport records as absent, in entries
       async getStorage() {
         return storage;
       },
-      // QMD matches BOTH private variants alongside the public seed.
       async searchAcrossNamespaces() {
         return [
           { docid: seed.id, path: seed.memory.path, score: 0.9, snippet: "" },
@@ -368,12 +322,6 @@ test("deep recall reports private support-passport records as absent, in entries
 });
 
 test("deep recall projects private support-passport sources out of the graph before the policy prompt (issue #2332)", async () => {
-  // The active-source projection rebuilt node titles and anchor attribution
-  // from every ACTIVE source, which included private support-passport
-  // records: a node sourced from an active private memory carried its content
-  // into the frontier handed to the policy LLM even when the memory itself
-  // never became a seed hit. The projection must treat a private record the
-  // way it treats a rejected one — as if it left the eligible set.
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-private-graph-"));
   try {
     const config = parseConfig({
@@ -436,8 +384,6 @@ test("deep recall projects private support-passport sources out of the graph bef
       async getStorage() {
         return storage;
       },
-      // QMD matches only the public seed; the private record reaches the
-      // invocation only through the graph.
       async searchAcrossNamespaces() {
         return [{ docid: seed.id, path: seed.memory.path, score: 0.9, snippet: "" }];
       },
@@ -483,10 +429,6 @@ test("deep recall projects private support-passport sources out of the graph bef
 });
 
 test("HTTP deep recall gates the body namespace, not just the query string (issue #2332 review)", async () => {
-  // The route used to resolve the scope from `?namespace=` only and then let
-  // `body.namespace` override it, so an allowed query namespace plus a foreign
-  // body namespace read another tenant. The body value must pass the SAME
-  // effective-namespace allow-list gate: 403 before the service is reached.
   const calls: Array<Record<string, unknown>> = [];
   const service = {
     configRef: parseConfig({
@@ -519,7 +461,6 @@ test("HTTP deep recall gates the body namespace, not just the query string (issu
       },
     );
   try {
-    // The escalation this fix closes: allowed query namespace, foreign body namespace.
     assert.equal(
       (await postDeep("scoped-ns-a", "ns_a", "ns_b")).status,
       403,
@@ -527,16 +468,13 @@ test("HTTP deep recall gates the body namespace, not just the query string (issu
     );
     assert.equal(calls.length, 0, "scoped deep recall: the service must NOT be reached for a denied namespace");
 
-    // A body namespace inside the allow-list still works, and still wins.
     const allowed = await postDeep("scoped-ns-a", "ns_a", "ns_a");
     assert.notEqual(allowed.status, 403, "scoped deep recall: an allowed body namespace must proceed");
     assert.equal(calls.at(-1)?.namespace, "ns_a", "the gated body namespace reaches the service");
 
-    // No body namespace: the query-string fallback is preserved.
     assert.notEqual((await postDeep("scoped-ns-a", "ns_a")).status, 403);
     assert.equal(calls.at(-1)?.namespace, "ns_a", "the query-string namespace still reaches the service");
 
-    // Unrestricted token: namespace scoping stays a no-op.
     assert.notEqual(
       (await postDeep("operator", "ns_a", "ns_b")).status,
       403,
@@ -549,10 +487,6 @@ test("HTTP deep recall gates the body namespace, not just the query string (issu
 });
 
 test("deep recall seeds search the resolved namespace's collection, not the base one (issue #2332 review)", async () => {
-  // Storage and graph reads resolve through the caller's namespace, so seed
-  // retrieval must too: the base `qmdCollection` belongs to the DEFAULT
-  // namespace, and querying it from `ns_b` returns default-namespace doc ids
-  // (cross-tenant) while missing the caller's own indexed memories.
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-seeds-"));
   try {
     const namespace = "ns_b";
@@ -625,12 +559,6 @@ test("deep recall seeds search the resolved namespace's collection, not the base
 });
 
 test("deep recall reads the graph from the resolved namespace, not the default store override (issue #2332 review)", async () => {
-  // `abstractionNodeStoreDir` defaults to the ROOT memory dir's graph store and
-  // wins over `memoryDir` inside the resolver, so passing it for every caller
-  // made a non-default namespace load the DEFAULT namespace's nodes/anchors:
-  // its own anchor expansions were invisible and a colliding memory id exposed
-  // default-namespace graph metadata. The harmonic WRITE path already sends the
-  // override to the base namespace only.
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-graph-"));
   try {
     const namespace = "ns_b";
@@ -647,9 +575,6 @@ test("deep recall reads the graph from the resolved namespace, not the default s
       namespacePolicies: [{ name: namespace, readPrincipals: ["operator"], writePrincipals: ["operator"] }],
     });
 
-    // Real source memories in the tenant's store: the graph projection every
-    // reader shares resolves node sources against the CURRENT active memories,
-    // so a node whose sources are not really there is not eligible at all.
     const storage = new StorageManager(namespaceDir);
     await storage.ensureDirectories();
     const seed = await storage.writeMemory("fact", "Alpha holds the payments routing decision.", {
@@ -660,8 +585,6 @@ test("deep recall reads the graph from the resolved namespace, not the default s
       "The tenant's own anchor-linked fallback contract.",
       { tags: ["payments"] },
     );
-    // Reachable ONLY through the default namespace's graph: routing the graph
-    // read to that store is what would surface it.
     const defaultLeak = await storage.writeMemory(
       "fact",
       "Metadata reachable only through the default namespace's graph.",
@@ -693,8 +616,6 @@ test("deep recall reads the graph from the resolved namespace, not the default s
       sessionKey: "test-session",
       nodeRefs,
     });
-    // The namespace's own store: the seed's node shares an anchor with the
-    // node holding the tenant-only memory.
     for (const own of [node("node-ns-b-seed", [seed.id]), node("node-ns-b-linked", [nsOnly.id])]) {
       await recordAbstractionNode({ memoryDir: namespaceDir, node: own });
     }
@@ -702,8 +623,6 @@ test("deep recall reads the graph from the resolved namespace, not the default s
       memoryDir: namespaceDir,
       anchor: anchor("anchor-ns-b", ["node-ns-b-seed", "node-ns-b-linked"]),
     });
-    // The DEFAULT namespace's store, reached only through the override. It
-    // collides on the seed memory and links to the default-only metadata.
     for (const foreign of [node("node-default-seed", [seed.id]), node("node-default-linked", [defaultLeak.id])]) {
       await recordAbstractionNode({ memoryDir, abstractionNodeStoreDir: defaultStoreOverride, node: foreign });
     }
@@ -763,11 +682,6 @@ test("deep recall reads the graph from the resolved namespace, not the default s
 });
 
 test("deep recall reports an unavailable namespace index as backend_unavailable, not empty success (issue #2332 review)", async () => {
-  // `searchAcrossNamespaces` contributes [] for an unavailable backend or a
-  // missing collection and reports the condition ONLY through
-  // `execution.onDegradation`. With no observer the surface answered
-  // `ok: true` with zero entries — indistinguishable from a healthy empty
-  // index, and contradicting the advertised `backend_unavailable` result.
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-degraded-"));
   try {
     const namespace = "ns_b";
@@ -829,12 +743,6 @@ test("deep recall reports an unavailable namespace index as backend_unavailable,
 });
 
 test("deep recall seeds resolve collection-qualified paths when namespaces are disabled (issue #2332 review)", async () => {
-  // The namespaces-disabled fanout queries the QMD backend directly, so hits
-  // keep the indexer's raw path forms instead of the router-resolved absolute
-  // paths the enabled path produces: `qmd://<collection>/...`,
-  // `<collection>/...`, an empty-hostname `qmd:///...`, and a root-relative
-  // `/...`. A miss falls back to the QMD docid, which no storage lookup
-  // hydrates, so the default standalone deployment answers with no memories.
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-raw-paths-"));
   try {
     const config = parseConfig({
@@ -870,8 +778,6 @@ test("deep recall seeds resolve collection-qualified paths when namespaces are d
           path: rawPath,
           score: 0.5 + index / 10,
         })),
-        // A foreign-collection hit is unresolvable: skip it. Admitting the
-        // bare docid would violate the foreign-collection guard (#3087).
         { docid: "hash-doc-foreign", path: "foreign-coll/facts/2026-08-01/fact-1.md", score: 0.9 },
       ],
     };
@@ -899,9 +805,6 @@ test("deep recall seeds resolve collection-qualified paths when namespaces are d
 });
 
 test("HTTP deep recall rejects malformed, empty, and fractional maxSteps instead of defaulting (issue #2915)", async () => {
-  // `""` previously coerced to 0 (a documented DISABLE value) and `"abc"`
-  // fell back to the configured default: both silently reinterpreted what
-  // the caller explicitly sent (§39).
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-maxsteps-"));
   try {
     const config = parseConfig({

@@ -329,8 +329,6 @@ function normalizePromotionWhitespace(value: string): string {
 }
 
 function stripTrailingPromotionPunctuation(value: string): string {
-  // Linear trailing-punctuation strip (no `/[,:;]+$/` — CodeQL flags that as a
-  // polynomial-backtracking ReDoS on long runs of ',;:'). Walk back once, O(n).
   let end = value.length;
   while (end > 0) {
     const ch = value[end - 1];
@@ -531,13 +529,6 @@ export class CompoundingEngine {
         if (causalCandidates.length > 0) {
           promotionCandidates = [...promotionCandidates, ...causalCandidates];
         }
-        // #378: fire the Codex materialize post-hook so
-        // `codexMaterializeOnConsolidation` actually has a runtime effect
-        // when the causal consolidation path runs. The helper silently no-ops
-        // when the feature flag or the per-trigger toggle is off, when the
-        // sentinel is missing, or when nothing has changed since the previous
-        // run. Wrapped in its own try/catch so a failed materialize never
-        // aborts weekly synthesis.
         try {
           await materializeAfterCausalConsolidation({
             config: this.config,
@@ -554,9 +545,6 @@ export class CompoundingEngine {
         log.warn(`[cmc] causal consolidation in synthesizeWeekly failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    // PEDC: calibration consolidation, keyed by the week id so a retry does
-    // not reinforce the same rules. Only a completed week consolidates: a
-    // manual in-progress-week run must not double-count partial evidence.
     if (resolveConsolidationCapabilities(this.config).calibration && weekId < isoWeekId(new Date())) {
       try {
         const { calibrationConsolidationInput, runCalibrationConsolidation } = await import("../calibration.js");
@@ -573,8 +561,6 @@ export class CompoundingEngine {
       ? await this.readContinuityAuditReferences(weekId)
       : { monthId: monthIdFromIsoWeek(weekId), weeklyPath: null, monthlyPath: null };
 
-    // The markdown report is the completion marker, so it is written after the
-    // JSON, rubrics, and mistakes artifacts. A crash before that write retries.
     const reportPath = path.join(this.weeklyDir, `${weekId}.md`);
     const md = this.formatWeeklyReport(weekId, entries, mistakes.patterns, mistakes.details, continuity, outcomeSummary, promotionCandidates);
 
@@ -616,13 +602,11 @@ export class CompoundingEngine {
     };
     await writeFile(reportJsonPath, JSON.stringify(weeklyArtifact, null, 2) + "\n", "utf-8");
 
-    // Write stable rubric artifact.
     const rubricsMarkdown = this.formatRubrics(storeOutcomeSummary, rubrics);
     await writeFile(this.rubricsPath, rubricsMarkdown, "utf-8");
     await writeFile(this.rubricsIndexPath, JSON.stringify(rubrics, null, 2) + "\n", "utf-8");
     await this.syncRubricArtifacts(rubrics);
 
-    // Update mistakes.json (always).
     await writeFile(
       this.mistakesPath,
       JSON.stringify({
@@ -723,15 +707,11 @@ export class CompoundingEngine {
       return report;
     }
 
-    // Sealed-envelope write (issue #1989 PR4): synthesized machine data.
     const promotionInput = { content: persistedContent, category: candidate.category, confidence, tags: uniqueTags };
     const { id, tombstoneBlocked } = await storage.writeSealedMemory(
       composeSalvagedEnvelope("compounding-promotion", promotionInput, { source: "compounding-promotion" }),
       { lineage, memoryKind: "note" },
     );
-    // #1645: a tombstone-blocked promotion lands pending_review (no active
-    // copy) — divert it to the tombstoneBlocked list so the report never
-    // claims a blocked write as a successfully promoted active memory.
     if (tombstoneBlocked) {
       report.tombstoneBlocked.push({
         id,
@@ -1000,7 +980,6 @@ export class CompoundingEngine {
     for (const [action, data] of byAction.entries()) {
       const total = data.counts.applied + data.counts.skipped + data.counts.failed;
       if (total <= 0) continue;
-      // Conservative weighting: reward applied, penalize skipped/failed.
       const weightedScore = Number((((data.counts.applied * 1) - (data.counts.skipped * 0.5) - (data.counts.failed * 1.5)) / total).toFixed(3));
       out.push({
         action,

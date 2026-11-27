@@ -34,11 +34,8 @@ test("a second reservation refuses while a pending transaction stands; abort res
       revision: a.pendingRevision,
     });
 
-    // Writer B reserves while the shard holds a standing committed token.
     const b = await store.beginRevisionTransaction(target);
     assert.ok(b.pendingRevision > a.pendingRevision, "the reserved token exceeds the standing token");
-    // Writer C cannot reserve while B's PENDING marker stands — concurrent
-    // ownership is impossible: the ambiguity refuses the new transaction.
     await assert.rejects(store.beginRevisionTransaction(target), /pending finalization/);
     assert.equal(
       (await store.readRevisionStatus(target)).status,
@@ -46,14 +43,12 @@ test("a second reservation refuses while a pending transaction stands; abort res
       "readers see recovery-needed, never B's pending token and never absence",
     );
 
-    // B's memory write failed: the abort restores A's standing token.
     await b.abort();
     assert.deepEqual(await store.readRevisionStatus(target), {
       status: "present",
       revision: a.pendingRevision,
     });
 
-    // The next reservation still exceeds the standing committed token.
     const c = await store.beginRevisionTransaction(target);
     assert.ok(c.pendingRevision > a.pendingRevision);
     await c.commit();
@@ -74,8 +69,6 @@ test("reconcilePendingRevision publishes or discards with the known write outcom
     await a.commit();
     assert.equal(await store.reconcilePendingRevision(target, true), "committed", "an already-committed shard is untouched");
 
-    // A crashed transaction whose memory write LANDED: the pending token
-    // publishes as the standing receipt.
     const b = await store.beginRevisionTransaction(target);
     assert.equal(await store.reconcilePendingRevision(target, true), "reconciled");
     assert.deepEqual(await store.readRevisionStatus(target), {
@@ -83,8 +76,6 @@ test("reconcilePendingRevision publishes or discards with the known write outcom
       revision: b.pendingRevision,
     });
 
-    // A crashed transaction whose memory write did NOT land: the previous
-    // standing token is restored.
     const c = await store.beginRevisionTransaction(target);
     assert.equal(await store.reconcilePendingRevision(target, false), "reconciled");
     assert.deepEqual(await store.readRevisionStatus(target), {
@@ -92,8 +83,6 @@ test("reconcilePendingRevision publishes or discards with the known write outcom
       revision: b.pendingRevision,
     });
 
-    // From a fresh target (no standing token), a discarded reservation
-    // returns the shard to genuine absence.
     const fresh = path.join(root, "memories", "fact-c.md");
     const d = await store.beginRevisionTransaction(fresh);
     assert.equal(await store.reconcilePendingRevision(fresh, false), "reconciled");
@@ -181,8 +170,6 @@ test("recoverPendingRevision aborts a crashed reservation whose write never land
 
     const a = await store.beginRevisionTransaction(target);
     await a.commit();
-    // Crash between reserve and the durable write: the file is unchanged,
-    // so the baseline fingerprint still matches.
     const b = await store.beginRevisionTransaction(target);
 
     assert.equal(await store.recoverPendingRevision(target), "aborted");
@@ -192,8 +179,6 @@ test("recoverPendingRevision aborts a crashed reservation whose write never land
     });
     assert.equal(await store.recoverPendingRevision(target), "committed", "idempotent once reconciled");
 
-    // Same crash from a fresh target (no standing receipt, absent file):
-    // the aborted reservation returns the shard to genuine absence.
     const fresh = path.join(root, "memories", "fact-restart-fresh.md");
     const f = await store.beginRevisionTransaction(fresh);
     assert.equal(await store.recoverPendingRevision(fresh), "aborted");
@@ -210,15 +195,12 @@ test("an evidenced gated recovery defers a reserve-only marker to the path-locke
     const a = await store.beginRevisionTransaction(target);
     await a.commit();
 
-    // A reserve-only marker is indistinguishable from a LIVE transaction
-    // between reserve and write, so an unlocked read must not abort it.
     const b = await store.beginRevisionTransaction(target);
     assert.equal(
       await store.recoverPendingRevision(target, { onlyWithWriteEvidence: true }),
       "reserved",
     );
     assert.equal((await store.readRevisionStatus(target)).status, "unavailable", "the marker still stands");
-    // The live transaction proceeds undisturbed and commits normally.
     await writeFile(target, "landed bytes", "utf8");
     await b.writeLanded();
     await b.commit();
@@ -242,7 +224,6 @@ test("recoverPendingRevision publishes a crashed reservation whose write landed 
     const b = await store.beginRevisionTransaction(target);
     await writeFile(target, "new durable bytes", "utf8");
     await b.writeLanded();
-    // Crash between writeLanded and commit: the marker holds the evidence.
 
     const shard = JSON.parse(await readFile(shardPathFor(root, target), "utf8")) as {
       state?: string;
@@ -276,8 +257,6 @@ test("recoverPendingRevision fails closed on an ambiguous durable change (#2807)
     const b = await store.beginRevisionTransaction(target);
     await assert.rejects(store.beginRevisionTransaction(target), /pending finalization/, "new reservations refuse");
     await b.writeLanded();
-    // After the crash the file changes again — neither the expected
-    // fingerprint nor the baseline can explain the current bytes.
     await writeFile(target, "unexplained third state", "utf8");
 
     await assert.rejects(store.recoverPendingRevision(target), /ambiguous[\s\S]{0,512}Refusing to guess/);
@@ -318,14 +297,12 @@ test("beginRevisionTransaction with expectedContent persists expectedDigest in p
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, "baseline content", "utf8");
 
-    // Establish standing receipt for baseline
     const initial = await store.beginRevisionTransaction(target, "baseline content");
     await initial.commit();
 
     const expectedContent = "new expected content";
     const txn = await store.beginRevisionTransaction(target, expectedContent);
 
-    // Inspect the shard before the memory write occurs:
     const shard = JSON.parse(await readFile(shardPathFor(root, target), "utf8")) as {
       state?: string;
       baselineDigest?: string;
@@ -341,7 +318,6 @@ test("beginRevisionTransaction with expectedContent persists expectedDigest in p
       "expected digest is persisted before memory write",
     );
 
-    // Case 1: Crash BEFORE memory write (file remains at baseline content):
     assert.equal(await store.recoverPendingRevision(target), "aborted");
     assert.equal((await store.readRevisionStatus(target)).status, "present");
     assert.equal(
@@ -350,7 +326,6 @@ test("beginRevisionTransaction with expectedContent persists expectedDigest in p
       "aborted transaction restored standing receipt",
     );
 
-    // Case 2: Fresh transaction, memory write lands, crash AFTER memory write:
     const txn2 = await store.beginRevisionTransaction(target, expectedContent);
     await writeFile(target, expectedContent, "utf8");
     assert.equal(
@@ -472,7 +447,6 @@ test("removeRevisionShard sweeps a committed shard, keeps pending evidence, neve
         () => false,
       );
 
-    // No receipt was ever minted: the sweep reports absence, not an error.
     assert.equal(await store.removeRevisionShard(target), "absent");
 
     const a = await store.beginRevisionTransaction(target);
@@ -482,13 +456,11 @@ test("removeRevisionShard sweeps a committed shard, keeps pending evidence, neve
     assert.equal(await shardExists(), false, "the committed shard is gone once its memory is deleted");
     assert.equal((await store.readRevisionStatus(target)).status, "absent");
 
-    // A PENDING marker is crash-recovery evidence: the sweep must keep it.
     const b = await store.beginRevisionTransaction(target);
     assert.equal(await store.removeRevisionShard(target), "pending");
     assert.equal(await shardExists(), true, "the pending marker survives the deletion sweep");
     await b.abort();
 
-    // A shard naming another target is never destroyed by this target's sweep.
     await mkdir(path.dirname(shard), { recursive: true });
     await writeFile(
       shard,

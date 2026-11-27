@@ -29,7 +29,6 @@ function createConfig(timeoutMs: number) {
 }
 
 const modelsBody = JSON.stringify({ data: [{ id: "fixture-local" }] });
-/** Stubs fetch for the local model: chat calls go to `onChat`, everything else (the availability probe) is answered. */
 interface ModelStub {
   chatCalls(): number;
   restore(): void;
@@ -38,7 +37,6 @@ interface ModelStub {
 function stubModel(onChat: (init?: RequestInit) => Promise<Response>): ModelStub {
   const original = globalThis.fetch;
   let chat = 0;
-  // SAFETY: the client only calls fetch(url, init); the stub keeps that call shape and returns a Response.
   globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
     if (String(url).endsWith("/chat/completions")) {
       chat += 1;
@@ -62,7 +60,6 @@ function drainEngine(config: ReturnType<typeof createConfig>): ExtractionEngine 
 }
 
 test("a timed-out attempt is retried by the live engine but not by the drain engine", async () => {
-  // Real 30 ms attempt timer: the abort under test is the client's own wall-clock timeout.
   const config = createConfig(30);
   const stub = stubModel(neverAnswers);
   try {
@@ -79,7 +76,6 @@ test("a timed-out attempt is retried by the live engine but not by the drain eng
 
 test("the orchestrator's claim-drain coordinator extracts with one attempt", async () => {
   const memoryDir = await mkTempMemoryDir("drain-extraction-wiring");
-  // Real 30 ms attempt timer: the abort under test is the client's own wall-clock timeout.
   const orchestrator = new Orchestrator(
     makeLifecycleConfig(memoryDir, {
       localLlmEnabled: true,
@@ -110,7 +106,6 @@ test("the orchestrator's claim-drain coordinator extracts with one attempt", asy
 });
 
 function liveEngineOf(orchestrator: Orchestrator): ExtractionEngine {
-  // The extraction field is orchestrator-private: read the own property and narrow it by class, with no cast.
   const live: unknown = Object.getOwnPropertyDescriptor(orchestrator, "extraction")?.value;
   assert.ok(live instanceof ExtractionEngine, "the orchestrator's live extraction engine");
   return live;
@@ -133,8 +128,6 @@ test("a drain extraction starts while a live extraction holds the shared client"
       localLlmModel: "fixture-local",
       localLlmUrl: "http://127.0.0.1:1234",
       localLlmFallback: false,
-      // The held live request ends at the client's own timeout, or at destroy() below. Retries are off
-      // so a drain engine that shared the live client would still pass the one-attempt test.
       localLlmTimeoutMs: 5_000,
       localLlmRetry5xxCount: 0,
       slowLogEnabled: false,
@@ -145,7 +138,6 @@ test("a drain extraction starts while a live extraction holds the shared client"
   let liveSettledWhenDrainStarted: boolean | undefined;
   const original = globalThis.fetch;
   let chat = 0;
-  // SAFETY: the client only calls fetch(url, init); the stub keeps that call shape and returns a Response.
   globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
     if (!String(url).endsWith("/chat/completions")) {
       return Promise.resolve(new Response(modelsBody, { status: 200, headers: { "content-type": "application/json" } }));

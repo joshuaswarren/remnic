@@ -93,9 +93,6 @@ export interface DecryptOptions {
   aad?: Uint8Array;
 }
 
-/**
- * Validate that a key is a 32-byte buffer suitable for AES-256.
- */
 function assertAesKey(key: Uint8Array): void {
   if (!(key instanceof Uint8Array)) {
     throw new Error("key must be a Uint8Array");
@@ -144,7 +141,6 @@ export function seal(
   const cipher = createCipheriv("aes-256-gcm", Buffer.from(key), Buffer.from(iv), {
     authTagLength: AUTH_TAG_LENGTH,
   });
-  // Codex P1: bind the envelope header (version + salt) into AAD so
   // flipping the salt or version on a sealed envelope triggers an
   // auth failure on open. Without this, callers using a metadata-
   // derived store key would still decrypt successfully even after
@@ -159,7 +155,6 @@ export function seal(
   const ciphertext = Buffer.concat([cipher.update(Buffer.from(plaintext)), cipher.final()]);
   const authTag = cipher.getAuthTag();
   if (authTag.length !== AUTH_TAG_LENGTH) {
-    // Defensive: Node always produces 16 bytes when authTagLength is 16.
     throw new Error(`unexpected auth tag length: ${authTag.length}`);
   }
 
@@ -238,23 +233,15 @@ export function open(
     authTagLength: AUTH_TAG_LENGTH,
   });
   decipher.setAuthTag(parsed.authTag);
-  // Codex P1: header (version + salt) is bound at seal time.
   // Reconstruct it identically so a tampered salt fails auth.
   const headerAad = buildHeaderAad(parsed.salt);
   const finalAad = options.aad
     ? Buffer.concat([headerAad, Buffer.from(options.aad)])
     : headerAad;
   decipher.setAAD(finalAad);
-  // `final()` throws if the auth tag doesn't validate.
   return Buffer.concat([decipher.update(parsed.ciphertext), decipher.final()]);
 }
 
-/**
- * Build the canonical header AAD: a single byte version followed by
- * the per-blob salt. Binds the immutable envelope header into AES-GCM
- * authentication so tampering with either value triggers auth failure
- * on open (codex P1 on PR #718).
- */
 function buildHeaderAad(salt: Uint8Array): Buffer {
   const out = Buffer.alloc(1 + ENVELOPE_SALT_LENGTH);
   out.writeUInt8(ENVELOPE_VERSION, 0);

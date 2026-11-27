@@ -29,9 +29,6 @@ export function computeCategoryAggregates(tasks: readonly TaskResult[]): Record<
       scoresByCategory.set(categoryName, [task.scores]);
     }
   }
-  // Build via Object.fromEntries (own-property define, not assignment) so a
-  // category literally named "__proto__" becomes an own key instead of
-  // invoking the prototype setter and vanishing from Object.keys.
   const sortedEntries = [...scoresByCategory.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return Object.fromEntries(sortedEntries.map(([categoryName, scores]) => [categoryName, aggregateTaskScores(scores)]));
 }

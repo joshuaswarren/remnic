@@ -27,7 +27,6 @@ import type { TrustStageResultItem } from "./trust-score-stage.js";
 import type { TrustScoreResult } from "./trust-score.js";
 import type { PluginConfig, QmdSearchResult } from "./types.js";
 
-// Deterministic ids (Main #7: no Date.now()/Math.random() in fixture paths).
 let idCounter = 0;
 const nextId = () => `fact-2183000000-${(idCounter++).toString().padStart(4, "0")}`;
 

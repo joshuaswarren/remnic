@@ -15,7 +15,6 @@ import {
   resolveSafeStoragePath,
 } from "./storage-paths.js";
 
-/** Stop words for title extraction */
 const STOP_WORDS = new Set([
   "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
   "have", "has", "had", "do", "does", "did", "will", "would", "could",
@@ -28,10 +27,6 @@ const STOP_WORDS = new Set([
   "just", "about", "like", "also", "very", "really", "here", "there",
 ]);
 
-/**
- * Extract top keywords from content for thread title.
- * Simple TF approach (no IDF needed for single thread).
- */
 function extractKeywords(content: string, maxKeywords: number = 3): string[] {
   const words = content
     .toLowerCase()
@@ -39,25 +34,19 @@ function extractKeywords(content: string, maxKeywords: number = 3): string[] {
     .split(/\s+/)
     .filter((w) => w.length >= 4 && !STOP_WORDS.has(w));
 
-  // Count frequencies
   const freq = new Map<string, number>();
   for (const word of words) {
     freq.set(word, (freq.get(word) ?? 0) + 1);
   }
 
-  // Sort by frequency, take top N
   return [...freq.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, maxKeywords)
     .map(([word]) => word);
 }
 
-/**
- * Generate a thread title from keywords.
- */
 function generateTitle(keywords: string[]): string {
   if (keywords.length === 0) return "Untitled Thread";
-  // Capitalize and join
   return keywords
     .map((k) => k.charAt(0).toUpperCase() + k.slice(1))
     .join(", ");
@@ -92,20 +81,7 @@ interface ThreadingRunState {
 }
 
 export class ThreadingManager {
-  /**
-   * Per-session thread-run state. One global slot let two concurrent
-   * extractions (bounded-parallel queue) interleave sessions and attach
-   * turns to the wrong thread, so the run state is keyed by session.
-   * Bounded: a long-lived daemon sees one entry per active session.
-   */
   private readonly runStateBySession = new Map<string, ThreadingRunState>();
-  /**
-   * Run states with a processTurn awaiting inside them. A session parked on
-   * `saveThread` can watch 512 other sessions insert and evict; dropping its
-   * state mid-await loses its thread id and forks its thread, so eviction
-   * never takes an in-flight state (the cap may be exceeded briefly by the
-   * number of in-flight extractions, which is bounded by the queue).
-   */
   private readonly inFlightRunStates = new Set<ThreadingRunState>();
   private static readonly RUN_STATE_MAX_SESSIONS = 512;
 
@@ -113,7 +89,6 @@ export class ThreadingManager {
     const key = turn.sessionKey ?? "";
     let state = this.runStateBySession.get(key);
     if (state) {
-      // Refresh recency: Map iteration is insertion-ordered, so re-putting a
       // touched session makes eviction true LRU instead of first-in-first-out —
       // an active session must not be the oldest entry just because it started
       // first.
@@ -124,7 +99,6 @@ export class ThreadingManager {
       this.runStateBySession.set(key, state);
       if (this.runStateBySession.size > ThreadingManager.RUN_STATE_MAX_SESSIONS) {
         for (const [oldestKey, oldest] of this.runStateBySession) {
-          // Never evict the state being inserted: before the caller registers
           // it in-flight, every older entry can be in flight and the loop
           // would otherwise delete this turn's own state and fork the thread.
           if (oldest === state || this.inFlightRunStates.has(oldest)) continue;
@@ -208,16 +182,10 @@ export class ThreadingManager {
     return collisionSafePath;
   }
 
-  /**
-   * Check if we should start a new thread based on session key and time gap.
-   * State is per session, so the cross-session check the shared slot needed
-   * is gone: different sessions never share run state at all.
-   */
   shouldStartNewThread(turn: BufferTurn): boolean {
     const turnTime = new Date(turn.timestamp).getTime();
     const state = this.runStateFor(turn);
 
-    // Time gap > threshold = new thread
     if (state.lastTurnTimestamp) {
       const gapMs = turnTime - state.lastTurnTimestamp;
       const gapMinutes = gapMs / (1000 * 60);
@@ -226,7 +194,6 @@ export class ThreadingManager {
       }
     }
 
-    // No current thread = new thread
     if (!state.currentThreadId) {
       return true;
     }
@@ -234,10 +201,6 @@ export class ThreadingManager {
     return false;
   }
 
-  /**
-   * Process a turn and return the thread ID it belongs to.
-   * Creates a new thread if needed.
-   */
   async processTurn(turn: BufferTurn, episodeIds: string[]): Promise<string> {
     await this.ensureDirectory();
 
@@ -246,7 +209,6 @@ export class ThreadingManager {
     this.inFlightRunStates.add(state);
     try {
       if (this.shouldStartNewThread(turn)) {
-        // Create new thread
         const threadId = `thread-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const thread: ConversationThread = {
           id: threadId,
@@ -262,7 +224,6 @@ export class ThreadingManager {
         state.currentThreadId = threadId;
         log.debug(`created new thread ${threadId}`);
       } else if (state.currentThreadId) {
-        // Add episodes to current thread
         const thread = await this.loadThread(state.currentThreadId);
         if (thread) {
           for (const id of episodeIds) {
@@ -305,9 +266,6 @@ export class ThreadingManager {
     await this.saveThread(thread);
   }
 
-  /**
-   * Update thread title based on accumulated content.
-   */
   async updateThreadTitle(threadId: string, content: string): Promise<void> {
     const thread = await this.loadThread(threadId);
     if (!thread) return;
@@ -370,9 +328,6 @@ export class ThreadingManager {
     }
   }
 
-  /**
-   * Get a thread by ID.
-   */
   async loadThread(threadId: string): Promise<ConversationThread | null> {
     const candidates = [
       this.encodedThreadFileName(threadId),
@@ -393,25 +348,18 @@ export class ThreadingManager {
     return null;
   }
 
-  /**
-   * Save a thread.
-   */
   async saveThread(thread: ConversationThread): Promise<void> {
     await this.ensureDirectory();
     const filePath = await this.threadFilePathForWrite(thread.id);
     await writeFile(filePath, JSON.stringify(thread, null, 2), "utf-8");
   }
 
-  /**
-   * Link two threads together.
-   */
   async linkThreads(threadId1: string, threadId2: string): Promise<boolean> {
     const thread1 = await this.loadThread(threadId1);
     const thread2 = await this.loadThread(threadId2);
 
     if (!thread1 || !thread2) return false;
 
-    // Add bidirectional links
     if (!thread1.linkedThreadIds.includes(threadId2)) {
       thread1.linkedThreadIds.push(threadId2);
       await this.saveThread(thread1);

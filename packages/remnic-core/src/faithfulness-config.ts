@@ -1,32 +1,6 @@
-/**
- * Faithfulness-gate + correction-intent config parsing (issue #1576 / #1585).
- *
- * Extracted verbatim from `config.ts` (a watchlisted god file) so the gate
- * config block can grow — the model-lab pointer keys
- * `extractionFaithfulnessBaseUrl` (#1585) and the correction-intent pointers
- * (`correctionIntentModel` / `correctionIntentBaseUrl`) — without growing the
- * god file. This is a behavior-preserving extraction (#1526-style): the
- * validation, defaults, and error messages are byte-identical to the inline
- * block it replaces, which the existing extraction-faithfulness + config
- * tests pin.
- *
- * Why a dedicated module (and not inline): the ratchet
- * (`scripts/check-ratchets.mjs`) forbids `config.ts` from growing, and the
- * model-lab integration needs three new optional keys. Centralizing the whole
- * gate+intent parsing here keeps it unit-testable in isolation and lets
- * `config.ts` spread the result in one line.
- */
 
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 
-/**
- * Parse a value as a strict integer >= `min`, throwing on anything else.
- *
- * Mirrors `parseIntegerAtLeast` in `config.ts` byte-for-byte (issue #1634:
- * reject non-numeric, <=0, non-integer, NaN, Infinity, booleans, objects —
- * gotcha #51). Reimplemented locally rather than exported from `config.ts`
- * so this module has no dependency on the god file (and vice versa).
- */
 function parseIntegerAtLeast(
   value: unknown,
   fallback: number,
@@ -74,7 +48,6 @@ export function parseFaithfulnessGateConfig(cfg: Record<string, unknown>): {
   if (gateValue === undefined || gateValue === null) {
     extractionFaithfulnessGate = "off";
   } else {
-    // Present-but-invalid (true/1/{}) must reject, not silently disable the gate (Ob4RQ).
     const raw = typeof gateValue === "string" ? gateValue.trim().toLowerCase() : gateValue;
     if (raw === "off" || raw === "shadow" || raw === "enforce") {
       extractionFaithfulnessGate = raw;
@@ -88,9 +61,6 @@ export function parseFaithfulnessGateConfig(cfg: Record<string, unknown>): {
   const extractionFaithfulnessModel =
     typeof cfg.extractionFaithfulnessModel === "string" ? cfg.extractionFaithfulnessModel : "";
 
-  // Issue #1585: model-lab pointer. Empty default → gate uses its existing
-  // routing chain (byte-identical). Non-empty + a model name → gate prefers
-  // the local served endpoint, falling back to the chain on failure.
   const extractionFaithfulnessBaseUrl =
     typeof cfg.extractionFaithfulnessBaseUrl === "string"
       ? cfg.extractionFaithfulnessBaseUrl
@@ -106,16 +76,6 @@ export function parseFaithfulnessGateConfig(cfg: Record<string, unknown>): {
     60_000,
   );
 
-  // Issue #1700 nit #6: resilient-fallback toggle for the local model-lab
-  // endpoint. Default false preserves the loud-signal behavior (a 200-with-
-  // garbage local response surfaces malformed_output so a misconfigured
-  // endpoint is visible); true falls back to the configured chain on local
-  // parse failure. Byte-identical pre-feature when unset (rule 39).
-  // coerceBool for CLI-string parity: a CLI override like
-  // --config extractionFaithfulnessLocalParseFallback=true reaches here as the
-  // string "true"; === true would silently leave the flag disabled. Matches
-  // every other CLI-settable boolean in config.ts (gotcha 36, codex P2
-  // PRRT_kwDORJXyws6O6gDQ / cursor BUGBOT e273b22c).
   const extractionFaithfulnessLocalParseFallback =
     coerceBool(cfg.extractionFaithfulnessLocalParseFallback) === true;
 

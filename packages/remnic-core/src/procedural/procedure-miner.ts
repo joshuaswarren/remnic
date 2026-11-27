@@ -1,6 +1,3 @@
-/**
- * Cluster causal trajectories into candidate procedure memories (issue #519).
- */
 
 import type { PluginConfig } from "../types.js";
 import type { StorageManager } from "../storage.js";
@@ -236,8 +233,6 @@ export async function runProcedureMining(options: {
         return false;
       }
 
-      // Sealed-envelope write (issue #1989 PR4): mined from causal
-      // trajectories (machine data) — salvage; drops are warn-logged.
       const procedureEnvelope = composeMemoryEnvelope(
         {
           content: body,
@@ -246,11 +241,6 @@ export async function runProcedureMining(options: {
           structuredAttributes: {
             procedure_cluster: key.slice(0, PROCEDURE_CLUSTER_ATTR_MAX),
             procedure_cluster_hash: clusterHash,
-            // Capped to the envelope attribute-value limit AT AN ID
-            // BOUNDARY (#2022 review): the legacy 1900-char slice now
-            // exceeds STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength, and a
-            // salvage drop would lose ALL trajectory provenance instead
-            // of the tail.
             trajectory_ids: capJoinedIds(
               group.map((g) => g.trajectoryId),
               STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength,

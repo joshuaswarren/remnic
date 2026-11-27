@@ -97,12 +97,9 @@ export interface GraphConfig {
   graphEdgeCacheIncrementalEnabled?: boolean;
 }
 
-/** Default minimum edge confidence required for traversal (issue #681 PR 3/3). */
 export const DEFAULT_GRAPH_TRAVERSAL_CONFIDENCE_FLOOR = 0.2;
-/** Default PageRank-style refinement iteration count (issue #681 PR 3/3). */
 export const DEFAULT_GRAPH_TRAVERSAL_PAGERANK_ITERATIONS = 8;
 
-// Causal signal phrases — order matters (most specific first)
 export const CAUSAL_PHRASES = ["as a result", "led to", "because of", "therefore", "caused", "because"];
 
 export function graphsDir(memoryDir: string): string {
@@ -128,7 +125,6 @@ export async function appendEdge(memoryDir: string, edge: GraphEdge): Promise<vo
   const filePath = graphFilePath(memoryDir, edge.type);
   const line = `${JSON.stringify(edge)}\n`;
   await withGraphWriteLock(filePath, async (lock) => {
-    // Round N+19 A: never append into a file a peer that broke this lock may rename over.
     await assertGraphLockHeld(filePath, lock);
     await appendFile(filePath, line, "utf8");
   });
@@ -162,13 +158,8 @@ function parseEdgesJsonl(raw: string, expectedType: GraphType): GraphEdge[] {
   return edges;
 }
 
-/** Parse batch size at which locked-section parsing yields to the event loop
- * so the graph lock's heartbeat timer can fire (round N+19 A). */
 const EDGE_PARSE_YIELD_BATCH = 5_000;
 
-/** Chunked {@link parseEdgesJsonl} yielding between batches; used by
- * {@link readEdgesStrict} (the locked-section reader) — the hot recall path
- * (`readEdges`) keeps the synchronous parse. */
 async function parseEdgesJsonlYielding(raw: string, expectedType: GraphType): Promise<GraphEdge[]> {
   const lines = raw.split("\n");
   const edges: GraphEdge[] = [];
@@ -218,9 +209,6 @@ export async function readEdgesStrict(memoryDir: string, type: GraphType): Promi
   }
 }
 
-/**
- * Read edges from all enabled graph types.
- */
 export async function readAllEdges(
   memoryDir: string,
   graphCaps: Pick<GraphConstructionCapabilitySet, "entityGraph" | "timeGraph" | "causalGraph">,
@@ -374,9 +362,6 @@ export async function analyzeGraphHealth(
   return report;
 }
 
-/**
- * Detect causal signal phrases in text. Returns the first matched phrase, or null.
- */
 export function detectCausalPhrase(text: string): string | null {
   const lower = text.toLowerCase();
   for (const phrase of CAUSAL_PHRASES) {
@@ -393,12 +378,6 @@ export function detectCausalPhrase(text: string): string | null {
  *
  *   // After each memory write:
  *   await this.graphIndex.onMemoryWritten(memoryPath, frontmatter, threadId, recentInThread);
- */
-/**
- * Identity of one graph JSONL file used to validate the incremental edge cache
- * (issue #1904). An absent file (ENOENT) is recorded as the all-zero sentinel
- * `{ size: 0, mtimeMs: 0, ino: 0 }` so a later peer creation (ino becomes
- * non-zero) is detected as a change.
  */
 interface GraphFileMeta {
   size: number;
@@ -445,7 +424,6 @@ export class GraphIndex {
     if (this.edgeCache && Date.now() - this.edgeCache.loadedAt < GraphIndex.EDGE_CACHE_TTL_MS) {
       return this.edgeCache.allEdges;
     }
-    // Consistent snapshot (issue #1904, Codex): capture file identity BEFORE and
     // AFTER reading edges and retry if it changed, so `allEdges` and the recorded
     // `meta` baseline reflect the SAME on-disk state. Without this a peer append
     // landing mid-read would leave the cache holding edges that exclude the peer
@@ -482,13 +460,6 @@ export class GraphIndex {
     return allEdges;
   }
 
-  /**
-   * Identity ({ size, mtimeMs, ino }) of each ENABLED graph file (issue #1904).
-   * Missing files (ENOENT) and any stat error map to the all-zero sentinel so
-   * the baseline is fail-open: a later revalidation sees a mismatch (or a peer
-   * creation flipping ino from 0 to non-zero) and forces a full reload rather
-   * than trusting a stale incremental push.
-   */
   private async readEnabledGraphFileMeta(): Promise<Partial<Record<GraphType, GraphFileMeta>>> {
     const enabled: GraphType[] = [];
     if (this.cfg.entityGraphEnabled) enabled.push("entity");
@@ -506,7 +477,6 @@ export class GraphIndex {
     return meta;
   }
 
-  /** True iff both metadata maps carry identical identity for every key. */
   private graphFileMetaEqual(
     a: Partial<Record<GraphType, GraphFileMeta>>,
     b: Partial<Record<GraphType, GraphFileMeta>>,
@@ -522,16 +492,6 @@ export class GraphIndex {
     return true;
   }
 
-  /**
-   * Re-stat every graph file whose identity the cache just committed and return
-   * false if any has moved since (issue #1904, Codex). Closes the validation→
-   * in-place-push TOCTOU window: a peer process (concurrent CLI / daemon /
-   * decay job) can append between edgeFilesUnchangedExceptOurAppends()'s final
-   * stat and the allEdges.push(...). Without this re-check the cache would be
-   * accepted with identity predating the peer write and miss the peer edge for
-   * the TTL. A residual infinitesimal window (peer writes during this re-stat)
-   * remains and is TTL-bounded.
-   */
   private async edgeCacheIdentityUnchangedSinceCommit(): Promise<boolean> {
     if (!this.edgeCache) return false;
     for (const type of Object.keys(this.edgeCache.meta) as GraphType[]) {
@@ -604,11 +564,9 @@ export class GraphIndex {
     const timeOn = g ? g.timeGraph : this.cfg.timeGraphEnabled;
     const causalOn = g ? g.causalGraph : this.cfg.causalGraphEnabled;
     const ts = new Date().toISOString();
-    // Appended this call: warm-cache in-place push (#1904) + surgical rollback rows (N+14).
     const appended: GraphEdge[] = [];
 
     try {
-      // Entity graph
       if (entityOn && opts.entityRef && opts.entitySiblings?.length) {
         const siblings = opts.entitySiblings.slice(0, this.cfg.maxEntityGraphEdgesPerMemory);
         for (const sibling of siblings) {
@@ -625,7 +583,6 @@ export class GraphIndex {
         }
       }
 
-      // Time graph — link to most recent memory in same thread
       if (timeOn && opts.threadId && opts.recentInThread?.length) {
         const predecessor = opts.recentInThread[opts.recentInThread.length - 1];
         if (predecessor && predecessor !== opts.memoryPath) {
@@ -642,7 +599,6 @@ export class GraphIndex {
         }
       }
 
-      // Causal graph
       if (causalOn && opts.causalPredecessor) {
         const phrase = detectCausalPhrase(opts.content);
         if (phrase) {
@@ -669,10 +625,8 @@ export class GraphIndex {
       // Edge-cache coherence (issue #1904). Legacy behavior nulled the cache on
       // every write, paying a 2-4 s full re-read + parse on the next traversal.
       if (!this.edgeCache || Date.now() - this.edgeCache.loadedAt >= GraphIndex.EDGE_CACHE_TTL_MS) {
-        // Nothing warm, or the entry is past its 5-min TTL backstop — reload.
         this.edgeCache = null;
       } else if (this.cfg.graphEdgeCacheIncrementalEnabled === false) {
-        // Rollback lever: restore the pre-#1904 null-on-every-write behavior.
         this.edgeCache = null;
       } else {
         // Trust an in-place push ONLY when WE are the sole writer since load:
@@ -706,26 +660,6 @@ export class GraphIndex {
     return appended;
   }
 
-  /**
-   * Cross-process coherence check for the incremental edge cache (issue #1904).
-   *
-   * Returns true iff every ENABLED graph file's current identity is explained
-   * ENTIRELY by THIS call's own append — no other process wrote to any graph
-   * file since load. Per file:
-   *   - inode must be unchanged. A local append (`appendFile`) keeps the inode;
-   *     an external atomic temp+rename rewrite (e.g. the edge-decay job) changes
-   *     it, so an inode change — even one that preserves byte length, such as
-   *     decaying confidence 0.9->0.8 — forces a reload (Codex).
-   *   - a file WE appended to (delta > 0): size must equal baseline + our exact
-   *     appended bytes. If it was absent at load (sentinel ino 0), our append
-   *     created it, so we accept size === delta and adopt the new identity.
-   *   - a file we did NOT touch (delta 0): size AND mtime must be unchanged, so
-   *     an in-place equal-length rewrite (mtime bump) or a peer append (size
-   *     bump) both force a reload.
-   * On success it commits the new identity baseline so the next append
-   * revalidates against post-this-write truth. Fail-open: an unreadable file
-   * (non-ENOENT) returns false, forcing a full reload.
-   */
   private async edgeFilesUnchangedExceptOurAppends(appended: GraphEdge[]): Promise<boolean> {
     if (!this.edgeCache) return false;
     const expectedDelta: Partial<Record<GraphType, number>> = {};
@@ -768,7 +702,6 @@ export class GraphIndex {
           if (cur.ino !== base.ino || cur.size !== base.size + delta) return false;
         }
       } else {
-        // Untouched file: identity must be byte-for-byte unchanged.
         if (cur.ino !== base.ino || cur.size !== base.size || cur.mtimeMs !== base.mtimeMs) {
           return false;
         }
@@ -855,7 +788,6 @@ export class GraphIndex {
       const allEdges = await this.loadEdgesCached();
       if (deadlineExpired()) return [];
 
-      // Build adjacency index: from → edges, to → edges (bidirectional for entity/time, directional for causal).
       // Edges below the confidence floor are pruned at index time so neither
       // direct activation nor downstream BFS expansion can re-introduce them.
       const adj = new Map<string, GraphEdge[]>();
@@ -866,7 +798,6 @@ export class GraphIndex {
         if (conf < floor) continue;
         if (!adj.has(edge.from)) adj.set(edge.from, []);
         adj.get(edge.from)!.push(edge);
-        // Entity and time edges are bidirectional
         if (edge.type !== "causal") {
           if (!adj.has(edge.to)) adj.set(edge.to, []);
           adj.get(edge.to)!.push({ ...edge, from: edge.to, to: edge.from });
@@ -1023,7 +954,6 @@ export class GraphIndex {
         });
       }
 
-      // Apply lateral inhibition if enabled (Synapse-inspired competitive suppression)
       if (deadlineExpired()) return finalizeScores();
       if (this.cfg.graphLateralInhibitionEnabled && scores.size > 1) {
         const inhibited = applyLateralInhibition(scores, {

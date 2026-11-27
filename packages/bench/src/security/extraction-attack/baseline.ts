@@ -1,15 +1,3 @@
-/**
- * Baseline measurement runner for the ADAM memory-extraction harness.
- *
- * Produces a reproducible set of ASR numbers for every attacker tier against
- * a synthetic target that mirrors the current Remnic read-path behavior
- * (memory IDs disclosed, namespace ACL enforced on cross-namespace reads).
- *
- * This is intentionally separate from the unit tests: tests keep budgets
- * small so CI stays fast, whereas the baseline pushes the budget high enough
- * for each tier to plateau. The output feeds into
- * `docs/security/adam-baseline-2026-04.md`.
- */
 
 import {
   OTHER_NAMESPACE_MEMORIES,
@@ -55,10 +43,6 @@ export interface BaselineRow {
   readonly mitigated?: boolean;
 }
 
-/**
- * Scenarios used for the 2026-04 baseline. Kept deterministic via fixed seeds
- * so the document remains reproducible.
- */
 export const DEFAULT_BASELINE_SCENARIOS: readonly BaselineScenario[] =
   Object.freeze([
     {

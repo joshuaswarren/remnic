@@ -1,21 +1,3 @@
-// Embedding-index generation semantics for offline sync (issue #3146, PR
-// #3148). Extracted from offline-sync.ts so the god-file line-count ratchet
-// does not grow when the rules gain behavior. The snapshot walker treats
-// every `state/embeddings/` shard set — or a legacy `state/embeddings.json`
-// marker — as ONE generation, in both directions:
-//
-//   1. Atomic replacement (apply side): an incoming generation is staged
-//      complete, verified byte-for-byte, and published through the store's
-//      single backup-swap state machine. A crash or write failure can never
-//      leave a mix of the local and incoming generation on disk, and a
-//      local-only shard of a replaced generation is removed by the swap, not
-//      merged into the incoming set.
-//   2. Filter-to-omit, never filter-to-delete (push side): when an exclusion
-//      filter removes ANY member of a local generation from a push, the
-//      WHOLE generation is omitted — files and deletion metadata — and the
-//      receiver keeps its copy. A filtered generation must never look
-//      deleted, and a partially filtered snapshot must never look like a
-//      complete generation.
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -55,10 +37,6 @@ import {
 const EMBEDDING_MARKER_BASENAME = "embeddings.json";
 export const EMBEDDING_SHARD_DIR_BASENAME = "embeddings";
 
-/**
- * Canonical `state` dir prefix ("state" or "namespaces/<ns>/state") for a
- * path's segments, or null when the path is not canonical runtime state.
- */
 function canonicalStateDirPrefix(parts: string[]): string | null {
   if (parts[0] === "state") return "state";
   if (parts[0] === "namespaces" && parts.length >= 4 && parts[2] === "state") {
@@ -67,7 +45,6 @@ function canonicalStateDirPrefix(parts: string[]): string | null {
   return null;
 }
 
-/** The sharded-generation directory when `relPath` is one of its shards. */
 export function embeddingShardDirOf(relPath: string): string | null {
   const parts = relPath.split("/");
   if (parts.length < 3) return null;
@@ -77,17 +54,11 @@ export function embeddingShardDirOf(relPath: string): string | null {
   return parts.slice(0, -1).join("/");
 }
 
-/**
- * True when `dirPath` is a canonical embeddings generation dir
- * (`state/embeddings` or `namespaces/<ns>/state/embeddings`). Encodes the
- * snapshot-field shape contract without a ReDoS-shaped literal (issue #2439).
- */
 export function isEmbeddingGenerationDirPath(dirPath: string): boolean {
   const membership = embeddingGenerationMembership(`${dirPath}/shard-0000.json`);
   return membership !== null && membership.shardDir === dirPath;
 }
 
-/** The state dir when `relPath` is the legacy single-file marker. */
 export function embeddingMarkerDirOf(relPath: string): string | null {
   const parts = relPath.split("/");
   if ((parts[parts.length - 1] ?? "") !== EMBEDDING_MARKER_BASENAME) return null;
@@ -113,14 +84,6 @@ export function embeddingGenerationMembership(relPath: string): EmbeddingGenerat
   return null;
 }
 
-/**
- * Advance the node-local generation marker around one out-of-band destructive
- * write or delete of a generation member (issue #3182); the fence reasserts
- * lock ownership so a stale-broken lock never publishes a stable marker over
- * a peer's write. Callers must not already hold the generation lock — the
- * snapshot removal deletes members under it, which is why converge hooks its
- * own call sites, not the shared IO adapter.
- */
 export async function advanceEmbeddingGenerationMarker<T>(
   rootAbs: string,
   membership: EmbeddingGenerationMembership | null,
@@ -149,13 +112,10 @@ export async function advanceEmbeddingGenerationMarker<T>(
 }
 
 export interface IncomingEmbeddingGenerations {
-  /** Generation dirs with at least one incoming shard. */
   shardDirs: Set<string>;
-  /** State dirs whose incoming snapshot carries the legacy marker. */
   legacyMarkerDirs: Set<string>;
 }
 
-/** Classify incoming snapshot paths into embedding generations. */
 export function detectIncomingEmbeddingGenerations(incomingPaths: Iterable<string>): IncomingEmbeddingGenerations {
   const shardDirs = new Set<string>();
   const legacyMarkerDirs = new Set<string>();
@@ -205,7 +165,6 @@ export interface EmbeddingGenerationTransactionIo {
 
 export interface EmbeddingGenerationTransactionInput {
   root: SafeArchiveRoot;
-  /** The generation dir, e.g. `state/embeddings`. */
   shardDirRel: string;
   /** Incoming shard rel paths — the complete incoming sharded generation. */
   incomingShardPaths: string[];
@@ -224,36 +183,9 @@ export interface EmbeddingGenerationTransactionInput {
   /** Verified incoming content by rel path (absent for shards the metadata
    * hydration skipped because the local hash already matches). */
   incomingBuffers: ReadonlyMap<string, Buffer>;
-  /**
-   * Shared-base states (pre-census): lets the transaction re-evaluate
-   * divergence against ACTUAL disk contents while holding the mutation
-   * lock, instead of trusting the census taken before the lock
-   * (codex P1: a daemon mutation between census and lock was discarded).
-   */
   baseStates?: ReadonlyMap<string, { sha256: string }>;
-  /**
-   * Paths this apply is pre-authorized to remove (changeset deletes / remote
-   * tombstones). A base member absent from the under-lock census is
-   * divergence UNLESS it is pre-authorized — the retry after a response loss
-   * must re-apply idempotently instead of failing as diverged (#3150
-   * review). A pre-authorized member still present with a changed digest
-   * defers as before, so a daemon rewrite is never silently swept.
-   */
   justifiedRemovals?: ReadonlySet<string>;
-  /**
-   * Deletion revisions (mtimeMs by path) to record through the delete hook
-   * AFTER the swap publishes. Swept members bypass the per-file delete path,
-   * so without this their tombstones are lost and a later peer without
-   * shared-base evidence can reintroduce the removed shards (codex P1).
-   */
   deletionMtimeByPath?: ReadonlyMap<string, number>;
-  /**
-   * True when the incoming set claims to be a FRESH creation but carries no
-   * base evidence (manifested changeset members are all base-less upserts):
-   * a non-empty local generation must match the incoming set exactly or the
-   * apply defers as diverged, because the empty-base divergence skip would
-   * otherwise silently replace it (#3150 review).
-   */
   freshCreateClaim?: boolean;
   io: EmbeddingGenerationTransactionIo;
   now: number;
@@ -263,9 +195,7 @@ export interface EmbeddingGenerationTransactionResult {
   shardDirRel: string;
   upserted: number;
   deleted: number;
-  /** nextBase states for files the transaction published. */
   writtenStates: Map<string, OfflineSyncFileState>;
-  /** nextBase paths the transaction removed (stale shards, demoted marker). */
   removedPaths: Set<string>;
   /** Paths the per-file apply loop must skip — all handled here. */
   handledPaths: Set<string>;
@@ -308,11 +238,6 @@ async function hydratedIncomingBuffer(
  * publish through the shared backup-swap. Any failure before the swap leaves
  * the local generation untouched; a crash in the swap gap is rolled back by
  * the store's recovery on next use.
- */
-/**
- * Enumerate and hash the ACTUAL local generation on disk (legacy marker +
- * every shard) through the configured secure IO — the fresh in-lock census
- * the stale pre-lock apply census cannot be trusted for (codex P1).
  */
 /** Scope the shared vault base to this physical embedding generation. */
 function baseStatesForGeneration(
@@ -375,27 +300,12 @@ export async function applyEmbeddingGenerationTransaction(
       await resolveSafeArchiveTarget(root, `${stateDirRel}/embedding-fallback-status.json`)
     );
 
-    // 1. Close a pending rename gap (old generation restored) before staging:
-    //    the swap below must never build on a half-replaced generation. The
-    //    fixed backup path is validated first: a planted symlink (or any
-    //    escape) must fail closed instead of being renamed into the published
-    //    position or removed through. The restored target is re-resolved so a
-    //    symlinked restoration cannot slip past the subsequent IO.
     const backupRel = `${stateDirRel}/embeddings.pre-replace.tmp`;
     await resolveSafeArchiveTarget(root, backupRel);
     if (await store.recoverIfInterrupted(fence)) {
       await resolveSafeArchiveTarget(root, shardDirRel);
     }
 
-    // Codex P1: the apply census was taken BEFORE this lock, so it may be
-    // stale. Re-enumerate and hash the ACTUAL local generation through the
-    // secure IO and defer the WHOLE generation when the disk no longer
-    // matches the shared base — a concurrent daemon mutation must never be
-    // silently discarded by the swap.
-    // No shared base (fresh catch-up) = no divergence semantics to protect,
-    // UNLESS the apply claims a fresh creation (manifested base-less
-    // upserts): an existing local generation must then match the incoming
-    // set exactly or defer, instead of being silently replaced.
     const justifiedRemovals = input.justifiedRemovals ?? new Set<string>();
     const baseStates = baseStatesForGeneration(input.baseStates, shardDirRel);
     if (baseStates.size > 0) {
@@ -404,10 +314,6 @@ export async function applyEmbeddingGenerationTransaction(
       const censusArr = [...localCensus].map(([relPath, sha256]) => ({ path: relPath, sha256 }));
       const deferrals = divergedEmbeddingGenerationDeferrals({
         incomingFiles: incomingGenerationStates(input),
-        // A pre-authorized removal keeps its base entry only while still on
-        // disk (digest auth): present members are compared normally — a
-        // daemon rewrite still defers — while an absent member is already
-        // applied and must not diverge the retry (#3150 review).
         baseFiles: baseArr.filter((member) => !justifiedRemovals.has(member.path) || localCensus.has(member.path)),
         currentFiles: censusArr,
       });
@@ -416,9 +322,6 @@ export async function applyEmbeddingGenerationTransaction(
         censusArr.some((member) =>
           !baseStates.has(member.path) &&
           !justifiedRemovals.has(member.path) &&
-          // An incoming member found in the census is the apply's own
-          // already-published work (response-loss retry), not a local
-          // addition; its bytes were verified above.
           !incomingShardPaths.has(member.path)) ||
         baseArr.some((member) => !localCensus.has(member.path) && !justifiedRemovals.has(member.path));
       if (deferrals.length > 0 || addedOrRemovedSinceBase) {
@@ -472,10 +375,6 @@ export async function applyEmbeddingGenerationTransaction(
 
     const published = new Map<string, Buffer>();
     let identity: EmbeddingIndexIdentity | null = null;
-  // Divergence re-evaluation happens HERE, under the lock, against real
-  // disk bytes: the apply-side census may already be stale.
-  // 2. Build the complete incoming generation (final rel path → plaintext
-  //    bytes) and validate every document BEFORE touching local state.
   if (input.incomingMarker) {
     const markerBuffer = await hydratedIncomingBuffer(
       io,
@@ -501,9 +400,6 @@ export async function applyEmbeddingGenerationTransaction(
     }
   } else {
     for (const relPath of input.incomingShardPaths) {
-      // Metadata-only pulls skip content whose local hash already matches
-      // the incoming record: the LOCAL bytes ARE the incoming content, so
-      // read and hash-verify them instead of failing (codex rounds 5-6).
       const state = input.incomingShardStates.get(relPath);
       const buffer = await hydratedIncomingBuffer(
         io,
@@ -540,10 +436,6 @@ export async function applyEmbeddingGenerationTransaction(
     try {
       await mkdir(stagingAbs, { recursive: true });
 
-      // 3. Stage the complete generation. With storage-backed IO the staged
-      //    ciphertext binds its FINAL canonical path (`aadRelPath`), so after
-      //    the directory swap it decrypts at the published path — a physical
-      //    staging-path AAD would make the published generation unreadable.
       for (const [relPath, buffer] of published) {
         const stagedRel = `${stagingRel}/${path.basename(relPath)}`;
         const stagedAbs = await resolveSafeArchiveTarget(root, stagedRel);
@@ -561,8 +453,6 @@ export async function applyEmbeddingGenerationTransaction(
         }
       }
 
-      // 4. Verify the staged bytes against the incoming content before the
-      //    published generation is touched at all.
       for (const [relPath, buffer] of published) {
         const stagedRel = `${stagingRel}/${path.basename(relPath)}`;
         const stagedAbs = await resolveSafeArchiveTarget(root, stagedRel);
@@ -581,9 +471,6 @@ export async function applyEmbeddingGenerationTransaction(
         }
       }
 
-      // 5. Publish with the ONE swap state machine shared with persist(). The
-      //    old directory moves aside wholesale, so local shards absent from
-      //    the incoming generation are removed by the swap — never merged.
       const localShardRels = (
         await readdir(shardDirAbs).catch((err) => {
           if ((err as NodeJS.ErrnoException).code === "ENOENT") return [] as string[];
@@ -608,8 +495,6 @@ export async function applyEmbeddingGenerationTransaction(
       let deleted = removedPaths.size;
       let markerCleanupFailed = false;
       if ((await pathExists(markerAbs)) && !input.incomingMarker && !input.incomingMarkerPresent) {
-        // Publication is already committed. Keep its base advancement even if
-        // marker cleanup fails, retaining the marker in base for a retry.
         try {
           if (io.deleteFile) await io.deleteFile({ root: root.abs, path: markerRel, filePath: markerAbs });
           else await rm(markerAbs, { force: true });
@@ -620,15 +505,6 @@ export async function applyEmbeddingGenerationTransaction(
           log.warn(`embedding generation ${shardDirRel}: marker cleanup deferred after publish: ${err}`);
         }
       }
-      // Swept members bypass the per-file delete path, so record their
-      // deletion revisions here — mirroring the whole-generation removal
-      // path — or a later peer without shared-base evidence can reintroduce
-      // the removed shards (codex P1). An empty map still records (with
-      // `now`) when the caller declared a deletion context, so tombstones
-      // whose changeset deletes omit mtimeMs are not lost. Every member
-      // gets an attempt before the failure propagates: the push side then
-      // retries a fully-recorded apply or nothing, and the
-      // justified-removals exemption keeps that retry idempotent.
       if (input.deletionMtimeByPath !== undefined && io.deleteFile) {
         let firstTombstoneError: unknown = null;
         for (const relPath of removedPaths) {
@@ -661,8 +537,6 @@ export async function applyEmbeddingGenerationTransaction(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Push-side whole-generation omission
 // ---------------------------------------------------------------------------
 
 export interface EmbeddingGenerationOmissionOptions {
@@ -730,9 +604,6 @@ export async function computeOmittedEmbeddingGenerationPaths(
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
     for (const name of shardNames) memberRels.push(`${shardDirRel}/${name}`);
-    // A tombstoned member is part of the generation even though it is
-    // already absent on disk: its exclusion must omit the WHOLE generation,
-    // not just drop its revision individually (codex round 6, XkFf).
     for (const tombstoned of options.tombstonedPaths ?? []) {
       const membership = embeddingGenerationMembership(tombstoned);
       if (membership?.shardDir === shardDirRel && !memberRels.includes(tombstoned)) {
@@ -774,7 +645,6 @@ export async function assertEmbeddingGenerationStillIncluded(
   }
 }
 
-/** True when a path belongs to a generation the push omitted. */
 export function isPathInOmittedEmbeddingGeneration(relPath: string, omittedDirs: ReadonlySet<string>): boolean {
   const membership = embeddingGenerationMembership(relPath);
   return membership !== null && omittedDirs.has(membership.shardDir);
@@ -812,8 +682,6 @@ export async function resolvePushEmbeddingGenerationState(options: {
     rootAbs: options.rootAbs,
     userExcludeRegexps: options.userExcludeRegexps,
     excludeFile: options.excludeFile,
-    // RAW pre-filter tombstones: a deleted member's exclusion must omit the
-    // whole generation even though the member is already absent on disk.
     tombstonedPaths: options.deletions.map((deletion) => deletion.path),
     isExcludedRelPath: (relPath) =>
       matchesOfflineSyncDefaultExclude(relPath) ||
@@ -860,19 +728,10 @@ export function storageBackedIndexStoreIo(storage: StorageBackedIndexIoHost): Em
 
 export interface EmbeddingGenerationRemovalInput {
   root: SafeArchiveRoot;
-  /** The generation dir, e.g. `state/embeddings`. */
   shardDirRel: string;
   io: Pick<EmbeddingGenerationTransactionIo, "deleteFile" | "readFile">;
-  /** Incoming deletion revisions by path, threaded so each removed member's
-   * tombstone is recorded through the configured delete hook AFTER the
-   * atomic empty publication (round 6: raw removal must not lose them). */
   deletionMtimeByPath?: ReadonlyMap<string, number>;
   now: number;
-  /**
-   * Shared-base states: when the live generation diverged from the base
-   * (daemon indexed, added, or removed members after the census), the
-   * removal DEFERS instead of erasing the local work (codex P1).
-   */
   baseStates?: ReadonlyMap<string, { sha256: string }>;
 }
 
@@ -908,7 +767,6 @@ export async function applyEmbeddingGenerationRemoval(
     // When the live generation no longer matches the shared base (daemon
     // indexed, added, or removed members), DEFER the removal — the local
     // work survives and a later sync re-evaluates with a fresh base.
-    // No shared base (fresh catch-up) = no divergence semantics to protect.
     const baseStates = baseStatesForGeneration(input.baseStates, shardDirRel);
     if (baseStates.size > 0) {
       const localCensus = await censusGenerationState(io, root, markerRel, markerAbs, shardDirAbs, shardDirRel);
@@ -952,13 +810,6 @@ export async function applyEmbeddingGenerationRemoval(
       removedPaths.add(markerRel);
       deleted += 1;
     }
-    // Preserve the replicated tombstones through the configured hooks AFTER
-    // the atomic publication: raw removal must not lose the deletion
-    // revisions, or a downstream sync without base evidence retains stale
-    // entries. EVERY member (shards and marker) is recorded exactly ONCE with
-    // the remote revision when known, so a first hook call without a revision
-    // is never overwritten by an older replicated one. The storage hook
-    // tolerates already-absent paths.
     let firstError: unknown = null;
     for (const relPath of removedPaths) {
       const memberAbs = relPath === markerRel ? markerAbs : await resolveSafeArchiveTarget(root, relPath);
@@ -991,7 +842,6 @@ export async function applyEmbeddingGenerationRemoval(
   });
 }
 
-/** Defer a whole generation when the shared remote base would erase a local change. */
 export function divergedEmbeddingGenerationDeferrals(options: {
   incomingFiles: readonly { path: string; sha256: string }[];
   baseFiles: readonly { path: string; sha256: string }[];
@@ -1004,8 +854,6 @@ export function divergedEmbeddingGenerationDeferrals(options: {
   const conflictedDirs = new Set<string>();
   for (const relPath of new Set([...base.keys(), ...current.keys(), ...incomingByPath.keys()])) {
     const membership = embeddingGenerationMembership(relPath);
-    // Without a shared generation base this is an initial remote-authoritative
-    // import, not evidence of local indexing after a synchronized snapshot.
     if (!membership || !sharedDirs.has(membership.shardDir)) continue;
     const currentSha = current.get(relPath);
     if (currentSha !== base.get(relPath) && currentSha !== incomingByPath.get(relPath)) {
@@ -1014,8 +862,6 @@ export function divergedEmbeddingGenerationDeferrals(options: {
   }
   if (conflictedDirs.size === 0) return [];
   const deferred: string[] = [];
-  // Include local/base members too: an all-absent remote generation still
-  // needs a concrete deferral so its removal cannot erase a local change.
   for (const relPath of new Set([...base.keys(), ...current.keys(), ...incomingByPath.keys()])) {
     const membership = embeddingGenerationMembership(relPath);
     if (membership && conflictedDirs.has(membership.shardDir)) deferred.push(relPath);
@@ -1024,9 +870,6 @@ export function divergedEmbeddingGenerationDeferrals(options: {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot-side generation routing, extracted from applyOfflineSyncSnapshot
-// for issue #3150 so the changeset path could share the machinery without
-// growing the offline-sync.ts ratchet ceiling. Behavior-preserving.
 // ---------------------------------------------------------------------------
 
 export interface IncomingEmbeddingGenerationApply {
@@ -1049,13 +892,6 @@ export interface IncomingEmbeddingGenerationApplyOptions {
   now: number;
 }
 
-/**
- * Snapshot-side generation routing, extracted from applyOfflineSyncSnapshot
- * for issue #3150 (the changeset path needed the same machinery and the
- * offline-sync.ts line ratchet had no headroom). Incoming generations replace
- * as ONE unit through the shared locked transaction. Behavior-preserving —
- * the #3148 regression suites own this contract.
- */
 export async function applyIncomingEmbeddingGenerations(
   options: IncomingEmbeddingGenerationApplyOptions,
 ): Promise<IncomingEmbeddingGenerationApply> {
@@ -1070,7 +906,6 @@ export async function applyIncomingEmbeddingGenerations(
     if (membership) deferredGenerationDirs.add(membership.shardDir);
   }
   const transactionResults: EmbeddingGenerationTransactionResult[] = [];
-  // Included and omitted cannot describe the same generation.
   for (const shardDir of generationDirs) {
     if (options.omittedGenerationDirs.has(shardDir)) {
       throw new EmbeddingIndexStorageError(
@@ -1078,10 +913,6 @@ export async function applyIncomingEmbeddingGenerations(
       );
     }
   }
-  // Fail closed BEFORE any publication: custom storage IO (encrypted or
-  // otherwise) without the staging pair would make the generation transaction
-  // fall back to unencrypted raw writes — a plaintext downgrade of the staged
-  // generation. Callers must wire both staging hooks (the CLI does).
   if (
     generationDirs.size > 0 &&
     options.customIoPresent &&
@@ -1097,10 +928,6 @@ export async function applyIncomingEmbeddingGenerations(
       incomingGenerations.legacyMarkerDirs.has(shardDir) &&
       !incomingGenerations.shardDirs.has(shardDir)
     ) {
-      // Cross-layout: an incoming legacy marker replaces a local sharded
-      // generation as a whole (codex round 4). When shards are ALSO
-      // incoming, the sharded set is the generation and the marker is
-      // written as an inert artifact by the per-file loop below.
       const markerRel = [...options.incomingMap.keys()].find(
         (relPath) => embeddingMarkerDirOf(relPath) === shardDir.slice(0, -`/${EMBEDDING_SHARD_DIR_BASENAME}`.length),
       );
@@ -1144,11 +971,6 @@ export async function applyIncomingEmbeddingGenerations(
       now: options.now,
     }));
   }
-  // Whole-generation removal (codex round 6 P1): when the remote deleted a
-  // previously shared sharded index, the deletion revisions cover EVERY
-  // local member. Remove that generation as ONE atomic swap instead of
-  // deleting shards one-by-one, so a crash or delete failure can never
-  // expose a partial same-identity generation serving missing memories.
   const localGenerationDirs = new Set<string>();
   for (const relPath of options.currentMap.keys()) {
     const membership = embeddingGenerationMembership(relPath);
@@ -1166,15 +988,7 @@ export async function applyIncomingEmbeddingGenerations(
       (relPath) => embeddingGenerationMembership(relPath)?.shardDir === shardDir,
     );
     if (localMembers.length === 0) continue;
-    // Tombstone or shared-base absence authorizes whole-generation removal.
     const baseMembers = localMembers.filter((relPath) => options.baseMap.has(relPath));
-    // Tombstone evidence is satisfied by the members the REMOTE knew: the
-    // remote cannot tombstone local-only extras or an inert legacy marker,
-    // and the removal sweeps those once the remote deletion is established.
-    // Non-empty same-generation tombstones establish remote absence on
-    // their own: they may name shards already absent locally (removed in an
-    // earlier round), so the set is NOT required to intersect localMembers
-    // (codex round 6, XiOb).
     const tombstonedMembers =
       options.deletionMtimeByPath === undefined
         ? []

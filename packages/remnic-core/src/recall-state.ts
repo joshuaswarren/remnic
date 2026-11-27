@@ -20,7 +20,6 @@ import {
 export type { IncludedMemory } from "./included-memories.js";
 export { coerceIncludedMemories } from "./included-memories.js";
 
-// Session keys are caller-supplied (host session IDs) and land in indexed
 // assignments on plain-object state. A key matching one of these would
 // pollute Object.prototype (or read junk off it), so every read/write
 // through this module rejects them — same contract load() already enforced.
@@ -153,7 +152,6 @@ export function clampGraphRecallExpandedEntries(
             : 0,
         graphType,
       };
-      // Issue #681 PR 3/3: clamp `edgeConfidence` into [0, 1] when present.
       // Older snapshots without the field round-trip cleanly via the
       // optional shape; legacy callers always rendered as 1.0.
       if (
@@ -180,24 +178,6 @@ export function clampGraphRecallExpandedEntries(
 type LastRecallState = Record<string, LastRecallSnapshot>;
 type StateFileWriter = (filePath: string, content: string) => Promise<void>;
 
-/**
- * Deep-copy a RecallTierExplain block.  Used by both the write path
- * (so caller mutation after `record()` cannot tear the persisted
- * snapshot) and the read path (so caller mutation after `get()` /
- * `getMostRecent()` cannot tear the in-memory store).
- *
- * Uses structuredClone so future additions to RecallTierExplain do
- * not silently share references through hand-enumerated fields —
- * matching the pattern used elsewhere in the codebase (e.g.,
- * qmd-recall-cache.ts).  The payload is pure JSON-shaped data, so
- * structuredClone is both safe and complete here.
- */
-/**
- * Stale-snapshot identity guard shared by the annotate methods (issue #518):
- * a writeNonce match wins outright; otherwise traceId (when expected) and
- * recordedAt are compared. Extracted so every annotation surface applies
- * identical guards (CLAUDE.md rule 22).
- */
 function cloneTierExplain(
   tierExplain: RecallTierExplain | undefined,
 ): RecallTierExplain | undefined {
@@ -289,12 +269,6 @@ const DEFAULT_TIER_MIGRATION_STATUS: TierMigrationStatusSnapshot = {
   },
 };
 
-/**
- * Suffix marking an impression spill CLAIMED for commit but not yet deleted.
- * The crash-safe drain renames `<uuid>.jsonl` -> `<uuid>.jsonl.claimed` before
- * committing its rows, mirroring the lifecycle ledger's claim/commit protocol
- * (#2033).
- */
 const CLAIMED_IMPRESSION_SPILL_SUFFIX = ".claimed";
 
 /**
@@ -331,7 +305,6 @@ export class LastRecallStore {
   private readonly impressionsLockOptions?: Pick<HeldFileLockOptions, "maxWaitMs" | "pollMs">;
   private state: LastRecallState = {};
   private stateWriteChain: Promise<void> = Promise.resolve();
-  // Serializes the rotate-then-append critical section so concurrent record()
   // calls never interleave rotation renames with each other's appends (#1910).
   private impressionsWriteChain: Promise<void> = Promise.resolve();
 
@@ -382,7 +355,6 @@ export class LastRecallStore {
   }
 
   get(sessionKey: string): LastRecallSnapshot | null {
-    // Defensive copy: callers must not be able to mutate internal state
     // by reaching into array/object fields on the returned snapshot.
     if (isUnsafeStateKey(sessionKey)) return null;
     return cloneLastRecallSnapshot(this.state[sessionKey] ?? null);
@@ -391,7 +363,6 @@ export class LastRecallStore {
   getMostRecent(): LastRecallSnapshot | null {
     const snapshots = Object.values(this.state);
     if (snapshots.length === 0) return null;
-    // Secondary key on sessionKey keeps the sort stable when two
     // snapshots share a recordedAt timestamp (CLAUDE.md rule 19).
     snapshots.sort((a, b) => {
       const byTime = b.recordedAt.localeCompare(a.recordedAt);
@@ -451,7 +422,6 @@ export class LastRecallStore {
     const now = new Date().toISOString();
     const queryHash = createHash("sha256").update(opts.query).digest("hex");
 
-    // Build the snapshot from opts, then deep-copy it via
     // cloneLastRecallSnapshot so caller arrays/objects passed in
     // `opts` cannot retain a live reference to the persisted state and
     // tear it after `record()` returns.
@@ -492,7 +462,6 @@ export class LastRecallStore {
 
     this.state[opts.sessionKey] = snapshot;
 
-    // Keep the state bounded; the impression log is append-only.
     const keys = Object.keys(this.state);
     if (keys.length > 50) {
       const ordered = keys
@@ -511,7 +480,6 @@ export class LastRecallStore {
 
     if (opts.appendImpression !== false) {
       const line = JSON.stringify(snapshot) + "\n";
-      // Chain onto the previous impression write so rotation + append run as one
       // serialized critical section — concurrent record() calls can never
       // interleave a rename with another call's append (#1910). `.catch` before
       // the link keeps a prior failure from poisoning the chain.
@@ -552,7 +520,6 @@ export class LastRecallStore {
 
   private async spillImpression(line: string): Promise<void> {
     await ensureContainedSpillDir(this.impressionsPendingDir);
-    // Write to a temp name the drain's `.jsonl` lister ignores, then atomically
     // rename to the final `<uuid>.jsonl` (#2033). writeFile creates the path
     // before its bytes are durable, so writing straight to the final name lets a
     // concurrent lock holder's drain read/rename/delete a partial spill and
@@ -609,7 +576,6 @@ export class LastRecallStore {
 
   private async appendImpressionSerialized(line: string): Promise<void> {
     await mkdir(path.dirname(this.impressionsPath), { recursive: true });
-    // Every active-file write goes under the shared cross-process rotation lock,
     // even when THIS writer's local rotation is disabled (`impressionsRotateBytes
     // <= 0`). A peer process with rotation enabled shares this lock and may
     // rename the active inode to `.1` at any moment, so an unlocked append could
@@ -621,7 +587,6 @@ export class LastRecallStore {
       lockPath,
       { staleMs: 30_000, ...this.impressionsLockOptions },
       async (acquired) => {
-        // withHeldFileLock falls back to task(false) when it cannot acquire the
         // lock within the budget. Do NOT append to the active file unlocked: a
         // peer holding the lock may be mid-rotation, so an unlocked append could
         // land in the inode it renames to `.1` (an offline-sync-excluded
@@ -669,7 +634,6 @@ export class LastRecallStore {
       lockPath,
       { staleMs: 30_000, ...this.impressionsLockOptions },
       async (acquired) => {
-        // A peer holds the lock (mid-rotation or mid-append). We MUST NOT touch
         // the active file unlocked (#2033), so the spills stay in the
         // offline-sync-EXCLUDED pending queue. Report the drain as DEFERRED
         // (pendingDeferred=true) so the caller does not build a snapshot that
@@ -678,7 +642,6 @@ export class LastRecallStore {
         if (!acquired) return;
         acquiredLock = true;
         folded = await this.foldPendingImpressionsAndAppend(null);
-        // Even WITH the lock, a spill the fold could not claim or a `.claimed`
         // orphan a failed commit left behind keeps durable rows in the excluded
         // queue. Treat that as an incomplete drain so the caller retries/aborts
         // rather than snapshotting an active file that omits them (#2033).
@@ -740,7 +703,6 @@ export class LastRecallStore {
       const content = await readFile(filePath, "utf-8");
       const unit = content.length === 0 || content.endsWith("\n") ? content : `${content}\n`;
       const unitBytes = Buffer.byteLength(unit, "utf-8");
-      // Drain-only fold must never push a drained row into a sync-excluded
       // archive (#2033). Once the active file cannot take this spill under the
       // cap without rotating, stop: the remaining spills stay durable in the
       // pending queue and the drain reports itself deferred. A lone spill larger
@@ -756,12 +718,10 @@ export class LastRecallStore {
       try {
         activeSize = await this.appendImpressionUnit(unit, activeSize, drainOnly);
       } catch (err) {
-        // Commit failed: roll this spill's claim back so it retries on the next
         // lock holder's drain instead of being lost.
         await rename(claimedPath, filePath).catch(() => undefined);
         throw err;
       }
-      // Commit is durable: delete the claimed file. A delete that fails leaves a
       // `.claimed` orphan the next drain recovers and re-commits — a
       // writeNonce-collapsible duplicate, never a lost row (#2033).
       await unlink(claimedPath).catch(() => undefined);
@@ -836,7 +796,6 @@ export class LastRecallStore {
    */
   private async shiftImpressionArchives(): Promise<void> {
     const keep = this.impressionsRotateKeep;
-    // Drop the archive that would fall off the end, then shift down: .(keep-1)
     // -> .keep, ..., .1 -> .2, active -> .1.
     try {
       await rm(`${this.impressionsPath}.${keep}`, { force: true });

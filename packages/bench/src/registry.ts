@@ -1,6 +1,3 @@
-/**
- * Published benchmark registry for @remnic/bench phase 1.
- */
 
 import type { BenchmarkDefinition, BenchmarkResult, ResolvedRunBenchmarkOptions } from "./types.js";
 import {

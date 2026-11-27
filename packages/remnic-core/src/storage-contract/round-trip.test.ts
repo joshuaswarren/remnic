@@ -1,15 +1,3 @@
-/**
- * Issue #1533 — Phase A contract test: write/read/list/delete round-trips.
- *
- * For EVERY category directory (iterated from ALL_CATEGORY_DIRS, never hardcoded
- * — rule 53's cousin), exercises the documented public surface end to end:
- *
- *   writeMemory → readMemoryByPath → getMemoryById → readAllMemories → invalidateMemory
- *
- * Asserts content fidelity, frontmatter integrity, hash identity, and that
- * deleted memories disappear from every read path. This is the round-trip
- * contract that the 51 importers depend on; Phase B moves MUST keep it green.
- */
 
 import assert from "node:assert/strict";
 import { mkdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
@@ -88,33 +76,28 @@ for (const category of ROUND_TRIP_CATEGORIES) {
         tags: ["round-trip"],
       });
 
-      // getMemoryById
       const byId = await storage.getMemoryById(id);
       assert.ok(byId, "getMemoryById returned null");
       assert.equal(byId!.content, content);
       assert.equal(byId!.frontmatter.category, category);
 
-      // readMemoryByPath — the path comes from the byId result
       const byPath = await storage.readMemoryByPath(byId!.path);
       assert.ok(byPath, "readMemoryByPath returned null");
       assert.equal(byPath!.content, content);
       assert.equal(byPath!.frontmatter.id, id);
 
-      // The file landed under the right category dir
       const expectedDir = categoryDirName(category);
       assert.ok(
         byId!.path.includes(`/${expectedDir}/`),
         `${category} memory landed in ${byId!.path}, expected under ${expectedDir}/`,
       );
 
-      // list contains it
       const all = await storage.readAllMemories();
       assert.ok(
         all.some((m) => m.frontmatter.id === id),
         "readAllMemories did not include the written memory",
       );
 
-      // delete (invalidate) removes it from every read path
       const deleted = await storage.invalidateMemory(id);
       assert.equal(deleted, true, "invalidateMemory should return true on success");
 
@@ -346,13 +329,8 @@ test("round-trip: archive fallback skips a bad file and returns readable sibling
 });
 
 test("round-trip: ALL_CATEGORY_DIRS is exactly facts + every CATEGORY_DIR_MAP value", () => {
-  // ALL_CATEGORY_DIRS must contain directory NAMES (facts, decisions, ...) not
-  // singular keys (fact, decision, ...). This guards the parity between
-  // categoryDirName() and the scan roots — a divergence would silently drop
-  // a category from recall.
   const expected = new Set(["facts", ...Object.values(CATEGORY_DIR_MAP)]);
   assert.deepEqual(new Set(ALL_CATEGORY_DIRS), expected);
-  // No singular keys leaked in
   for (const dir of ALL_CATEGORY_DIRS) {
     assert.ok(!Object.hasOwn(CATEGORY_DIR_MAP, dir),
       `${dir} is a singular category key, not a directory name`);
@@ -375,29 +353,23 @@ test("question-queue: writeQuestion → readQuestions → resolveQuestion round-
     assert.equal(typeof id, "string");
     assert.match(id, /^q-/);
 
-    // readQuestions returns it
     const questions = await storage.readQuestions();
     const q = questions.find((x) => x.id === id);
     assert.ok(q, "readQuestions must include the just-written question");
     assert.equal(q!.question, "What database are we on?");
     assert.equal(q!.resolved, false);
 
-    // questions/ is a RECALL_NON_MEMORY_DIRS entry — it must NOT appear in readAllMemories
     const all = await storage.readAllMemories();
     assert.ok(
       !all.some((m) => m.frontmatter.id === id),
       "questions must not leak into the memory corpus (readAllMemories)",
     );
 
-    // unresolvedOnly filter works
     const unresolved = await storage.readQuestions({ unresolvedOnly: true });
     assert.ok(unresolved.some((x) => x.id === id));
 
-    // resolve marks it resolved
     const resolved = await storage.resolveQuestion(id);
     assert.equal(resolved, true);
-    // Directory mtimes are only a cross-process hint and may be coarser than
-    // the cache timestamp. Same-process resolution must invalidate directly.
     await utimes(path.join(storage.dir, "questions"), new Date(0), new Date(0));
 
     const afterResolve = await storage.readQuestions({ unresolvedOnly: true });

@@ -129,11 +129,8 @@ export class CodexMemoryExtensionPublisher implements MemoryExtensionPublisher {
 
     ctx.log.info(`Publishing Codex memory extension to ${extensionRoot}`);
 
-    // Ensure the extension root exists.
     fs.mkdirSync(extensionRoot, { recursive: true });
 
-    // Render and write instructions.md using atomic write (temp + rename).
-    // Per CLAUDE.md #54: never delete before write in file replace operations.
     const content = await this.renderInstructions(ctx);
     const tmpPath = `${instructionsPath}.tmp-${process.pid}-${Date.now()}`;
 
@@ -143,7 +140,6 @@ export class CodexMemoryExtensionPublisher implements MemoryExtensionPublisher {
       filesWritten.push(instructionsPath);
       ctx.log.info(`Wrote ${instructionsPath}`);
     } catch (err) {
-      // Clean up temp file on failure.
       try {
         if (fs.existsSync(tmpPath)) {
           fs.unlinkSync(tmpPath);

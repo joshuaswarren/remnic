@@ -1,23 +1,3 @@
-/**
- * Maintenance scheduler — extracted from the orchestrator (issue #1526 PR1).
- *
- * Owns the WHEN of memory maintenance:
- *   - cron auto-registration (writes jobs.json entries the OpenClaw cron
- *     daemon picks up)
- *   - debounced + singleflight QMD index maintenance (re-index + embed
- *     after writes)
- *   - consolidation scheduling trigger (count + interval gated)
- *
- * Does NOT own the WHAT — the actual job runners (runSemanticConsolidation,
- * runPatternReinforcement, runDeepSleepGovernanceNow, runConsolidation)
- * remain on the orchestrator because they need the full LLM + extraction
- * dependency surface. The scheduler invokes consolidation through a
- * callback so the orchestrator stays the source of truth for that work.
- *
- * Behavior-preserving move from orchestrator.ts. No logic changes — the
- * orchestrator keeps thin delegating methods so existing tests that stub
- * `orchestrator.requestQmdMaintenance` etc. continue to work.
- */
 
 import { resolveNamespaceCapabilities,
   resolveQmdCapabilities,resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
@@ -73,7 +53,6 @@ import {
   SECURE_STORE_ENVELOPE_OVERHEAD_BYTES,
 } from "../secure-store/secure-fs.js";
 
-/** Reason a QMD maintenance pass was skipped, used for status recording. */
 function qmdMaintenanceSkipReasonForError(
   error: unknown,
 ): NamespaceMaintenanceSkipReason | null {
@@ -83,12 +62,8 @@ function qmdMaintenanceSkipReasonForError(
     : null;
 }
 
-/** Dependencies injected by the orchestrator. All stable references. */
 export interface MaintenanceSchedulerDeps {
   config: PluginConfig;
-  /** Live accessor — the orchestrator can reassign its qmd backend after
-   *  construction (e.g. swap to NoopSearchBackend when the collection is
-   *  missing), and the scheduler must always observe the current backend. */
   getQmd: () => SearchBackend;
   namespaceSearchRouter: NamespaceSearchRouter;
   namespaceCatalog: NamespaceCatalog;
@@ -115,49 +90,27 @@ export interface MaintenanceSchedulerDeps {
   onActivitySynced?: (summary: ActivitySyncRunSummary) => void;
 }
 
-/**
- * Schedules and debounces memory maintenance work. Owns the cadence +
- * singleflight state that previously lived as private orchestrator fields.
- *
- * The orchestrator constructs one instance in its constructor and delegates
- * the public scheduling entrypoints to it. Job execution stays on the
- * orchestrator (LLM-heavy) and is invoked through callbacks.
- */
 export class MaintenanceScheduler {
-  // ── Consolidation scheduling state ──
   private nonZeroExtractionsSinceConsolidation = 0;
   private lastConsolidationRunAtMs = 0;
   private consolidationRunPromise: Promise<unknown> | null = null;
   private disposed = false;
 
-  // ── QMD maintenance scheduling state ──
   private qmdMaintenanceTimer: NodeJS.Timeout | null = null;
   private qmdMaintenancePending = false;
   private qmdMaintenanceInFlight = false;
   private readonly qmdCompletion = new QmdMaintenanceCompletion();
-  /** Namespaces that ran in passes of the request still waiting for full coverage. */
   private readonly qmdCoveredNamespaces = new Set<string>();
   private lastQmdEmbedAtMs = 0;
   private lastQmdEmbedAtMsByNamespace = new Map<string, number>();
 
-  // ── Lifecycle-ledger auto-compaction state (issue #1910) ──
   private lifecycleCompactionInFlight = false;
   private lastLifecycleCompactionAtMs = 0;
-  // Upper bound on a rewritten ledger; a preserving compaction is bounded to
-  // this so it can never leave the ledger over the whole-file read/decrypt cap
-  // (#2033). Defaults to the decrypt cap; overridable in focused tests to drive
-  // the bounding + post-write verification deterministically without a 400MB
-  // fixture.
   private lifecycleLedgerMaxBytes = STATE_FILE_MAX_DECRYPT_BYTES;
 
-  // ── Memory-projection scheduled-rebuild state (issue #2119) ──
   private readonly projectionRebuild = createProjectionRebuildScheduleState();
 
-  // ── Activity (screen-capture) sync scheduler (issue #1900) ──
-  // The full arm/re-arm/teardown lifecycle lives in ActivitySyncRegistrar.
   private readonly activityRegistrar: ActivitySyncRegistrar;
-  // ── Location day-sync scheduler (issue #2047) — master default-off; the
-  // timer + lifecycle contract lives in location/scheduler.ts.
   private locationAutoSync: LocationAutoSyncHandle | null = null;
   private compoundingWeekly: CompoundingWeeklySchedulerHandle | null = null;
 
@@ -175,9 +128,6 @@ export class MaintenanceScheduler {
     });
   }
 
-  // ───────────────────────────────────────────────────────────────────────
-  // Cron auto-registration
-  // ───────────────────────────────────────────────────────────────────────
 
   /**
    * Register every cron job the daemon should run, gated by its config flag.
@@ -232,12 +182,7 @@ export class MaintenanceScheduler {
       }
     }
 
-    // Activity (screen-capture) in-process sync scheduler (issue #1900),
-    // master default-off. The registrar owns the arm/re-arm/teardown contract
-    // (stop-prior, abort/teardown guards, secure-store refusal, retry latch).
     await this.activityRegistrar.register(signal);
-    // Location day sync (issue #2047): same deferred lifecycle as activity;
-    // ticks run the SAME shared runner as the CLI/MCP/HTTP surfaces.
     if (
       !signal.aborted &&
       this.deps.config.location.enabled &&
@@ -403,16 +348,8 @@ export class MaintenanceScheduler {
   }
 
   // ───────────────────────────────────────────────────────────────────────
-  // Consolidation scheduling
   // ───────────────────────────────────────────────────────────────────────
 
-  /**
-   * Maybe trigger a background consolidation pass after an extraction.
-   * Counted + interval gated so a burst of extractions does not fan into a
-   * burst of consolidation passes. The consolidation runner itself is
-   * passed in as a callback because it lives on the orchestrator (LLM +
-   * storage dependency surface) and is not owned by this module.
-   */
   maybeScheduleConsolidation(
     nonZeroExtraction: boolean,
     runConsolidation: () => Promise<unknown>,
@@ -452,31 +389,20 @@ export class MaintenanceScheduler {
       });
   }
 
-  /** Whether a background consolidation pass is currently running. Exposed so
-   *  the orchestrator's waitForConsolidationIdle can poll idle state without
-   *  owning the cadence state (issue #1526 PR1). */
   isConsolidationInFlight(): boolean {
     return this.consolidationRunPromise !== null;
   }
 
-  /** Whether a debounced QMD maintenance pass is armed and waiting for the
-   *  debounce timer. Exposed so drain/teardown diagnostics (e.g. the bench
-   *  adapter) can observe scheduler idle state after the #1526 PR1 extraction
-   *  moved this flag off the orchestrator. */
   isQmdMaintenancePending(): boolean {
     return this.qmdMaintenancePending;
   }
 
-  /** Whether a QMD maintenance pass is currently running (singleflight guard).
-   *  Exposed for drain/teardown diagnostics (see isQmdMaintenancePending). */
   isQmdMaintenanceInFlight(): boolean {
     return this.qmdMaintenanceInFlight;
   }
   // ───────────────────────────────────────────────────────────────────────
-  // QMD maintenance scheduling (debounced + singleflight)
   // ───────────────────────────────────────────────────────────────────────
 
-  /** Internal: queue a debounced QMD maintenance pass; false when nothing could be armed. */
   private requestQmdMaintenance(): boolean {
     if (!this.deps.getQmd().isAvailable()) return false;
     if (!resolveQmdCapabilities(this.deps.config).qmdMaintenance) return false;
@@ -504,10 +430,6 @@ export class MaintenanceScheduler {
     return this.qmdCompletion.wait(namespace);
   }
 
-  /**
-   * Public entrypoint for tool-driven QMD maintenance requests.
-   * Routes through existing debounced/singleflight maintenance controls.
-   */
   requestQmdMaintenanceForTool(reason: string): void {
     try {
       this.requestQmdMaintenance();
@@ -515,18 +437,9 @@ export class MaintenanceScheduler {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn(`qmd maintenance request failed (${reason}): ${msg}`);
     }
-    // Lifecycle-ledger auto-compaction (#1910) must run independently of QMD.
-    // When QMD is unavailable or its maintenance capability is off,
-    // requestQmdMaintenance() short-circuits and runQmdMaintenance() never
-    // fires — so a compaction check living only in that path would never run.
-    // Fire it here on every maintenance request (throttled, size-gated,
-    // single-flighted, never awaited, never throws) so a QMD-off deployment
-    // still bounds the lifecycle ledger.
     void this.maybeCompactMemoryLifecycleLedger().catch((err) =>
       log.debug(`lifecycle ledger auto-compaction check failed (non-fatal): ${err}`),
     );
-    // Memory-projection scheduled rebuild (#2119): interval-throttled,
-    // single-flighted, never awaited, never throws — see the module docblock.
     void maybeRebuildMemoryProjectionScheduled({
       config: this.deps.config,
       getStorage: this.deps.getStorage,
@@ -536,25 +449,18 @@ export class MaintenanceScheduler {
     );
   }
 
-  /** Internal: run a single QMD maintenance pass under singleflight guard. */
   async runQmdMaintenance(): Promise<void> {
     if (this.qmdMaintenanceInFlight) return;
     if (!this.qmdMaintenancePending) return;
     this.qmdMaintenanceInFlight = true;
     this.qmdMaintenancePending = false;
-    // Waiters claimed here are served by THIS pass; later requests wait for the next.
     const settle = this.qmdCompletion.claim();
     let served = false;
     let deferred = false;
-    // Set only by the namespace-aware branch; absent means the pass outcome applies to every waiter.
     let ranNamespaces: Set<string> | undefined;
 
     try {
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
-        // Include cataloged dynamic namespaces, not just the configured set
-        // (NGnei), but run through the namespace-aware maintenance planner so
-        // each namespace is budgeted, lock-protected, and status-recorded
-        // independently (issue #1500).
         const plan = await this.namespaceMaintenancePlan("qmd");
         const now = Date.now();
         const lastEmbedAtByNamespace = this.lastQmdEmbedAtMsByNamespace;
@@ -623,10 +529,6 @@ export class MaintenanceScheduler {
             skipReasonForError: qmdMaintenanceSkipReasonForError,
           },
         );
-        // Namespaces skipped for a TRANSIENT reason (budget_exhausted, lock_held) were not covered
-        // by this pass. They are covered once they ran in this or an earlier pass of the same
-        // request, so a deployment with more namespaces than the cycle budget still converges.
-        // Permanent skip reasons describe namespaces this deployment never re-indexes.
         const covered = this.qmdCoveredNamespaces;
         const ran = new Set<string>();
         ranNamespaces = ran;
@@ -642,18 +544,11 @@ export class MaintenanceScheduler {
             (status.reason === "budget_exhausted" || status.reason === "lock_held") &&
             !covered.has(status.namespace),
         );
-        // The batch runner drops namespace "*" skips from the statuses, so a failed catalog read
-        // is only visible on the plan: cataloged namespaces were never discovered this pass.
         const catalogReadFailed = plan.skipped.some((skip) => skip.reason === "catalog_read_failed");
         served = summary.ran > 0 && summary.failed === 0 && !uncovered && !catalogReadFailed;
-        // Partial progress keeps the waiters for another pass; no progress, a failure or a failed
-        // catalog read ends the request unserved so the next start asks again.
         deferred = !served && summary.failed === 0 && !catalogReadFailed && covered.size > before && !this.disposed;
       } else {
         const qmd = this.deps.getQmd();
-        // Plain update() is fail-open on every backend: it resolves when the min-interval gate,
-        // failure backoff or an early exit suppressed it, and when it errored. Only the variants
-        // that report whether an update ran count (updateCompleted, else QMD's updateStrict).
         if (qmd.updateCompleted) {
           try {
             served = await qmd.updateCompleted();
@@ -700,46 +595,7 @@ export class MaintenanceScheduler {
     }
   }
 
-  /**
-   * Size-gated, throttled, single-flighted auto-compaction of the lifecycle
-   * ledger (issue #1910). Compacts the root ledger AND every namespace ledger
-   * (`memoryDir/namespaces/<token>/state/`) when namespaces are enabled, each
-   * through the existing `rebuildMemoryLifecycleLedger` so the
-   * archive-then-atomic-write discipline is reused verbatim. `0` disables.
-   *
-   * Before compacting, drain EVERY target's durable pending-append spill (the
-   * root ledger AND each namespace ledger) so a lifecycle event that spilled
-   * while a prior long rewrite held the lock is folded back into its ledger and
-   * cannot be silently lost (issue #2033). Draining is independent of both the
-   * compaction threshold and the min-interval throttle: targets are enumerated
-   * through the same safe (symlink/containment-checked) resolver and every
-   * eligible queue is drained BEFORE any throttle return, so a namespace spill
-   * created after the previous pass never waits out the whole interval.
-   * Encrypted-store safety is preserved — a keyed target drains through its
-   * secure StorageManager, a filesystem-fallback target only through a plaintext
-   * context that refuses encrypted ledgers/spills. Work stays bounded: one
-   * target enumeration plus a bounded per-queue drain.
-   *
-   * The min-interval throttle timestamp advances ONLY after real, fully
-   * successful compaction work: a failed OR deferred target leaves the throttle
-   * un-advanced so it stays eligible on the next maintenance pass, while
-   * `lifecycleCompactionInFlight` still prevents overlapping runs. A "deferred"
-   * target is oversized but could not be compacted because its encrypted ledger
-   * has no unlocked secure store — arming the throttle for it would suppress the
-   * retry of that still-oversized ledger for the whole interval (#2033).
-   *
-   * The min-interval throttle is bypassed for one case: an encrypted ledger
-   * already at/over the whole-file decrypt cap is unreadable, so it must be
-   * clamped on the next pass rather than wait out the interval. Ordinary
-   * below-cap (or plaintext) targets stay throttled (#2033).
-   */
   private async maybeCompactMemoryLifecycleLedger(): Promise<void> {
-    // Enumerate every lifecycle target (root + namespaces) through the safe,
-    // containment-checked resolver, and fold each one's durable pending spill
-    // back into its ledger BEFORE any threshold or throttle return (#2033). A
-    // spill created after the previous pass must land promptly even while
-    // compaction is throttled or disabled; draining is bounded per queue and
-    // never bypasses encrypted-store safety.
     const targets = await this.resolveLifecycleCompactionTargets();
     for (const target of targets) {
       await this.drainPendingForTarget(target);
@@ -754,20 +610,8 @@ export class MaintenanceScheduler {
         this.deps.config.memoryLifecycleLedgerCompactMinIntervalMs &&
       !(await this.hasOverCapEncryptedLifecycleLedger(targets))
     ) {
-      // Throttled: no ordinary target is due yet. The exception is an encrypted
-      // ledger already at/over the whole-file decrypt cap — it is unreadable, so
-      // the global min-interval must not defer clamping it for a whole interval.
-      // The guard above lets such a target through immediately (compaction then
-      // clamps it via the cap-aware effective threshold) while ordinary
-      // below-cap targets stay throttled (#2033).
       return;
     }
-    // The over-cap probe above awaits, so a second maintenance request can pass
-    // the early `lifecycleCompactionInFlight` guard and reach here during that
-    // await. Recheck the guard immediately before claiming it — otherwise two
-    // racing requests both see an over-cap ledger and run duplicate 400MB-class
-    // compactions/backups back-to-back (#2033). The set below is synchronous
-    // with this recheck (no await between), so exactly one caller wins.
     if (this.lifecycleCompactionInFlight) return;
     this.lifecycleCompactionInFlight = true;
     try {
@@ -780,11 +624,6 @@ export class MaintenanceScheduler {
         else if (outcome === "failed") failed += 1;
         else if (outcome === "deferred") deferred += 1;
       }
-      // Arm the throttle only when at least one ledger actually compacted AND
-      // nothing failed AND nothing was deferred. A below-threshold no-op
-      // (compacted === 0), any failure, or a deferred oversized ledger (locked
-      // encrypted store, still pending) leaves the throttle where it was so the
-      // next pass retries the untouched targets (#2033).
       if (compacted > 0 && failed === 0 && deferred === 0) {
         this.lastLifecycleCompactionAtMs = now;
       }
@@ -793,17 +632,6 @@ export class MaintenanceScheduler {
     }
   }
 
-  /**
-   * True when any lifecycle target's ledger is encrypted at rest AND its
-   * on-disk size is at/over the whole-file decrypt cap. Such a ledger is already
-   * unreadable (the secure reader refuses at/over the cap), so it must reach the
-   * bounded compaction path on the next maintenance pass regardless of the
-   * global min-interval throttle — otherwise the throttle could keep an
-   * unreadable ledger un-clamped for a whole interval (#2033). Ordinary
-   * below-cap or plaintext targets never match, so the throttle still governs
-   * them. A stat/probe failure yields "no forced target" and is left to the
-   * normal compaction path, which classifies it as failed and retries.
-   */
   private async hasOverCapEncryptedLifecycleLedger(
     targets: Array<{ memoryDir: string; storage?: StorageManager }>,
   ): Promise<boolean> {
@@ -825,13 +653,6 @@ export class MaintenanceScheduler {
     return false;
   }
 
-  /**
-   * Drain one compaction target's durable pending spill. A catalog-backed
-   * target folds through its secure StorageManager; a filesystem-fallback
-   * target (no storage) folds through a path-scoped plaintext context that
-   * refuses encrypted ledgers/spills so a keyless drain never downgrades an
-   * encrypted ledger (issue #2033).
-   */
   private async drainPendingForTarget(
     target: { memoryDir: string; storage?: StorageManager },
   ): Promise<void> {
@@ -842,8 +663,6 @@ export class MaintenanceScheduler {
     }
   }
 
-  /** Drain a target's durable pending lifecycle-append spill into its ledger
-   *  (issue #2033); non-fatal and a fast no-op when nothing is pending. */
   private async drainPendingLifecycleAppends(storage: StorageManager | undefined): Promise<void> {
     if (!storage) return;
     try {
@@ -853,13 +672,6 @@ export class MaintenanceScheduler {
     }
   }
 
-  /**
-   * Enumerate the lifecycle ledgers to consider for compaction: the root
-   * (through the secure-configured root storage when available) plus every
-   * cataloged namespace ledger when namespaces are enabled. Deduplicated by
-   * resolved storage dir so a namespace that collapses onto the root is not
-   * compacted twice. Namespace resolution failures are non-fatal.
-   */
   private async resolveLifecycleCompactionTargets(): Promise<
     Array<{ memoryDir: string; storage?: StorageManager }>
   > {
@@ -897,20 +709,8 @@ export class MaintenanceScheduler {
       }
     }
 
-    // Filesystem fallback (codex P2): when namespaces are enabled but the
-    // catalog is disabled (namespaceCatalogEnabled=false) — or a namespace is
-    // not yet cataloged — the catalog walk above finds nothing, yet per-namespace
-    // ledgers still grow under <memoryDir>/namespaces/<token>/state/. Scan that
-    // base directly so those ledgers are still bounded. Deduped by resolved dir,
-    // so a namespace already added via the catalog is not compacted twice.
     if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
       const namespacesBase = path.join(this.deps.config.memoryDir, "namespaces");
-      // Symlink/traversal containment (issue #2033 codex P2): a symlinked
-      // <memoryDir>/namespaces (or a symlinked child) must not redirect the scan
-      // — and later backup/ledger rewrites — outside memoryDir. Resolve the
-      // memory root and the scan base through realpath, reject a symlinked or
-      // escaping base, and skip any symlinked/escaping child, mirroring the
-      // memory-store walkers' hardening (utils/path-containment).
       let memoryDirReal: string;
       try {
         memoryDirReal = await realpath(this.deps.config.memoryDir);
@@ -942,29 +742,6 @@ export class MaintenanceScheduler {
           log.debug(`lifecycle compaction: skipping out-of-root namespace dir ${childPath}: ${err}`);
           continue;
         }
-        // Resolve the namespace's secure-store-aware storage so an encrypted
-        // fallback ledger compacts through the correct root key/context instead
-        // of deferring forever behind a keyless plaintext StorageManager (#2033
-        // thread PRRT_kwDORJXyws6SE5fv). The on-disk dir name is EITHER a
-        // namespace identity TOKEN (ns-<hex>) OR a legacy raw namespace dir name
-        // written before tokenization (namespaces/<name>/). Decode a token back
-        // to its canonical namespace; treat a non-token dir as a raw namespace
-        // only when it is a safe route namespace (isSafeRouteNamespace), so a
-        // garbage/traversal dir name is never handed to the resolver. Passing the
-        // raw token to the resolver would re-tokenize an already-tokenized value
-        // and (for namespaces longer than 30 bytes) exceed the router's 64-char
-        // safe-route limit, so the resolver throws and the encrypted over-cap
-        // ledger defers forever — hence decode first. Resolve the route namespace
-        // and accept the keyed storage only when it roots at THIS dir: the secure
-        // store keys one master key per memory ROOT (not per namespace), the
-        // router routes a token to namespaces/<token>/ and an existing legacy raw
-        // name to its namespaces/<name>/ root, so a correct resolve returns THIS
-        // childPath; anything else is an unexpected re-route we refuse (keeping
-        // namespace isolation and never compacting the wrong ledger). A dir that
-        // neither decodes nor is a safe raw namespace, or no resolver wired
-        // (focused tests / plaintext deployments), leaves the keyless target
-        // standing: the rebuild chokepoint still refuses to downgrade an
-        // encrypted ledger, so plaintext behavior holds.
         const decodedNamespace = namespaceIdentityFromToken(entry.name);
         const routeNamespace =
           decodedNamespace !== null
@@ -995,18 +772,6 @@ export class MaintenanceScheduler {
     return targets;
   }
 
-  /**
-   * Compact one lifecycle ledger when it is at/over `threshold`. Returns
-   * `"skipped"` (absent or below threshold — nothing to do), `"compacted"`
-   * (rewritten and verified under the read/decrypt cap), `"failed"`
-   * (rebuild/probe threw, or the rewritten ledger is STILL over the cap — an
-   * ineffective compaction — non-fatal, retried next pass), or `"deferred"`
-   * (oversized but its encrypted ledger cannot be rewritten because no unlocked
-   * secure store is available — real work still pending, so the caller must NOT
-   * arm the throttle). #2033: a deferred/failed target is distinct from a genuine
-   * no-op so one namespace compacting cannot suppress retries for another, and
-   * an over-cap rewrite never arms the throttle.
-   */
   private async compactLifecycleLedgerTarget(
     target: { memoryDir: string; storage?: StorageManager },
     threshold: number,
@@ -1022,15 +787,6 @@ export class MaintenanceScheduler {
       );
       return "failed";
     }
-    // #2033 finding (1): an encrypted ledger becomes unreadable once its on-disk
-    // size reaches the whole-file decrypt cap (the reader refuses at/over it), so
-    // the effective compaction trigger for an encrypted target is clamped to that
-    // cap even when the configured threshold is LARGER — otherwise a ledger that
-    // grows past the cap but stays below a bigger threshold would never compact
-    // and stay permanently unreadable. Plaintext streaming is unaffected at any
-    // size, so a plaintext target keeps the configured threshold. The cheap
-    // pre-check skips anything below the smaller of the two before paying for the
-    // extra lstat/open the encryption probe costs.
     if (size < Math.min(threshold, this.lifecycleLedgerMaxBytes)) return "skipped";
     let encrypted: boolean;
     try {
@@ -1043,13 +799,6 @@ export class MaintenanceScheduler {
       ? Math.min(threshold, this.lifecycleLedgerMaxBytes)
       : threshold;
     if (size < effectiveThreshold) return "skipped";
-    // No plaintext rewrite of an encrypted-at-rest ledger (#2033): rebuilding an
-    // encrypted ledger without an unlocked secure StorageManager would either
-    // fail the preserve-read (locked store) or downgrade the ledger to plaintext.
-    // Report "deferred" (NOT "skipped"): the ledger is over threshold and still
-    // needs compaction, so the throttle must stay un-armed and retry once a key
-    // is available — a "skipped" here would let another target's success arm the
-    // throttle and suppress this pending work for the whole interval (#2033).
     if (encrypted && !(target.storage?.isSecureStoreUnlocked() ?? false)) {
       log.warn(
         `lifecycle ledger at ${ledgerPath} is encrypted at rest but no unlocked secure `
@@ -1058,17 +807,6 @@ export class MaintenanceScheduler {
       );
       return "deferred";
     }
-    // #2033 findings (2)+(4): the rewrite budget bounds the PLAINTEXT payload, but
-    // an encrypted-at-rest target adds a fixed secure-store envelope on disk.
-    // Reserve that envelope (plus one byte) from the plaintext budget so the
-    // encrypted file lands STRICTLY below the reader's refusal cap and the
-    // post-write check — which stats the on-disk (encrypted) size against the cap
-    // — cannot fail forever on a plaintext budget that equals the cap (the
-    // endless-retry bug). Base this on whether the REPLACEMENT will be encrypted
-    // (the storage write mode), NOT only on the current file header: a
-    // plaintext ledger rewritten under `secureStoreEncryptOnWrite` with the key
-    // set becomes encrypted, so it needs the reserve even though its current
-    // header is plaintext (#2033 write-mode finding).
     const replacementEncrypted =
       encrypted || (target.storage?.willEncryptStateWrites() ?? false);
     const plaintextBudget = replacementEncrypted
@@ -1079,20 +817,9 @@ export class MaintenanceScheduler {
         memoryDir: target.memoryDir,
         dryRun: false,
         storage: target.storage,
-        // Background compaction must not lose append-only history that
-        // frontmatter cannot reconstruct (issue #1910); the manual CLI repair
-        // rebuild now preserves and bounds identically (#2033).
         preserveExistingEvents: true,
-        // Bound the PLAINTEXT rewrite to a budget that reserves the secure-store
-        // envelope, so the on-disk ledger (plaintext, or plaintext+envelope when
-        // encrypted) is strictly below the read/decrypt cap; overflow lands in
-        // the verbatim backup (#2033 findings 2+4).
         maxLedgerBytes: plaintextBudget,
       });
-      // Verify the rewritten ledger is actually bounded. A compaction that left
-      // the ledger at/over the read/decrypt cap is ineffective (the ledger would
-      // be unreadable) — report "failed" so the throttle stays un-armed and the
-      // next pass retries rather than declaring success (#2033).
       let rewrittenSize = 0;
       try {
         rewrittenSize = (await stat(ledgerPath)).size;
@@ -1109,12 +836,6 @@ export class MaintenanceScheduler {
         return "failed";
       }
       if (result.rewritten === false) {
-        // No-op pass (#2033 thread PRRT_kwDORJXyws6SExst): a preserving rebuild
-        // would reproduce the current ledger byte-for-byte, so it skipped the
-        // backup+rewrite. The ledger stays over the trigger but under the cap;
-        // report "compacted" so the throttle still arms (nothing more can be
-        // done until the ledger grows), which stops the periodic re-archive/
-        // rewrite churn the review flagged — the archive no longer grows.
         log.debug(
           `lifecycle ledger already compact for ${target.memoryDir}: ${rewrittenSize}B, `
           + `no rewrite needed (throttle armed to avoid re-archiving an unchanged ledger).`,
@@ -1137,7 +858,6 @@ export class MaintenanceScheduler {
     }
   }
 
-  /** Build the namespace-aware maintenance plan for one job. */
   private async namespaceMaintenancePlan(
     jobName: string,
   ): Promise<NamespaceMaintenancePlan> {
@@ -1148,22 +868,12 @@ export class MaintenanceScheduler {
   }
 
   // ───────────────────────────────────────────────────────────────────────
-  // Lifecycle
   // ───────────────────────────────────────────────────────────────────────
 
-  /**
-   * Clear any pending debounce timer and drain the activity sync scheduler.
-   * Called from the orchestrator's destroy() so a late tick does not fire on a
-   * torn-down instance and no in-flight activity tick keeps writing after
-   * teardown. Async: awaits the scheduler's abort+drain before resolving.
-   */
   async dispose(): Promise<void> {
     this.disposed = true;
     terminateScheduledProjectionRebuilds(this.projectionRebuild);
     const consolidationDrain = this.consolidationRunPromise;
-    // The registrar latches teardown first (so a draining tick's onRun cannot
-    // re-arm QMD maintenance) and aborts+drains the sync. Capture its drain and
-    // await it last so the rest of teardown runs while the aborted tick unwinds.
     const activityDrain = this.activityRegistrar.dispose();
     const locationDrain = this.locationAutoSync?.stop() ?? Promise.resolve();
     this.locationAutoSync = null; const weeklyDrain = this.compoundingWeekly?.stop() ?? Promise.resolve(); this.compoundingWeekly = null;
@@ -1175,7 +885,6 @@ export class MaintenanceScheduler {
     this.qmdCompletion.abandon();
     await activityDrain;
     await locationDrain; await weeklyDrain;
-    // Belt-and-suspenders: clear anything a late tick armed before the latch.
     if (this.qmdMaintenanceTimer) {
       clearTimeout(this.qmdMaintenanceTimer);
       this.qmdMaintenanceTimer = null;

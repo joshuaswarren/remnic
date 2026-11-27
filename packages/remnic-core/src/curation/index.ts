@@ -16,12 +16,9 @@ import {
   repairContentAfterJournalMoveSync,
 } from "../storage/entity-canonical-id-references.js";
 
-// ── Types ────────────────────────────────────────────────────────────────────
 
 export interface CurateOptions {
-  /** File or directory path to curate */
   targetPath: string;
-  /** Memory root directory for writing */
   memoryDir: string;
   /** Source label (e.g. "manual", "docs", "onboarding") */
   source?: string;
@@ -29,56 +26,41 @@ export interface CurateOptions {
   category?: string;
   /** Confidence to assign (default: 0.9 for curated items) */
   confidence?: number;
-  /** Entity reference to attach */
   entityRef?: string;
-  /** Tags to add */
   tags?: string[];
   /** Whether to perform dedup check against existing memories */
   checkDuplicates?: boolean;
-  /** Whether to detect contradictions */
   checkContradictions?: boolean;
   /** Whether to write files (default: true). False = dry run */
   write?: boolean;
 }
 
 export interface CuratedStatement {
-  /** Unique ID for this statement */
   id: string;
-  /** The extracted statement text */
   content: string;
-  /** Category */
   category: string;
-  /** Confidence */
   confidence: number;
-  /** Provenance info */
   provenance: StatementProvenance;
   /** Hash of content for dedup */
   contentHash: string;
-  /** Tags */
   tags: string[];
-  /** Entity reference */
   entityRef?: string;
 }
 
 export interface StatementProvenance {
-  /** Source file path */
   sourcePath: string;
   /** Relative path from project root */
   relativePath: string;
-  /** Source label */
   source: string;
   /** Line number if extractable (0 = unknown) */
   lineNumber: number;
-  /** Timestamp of ingestion */
   ingestedAt: string;
   /** Hash of the source file for diff tracking */
   sourceFileHash: string;
 }
 
 export interface CurateResult {
-  /** Statements extracted */
   statements: CuratedStatement[];
-  /** Files processed */
   filesProcessed: number;
   /** Files skipped (empty, binary, etc.) */
   filesSkipped: number;
@@ -86,35 +68,26 @@ export interface CurateResult {
   duplicates: DuplicateResult[];
   /** Contradictions found (if checkContradictions) */
   contradictions: ContradictionResult[];
-  /** Memory files written */
   written: string[];
   /** Duration in ms */
   durationMs: number;
 }
 
 export interface DuplicateResult {
-  /** New statement */
   newStatement: CuratedStatement;
-  /** Existing memory ID that matches */
   existingId: string;
   /** Similarity score (0-1) */
   similarity: number;
-  /** Recommended action */
   action: "skip" | "merge" | "keep";
 }
 
 export interface ContradictionResult {
-  /** New statement */
   newStatement: CuratedStatement;
-  /** Conflicting memory ID */
   conflictingId: string;
-  /** The conflicting content */
   conflictingContent: string;
-  /** Severity */
   severity: "high" | "medium" | "low";
 }
 
-// ── Main function ────────────────────────────────────────────────────────────
 
 export async function curate(options: CurateOptions): Promise<CurateResult> {
   const startTime = Date.now();
@@ -138,16 +111,13 @@ export async function curate(options: CurateOptions): Promise<CurateResult> {
   let filesProcessed = 0;
   let filesSkipped = 0;
 
-  // Determine targets
   const targets = resolveTargets(targetPath);
   const provenanceRoot = resolveProvenanceRoot(targetPath);
 
-  // Load existing memories for dedup/contradiction checks
   const existingMemories = checkDuplicates || checkContradictions
     ? loadExistingMemories(memoryDir)
     : new Map();
 
-  // Process each file
   for (const filePath of targets) {
     const content = readFileSafe(filePath);
     if (!content) {
@@ -176,7 +146,6 @@ export async function curate(options: CurateOptions): Promise<CurateResult> {
     );
 
     for (const stmt of fileStatements) {
-      // Dedup check
       if (checkDuplicates) {
         const dup = findDuplicate(stmt, existingMemories);
         if (dup) {
@@ -185,7 +154,6 @@ export async function curate(options: CurateOptions): Promise<CurateResult> {
         }
       }
 
-      // Contradiction check
       if (checkContradictions) {
         const contra = findContradiction(stmt, existingMemories);
         if (contra) {
@@ -195,7 +163,6 @@ export async function curate(options: CurateOptions): Promise<CurateResult> {
 
       statements.push(stmt);
 
-      // Write to memory
       if (write) {
         const writtenPath = writeStatement(stmt, memoryDir);
         written.push(writtenPath);
@@ -208,7 +175,6 @@ export async function curate(options: CurateOptions): Promise<CurateResult> {
     }
   }
 
-  // Per-statement corpus bumps happen in writeStatement (below) so a
   // same-process readAllMemories mid-batch never serves a stale/partial corpus
   // (Cursor Medium, #1902); no after-loop bump needed here.
 
@@ -223,13 +189,11 @@ export async function curate(options: CurateOptions): Promise<CurateResult> {
   };
 }
 
-// ── Target resolution ────────────────────────────────────────────────────────
 
 function resolveTargets(targetPath: string): string[] {
   const stat = fs.statSync(targetPath);
   if (stat.isFile()) return [targetPath];
 
-  // Directory — walk for .md, .txt, .mdx
   const results: string[] = [];
   const extensions = new Set([".md", ".txt", ".mdx", ".rst"]);
 
@@ -256,7 +220,6 @@ function resolveProvenanceRoot(targetPath: string): string {
   return stat.isFile() ? path.dirname(resolvedTarget) : resolvedTarget;
 }
 
-// ── Statement extraction ─────────────────────────────────────────────────────
 
 function extractStatements(
   content: string,
@@ -273,13 +236,11 @@ function extractStatements(
   const statements: CuratedStatement[] = [];
   const now = new Date().toISOString();
 
-  // Split content into paragraphs/lines and extract meaningful statements
   const paragraphs = content
     .split(/\n{2,}/)
     .map((p) => p.trim())
     .filter((p) => p.length > 20 && p.length < 2000);
 
-  // Also extract list items
   const listItems = content
     .split("\n")
     .filter((l) => /^\s*[-*]\s+/.test(l))
@@ -288,7 +249,6 @@ function extractStatements(
 
   const allItems = [...paragraphs, ...listItems];
 
-  // Deduplicate within file
   const seen = new Set<string>();
   for (const item of allItems) {
     const hash = hashContent(item.toLowerCase());
@@ -320,7 +280,6 @@ function extractStatements(
   return statements;
 }
 
-// ── Category detection ───────────────────────────────────────────────────────
 
 function detectCategory(text: string): string {
   const lower = text.toLowerCase();
@@ -334,7 +293,6 @@ function detectCategory(text: string): string {
   return "fact";
 }
 
-// ── Dedup ────────────────────────────────────────────────────────────────────
 
 interface ExistingMemory {
   id: string;
@@ -348,7 +306,6 @@ function findDuplicate(
 ): DuplicateResult | null {
   const stmtLower = stmt.content.toLowerCase();
 
-  // Exact hash match
   const exactMatch = existing.get(stmt.contentHash);
   if (exactMatch) {
     return {
@@ -359,11 +316,9 @@ function findDuplicate(
     };
   }
 
-  // Fuzzy match — check substring containment
   for (const [_, mem] of existing) {
     const memLower = mem.content.toLowerCase();
     if (memLower.length > 50 && stmtLower.length > 50) {
-      // Check if one contains the other
       if (memLower.includes(stmtLower.slice(0, 40)) || stmtLower.includes(memLower.slice(0, 40))) {
         return {
           newStatement: stmt,
@@ -378,7 +333,6 @@ function findDuplicate(
   return null;
 }
 
-// ── Contradiction detection ──────────────────────────────────────────────────
 
 function findContradiction(
   stmt: CuratedStatement,
@@ -391,7 +345,6 @@ function findContradiction(
   const hasNegation = negationPatterns.some((p) => p.test(stmt.content));
   if (!hasNegation) return null;
 
-  // Strip negation and look for positive version
   const stripped = stmt.content
     .toLowerCase()
     .replace(/\b(not|don't|doesn't|isn't|aren't|won't|can't|never|no)\b/gi, "")
@@ -401,7 +354,6 @@ function findContradiction(
 
   for (const [_, mem] of existing) {
     const memLower = mem.content.toLowerCase();
-    // If an existing memory affirms what this statement negates
     if (memLower.includes(stripped.slice(0, Math.min(30, stripped.length)))) {
       return {
         newStatement: stmt,
@@ -415,13 +367,11 @@ function findContradiction(
   return null;
 }
 
-// ── Memory loading ───────────────────────────────────────────────────────────
 
 function loadExistingMemories(memoryDir: string): Map<string, ExistingMemory> {
   const result = new Map<string, ExistingMemory>();
   if (!fs.existsSync(memoryDir)) return result;
 
-  // Walk all known category dirs for existing memories
   const dirs = ALL_CATEGORY_DIRS;
   for (const dir of dirs) {
     const fullDir = path.join(memoryDir, dir);
@@ -447,9 +397,7 @@ function loadExistingMemories(memoryDir: string): Map<string, ExistingMemory> {
   return result;
 }
 
-// ── Writing ──────────────────────────────────────────────────────────────────
 
-// Curation writes raw frontmatter directly, so it is a write boundary for
 // entity references too (issue #2213): resolve through the target's journal.
 const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
@@ -465,7 +413,6 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
   const filePath = path.join(dir, fileName);
   const historicalIds = historicalIdCache.get(path.join(memoryDir, "state"));
 
-  // Keep the caller's ORIGINAL ref in the raw form: repair-after-write must
   // re-resolve from it, including the direction where a mapping was parked
   // and the resolution falls back to the legacy claimant (issue #2213).
   const rawBody = `${[
@@ -488,7 +435,6 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
   const body = canonicalizeEntityRefFrontmatter(rawBody, historicalIds);
 
   fs.writeFileSync(filePath, body);
-  // Post-write REPAIR (issue #2213): a peer process publishing the journal
   // across this write would otherwise strand the reference — the corpus bump
   // below no longer re-triggers the migration, and a parked mapping cannot be
   // fixed after the fact by the reconcile pass. On repair exhaustion, remove
@@ -511,7 +457,6 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
     }
     throw err;
   }
-  // Bump the corpus sentinel per write (out-of-band create) so a concurrent
   // same-process readAllMemories rescans and sees this statement immediately,
   // never a stale/partial corpus mid-batch (Cursor Medium, #1902). AFTER the
   // repair, so a rescan never captures pre-repair bytes.
@@ -519,7 +464,6 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
   return filePath;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -545,7 +489,6 @@ function readFileSafe(filePath: string): string | null {
 }
 
 function isBinary(content: string): boolean {
-  // Simple heuristic: if content has null bytes, it's binary
   for (let i = 0; i < Math.min(content.length, 8000); i++) {
     if (content.charCodeAt(i) === 0) return true;
   }

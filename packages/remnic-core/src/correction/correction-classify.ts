@@ -74,8 +74,6 @@ export async function completeCorrectionClassify(
       if (abortSignal?.aborted) {
         throw isAbortError(err) ? err : abortError("correction classify aborted");
       }
-      // A timeout abort belongs to this attempt. Fall through unless the
-      // operator turned the gateway path off.
       if (deps.config.localLlmFallback === false) {
         if (isAbortError(err)) {
           throw new Error("correction classify: local LLM timed out and fallback disabled");
@@ -107,9 +105,6 @@ export async function completeCorrectionClassify(
     if (abortSignal?.aborted) throw abortError("correction classify aborted");
     return fallback?.content ?? null;
   } catch (err) {
-    // The attempt signal aborts on its own budget. That is a finished miss
-    // (empty plan), not a caller disconnect — only the caller signal skips
-    // the empty-plan path.
     if (abortSignal?.aborted) {
       throw isAbortError(err) ? err : abortError("correction classify aborted");
     }
@@ -137,9 +132,6 @@ function startAttempt(
   caller: AbortSignal | undefined,
   timeoutMs: number
 ): { signal: AbortSignal; dispose: () => void } {
-  // A ref'd timer, not AbortSignal.timeout: that helper's timer is unref'd,
-  // so a classify wait would not keep a short-lived caller alive until the
-  // budget elapses.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const onCaller = (): void => controller.abort();

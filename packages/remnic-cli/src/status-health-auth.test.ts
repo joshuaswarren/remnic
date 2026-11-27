@@ -76,7 +76,6 @@ test("legacy env ENGRAM_AUTH_TOKEN is accepted when REMNIC_AUTH_TOKEN is unset",
 });
 
 test("falls back to config server.authToken when no env token is set", async () => {
-  // resolveConfigPath() honours REMNIC_CONFIG_PATH (set in `before`).
   await writeFile(
     process.env.REMNIC_CONFIG_PATH!,
     JSON.stringify({ server: { authToken: "config-file-token" } }),
@@ -95,7 +94,6 @@ test("falls back to the first connector token from the local token store", async
       ],
     }),
   );
-  // listTokens() returns store order; the first entry is what the probe uses.
   const token = resolveStatusProbeToken();
   assert.ok(typeof token === "string" && token.length > 0);
   assert.ok(token === "first-connector-token" || token === "second-connector-token");
@@ -144,7 +142,6 @@ test("treats the \${REMNIC_AUTH_TOKEN} config placeholder as unresolved (falls t
     process.env.REMNIC_CONFIG_PATH!,
     JSON.stringify({ server: { authToken: "${REMNIC_AUTH_TOKEN}" } }),
   );
-  // No env token, no connector store → undefined (placeholder did not leak).
   assert.equal(resolveStatusProbeToken(), undefined);
 });
 

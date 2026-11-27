@@ -6,9 +6,6 @@ import {
 } from "./adapters.js";
 import type { BenchMemoryAdapter } from "../../../adapters/types.js";
 
-// ---------------------------------------------------------------------------
-// Prompt-only baseline
-// ---------------------------------------------------------------------------
 
 test("baseline: recall surfaces turns overlapping the query terms", async () => {
   const adapter = new PromptOnlyBaselineAdapter();
@@ -26,7 +23,6 @@ test("baseline: correct() is just another turn (no retire)", async () => {
   const adapter = new PromptOnlyBaselineAdapter();
   await adapter.ingestTurn("s1", "user", "My coffee preference is oat-milk.", "2026-07-05T00:00:00Z");
   await adapter.correct("Correction: coffee is now black-coffee, not oat-milk.", "s1");
-  // Both the original and the correction are still in the prompt window.
   const recalled = await adapter.recall("what is my coffee preference?", "s1");
   const joined = recalled.join(" ").toLowerCase();
   assert.ok(joined.includes("oat-milk"), "baseline must NOT retire oat-milk (structural floor)");
@@ -49,7 +45,6 @@ test("baseline: reset clears the store", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Remnic-native wrapper (against a fake public BenchMemoryAdapter)
 // ---------------------------------------------------------------------------
 
 type CapturedCalls = {
@@ -129,7 +124,6 @@ test("remnic wrapper: correct() prefers the adapter's correction-contract surfac
   assert.equal(correctCalls[0].session, "mc:ns-a");
   assert.equal(correctCalls[0].text, "fix this");
   assert.equal(correctCalls[0].at, "2026-07-05T00:02:00Z");
-  // The contract applied — the correction must NOT also land as a turn.
   assert.equal(captured.storeCalls.length, 0);
 });
 
@@ -139,7 +133,6 @@ test("remnic wrapper: correct() falls back to the turn path when the contract pl
   base.correct = async () => ({ applied: false });
   const adapter = createRemnicMemCorrectAdapter(base, { sessionPrefix: "mc" });
   await adapter.correct("fix this", "ns-a", "2026-07-05T00:02:00Z");
-  // Unapplied contract → delivered exactly once as a user turn.
   assert.equal(captured.storeCalls.length, 1);
   assert.equal(captured.storeCalls[0].session, "mc:ns-a");
   assert.equal(captured.storeCalls[0].messages.length, 1);

@@ -1,8 +1,3 @@
-/**
- * MECE Taxonomy — Knowledge directory with resolver decision tree.
- *
- * Re-exports all public types and functions from the taxonomy subsystem.
- */
 
 export type {
   Taxonomy,

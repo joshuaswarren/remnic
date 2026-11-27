@@ -1,11 +1,3 @@
-/**
- * Extraction retry/backoff + circuit-breaker tests (extraction hot-loop
- * hardening). Drives a real ExtractionRunCoordinator over tmpdir StorageManager
- * instances with a fake extraction engine so the retry gate, per-fingerprint
- * backoff, provider circuit breaker, recovery, class-specific caps, the
- * never-mark-processed invariant, force-flush bypass, config parity, backoff
- * math, cache coherence, and namespace isolation are all exercised end to end.
- */
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -32,9 +24,6 @@ import type { TierMigrationCycleSummary } from "../recall-state.js";
 import { log } from "../logger.js";
 import { getExtractionLlmHealth, resetExtractionLlmHealthForTests } from "../extraction-llm-health.js";
 
-// ---------------------------------------------------------------------------
-// Result factories
-// ---------------------------------------------------------------------------
 
 function failureResult(cls: ExtractionFailureClass): ExtractionResult {
   return {
@@ -84,7 +73,6 @@ const migrationSummary: TierMigrationCycleSummary = {
 };
 
 // ---------------------------------------------------------------------------
-// Harness
 // ---------------------------------------------------------------------------
 
 interface Harness {
@@ -486,7 +474,6 @@ test("runExtraction clamps long deadline timers to the Node setTimeout limit", a
 });
 
 // ---------------------------------------------------------------------------
-// Backoff math (pure)
 // ---------------------------------------------------------------------------
 
 test("computeExtractionRetryNextEligibleMs: progresses through schedule and caps", () => {
@@ -496,9 +483,7 @@ test("computeExtractionRetryNextEligibleMs: progresses through schedule and caps
   assert.equal(computeExtractionRetryNextEligibleMs(1, sched, cap, 0.2, 0, noJitter), 1000);
   assert.equal(computeExtractionRetryNextEligibleMs(2, sched, cap, 0.2, 0, noJitter), 5000);
   assert.equal(computeExtractionRetryNextEligibleMs(3, sched, cap, 0.2, 0, noJitter), 30000);
-  // Past the schedule end → clamps to the last step, then to cap.
   assert.equal(computeExtractionRetryNextEligibleMs(9, sched, cap, 0.2, 0, noJitter), 30000);
-  // A schedule value above the cap is clamped to the cap.
   assert.equal(computeExtractionRetryNextEligibleMs(1, [999999], cap, 0.2, 0, noJitter), cap);
 });
 
@@ -594,7 +579,6 @@ test("capExtractionRetryStateEntries rejects non-finite and fractional caps", ()
 });
 
 // ---------------------------------------------------------------------------
-// Backoff eligibility gate
 // ---------------------------------------------------------------------------
 
 test("backoff: a provider_retryable failure parks the same fingerprint; extract() not called again", async () => {
@@ -613,7 +597,6 @@ test("backoff: a provider_retryable failure parks the same fingerprint; extract(
     assert.equal(r2.reason, "extraction_backoff");
     assert.equal(h.engineCalls(), 1, "second attempt is suppressed by backoff");
 
-    // A distinct fingerprint is unaffected by another fingerprint's backoff.
     const r3 = await h.run(coord, "topic-b");
     assert.equal(h.engineCalls(), 2, "distinct fingerprint still runs");
     assert.equal(r3.status, "skipped");
@@ -633,8 +616,6 @@ test("backoff: rewriting nextEligibleAt to the past re-enables the fingerprint (
     await h.run(coord, "topic-a");
     assert.equal(h.engineCalls(), 1);
 
-    // Simulate the backoff window elapsing by rewinding the persisted state,
-    // then hydrate a FRESH coordinator (as a daemon restart would).
     const storage = await h.storageForNs("default");
     const meta = await storage.loadMeta();
     assert.equal(meta.extractionRetryState?.length, 1, "failure persisted to meta.json");
@@ -655,7 +636,6 @@ test("backoff: rewriting nextEligibleAt to the past re-enables the fingerprint (
 });
 
 // ---------------------------------------------------------------------------
-// Circuit breaker
 // ---------------------------------------------------------------------------
 
 test("circuit breaker: opens after threshold failures and suppresses distinct fingerprints", async () => {
@@ -672,7 +652,6 @@ test("circuit breaker: opens after threshold failures and suppresses distinct fi
     assert.equal(h.engineCalls(), 2, "two distinct fingerprints failed, tripping the breaker");
     assert.equal(coord.getExtractionResilienceStatus().breaker.state, "open");
 
-    // A THIRD distinct fingerprint is short-circuited without calling extract().
     const r = await h.run(coord, "fp-3");
     assert.equal(r.reason, "provider_circuit_open");
     assert.equal(h.engineCalls(), 2, "breaker-open suppresses distinct fingerprints too");
@@ -765,7 +744,6 @@ test("recovery: half-open probe succeeds → breaker closes", async () => {
     await h.run(coord, "fp-1");
     assert.equal(coord.getExtractionResilienceStatus().breaker.state, "open");
 
-    // Cooldown 0 → next call flips open→half_open and allows one probe.
     h.setRespond(() => successResult());
     const r = await h.run(coord, "fp-2");
     assert.equal(r.status, "completed", "half-open probe runs");
@@ -777,10 +755,6 @@ test("recovery: half-open probe succeeds → breaker closes", async () => {
 });
 
 test("recovery: a FAILED half-open probe re-opens the breaker (cursor review)", async () => {
-  // An auth_config failure trips the breaker below the consecutive-failure
-  // threshold. After the auth cooldown elapses (half_open), a transient probe
-  // failure must re-open the breaker — not leave it stuck half_open where it
-  // no longer suppresses anything.
   const h = await makeHarness({
     extractionRetryScheduleMs: [3_600_000],
     extractionBreakerFailureThreshold: 100, // auth trips below threshold
@@ -793,8 +767,6 @@ test("recovery: a FAILED half-open probe re-opens the breaker (cursor review)", 
     await h.run(coord, "fp-a"); // auth failure → breaker opens immediately
     assert.equal(coord.getExtractionResilienceStatus().breaker.state, "open");
 
-    // Auth cooldown 0 → this call flips open→half_open and probes; the probe
-    // fails transiently → the breaker must re-open with the transient cooldown.
     h.setRespond(() => failureResult("provider_retryable"));
     await h.run(coord, "fp-b");
     assert.equal(
@@ -803,7 +775,6 @@ test("recovery: a FAILED half-open probe re-opens the breaker (cursor review)", 
       "failed half-open probe re-opens the breaker",
     );
 
-    // While re-opened, a third fingerprint is suppressed without calling extract().
     const calls = h.engineCalls();
     const r3 = await h.run(coord, "fp-c");
     assert.equal(r3.reason, "provider_circuit_open", "re-opened breaker suppresses");
@@ -830,7 +801,6 @@ test("recovery: a successful extract clears the fingerprint's retry state so it 
     assert.equal(h.engineCalls(), 2);
     assert.equal(coord.getExtractionResilienceStatus().backoffFingerprintCount, 0, "retry state cleared on success");
 
-    // Same fingerprint, non-forced, now proceeds because the entry cleared.
     await h.run(coord, "fp-1");
     assert.equal(h.engineCalls(), 3, "cleared fingerprint runs without the gate");
   } finally {
@@ -839,10 +809,6 @@ test("recovery: a successful extract clears the fingerprint's retry state so it 
 });
 
 test("recovery: a successful FORCED flush on a fresh coordinator clears a persisted backoff entry (cursor/codex review)", async () => {
-  // A forced flush bypasses the retry gate and never hydrates the in-memory
-  // mirror, so the success-heal path must still clear the persisted meta entry
-  // — otherwise a stale backoff survives a successful forced flush and keeps
-  // blocking normal extraction until the timer expires.
   const h = await makeHarness({
     extractionRetryScheduleMs: [3_600_000],
     extractionBreakerFailureThreshold: 100,
@@ -855,7 +821,6 @@ test("recovery: a successful FORCED flush on a fresh coordinator clears a persis
     let meta = await storage.loadMeta();
     assert.equal((meta.extractionRetryState ?? []).length, 1, "failure persisted");
 
-    // Fresh coordinator (mirror empty, namespace not hydrated) — forced success.
     const coordB = h.newCoordinator();
     h.setRespond(() => successResult());
     await h.run(coordB, "fp-heal", { force: true });
@@ -872,7 +837,6 @@ test("recovery: a successful FORCED flush on a fresh coordinator clears a persis
 });
 
 // ---------------------------------------------------------------------------
-// Class-specific caps
 // ---------------------------------------------------------------------------
 
 test("parse_empty: long-parks a fingerprint after extractionParseEmptyMaxAttempts", async () => {
@@ -886,7 +850,6 @@ test("parse_empty: long-parks a fingerprint after extractionParseEmptyMaxAttempt
   try {
     const coord = h.newCoordinator();
     h.setRespond(() => failureResult("parse_empty"));
-    // Force each attempt so the gate does not suppress; drive past the cap.
     await h.run(coord, "fp-1", { force: true });
     await h.run(coord, "fp-1", { force: true });
     await h.run(coord, "fp-1", { force: true }); // attempt 3 > cap of 2 → long-park
@@ -947,7 +910,6 @@ test("invariant: a failing extraction never records a processed fingerprint", as
 });
 
 // ---------------------------------------------------------------------------
-// Config parity: extractionRetryEnabled=false restores pre-change behavior
 // ---------------------------------------------------------------------------
 
 test("extractionRetryEnabled=false: extractor is called on every observe with no gate", async () => {
@@ -972,7 +934,6 @@ test("extractionRetryEnabled=false: extractor is called on every observe with no
 });
 
 // ---------------------------------------------------------------------------
-// Cache coherence across instances
 // ---------------------------------------------------------------------------
 
 test("cache coherence: a failure recorded by one coordinator gates a second over the same meta", async () => {
@@ -986,8 +947,6 @@ test("cache coherence: a failure recorded by one coordinator gates a second over
     await h.run(coordA, "shared-fp");
     assert.equal(h.engineCalls(), 1);
 
-    // A second coordinator over the same memory dir hydrates from meta.json and
-    // honors the persisted backoff without calling extract().
     const coordB = h.newCoordinator();
     const r = await h.run(coordB, "shared-fp");
     assert.equal(r.reason, "extraction_backoff");
@@ -998,7 +957,6 @@ test("cache coherence: a failure recorded by one coordinator gates a second over
 });
 
 // ---------------------------------------------------------------------------
-// Namespace isolation vs. provider-global breaker
 // ---------------------------------------------------------------------------
 
 test("namespace isolation: per-fingerprint backoff is namespace-scoped; breaker is provider-global", async () => {
@@ -1009,19 +967,16 @@ test("namespace isolation: per-fingerprint backoff is namespace-scoped; breaker 
   try {
     const coord = h.newCoordinator();
     h.setRespond(() => failureResult("provider_retryable"));
-    // Same fingerprint content, routed to namespace A → parked in A only.
     await h.run(coord, "same-content", { writeNamespaceOverride: "nsA" });
     assert.equal(h.engineCalls(), 1);
     const rA = await h.run(coord, "same-content", { writeNamespaceOverride: "nsA" });
     assert.equal(rA.reason, "extraction_backoff", "namespace A fingerprint is parked");
     assert.equal(h.engineCalls(), 1);
 
-    // The identical content routed to namespace B is NOT gated by A's backoff.
     const rB = await h.run(coord, "same-content", { writeNamespaceOverride: "nsB" });
     assert.equal(h.engineCalls(), 2, "namespace B is not gated by namespace A's per-fingerprint backoff");
     assert.equal(rB.status, "skipped");
 
-    // Meta isolation: each namespace persists only its own retry state.
     const metaA = await (await h.storageForNs("nsA")).loadMeta();
     const metaB = await (await h.storageForNs("nsB")).loadMeta();
     assert.equal((metaA.extractionRetryState ?? []).length, 1);
@@ -1043,7 +998,6 @@ test("namespace isolation: the provider breaker suppresses extraction across nam
     await h.run(coord, "fp-a", { writeNamespaceOverride: "nsA" });
     assert.equal(coord.getExtractionResilienceStatus().breaker.state, "open");
 
-    // A different namespace is still suppressed — the breaker is provider-global.
     const r = await h.run(coord, "fp-b", { writeNamespaceOverride: "nsB" });
     assert.equal(r.reason, "provider_circuit_open");
     assert.equal(h.engineCalls(), 1, "provider-global breaker suppresses namespace B too");
@@ -1054,17 +1008,12 @@ test("namespace isolation: the provider breaker suppresses extraction across nam
 
 
 // ---------------------------------------------------------------------------
-// Extraction liveness watermark (#2223): a successfully parsed extraction must
-// advance lastExtractionAt even when it emits no durable objects. Normal live
-// turns do not set persistProcessedFingerprint, which is the gap case.
 // ---------------------------------------------------------------------------
 
 function emptySuccessResult(): ExtractionResult {
   return { facts: [], profileUpdates: [], entities: [], questions: [] };
 }
 
-// Normal live turns (TurnIngestionCoordinator.processTurn path) do NOT set
-// persistProcessedFingerprint — the case the pre-#2223 watermark stamp skipped.
 function liveTurns(content: string): BufferTurn[] {
   return [
     { role: "user", content: `u:${content}`, timestamp: "2026-07-15T00:00:00Z" },
@@ -1329,8 +1278,6 @@ test("#3140: a failed flush records the LLM health failure and emits one dedupli
     assert.equal(first.llmReachable, false);
     assert.equal(first.lastFailureReason, "synthetic_provider_retryable");
 
-    // A second failing flush updates the timestamp but must NOT emit a second
-    // ERROR for the same reason inside the dedup window.
     await h.run(coord, "failed-flush-two");
     assert.equal(errors.length, 1, "one deduplicated ERROR per reason per window");
     assert.match(errors[0]!, /synthetic_provider_retryable/);
@@ -1365,7 +1312,6 @@ test("#3140: a successful flush heals the recorded LLM health", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Wiring the trigger drain depends on (#3266): what a real run hands back, and what it asks of the buffer
 // ---------------------------------------------------------------------------
 
 test("a retained failure carries the extraction's failure class, so the drain can tell an outage from a bad chunk", async () => {
@@ -1449,8 +1395,6 @@ test("isolated claim drains share the orchestrator's provider breaker (review ro
     extractionBreakerCooldownMs: 60_000,
   });
   try {
-    // extractionRunCoordinatorForBuffer builds a fresh coordinator per claim
-    // drain; the ORCHESTRATOR-wide breaker must be the one they all consult.
     const shared = new ProviderCircuitBreaker();
     const makeIsolated = () =>
       new ExtractionRunCoordinator({ ...harness.makeDeps(), providerBreaker: shared });
@@ -1463,13 +1407,9 @@ test("isolated claim drains share the orchestrator's provider breaker (review ro
       extractionFailureClass: "provider_retryable",
     }));
 
-    // The first failing attempt opens the SHARED breaker.
     const first = await harness.run(makeIsolated(), "breaker-share");
     assert.equal(first.reason, "empty_extraction_result");
 
-    // A DIFFERENT isolated coordinator (a fresh claim drain) must observe the
-    // opened breaker instead of re-calling the failing provider. Distinct
-    // fingerprint, so only the breaker can suppress this attempt.
     const second = await harness.run(makeIsolated(), "breaker-share-2");
     assert.equal(
       second.reason,
@@ -1482,7 +1422,6 @@ test("isolated claim drains share the orchestrator's provider breaker (review ro
 });
 
 // ---------------------------------------------------------------------------
-// #3227: optional durable outputs (identity reflection, entity relationships)
 // ---------------------------------------------------------------------------
 
 function optionalOnlyResult(extra: Partial<ExtractionResult>): ExtractionResult {
@@ -1633,7 +1572,6 @@ test("half-open probe: a probe that cannot answer in time re-opens the breaker i
         extract: async (_turns, _entities, signal) => {
           calls += 1;
           if (calls === 1) return failureResult("provider_retryable");
-          // The probe: no answer until the caller gives up.
           const stopped = Promise.withResolvers<void>();
           signal?.addEventListener("abort", () => stopped.resolve(), { once: true });
           await stopped.promise;
@@ -1703,7 +1641,6 @@ test("half-open probe timeout keeps the caller deadline enforced while the failu
       }),
     });
     await h.run(coord, "fp-1"); // opens the breaker
-    // Recording the probe failure must not outlive the caller deadline.
     const storage = await h.storageForNs("default");
     storage.updateMeta = () => new Promise<never>(() => {});
     const guard = Promise.withResolvers<"hung">();

@@ -9,7 +9,6 @@
 
 import type { ZodError } from "zod";
 
-// ─── Existing error classes (restored from pre-#3042) ─────────────────────
 
 /** Authenticated caller lacks the required authorization (HTTP 403). */
 export class EngramAccessForbiddenError extends Error {}
@@ -40,29 +39,15 @@ export class NamespaceNotWritableError extends EngramAccessInputError {
   }
 }
 
-// ─── Reserved argument keys (issue #3225 B1) ──────────────────────────────
 
-/**
- * Dictionary keys that change object shape or prototype resolution. A JSON
- * body can carry them as own members; the request preprocessors reject them
- * before copying, so a decoded `__proto__` member cannot become an inherited
- * schema field. Lives in this lowest module so the boundary and wire schema
- * layers share one implementation without an import cycle.
- */
 export const RESERVED_PROTO_KEYS: readonly string[] = ["__proto__", "constructor", "prototype"];
 
-/**
- * Reject the reserved keys with the input-error type, so a client that
- * submits a magic dictionary key gets a validation error instead of a
- * silently reshaped request object.
- */
 export function rejectReservedArgumentKey(key: string): void {
   if (RESERVED_PROTO_KEYS.includes(key)) {
     throw new EngramAccessInputError(`${key} is not a permitted argument key`);
   }
 }
 
-// ─── Levenshtein distance ─────────────────────────────────────────────────
 
 /**
  * Standard Levenshtein edit distance. O(n*m) over bounded inputs.
@@ -71,15 +56,12 @@ export function rejectReservedArgumentKey(key: string): void {
 export function levenshtein(a: string, b: string): number {
   const an = a.length;
   const bn = b.length;
-  // Fast paths for empty strings.
   if (an === 0) return bn;
   if (bn === 0) return an;
 
-  // Use two rows to keep memory O(min(n,m)).
   let prev: number[] = [];
   let curr: number[] = [];
 
-  // Align loops to the shorter string.
   const [shorter, longer, sn, ln] =
     an < bn ? [a, b, an, bn] : [b, a, bn, an];
 
@@ -100,7 +82,6 @@ export function levenshtein(a: string, b: string): number {
   return prev[sn];
 }
 
-// ─── Similar-name helpers ─────────────────────────────────────────────────
 
 const SUGGESTION_DISTANCE_CAP = 3;
 /**
@@ -127,8 +108,6 @@ export function nearestSuggestions(
   requested: string,
   registeredNames: readonly string[],
 ): SuggestionCandidate[] {
-  // Defense in depth: the entry point already caps; this guards any direct
-  // caller of the helper from an unbounded Levenshtein pass (issue #3042).
   if (requested.length > SUGGESTION_REQUEST_MAX_LEN) return [];
   const candidates: SuggestionCandidate[] = [];
   for (const name of registeredNames) {
@@ -137,7 +116,6 @@ export function nearestSuggestions(
       candidates.push({ name, distance });
     }
   }
-  // Total comparator: distance asc, then name asc.
   candidates.sort((a, b) => {
     if (a.distance !== b.distance) return a.distance < b.distance ? -1 : 1;
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
@@ -246,10 +224,6 @@ export function unknownToolError(
   requested: string,
   registeredNames: readonly string[],
 ): string {
-  // Cap the request before the suggestion pass: a 128 KB name would otherwise
-  // pay O(n*m) per registered tool (issue #3042 review, P2). The cap matches
-  // the documented tool-name shape; an over-long request is rejected with a
-  // teaching message rather than a silent truncate.
   if (requested.length > SUGGESTION_REQUEST_MAX_LEN) {
     return `Unknown tool: name exceeds ${SUGGESTION_REQUEST_MAX_LEN} characters (got ${requested.length}).`;
   }
@@ -291,9 +265,6 @@ export function invalidArgsError(
     return message;
   }
 
-  // Withhold an example that cannot parse against its own schema: a
-  // non-round-tripping example is misinformation, worse than none. Narrowed
-  // with `in`/`typeof` rather than an inline cast so the shape is checked.
   let roundTrips = false;
   if (typeof schema === "object" && "safeParse" in schema) {
     const parser = schema.safeParse;

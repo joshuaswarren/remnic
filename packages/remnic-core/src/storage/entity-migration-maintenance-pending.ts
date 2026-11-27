@@ -3,19 +3,6 @@ import { readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isErrnoCode } from "../utils/errno.js";
 
-/**
- * Issue #3286: the entity migration asks search maintenance to re-index only
- * after a pass that rewrote references. A crash between that rewrite and the
- * request would replay as a quiet no-op and leave the QMD index and projections
- * naming pre-rewrite entity ids. A marker, written BEFORE a pass rewrites
- * anything and cleared only after the host reports the request SERVED, makes
- * the owed request survive the crash. No marker means no request, so ordinary
- * no-op startups stay quiet.
- *
- * One file per arming run (`<prefix>.<pid>-<uuid>`): a run clears only the
- * files it observed at start or wrote itself, so a concurrent run's marker can
- * never be overwritten or deleted by this run's clear (review finding on #3287).
- */
 export const ENTITY_MIGRATION_MAINTENANCE_PENDING_PREFIX = "entity-canonical-id-maintenance.pending";
 
 /** Atomic temp-and-rename publish, the same pattern as the migration journal. Returns the marker's file name. */

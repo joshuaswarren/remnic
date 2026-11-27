@@ -1,27 +1,3 @@
-/**
- * Say-Once benchmark: extraction -> recall round-trip reliability (issue #3036).
- *
- * The product promise is that a preference mentioned ONCE — even vaguely — is
- * stored and resurfaces in a later relevant context. This scores that promise
- * per vagueness tier (explicit / casual / buried-mid-task).
- *
- * SCOPE: replay mode only.
- *
- * Each case runs through the bench adapter contract: the seed user/assistant
- * turn is stored via `system.store`, then each probe's prompt is fed to
- * `system.recall`. The harness never touches the filesystem directly; a
- * benchmark that scores recall without going through recall is measuring
- * disk, not retrieval, and ships misleading perfect-recall numbers (#3042
- * review, P1).
- *
- * Live mode (drive the real LLM extraction pipeline, then probe) is NOT
- * implemented here. The Orchestrator exposes no programmatic turn-ingestion
- * seam — buffering happens through the host's `agent_end` hook — so a live
- * harness needs a new seam in core rather than a call from this package.
- * Tracked separately; see the package README. Nothing here reports a live
- * result, because there is no live path: `runSayOnceBenchmark` has one code
- * path and it always goes through the adapter contract.
- */
 
 import { randomUUID } from "node:crypto";
 import type {
@@ -62,21 +38,12 @@ export class SayOnceHarnessError extends Error {
   }
 }
 
-/**
- * Take at most `budget` cases. A budget of exactly 0 means zero, never "all"
- * (checklist 17: `slice(-0)` silently returns everything).
- */
 function takeWithinBudget<T>(cases: readonly T[], budget: number): T[] {
   if (!Number.isFinite(budget)) return [...cases];
   if (budget <= 0) return [];
   return cases.slice(0, Math.floor(budget));
 }
 
-/**
- * Resolve `--limit`, which arrives as a string from the CLI. Rejects a
- * non-integer or non-finite value rather than silently defaulting
- * (checklist 1 / 17 / 39).
- */
 export function resolveSayOnceLimit(raw: unknown): number {
   if (raw === undefined || raw === null) return Number.POSITIVE_INFINITY;
   const value = typeof raw === "string" ? Number(raw) : raw;
@@ -91,11 +58,6 @@ export function resolveSayOnceLimit(raw: unknown): number {
   return value;
 }
 
-// Signature is deliberately the registry's one-arg `run` contract
-// (`registry.ts`: `run?: (options: ResolvedRunBenchmarkOptions) => ...`).
-// There is no mode parameter because there is only one mode: every case goes
-// through the adapter contract, and this module never reaches into a file
-// system that could carry operator memory content.
 export async function runSayOnceBenchmark(
   options: ResolvedRunBenchmarkOptions,
 ): Promise<BenchmarkResult> {
@@ -108,9 +70,6 @@ export async function runSayOnceBenchmark(
   const tasks: TaskResult[] = [];
 
   const system = options.system;
-  // The benchmark contract REQUIRES a memory adapter -- without one there is
-  // no recall path to score against (checklist 39: missing required input
-  // rejects, not silently defaults).
   if (!system) {
     throw new SayOnceHarnessError(
       "say-once: a BenchMemoryAdapter is required (pass --adapter or wire one through the bench runner)",
@@ -121,8 +80,6 @@ export async function runSayOnceBenchmark(
   for (const sample of cases) {
     caseIndex += 1;
     const startedAt = performance.now();
-    // A fresh session id per case so each task has an isolated namespace and
-    // no cross-task recall bleed.
     const sessionId = `say-once-${sample.id}-${randomUUID()}`;
     try {
       const result = await runSingleCase(sample, sessionId, system);
@@ -132,8 +89,6 @@ export async function runSayOnceBenchmark(
         tokens: { input: 0, output: 0 },
       });
     } finally {
-      // The adapter's reset/destroy handle the underlying storage; we don't
-      // fabricate a per-session API that the contract doesn't expose.
       await system.reset(sessionId).catch(() => {});
     }
     options.onTaskComplete?.(tasks[tasks.length - 1]!, caseIndex, cases.length);
@@ -186,10 +141,6 @@ async function runSingleCase(
   sessionId: string,
   system: ResolvedRunBenchmarkOptions["system"],
 ): Promise<Omit<TaskResult, "latencyMs" | "tokens">> {
-  // Store through the real adapter ingest path -- same surface a live turn
-  // would take through extraction. We do NOT bypass into raw .md files; a
-  // benchmark that scores recall without going through recall is measuring
-  // disk, not retrieval, and ships misleading perfect-recall numbers.
   const now = new Date().toISOString();
   await system.store(sessionId, [
     { role: "user", content: sample.seedUserMessage, timestamp: now },

@@ -1,17 +1,3 @@
-/**
- * Rich result summaries for tooling surfaces (bench-ui, /api/results feeds).
- *
- * `listBenchmarkResults` in results-store.ts answers "which runs exist";
- * this module answers "what is in a run" for display: aggregate metrics
- * joined with confidence intervals and effect sizes, per-task score
- * tables, assistant per-seed details, and the integrity badge block.
- *
- * Every summary is backed by a `BenchmarkResult` that passed
- * `loadBenchmarkResult` validation. Fields the validator does not check
- * (aggregate/statistic values, `meta.canaryFloor`, assistant
- * `task.details`) are still defensively coerced, so a hand-edited
- * artifact degrades to nulls instead of crashing a consumer.
- */
 
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
@@ -194,9 +180,6 @@ function resolveSplit(value: unknown): BenchIntegritySplit {
 }
 
 function resolveCanaryFloor(value: unknown): number {
-  // Results produced under a custom `REMNIC_BENCH_CANARY_FLOOR` may persist
-  // the floor into `meta.canaryFloor`. If present and finite, honor it so
-  // the badge matches the gate that produced the result.
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
     return value;
   }

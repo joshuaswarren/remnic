@@ -1,50 +1,3 @@
-/**
- * OAuth 2.1 authorization-server facade for the standalone Remnic server.
- *
- * Why this exists: ChatGPT developer-mode apps (chatgpt.com) can only talk
- * to remote MCP servers with OAuth, "No Authentication", or Mixed auth —
- * there is no static API-key/bearer option in the ChatGPT UI. Remnic's MCP
- * endpoint (`POST /mcp`) is bearer-token protected, so this module lets
- * Remnic act as its OWN authorization server: ChatGPT runs a standard
- * authorization-code + PKCE flow against these endpoints and receives a
- * regular Remnic connector token (per-app connector id: `chatgpt`,
- * `claude-ai`, or `oauth-app-<host>`; see oauthConnectorIdForRedirect) as the OAuth
- * access token. The existing bearer validation on `/mcp` then works
- * unchanged.
- *
- * Protocol layer: the security-critical endpoints are NOT hand-rolled.
- * `authorizationHandler`, `tokenHandler` (PKCE S256 verification, client
- * authentication, param validation, rate limiting) and the RFC 8414 /
- * RFC 9728 metadata router all come from `@modelcontextprotocol/sdk`.
- * This module contributes only the Remnic-specific pieces:
- *
- *  - config parsing (`server.oauth` block + `REMNIC_OAUTH_*` env overrides),
- *  - the static single-client store (Remnic pre-registers ChatGPT; the
- *    operator pastes the same client id/secret into ChatGPT's app UI),
- *  - the pending-approval interaction: `/authorize` renders a page that
- *    instructs the operator to run `remnic oauth approve <ref>` locally;
- *    the page polls with a per-transaction secret and redirects to the
- *    ChatGPT callback once the operator approves,
- *  - operator-only pending/approve/deny endpoints (gated by the core
- *    bearer authorization passed in from the access server), and
- *  - access-token minting into the Remnic token store.
- *
- * Security model (do not weaken):
- *  - The approval page NEVER asks for credentials. Approval happens
- *    out-of-band via the CLI, which authenticates with the operator
- *    bearer token against the local daemon.
- *  - `txn` id and `pollSecret` are independent 128-bit random values;
- *    the human-readable `ref` shown on the page cannot authorize
- *    anything by itself.
- *  - Authorization codes are 128-bit, single-use, TTL-capped at 120 s,
- *    and bound to client_id + redirect_uri + PKCE challenge + resource.
- *  - Redirect URIs are validated by the SDK against the exact
- *    pre-registered allowlist (`server.oauth.redirectUris`); an empty
- *    allowlist refuses every authorization (setup mode: discovery works,
- *    authorization does not).
- *  - Secret comparisons go through SHA-256 digests + `timingSafeEqual`,
- *    which is constant-time and never throws on length mismatch.
- */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -72,38 +25,17 @@ import {
   OAUTH_APP_CONNECTOR_PREFIX,
 } from "@remnic/core";
 
-// ── Constants ────────────────────────────────────────────────────────────────
 
-/**
- * Token-endpoint client auth methods this facade supports. The SDK's
- * client-auth middleware reads credentials from the request body only,
- * so `client_secret_basic` is intentionally NOT offered: advertising a
- * method the token endpoint would reject is worse than not offering it.
- * ChatGPT supports `client_secret_post` and `none` for predefined
- * clients.
- */
 const ALLOWED_TOKEN_AUTH_METHODS = ["client_secret_post", "none"] as const;
 export type OAuthTokenEndpointAuthMethod = (typeof ALLOWED_TOKEN_AUTH_METHODS)[number];
 
 /** Default TTL for pending authorizations (10 minutes). */
 const DEFAULT_APPROVAL_TTL_SECONDS = 600;
 
-/** Authorization-code TTL (OAuth 2.1 recommends short single-use codes). */
 const AUTHORIZATION_CODE_TTL_MS = 120_000;
 
-/** 128 bits of entropy in hex = 32 chars. */
 const HIGH_ENTROPY_HEX_BYTES = 16;
 
-/**
- * Connector id under which an OAuth access token is minted, chosen per
- * linked app from the (already allowlist-validated) redirect URI origin.
- * Each app gets its own token-store entry, so re-linking one app rotates
- * only that app's token: linking Claude never revokes ChatGPT's token and
- * vice versa. ChatGPT keeps the original `chatgpt` id so existing links
- * are unaffected. Every id here must match core isOAuthConnector()
- * (OAUTH_CONNECTOR_IDS or the OAUTH_APP_CONNECTOR_PREFIX) so the access
- * server pins it to `/mcp`.
- */
 export function oauthConnectorIdForRedirect(redirectUri: string): string {
   let url: URL;
   try {
@@ -115,21 +47,12 @@ export function oauthConnectorIdForRedirect(redirectUri: string): string {
   const isHost = (domain: string) => host === domain || host.endsWith(`.${domain}`);
   if (isHost("chatgpt.com") || isHost("openai.com")) return "chatgpt";
   if (isHost("claude.ai") || isHost("claude.com")) return "claude-ai";
-  // Any other app gets its own id keyed by its full redirect origin,
-  // scheme included. Percent-encoding keeps every origin component
-  // injective, so two distinct origins can never collide into one
-  // connector id (and never rotate each other's tokens).
   const key = `${url.protocol}//${host}${url.port ? `:${url.port}` : ""}`;
   const slug = encodeURIComponent(key) || "unknown";
   return `${OAUTH_APP_CONNECTOR_PREFIX}${slug}`;
 }
 
-// ── Config schema + parser ──────────────────────────────────────────────────
 
-/**
- * Raw config block as it appears in `server.oauth`. All fields optional at
- * the type level; the parser enforces requirements when `enabled: true`.
- */
 export interface OAuthConfigInput {
   enabled?: unknown;
   issuerUrl?: unknown;
@@ -154,11 +77,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-/**
- * Coerce a boolean coming from JSON (any) or env (string). Mirrors the
- * repo's canonical boolean coercion (rules 17, 24): "true"/"1"/"yes"/"on"
- * are truthy, "false"/"0"/"no"/"off" are falsy. Anything else throws.
- */
 function coerceBoolean(value: unknown, source: string): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -310,7 +228,6 @@ export function parseOAuthConfig(raw: unknown): ParsedOAuthConfig {
   };
 }
 
-// ── Env overrides (REMNIC_OAUTH_*) ───────────────────────────────────────────
 
 /**
  * Build the OAuth config overrides from env vars (REMNIC_OAUTH_*). The
@@ -339,12 +256,7 @@ export function readOAuthEnvOverrides(): Record<string, unknown> {
   return overrides;
 }
 
-/** Merge env overrides over the file block and parse the result. */
 export function applyOAuthEnvOverrides(fileBlock: unknown): ParsedOAuthConfig {
-  // A present-but-non-object `server.oauth` (e.g. `true` or a string) is
-  // invalid config, not "disabled". Hand it straight to parseOAuthConfig,
-  // which throws a precise error, instead of silently coercing it to `{}`
-  // and treating OAuth as off (repo rule: reject invalid input).
   if (fileBlock !== undefined && !isPlainObject(fileBlock)) {
     return parseOAuthConfig(fileBlock);
   }
@@ -356,13 +268,7 @@ export function applyOAuthEnvOverrides(fileBlock: unknown): ParsedOAuthConfig {
   return parseOAuthConfig(merged);
 }
 
-// ── Small crypto helpers ─────────────────────────────────────────────────────
 
-/**
- * Constant-time string equality via fixed-size SHA-256 digests. Digest
- * comparison never throws on length mismatch and does not leak length
- * or content timing. Hash equality implies content equality.
- */
 function timingSafeStringEqual(a: string, b: string): boolean {
   if (typeof a !== "string" || typeof b !== "string") return false;
   const digestA = createHash("sha256").update(a, "utf8").digest();
@@ -374,17 +280,10 @@ function randomHex(bytes: number): string {
   return randomBytes(bytes).toString("hex");
 }
 
-/**
- * Human-readable approval ref: 8 random bytes rendered in base36
- * (~62 bits, 13 chars max). Unguessable in practice, but knowing the ref
- * alone never authorizes anything — approval additionally requires the
- * operator bearer token.
- */
 function newApprovalRef(): string {
   return BigInt(`0x${randomHex(8)}`).toString(36);
 }
 
-// ── Pending-transaction store ────────────────────────────────────────────────
 
 export interface PendingTransaction {
   /** High-entropy public id; key for the poll endpoint. */
@@ -429,17 +328,11 @@ export class OAuthState {
 
   /** Delete expired entries. Run before each lookup. */
   private gc(now: number): void {
-    // Expire codes first so the pending check below sees the post-GC code
-    // set.
     for (const [key, code] of this.codes) {
       if (code.expiresAt < now) this.codes.delete(key);
     }
     for (const [key, txn] of this.pending) {
       if (txn.expiresAt >= now) continue;
-      // Keep an APPROVED transaction alive while its authorization code is
-      // still live, even past the pending TTL: an approval made just
-      // before the deadline (or under a short approvalTtlSeconds) must
-      // still be pollable+redirectable until the code itself expires.
       if (txn.outcome?.kind === "approved" && this.codes.has(txn.outcome.code)) continue;
       this.pending.delete(key);
     }
@@ -530,7 +423,6 @@ export class OAuthState {
     txn.outcome = { kind: "denied" };
   }
 
-  /** Redirect target carrying the code (+ state) back to the client. */
   buildRedirect(txn: PendingTransaction, code: string): string {
     const url = new URL(txn.redirectUri);
     url.searchParams.set("code", code);
@@ -558,12 +450,6 @@ export class OAuthState {
       return { status: "pending" };
     }
     if (txn.outcome.kind === "denied") return { status: "denied" };
-    // Approved, but only hand back the redirect while the authorization
-    // code is still live. The code TTL (120 s) is shorter than the txn TTL
-    // (approvalTtlSeconds, default 600 s), so a slow browser poll could
-    // otherwise be redirected with a code that has already expired,
-    // failing the token exchange. Once the code is gone (expired or
-    // already exchanged), report expired so the client restarts cleanly.
     if (!this.peekCode(txn.outcome.code)) return { status: "expired" };
     return { status: "approved", redirect: this.buildRedirect(txn, txn.outcome.code) };
   }
@@ -593,8 +479,6 @@ export class OAuthState {
   }): AuthorizationCodeEntry | undefined {
     const entry = this.peekCode(args.code);
     if (!entry) return undefined;
-    // Burn the code before the binding checks: a code that reaches the
-    // exchange step is spent regardless of outcome (OAuth 2.1 single use).
     entry.consumed = true;
     if (!timingSafeStringEqual(entry.clientId, args.clientId)) return undefined;
     // The token request MAY omit redirect_uri only when the authorization
@@ -608,14 +492,6 @@ export class OAuthState {
     return entry;
   }
 
-  /**
-   * Un-burn a code consumed by takeCode when the downstream token persist
-   * fails (disk full, permissions). Lets the client retry the exchange
-   * instead of being forced through a fresh authorize+approve. Only
-   * revives an entry still present and within TTL; a binding/PKCE
-   * mismatch is NOT revived (that is a genuine client error, and OAuth
-   * 2.1 revokes a code presented incorrectly).
-   */
   reviveCode(code: string): void {
     const entry = this.codes.get(code);
     if (entry && entry.expiresAt >= Date.now()) {
@@ -624,7 +500,6 @@ export class OAuthState {
   }
 }
 
-// ── HTML approval page (auto-polling) ────────────────────────────────────────
 
 function escapeHtml(value: string): string {
   return value
@@ -637,10 +512,6 @@ function escapeHtml(value: string): string {
 
 function renderApprovalPage(args: { txn: PendingTransaction; issuerUrl: string; command: string }): string {
   const { txn, issuerUrl, command } = args;
-  // The page NEVER asks for credentials. It displays the approval ref and
-  // CLI instructions, then polls /oauth/authorize/poll with the
-  // per-transaction pollSecret. On approval the browser follows the
-  // redirect to the client's callback.
   const safeRef = escapeHtml(txn.ref);
   const safeClientId = escapeHtml(txn.clientId);
   const safeRedirect = escapeHtml(txn.redirectUri);
@@ -727,14 +598,7 @@ Open a terminal on the Remnic host and run:</p>
 </html>`;
 }
 
-// ── Provider (SDK OAuthServerProvider implementation) ────────────────────────
 
-/**
- * Static single-client provider backed by the pending-approval store and
- * the Remnic token store. All protocol validation (PKCE, client auth,
- * redirect membership, param shapes) happens in the SDK handlers; this
- * provider only implements the Remnic-specific decisions.
- */
 class RemnicOAuthProvider implements OAuthServerProvider {
   private readonly config: ParsedOAuthConfig;
   private readonly state: OAuthState;
@@ -748,9 +612,6 @@ class RemnicOAuthProvider implements OAuthServerProvider {
     this.tokensPath = tokensPath;
     this.staticClient = {
       client_id: config.clientId,
-      // With `none`, the client is public: no secret is stored, so the
-      // SDK's client-auth middleware will not demand one. Otherwise the
-      // secret is REQUIRED on every token request.
       ...(config.tokenEndpointAuthMethod === "none" ? {} : { client_secret: config.clientSecret }),
       redirect_uris: config.redirectUris,
       token_endpoint_auth_method: config.tokenEndpointAuthMethod,
@@ -820,15 +681,6 @@ class RemnicOAuthProvider implements OAuthServerProvider {
     if (!entry) {
       throw new InvalidGrantError("authorization code is invalid, expired, or already used");
     }
-    // Mint a fresh Remnic connector token as the OAuth access token, under
-    // a per-app connector id derived from the redirect URI bound to this
-    // code. commitTokenEntry replaces only that app's previous entry, so
-    // re-linking an app rotates its own token (documented behavior) and
-    // never another app's. If the
-    // token-store write fails (disk full, permissions), revive the code
-    // so the client can retry the exchange instead of being forced
-    // through a fresh authorize+approve (AGENTS.md #14 — don't burn old
-    // state before the replacement is confirmed).
     const connectorId = oauthConnectorIdForRedirect(entry.redirectUri);
     const tokenEntry = buildTokenEntry(connectorId);
     try {
@@ -870,7 +722,6 @@ class RemnicOAuthProvider implements OAuthServerProvider {
   }
 }
 
-// ── Express app builder ─────────────────────────────────────────────────────
 
 export interface OAuthAppBundle {
   app: Express;
@@ -916,13 +767,10 @@ export function buildOAuthApp(
   const app = express();
   app.disable("x-powered-by");
 
-  // SDK metadata, truthfully narrowed to what this server actually
-  // accepts: a single client-auth method and the authorization_code grant.
   const oauthMetadata = createOAuthMetadata({ provider, issuerUrl: issuer });
   oauthMetadata.token_endpoint_auth_methods_supported = [config.tokenEndpointAuthMethod];
   oauthMetadata.grant_types_supported = ["authorization_code"];
 
-  // SDK handlers own the protocol-critical endpoints.
   app.use("/authorize", authorizationHandler({ provider }));
   app.use("/token", tokenHandler({ provider }));
   app.use(mcpAuthMetadataRouter({ oauthMetadata, resourceServerUrl, resourceName: "Remnic" }));
@@ -937,20 +785,7 @@ export function buildOAuthApp(
     });
   });
 
-  // Remnic-specific endpoints below parse JSON bodies.
   app.use(express.json({ limit: "32kb" }));
-  // Rate limiters for the Remnic-owned endpoints (the SDK already
-  // rate-limits /authorize and /token). Two policies:
-  //  - pollLimiter: generous. The approval page polls every ~3 s for up
-  //    to approvalTtlSeconds, so a full flow is ~200 polls; 120/min per IP
-  //    leaves headroom for several concurrent flows without locking the
-  //    browser out of its own approval.
-  //  - operatorReadLimiter / operatorDecisionLimiter: operator list vs
-  //    approve/deny. Both are low-frequency, so tight bounds blunt
-  //    brute-forcing an approval ref while never impeding a human
-  //    operator; separate buckets keep listing from starving decisions.
-  // Shared limiter shape: deterministic JSON 429 (stable `error` code) so
-  // ChatGPT and the CLI get a machine-parseable body, never default HTML.
   const makeLimiter = (max: number) =>
     rateLimit({
       windowMs: 60_000,
@@ -960,12 +795,9 @@ export function buildOAuthApp(
       message: { error: "rate_limited", error_description: "too many requests; retry later" },
     });
   const pollLimiter = makeLimiter(120);
-  // Read listing gets its own bucket so polling `pending` can never
-  // exhaust the decision (approve/deny) capacity below.
   const operatorReadLimiter = makeLimiter(60);
   const operatorDecisionLimiter = makeLimiter(30);
 
-  // ── Poll endpoint (public; gated by txn id + pollSecret) ──────────────
   app.post("/oauth/authorize/poll", pollLimiter, (req: Request, res: Response) => {
     const body: unknown = req.body;
     if (
@@ -986,7 +818,6 @@ export function buildOAuthApp(
     res.status(200).json(result);
   });
 
-  // ── Operator-only endpoints ────────────────────────────────────────────
   function operatorGuard(req: Request, res: Response): boolean {
     if (authCtxLookup(req).authorized === true) return true;
     res.status(401).json({ error: "unauthorized", error_description: "operator authentication required" });
@@ -1056,7 +887,6 @@ export function buildOAuthApp(
   };
 }
 
-// ── External request handler (mount point) ──────────────────────────────────
 
 /**
  * Adapt the OAuth express app to the core access server's

@@ -62,10 +62,6 @@ export async function wearablesSync(
   const summaries = await host.orchestrator
     .getWearablesService(namespace)
     .sync({ source: request.source, date: request.date, days: request.days, forceMemories: request.forceMemories });
-  // Manual one-shot sync (HTTP/MCP/CLI): the meeting tail-step arms a
-  // debounced, unref'd timer a short-lived caller exits before firing. Drain
-  // it now so a manual sync's meeting build actually runs before we return.
-  // The long-lived auto-sync daemon does NOT flush — it keeps coalescing.
   if (host.orchestrator.config.meetings.enabled) {
     await (await host.orchestrator.getMeetingsService(namespace)).flushBuilds();
   }
@@ -102,7 +98,6 @@ export function wearablesTranscriptMemories(
   });
 }
 
-// Meetings (issue #1900): thin delegations to the caller-ns MeetingsService.
 export async function meetingsList(
   host: WearablesMeetingsHost,
   date?: string,

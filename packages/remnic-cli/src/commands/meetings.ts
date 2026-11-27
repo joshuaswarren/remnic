@@ -23,9 +23,6 @@ export async function runMeetingsBinaryCommand(rest: string[]): Promise<void> {
       : rest;
   let meetingsOrchestrator: Orchestrator | undefined;
   try {
-    // Config/bootstrap failures get a constant message: parseConfig error
-    // strings can embed config values (CodeQL js/clear-text-logging), so
-    // they must never reach console output.
     let meetingsService: MeetingsService;
     try {
       const configPath = resolveConfigPath();

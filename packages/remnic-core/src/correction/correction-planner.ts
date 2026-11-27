@@ -44,11 +44,7 @@ import {
   type MemoryDraft,
 } from "./correction-contract.js";
 
-// ---------------------------------------------------------------------------
-// Injected collaborators — kept narrow so the planner is unit-testable.
-// ---------------------------------------------------------------------------
 
-/** A memory the planner located for the user. */
 export interface PlannerCandidate {
   memoryId: string;
   /** Path relative to the storage dir (for diff rendering). */
@@ -64,8 +60,6 @@ export interface PlannerCandidate {
 }
 
 export interface PlannerDeps {
-  // readableNamespaces is passed per-call to plan() so a single planner
-  // instance serves requests from callers with different read scopes.
   /**
    * Search memories for the correction text. The implementation is supplied
    * by the service and reuses the existing recall/QMD search path scoped to
@@ -154,15 +148,9 @@ export interface LlmClassificationResult {
   fallback?: boolean;
 }
 
-/**
- * Placeholder substituted for the request text when persisting a never-store /
- * redaction-rule plan (#1678 thread Oid8t). Mirrors the durable-audit
- * redaction so the transient pending-plan file never holds the secret.
- */
 const REDACTED_REQUEST_TEXT = "[redacted — never-store/redaction correction text withheld from the pending-plan file]";
 
 // ---------------------------------------------------------------------------
-// Planner
 // ---------------------------------------------------------------------------
 
 export class CorrectionPlanner {
@@ -181,7 +169,6 @@ export class CorrectionPlanner {
     throwIfAborted(abortSignal, "correction planning aborted");
     const cleaned = validateCorrectionRequest(request);
     if (cleaned.text.length > CORRECTION_TEXT_MAX) {
-      // Defensive double-check; validateCorrectionRequest already throws.
       throw new CorrectionContractError("CorrectionRequest.text too long.");
     }
 
@@ -198,7 +185,6 @@ export class CorrectionPlanner {
       );
     }
 
-    // 1. LOCATE — duplicateOf skips search and the classifier.
     const explicitDuplicate = cleaned.duplicateOf
       ? await this.planExplicitDuplicate(cleaned, namespaces, abortSignal)
       : null;
@@ -207,16 +193,12 @@ export class CorrectionPlanner {
       : await this.locateCandidates(cleaned, namespaces, abortSignal);
     throwIfAborted(abortSignal, "correction planning aborted");
     if (!explicitDuplicate && located.candidates.length === 0) {
-      // No candidates AND no explicit targets → empty plan is valid (the user
-      // can still discard). But explicit-target-not-found was already raised
-      // inside locateCandidates (rule 34).
       return this.persist(
         this.emptyPlan(cleaned, namespaces[0], "no matching memories found for the correction text"),
         abortSignal,
       );
     }
 
-    // 2. CLASSIFY + DRAFT
     const llm = explicitDuplicate
       ? explicitDuplicate.llm
       : await this.deps.classifyAndDraft({
@@ -226,9 +208,6 @@ export class CorrectionPlanner {
         });
     throwIfAborted(abortSignal, "correction planning aborted");
 
-    // Validate every action shape before persisting — the adapter is trusted
-    // to validate, but a malformed action must never reach the executor
-    // (defense in depth, rule 51).
     for (const action of llm.actions) {
       validateCorrectionAction(action);
       if (action.kind === "redaction_rule") {
@@ -236,10 +215,8 @@ export class CorrectionPlanner {
       }
     }
 
-// 3. Map actions → affected entries (only memories the planner located).
     const affected = this.deriveAffected(located.candidates, llm);
 
-    // Bulk guard (§39): refuse past maxAffected without silent truncation.
     const touchedCount = new Set(
       llm.actions
         .map((a) =>
@@ -257,11 +234,6 @@ export class CorrectionPlanner {
       );
     }
 
-    // Defense in depth (review thread: reject-actions-outside-candidates):
-    // an LLM that hallucinates or is prompt-injected must never target a
-    // memory the planner did not locate. NOW that the bulk guard has had its
-    // chance to reject over-limit plans, drop actions whose target ID is
-    // absent from the candidate set and warn.
     const candidateIds = new Set(located.candidates.map((c) => c.memoryId));
     if (llm.actions.length > 0 && candidateIds.size > 0) {
       const explicitWinner = cleaned.duplicateOf;
@@ -273,9 +245,6 @@ export class CorrectionPlanner {
               ? action.memoryId
               : null;
         if (id !== null && !candidateIds.has(id)) return false;
-        // A model-picked winner must be a located candidate. duplicateOf is
-        // the exception: that winner was validated as an active memory and is
-        // intentionally not part of the mutated set.
         if (
           action.kind === "supersede" &&
           action.winnerId &&
@@ -293,7 +262,6 @@ export class CorrectionPlanner {
       }
     }
 
-    // 4. RENDER DIFF
     const diff = llm.fallback
       ? ""
       : await this.deps.renderDiff({ candidates: located.candidates, actions: llm.actions });
@@ -408,7 +376,6 @@ export class CorrectionPlanner {
         namespaces,
       });
       throwIfAborted(abortSignal, "correction planning aborted");
-      // Expand 1-hop neighbors and merge (dedup by memoryId, keep highest score).
       const seedIds = targets.map((c) => c.memoryId);
       const neighbors = await this.deps.expandNeighbors({
         seedIds,
@@ -453,8 +420,6 @@ export class CorrectionPlanner {
         ...(c.sourceQuote ? { sourceQuote: c.sourceQuote } : {}),
       });
     }
-    // Include touched memories that the LLM did not annotate but whose actions
-    // reference them (e.g. an `edit` drafted against a located candidate).
     const annotated = new Set(out.map((e) => e.memoryId));
     for (const action of llm.actions) {
       const id =
@@ -502,10 +467,8 @@ export class CorrectionPlanner {
   }
 
   // -------------------------------------------------------------------------
-  // Plan persistence — atomic write (rule 54), serialized per plan id (rule 40).
   // -------------------------------------------------------------------------
 
-  /** Directory holding pending plans for one namespace. */
   private async pendingDir(namespace: string): Promise<string> {
     return path.join(await this.deps.storageDir(namespace), "state", "corrections", "pending");
   }
@@ -518,24 +481,9 @@ export class CorrectionPlanner {
     const dir = await this.pendingDir(plan.namespace);
     throwIfAborted(abortSignal, "correction planning aborted");
     const target = path.join(dir, `${plan.planId}.json`);
-    // #1678 (thread Oid8t): never-store/redaction corrections carry the very
-    // secret/pattern the user asked Remnic NOT to retain. The durable audit
-    // already withholds the text; the TRANSIENT pending-plan file must too,
-    // or the secret sits on disk (pending until apply/discard + TTL). Redact
-    // the request text in the persisted copy for never_store classifications
-    // or any redaction_rule action. The in-memory plan keeps the original
-    // text so the executor's audit body (which re-applies its own redaction)
-    // is unaffected; only the on-disk JSON is sanitized.
     const sensitive =
       plan.classification === "never_store" ||
       plan.actions.some((a) => a.kind === "redaction_rule");
-    // #1678 (threads vMLN/vZln): redact request.text (the executor does not
-    // need the raw request text for redaction_rule actions). The pattern is
-    // NOT redacted: the executor's apply flow reloads via loadPlan (disk) and
-    // needs the real pattern to call registerRedactionRule. Redacting it would
-    // register a placeholder and the extraction redaction (#1669) would never
-    // block the intended content. The pattern's transient on-disk exposure is
-    // bounded by the pending-plan TTL + consumed-on-apply lifecycle.
     const persistedPlan: CorrectionPlan = sensitive
       ? { ...plan, request: { ...plan.request, text: REDACTED_REQUEST_TEXT } }
       : plan;
@@ -547,7 +495,6 @@ export class CorrectionPlanner {
     return plan;
   }
 
-  /** Load a pending plan by id (used by the service / executor). */
   async loadPlan(namespace: string, planId: string): Promise<CorrectionPlan | null> {
     assertSafePlanId(planId);
     const file = path.join(await this.pendingDir(namespace), `${planId}.json`);
@@ -605,19 +552,11 @@ export class CorrectionPlanner {
       const plan = parsePlan(raw);
       if (!plan) return;
       plan.status = status;
-      // #1713 Item 2: stamp applyingAt when entering the applying state so
-      // startup recovery can detect plans stuck mid-apply (process death).
-      // Cleared on terminal transitions; harmless residue on non-applying
-      // plans is ignored by the recovery scan.
       if (status === "applying") {
         plan.applyingAt = this.deps.now().toISOString();
       } else {
         delete plan.applyingAt;
       }
-      // #1669 thread P1: scrub redaction_rule patterns from consumed plans so
-      // a never-store pattern does not persist on disk after apply/discard.
-      // The executor reloads via loadPlan only between "applying" (step 1) and
-      // "applied" (step 4), so scrubbing at the terminal status is safe.
       if (status !== "applying") {
         plan.actions = plan.actions.map((a) =>
           a.kind === "redaction_rule"
@@ -666,26 +605,8 @@ export class CorrectionPlanner {
     });
   }
 
-  /**
-   * Stale-applying TTL: a plan in `applying` state longer than this is
-   * assumed to be from a crashed process and is recovered on startup
-   * (#1713 Item 2). 10 minutes is generous for an apply that normally
-   * completes in seconds, yet short enough to avoid leaving stale state.
-   */
   static readonly STALE_APPLYING_TTL_MS = 10 * 60 * 1000;
 
-  /**
-   * Recover stale `applying` plans past the stale-applying TTL (#1713 Item 2).
-   *
-   * A plan stuck in `applying` means the process died mid-apply. Re-applying
-   * wholesale would duplicate succeeded actions (replacements, tombstones,
-   * audits), so recovery discards + scrubs the plan instead. The operator
-   * inspects the outcome and files a NEW plan for any actions that did not
-   * complete. Plans without `applyingAt` (predating this fix) are recovered
-   * when they are past their `expiresAt` timestamp.
-   *
-   * @returns the ids of recovered (discarded) plans.
-   */
   async recoverStaleApplyingPlans(
     namespace: string,
     opts?: { ttlMs?: number; now?: Date },
@@ -712,10 +633,6 @@ export class CorrectionPlanner {
         continue; // malformed — skip (rule 34).
       }
       if (!plan || plan.status !== "applying") continue;
-      // Post-fix plans (with applyingAt): stale if the applying timestamp is
-      // past the TTL (process died mid-apply). Pre-fix plans (no applyingAt):
-      // stale as soon as they have expired — no additional TTL wait, since the
-      // plan is already past its intended lifetime (review thread ff034716).
       const stale = plan.applyingAt
         ? now - new Date(plan.applyingAt).getTime() >= ttl
         : now >= new Date(plan.expiresAt).getTime();
@@ -732,19 +649,8 @@ export class CorrectionPlanner {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Reject caller-supplied plan ids that would escape the pending-plan dir
- * (review thread Ug8): `correct --discard --plan-id ../../meta` must not let
- * `path.join(pendingDir, "../../meta.json")` unlink arbitrary `.json` files
- * under the storage root. A safe plan id is a bare basename with no path
- * separators and no parent-segment shape. The canonical format is
- * `corr-<base36>-<base36>` (see {@link newPlanId}); this guard accepts any
- * single-segment id so future formats need not touch it, but blocks every
- * traversal vector (`/`, `\`, `..`, leading dots, NUL).
- */
 function assertSafePlanId(planId: string): void {
   if (
     typeof planId !== "string" ||
@@ -767,7 +673,6 @@ function clampConfidence(n: number): number {
   return Math.min(1, Math.max(0, n));
 }
 
-/** Merge two candidate lists, deduping by memoryId and keeping the highest score. */
 function mergeCandidates(a: readonly PlannerCandidate[], b: readonly PlannerCandidate[]): PlannerCandidate[] {
   const map = new Map<string, PlannerCandidate>();
   for (const c of a) {
@@ -794,7 +699,6 @@ export function parsePlan(raw: string): CorrectionPlan | null {
   if (typeof p.planId !== "string" || typeof p.namespace !== "string") return null;
   if (typeof p.createdAt !== "string" || typeof p.expiresAt !== "string") return null;
   if (!Array.isArray(p.actions) || !Array.isArray(p.affected)) return null;
-  // Re-validate each action shape; a single malformed action poisons the plan.
   for (const action of p.actions as unknown[]) {
     try {
       validateCorrectionAction(action);

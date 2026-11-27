@@ -24,8 +24,6 @@ function createConfig(memoryDir: string) {
     localLlmEnabled: true,
     localLlmModel: "test-local-model",
     localLlmUrl: "http://127.0.0.1:9",
-    // Mirror the production daemon: a 10-minute budget with 2 attempts, so
-    // an unhonored abort would outlive any sane test deadline.
     localLlmTimeoutMs: 600_000,
     localLlmRetry5xxCount: 1,
     localLlmRetryBackoffMs: 30_000,
@@ -174,8 +172,6 @@ test("an abort during retry backoff ends the loop without sleeping it out or sta
       { operation: "extraction" },
     );
 
-    // Sync point: the retry loop is in its 30s backoff when the backoff
-    // warn line lands; abort there.
     await waitFor(
       () => lines.some((line) => line.includes("retrying after 30000ms")),
       "attempt 1 to fail and backoff to start",

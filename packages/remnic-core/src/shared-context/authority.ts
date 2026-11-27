@@ -1,8 +1,3 @@
-/**
- * Shared-item actor authority (issue #1957).
- *
- * Pure helper. Empty required means no gate. Missing actor always fails.
- */
 
 export type AuthorityCheckError = "missing_actor" | "forbidden";
 

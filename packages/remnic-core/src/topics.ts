@@ -8,7 +8,6 @@
 import type { MemoryFile, TopicScore } from "./types.js";
 import { cjkBigrams } from "./utils/script-aware-text.js";
 
-/** Stop words to exclude from topic extraction */
 const STOP_WORDS = new Set([
   "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
   "have", "has", "had", "do", "does", "did", "will", "would", "could",
@@ -56,7 +55,6 @@ export function extractTopics(
 ): TopicScore[] {
   if (memories.length === 0) return [];
 
-  // Count term frequency per document and document frequency
   const docFreq = new Map<string, number>(); // term -> number of documents containing it
   const termFreqPerDoc: Map<string, number>[] = []; // per-doc term frequencies
 
@@ -68,7 +66,6 @@ export function extractTopics(
       termFreq.set(term, (termFreq.get(term) ?? 0) + 1);
     }
 
-    // Track which terms appear in this document
     for (const term of termFreq.keys()) {
       docFreq.set(term, (docFreq.get(term) ?? 0) + 1);
     }
@@ -78,7 +75,6 @@ export function extractTopics(
 
   const totalDocs = memories.length;
 
-  // Calculate TF-IDF for each term
   const tfidfScores = new Map<string, { score: number; count: number }>();
 
   for (let i = 0; i < memories.length; i++) {
@@ -101,7 +97,6 @@ export function extractTopics(
     }
   }
 
-  // Convert to array and sort by score
   const topics: TopicScore[] = [...tfidfScores.entries()]
     .map(([term, { score, count }]) => ({ term, score, count }))
     .sort((a, b) => b.score - a.score)

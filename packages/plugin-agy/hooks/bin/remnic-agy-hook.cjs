@@ -43,12 +43,10 @@ const path = require("path");
 const { run } = require("./remnic-hook-core.cjs");
 const { readBounded } = require("./remnic-agy-jsonl-read.cjs");
 
-// Conversation storage (measured on Linux 2026-11-17): per-conversation
 // SQLite files at ~/.gemini/antigravity-cli/conversations/<id>.db (tables:
 // trajectory_meta, steps with protobuf metadata blobs), plus a JSONL prompt
 // history at ~/.gemini/antigravity-cli/history.jsonl. There is NO per-session
 // JSON transcript file yet found, so ATIF parsing below is provisional: if
-// Conversation storage (measured on Linux 2026-11-17): per-conversation
 // SQLite files at ~/.gemini/antigravity-cli/conversations/<id>.db (tables:
 // trajectory_meta, steps with protobuf payload blobs). There is NO
 // per-session JSON transcript — 3449 shipped a JSON-only resolver, so the
@@ -119,7 +117,6 @@ function resolveTranscriptPath(input) {
 // strings (bounded). Steps that yield no text are skipped, so cursor
 // counting stays aligned with what was actually observed.
 const AGY_SQLITE_MESSAGE_CAP = 8000;
-// Row-count bound on the steps read (#3452 review): a pathological
 // conversation db must not load an unbounded number of rows into memory.
 // The count check refuses cheaply — a truncated head list would instead
 // advance the message-count cursor over turns that were never observed,
@@ -129,7 +126,6 @@ const AGY_SQLITE_MESSAGE_CAP = 8000;
 // SELECT itself stays as the hard bound for rows materialized in one read.
 const AGY_SQLITE_ROW_LIMIT = 10000;
 const AGY_JSONL_MESSAGE_CAP = 8000;
-// Line-count and byte bound on JSONL reads (#3454 / Kilo review): mirror the
 // SQLite row cap so a pathological transcript cannot load unbounded lines or
 // messages. Past the cap the parse throws and the shared parse-failed path
 // logs and retries on each hook event (same loud failure as .db over-cap).
@@ -150,7 +146,6 @@ function jsonlStringContent(value) {
 }
 
 function parseAgyJsonl(jsonlPath) {
-  // Read through one descriptor with a byte bound: stat-then-read lets a file
   // grown between the calls load past the cap (CodeRabbit #3454). The bounded
   // read lives in remnic-agy-jsonl-read.cjs so a short readSync (network
   // filesystems) cannot truncate the transcript mid-parse.
@@ -210,7 +205,6 @@ function parseAgySqlite(dbPath) {
         ? row.step_payload
         : Buffer.from(row.step_payload);
       if (!payload || payload.length === 0) continue;
-      // Preserve Unicode conversation text (mixed-language turns); drop
       // only binary framing and control/format characters.
       const text = payload
         .toString("utf8")
@@ -221,7 +215,6 @@ function parseAgySqlite(dbPath) {
         .join("\n")
         .trim();
       if (!text) continue;
-      // Role follows row structure, never text patterns (a user can
       // type `(bot-`, `call_1`, or JSON — matching on text would misfile
       // user intent as agent output). step_type 132 rows exist only as
       // agent tool-call/result activity in every sampled db and the

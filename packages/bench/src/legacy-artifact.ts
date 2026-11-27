@@ -140,9 +140,6 @@ function optionalProviderConfig(where: string, value: unknown): ProviderConfig |
   if (value === undefined || value === null) {
     return null;
   }
-  // Complete-shape validation (issue #2895): a malformed optional field
-  // (e.g. a numeric rubricVersion) rejects with its field path instead of
-  // surviving the cast into typed results and exports.
   const issue = validateProviderConfigShape(value);
   if (issue) {
     reject(
@@ -264,23 +261,15 @@ function upgradeMeta(legacy: JsonRecord, recognizedTaskCount: number): Benchmark
     id: meta.id as string,
     benchmark: meta.benchmark as string,
     timestamp: meta.timestamp as string,
-    // Old UI display default for an absent tier.
     benchmarkTier: optionalTier("meta.benchmarkTier", meta) ?? "custom",
-    // Provenance is not knowable from a legacy artifact: recognition
-    // rejects any payload with a present provenance key, so the only
-    // honest value here is the explicit "unknown" marker.
     version: "unknown",
     remnicVersion: "unknown",
     gitSha: "unknown",
-    // Old UI display default for an absent mode.
     mode: optionalMode("meta.mode", meta) ?? "quick",
-    // Old UI fell back to the task count when runCount was absent.
     runCount: optionalNonNegativeInteger("meta.runCount", meta, "runCount") ?? taskCount,
     seeds: optionalSeeds("meta.seeds", meta.seeds) ?? [],
   };
 
-  // Optional pass-through fields: present-but-wrong-type rejects here
-  // so report-card/HTML export never sees a non-string failureReason.
   const metaExtras = upgraded as unknown as JsonRecord;
   for (const key of [
     "runId",
@@ -353,7 +342,6 @@ function upgradeMeta(legacy: JsonRecord, recognizedTaskCount: number): Benchmark
 
 function upgradeConfig(legacy: JsonRecord): BenchmarkResult["config"] {
   if (!("config" in legacy)) {
-    // Old UI display defaults: no providers configured, adapter unknown.
     return {
       systemProvider: null,
       judgeProvider: null,
@@ -369,7 +357,6 @@ function upgradeConfig(legacy: JsonRecord): BenchmarkResult["config"] {
   const upgraded: BenchmarkResult["config"] = {
     systemProvider: optionalProviderConfig("config.systemProvider", config.systemProvider),
     judgeProvider: optionalProviderConfig("config.judgeProvider", config.judgeProvider),
-    // Old UI display default for an absent adapter mode.
     adapterMode: optionalString("config.adapterMode", config, "adapterMode") ?? "unknown",
     remnicConfig: {},
   };
@@ -383,10 +370,6 @@ function upgradeConfig(legacy: JsonRecord): BenchmarkResult["config"] {
   if ("internalProvider" in config && config.internalProvider !== undefined) {
     upgraded.internalProvider = optionalProviderConfig("config.internalProvider", config.internalProvider);
   }
-  // Config extras carry the strict-schema contract (issue #2885): the
-  // canonical re-validation never checks these fields, so an invalid
-  // value copied here would flow into repro manifests and exports as if
-  // it were typed. Validate before copying.
   if ("runtimeProfile" in config && config.runtimeProfile !== undefined) {
     const profile = config.runtimeProfile;
     if (profile !== null && !isBenchRuntimeProfile(profile)) {
@@ -408,8 +391,6 @@ function upgradeConfig(legacy: JsonRecord): BenchmarkResult["config"] {
 
 function upgradeCost(legacy: JsonRecord): BenchmarkResult["cost"] {
   if (!("cost" in legacy)) {
-    // Canonical cost accounting is additive; a legacy artifact that
-    // recorded no usage upgrades to zero, never to a guess.
     return {
       totalTokens: 0,
       inputTokens: 0,
@@ -440,8 +421,6 @@ function upgradeCost(legacy: JsonRecord): BenchmarkResult["cost"] {
 
 function upgradeTask(where: string, task: unknown): TaskResult | null {
   if (!isRecord(task) || typeof task.taskId !== "string" || task.taskId.trim().length === 0) {
-    // Pre-#2800 UI parity: a task row without a usable taskId has no
-    // identity to display and is skipped, not fatal.
     return null;
   }
 
@@ -455,7 +434,6 @@ function upgradeTask(where: string, task: unknown): TaskResult | null {
 
   const upgraded: TaskResult = {
     taskId: task.taskId,
-    // Old UI display defaults for absent task text fields.
     question: optionalString(`${where}.question`, task, "question") ?? "",
     expected: optionalString(`${where}.expected`, task, "expected") ?? "",
     actual: optionalString(`${where}.actual`, task, "actual") ?? "",
@@ -567,8 +545,6 @@ function upgradeEnvironment(legacy: JsonRecord): BenchmarkResult["environment"] 
     nodeVersion: optionalString("environment.nodeVersion", environment, "nodeVersion") ?? "unknown",
   };
   if ("hardware" in environment) {
-    // Pass through verbatim; the canonical re-validation in the loader
-    // rejects a present-but-invalid value instead of dropping it.
     upgraded.hardware = environment.hardware as string;
   }
   return upgraded;
@@ -586,10 +562,6 @@ export function recognizeLegacyBenchmarkArtifact(value: unknown): LegacyArtifact
   }
   if (isRecord(value.meta)) {
     const meta = value.meta;
-    // Any single provenance key claims modern provenance. Requiring all
-    // three keys let a partially corrupted modern artifact (e.g. version
-    // and remnicVersion retained, gitSha lost) fall into this legacy
-    // path and get its missing marker fabricated as "unknown".
     const modernProvenance = "version" in meta || "remnicVersion" in meta || "gitSha" in meta;
     const modernTier = meta.benchmarkTier === "published" || meta.benchmarkTier === "remnic";
     const modernIntegrity = INTEGRITY_META_FIELDS.some((key) => key in meta);

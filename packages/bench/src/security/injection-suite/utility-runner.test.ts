@@ -104,7 +104,6 @@ for (const arm of INJECTION_SUITE_PUBLICATION_ARMS) {
     );
     const captured = dep.chats[0]!;
     assert.deepEqual(captured.messages, expected);
-    // Same executor contract the security rows derive; no tools for utility.
     assert.deepEqual(captured.options, {
       kind: "openai-compat",
       baseUrl: "https://utility-fixture.test/v1",
@@ -151,7 +150,6 @@ test("concurrent markInFlight calls throw an ambiguous-task error instead of ove
     /ambiguous paid utility task/,
   );
   store.markInFlight("task-a", true);
-  // replace=true clears the previous marker so a subsequent claim succeeds.
   assert.doesNotThrow(() => store.markInFlight("task-a", true));
 });
 
@@ -161,11 +159,9 @@ test("a marker left behind by a crash after the durable commit is not ambiguous"
   store.markInFlight("task-a", false);
   const task = { taskId: "task-a", question: "q", expected: "e", actual: "a", scores: { s: 1 }, latencyMs: 1 };
   store.commit(task as never);
-  // Re-create the marker as if the crash happened before commit() removed it.
   store.markInFlight("task-a", false);
   assert.deepEqual(store.ambiguousTaskIds(), [], "a checkpointed task owes nothing");
   assert.doesNotThrow(() => store.markInFlight("task-a", false), "the stale marker was reconciled away");
-  // A marker for a task with no checkpoint is still ambiguous.
   store.markInFlight("task-b", false);
   assert.deepEqual(store.ambiguousTaskIds(), ["task-b"]);
 });
@@ -217,7 +213,6 @@ test("a utility output directory is bound to its execution contract", async () =
       /different utility contract/,
       "new weights behind the same served name must not reuse the checkpoints",
     );
-    // The resolved backend selects non-generic request fields, so resuming
     // under a different override is a different condition (PR #3079).
     const previousBackend = process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND;
     process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND = "ollama";
@@ -231,7 +226,6 @@ test("a utility output directory is bound to its execution contract", async () =
       if (previousBackend === undefined) delete process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND;
       else process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND = previousBackend;
     }
-    // Checkpoints from before the contract existed are refused rather than reused.
     const legacy = mkdtempSync(path.join(os.tmpdir(), "h5-util-legacy-"));
     mkdirSync(path.join(legacy, "utility-checkpoints"), { recursive: true });
     await assert.rejects(
@@ -270,7 +264,6 @@ test("the utility contract binds to dataset CONTENTS, not just the directory pat
     const before = datasetDigest(dataset);
     await assertUtilityContract(input, ["locomo"]);
     await assertUtilityContract(input, ["locomo"]);
-    // Editing the frozen dataset in place changes the digest, so the
     // partially scored checkpoints are refused instead of mixed (#3078).
     writeFileSync(path.join(dataset, "questions.jsonl"), '{"id":"q1","edited":true}\n');
     assert.notEqual(datasetDigest(dataset), before);
@@ -278,15 +271,12 @@ test("the utility contract binds to dataset CONTENTS, not just the directory pat
       assertUtilityContract(input, ["locomo"]),
       /different utility contract/,
     );
-    // Adding a file counts too, and the digest is order-independent.
     writeFileSync(path.join(dataset, "questions.jsonl"), '{"id":"q1"}\n');
     assert.equal(datasetDigest(dataset), before, "restoring the bytes restores the digest");
     writeFileSync(path.join(dataset, "extra.jsonl"), '{"id":"q2"}\n');
     await assert.rejects(assertUtilityContract(input, ["locomo"]), /different utility contract/);
-    // A benchmark that is not selected contributes no digest, so an
     // unrelated dataset directory cannot invalidate the contract.
     assert.equal(datasetDigest(undefined), null);
-    // The loaders read THROUGH symlinks, so the digest must too: editing a
     // link target must change the contract (PR #3079 review).
     const external = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-ext-"));
     writeFileSync(path.join(external, "real.json"), '{"v":1}\n');
@@ -294,7 +284,6 @@ test("the utility contract binds to dataset CONTENTS, not just the directory pat
     const withLink = datasetDigest(dataset);
     writeFileSync(path.join(external, "real.json"), '{"v":2}\n');
     assert.notEqual(datasetDigest(dataset), withLink, "a retargeted symlink changes the digest");
-    // A directory symlink is traversed, so files below it are hashed: an
     // in-place edit under the link and a retarget to different contents are
     // both visible, and a cycle does not hang the walk (PR #3079 r2).
     const externalDir = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-dir-"));

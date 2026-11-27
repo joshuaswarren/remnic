@@ -1,8 +1,3 @@
-/**
- * Isolated span-shift helper (issue #2333 leftover).
- *
- * Pure. Extraction wiring waits on the Phase A bench gate.
- */
 
 export function shiftSpan(opts: {
   start: number;

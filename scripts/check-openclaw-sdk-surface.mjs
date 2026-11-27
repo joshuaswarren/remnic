@@ -169,15 +169,6 @@ async function inspectOpenClawSurface(root) {
   const hooks = new Set();
   const manifestContracts = new Set();
 
-  // Prefer the authoritative plugin-author surface:
-  //  - plugin hooks from the `PLUGIN_HOOK_NAMES` array / `PluginHookName` union
-  //  - registrars from the `OpenClawPluginApi` type body
-  // Sourcing from these declarations excludes AgentHarness-internal events
-  // (e.g. session_before_compact, after_provider_response, agent_message_chunk)
-  // and non-plugin registrars (e.g. registerCommandGroups, registerCliMetadata)
-  // that merely appear as tokens elsewhere in the plugin-sdk type tree — those
-  // are not registerable via `api.on(...)` / `OpenClawPluginApi`, so reporting
-  // them as "drift" was a false positive (issue #1431).
   let sawHookSource = false;
   let sawRegistrarSource = false;
   for (const file of files) {
@@ -194,10 +185,6 @@ async function inspectOpenClawSurface(root) {
     }
   }
 
-  // Fallback for older OpenClaw layouts (or test fixtures) that do not expose
-  // the canonical `PLUGIN_HOOK_NAMES` / `OpenClawPluginApi` declarations: keep
-  // the historical token heuristic so the check still runs. Only applied to the
-  // dimension whose authoritative source was missing.
   if (!sawHookSource || !sawRegistrarSource) {
     for (const file of files) {
       const text = await readFile(file, "utf-8").catch(() => "");
@@ -268,9 +255,6 @@ function extractPluginManifestContractsBlock(text) {
 }
 
 function extractTypeBody(text, name) {
-  // Match a real declaration (not a re-export): `interface Name ... {` or
-  // `type Name ... = {`. Re-export forms like `type Name, Other` end at `;`
-  // before any `{`/`=` and are intentionally not matched.
   const re = new RegExp(
     `\\b(?:export\\s+)?(?:interface\\s+${name}\\b[^{};]*\\{|type\\s+${name}\\b[^=;{]*=\\s*\\{)`,
   );
@@ -292,14 +276,12 @@ function extractTypeBody(text, name) {
 
 function extractPluginHookNames(text) {
   const names = new Set();
-  // `PLUGIN_HOOK_NAMES` readonly array literal (declaration may use `:` or `=`).
   const arrayMatch = /\bPLUGIN_HOOK_NAMES\b[^[]*\[([^\]]*)\]/.exec(text);
   if (arrayMatch) {
     for (const m of arrayMatch[1].matchAll(/["'`]([a-z][a-z0-9_]*)["'`]/g)) {
       names.add(m[1]);
     }
   }
-  // `PluginHookName` string-literal union type.
   const unionMatch = /\b(?:export\s+)?type\s+PluginHookName\b[^=]*=\s*([^;]+);/.exec(text);
   if (unionMatch) {
     for (const m of unionMatch[1].matchAll(/["'`]([a-z][a-z0-9_]*)["'`]/g)) {

@@ -17,8 +17,6 @@ test("lexicalSimilarity computes containment of gold in candidate", () => {
     "Avery Quill visited Paris in May",
     "Avery Quill traveled to Paris during May"
   );
-  // Gold content words: avery, quill, visited, paris, may (5 words)
-  // Candidate content words: avery, quill, traveled, paris, may (matches 4: avery, quill, paris, may) -> 4/5 = 0.8
   assert.strictEqual(sim1, 0.8);
 
   const sim2 = lexicalSimilarity("no match here", "completely different text");
@@ -206,7 +204,6 @@ test("implied-pass logic: passing retrieval retroactively marks unavailable inde
     listMemories: async () => [
       { id: "mem-1", content: "Avery's favorite color is teal blue" },
     ],
-    // oracleSearch is undefined (unavailable)
     recall: async () => [{ id: "mem-1", content: "Avery's favorite color is teal blue" }],
     recallLimit: 5,
   };
@@ -230,7 +227,6 @@ test("unavailable propagation to unattributed when checks unavailable", async ()
     listMemories: async () => [
       { id: "mem-1", content: "Avery's favorite color is teal blue" },
     ],
-    // Neither oracleSearch nor recall available
     recallLimit: 5,
   };
 
@@ -255,8 +251,6 @@ test("threshold boundary handling", async () => {
     recallLimit: 5,
   };
 
-  // Gold words: avery, favorite, color, teal, blue (5 words)
-  // Candidate words: avery, likes, teal, color (matches 3/5 = 0.6)
   const task = {
     taskId: "task-8",
     question: "What is Avery's favorite color?",
@@ -264,11 +258,9 @@ test("threshold boundary handling", async () => {
     goldMemories: ["Avery favorite color teal blue"],
   };
 
-  // With threshold 0.6 -> pass extraction
   const resPass = await attributeTask(task, env, { threshold: 0.6 });
   assert.strictEqual(resPass!.golds[0].stages.extraction.status, "pass");
 
-  // With threshold 0.7 -> fail extraction
   const resFail = await attributeTask(task, env, { threshold: 0.7 });
   assert.strictEqual(resFail!.golds[0].stages.extraction.status, "fail");
 });
@@ -296,7 +288,6 @@ test("overall label picks earliest stage miss across multiple golds", async () =
 
   const res = await attributeTask(task, env, { threshold: 0.6 });
   assert.notStrictEqual(res, null);
-  // extraction_miss is earlier than use_miss -> overall must be extraction_miss
   assert.strictEqual(res!.overall.class, "extraction_miss");
 });
 
@@ -337,15 +328,12 @@ test("attributeRun aggregates totals, handles skipped tasks, and sorts determini
   const report1 = await attributeRun(runResult, env, { threshold: 0.6 });
   const report2 = await attributeRun(runResult, env, { threshold: 0.6 });
 
-  // Determinism check
   assert.deepStrictEqual(report1, report2);
   assert.strictEqual(serializeAttributionReport(report1), serializeAttributionReport(report2));
 
-  // Check items sorted by taskId
   assert.strictEqual(report1.items.length, 1);
   assert.strictEqual(report1.items[0].taskId, "task-Z");
 
-  // Check skipped tasks sorted by taskId
   assert.strictEqual(report1.skippedTasks.length, 2);
   assert.strictEqual(report1.skippedTasks[0].taskId, "task-A");
   assert.strictEqual(report1.skippedTasks[1].taskId, "task-M");

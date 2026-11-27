@@ -1,10 +1,3 @@
-/**
- * Census field acceptance shared by offline-sync and the reconcile planner
- * (issue #2477). Both surfaces parse untrusted peer censuses and must accept
- * and reject exactly the same values; when these checks lived as two copies
- * they could drift silently and break convergence. Each surface keeps only a
- * thin wrapper that picks its own error type and message.
- */
 
 /** 64-character sha256 hex, either case; the canonical stored form is lowercase. */
 export const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/i;

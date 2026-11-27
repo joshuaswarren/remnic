@@ -16,7 +16,6 @@ const LOOKUP_TTL_MS = 10 * 60_000;
 const MAX_CACHE_ENTRIES = 4096;
 type PathEntry = { path: string | null; expiresAt: number };
 
-/** Direct and cached probes must retain the walk's realpath containment check. */
 export async function readHarmonicSourceMemory(
   storage: StorageManager,
   rootReal: string,
@@ -97,7 +96,6 @@ export async function readUnresolvedHarmonicSources(options: {
   }
   if (pending.size === 0) return found;
 
-  // Opaque legacy ids previously used the full scan, including edited projected files.
   const inspectProjected = [...pending].some((id) => !isSafeLegacyPathSegment(id));
   const projectedPaths = readProjectedMemoryPaths(storage.dir);
   const walked = [
@@ -111,8 +109,6 @@ export async function readUnresolvedHarmonicSources(options: {
   const read = await mapInBatches(toRead, async (filePath) => {
     throwIfAborted(abortSignal, "harmonic retrieval aborted");
     const memory = await readHarmonicSourceMemory(storage, rootReal, filePath, abortSignal);
-    // Drop non-matching parses inside the batch so a full-corpus walk does not
-    // hold every MemoryFile until the last batch resolves.
     return { filePath, memory: memory !== null && pending.has(memory.frontmatter.id) ? memory : null };
   });
   for (const { filePath, memory } of read) {
@@ -127,13 +123,11 @@ export async function readUnresolvedHarmonicSources(options: {
     if (!found.has(id)) cache.set(id, { path: null, expiresAt: nowMs + LOOKUP_TTL_MS });
   }
   throwIfAborted(abortSignal, "harmonic retrieval aborted");
-  // A concurrent mutation must not publish absence for a different corpus epoch.
   if (storage.getCorpusScanVersion() === corpusVersion) {
     try {
       await mkdir(stateDir, { recursive: true });
       if (isPathInsideStorageRoot(rootReal, await realpath(stateDir))) {
         throwIfAborted(abortSignal, "harmonic retrieval aborted");
-        // ponytail: atomic last-writer-wins cache; contention can repeat a walk, not lose sources.
         await writeJsonFileAtomic(cachePath, {
           rebuiltAt, corpusVersion,
           entries: [...cache].slice(-MAX_CACHE_ENTRIES).map(([id, entry]) => [id, entry.path, entry.expiresAt]),

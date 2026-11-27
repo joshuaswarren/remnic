@@ -1,26 +1,16 @@
-/**
- * @remnic/core — Diff-Aware Sync
- *
- * Watches source files for changes and triggers re-ingestion
- * only for changed content. Uses file hashing to detect changes.
- */
 
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 
-// ── Types ────────────────────────────────────────────────────────────────────
 
 export interface SyncOptions {
-  /** Source directory to watch */
   sourceDir: string;
-  /** Memory root directory */
   memoryDir: string;
   /** State file path (stores hashes). Default: memoryDir/.sync-state.json */
   stateFile?: string;
   /** File extensions to watch (default: .md, .txt, .mdx) */
   extensions?: string[];
-  /** Directories to exclude */
   excludeDirs?: string[];
   /** Poll interval for watchForChanges. Default: 5000ms */
   pollIntervalMs?: number;
@@ -29,47 +19,30 @@ export interface SyncOptions {
 }
 
 export interface SyncResult {
-  /** Files scanned */
   scanned: number;
-  /** Files changed since last sync */
   changed: FileChange[];
-  /** Files unchanged */
   unchanged: number;
-  /** Files deleted since last sync */
   deleted: string[];
-  /** Files newly added */
   added: string[];
-  /** Duration in ms */
   durationMs: number;
-  /** State file path */
   stateFile: string;
 }
 
 export interface FileChange {
-  /** Absolute file path */
   filePath: string;
-  /** Relative path from source root */
   relativePath: string;
-  /** Change type */
   type: "added" | "modified" | "deleted";
-  /** Current content hash */
   currentHash: string;
-  /** Previous content hash (if modified) */
   previousHash?: string;
-  /** File size in bytes */
   size: number;
 }
 
 export interface SyncState {
-  /** Map of relative path → content hash */
   fileHashes: Record<string, string>;
-  /** Last sync timestamp */
   lastSyncAt: string;
-  /** Version of state format */
   version: number;
 }
 
-// ── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_EXTENSIONS = new Set([".md", ".txt", ".mdx", ".rst"]);
 const DEFAULT_EXCLUDE = new Set([
@@ -81,7 +54,6 @@ const DEFAULT_EXCLUDE = new Set([
   "coverage",
 ]);
 
-// ── Main function ────────────────────────────────────────────────────────────
 
 export function syncChanges(options: SyncOptions): SyncResult {
   const startTime = Date.now();
@@ -97,13 +69,10 @@ export function syncChanges(options: SyncOptions): SyncResult {
   const excludeSet = new Set([...DEFAULT_EXCLUDE, ...excludeDirs]);
   const stateFilePath = options.stateFile ?? path.join(memoryDir, ".sync-state.json");
 
-  // Load previous state
   const prevState = loadState(stateFilePath);
 
-  // Scan current files
   const currentFiles = scanFiles(sourceDir, extSet, excludeSet);
 
-  // Compute diffs
   const changes = computeDiff(currentFiles, prevState.fileHashes, sourceDir);
 
   const added = changes.filter((c) => c.type === "added").map((c) => c.relativePath);
@@ -112,7 +81,6 @@ export function syncChanges(options: SyncOptions): SyncResult {
     .filter((c) => c.type === "deleted")
     .map((c) => c.relativePath);
 
-  // Update state (even in dry run, we want to show what would change)
   if (!dryRun) {
     const newState: SyncState = {
       fileHashes: {},
@@ -120,12 +88,10 @@ export function syncChanges(options: SyncOptions): SyncResult {
       version: 1,
     };
 
-    // Build new state from current files
     for (const [relPath, hash] of Object.entries(currentFiles)) {
       newState.fileHashes[relPath] = hash;
     }
 
-    // Write state
     fs.mkdirSync(path.dirname(stateFilePath), { recursive: true });
     fs.writeFileSync(stateFilePath, JSON.stringify(newState, null, 2));
   }
@@ -163,7 +129,6 @@ export function watchForChanges(
   let lastHashes: Record<string, string> = {};
   let pollInFlight = false;
 
-  // Initial scan
   const currentFiles = scanFiles(sourceDir, extSet, excludeSet);
   lastHashes = { ...currentFiles };
 
@@ -177,7 +142,6 @@ export function watchForChanges(
 
       if (changes.length > 0) {
         await onChange(changes);
-        // Update hashes
         for (const change of changes) {
           if (change.type === "deleted") {
             delete lastHashes[change.relativePath];
@@ -201,7 +165,6 @@ export function watchForChanges(
   };
 }
 
-// ── File scanning ────────────────────────────────────────────────────────────
 
 function scanFiles(
   root: string,
@@ -248,7 +211,6 @@ function scanFiles(
   return result;
 }
 
-// ── Diff computation ─────────────────────────────────────────────────────────
 
 function computeDiff(
   current: Record<string, string>,
@@ -257,12 +219,10 @@ function computeDiff(
 ): FileChange[] {
   const changes: FileChange[] = [];
 
-  // Find added and modified
   for (const [relPath, hash] of Object.entries(current)) {
     const fullPath = path.join(sourceDir, relPath);
 
     if (!(relPath in previous)) {
-      // Added
       let size = 0;
       try {
         size = fs.statSync(fullPath).size;
@@ -277,7 +237,6 @@ function computeDiff(
         size,
       });
     } else if (previous[relPath] !== hash) {
-      // Modified
       let size = 0;
       try {
         size = fs.statSync(fullPath).size;
@@ -295,7 +254,6 @@ function computeDiff(
     }
   }
 
-  // Find deleted
   for (const relPath of Object.keys(previous)) {
     if (!(relPath in current)) {
       changes.push({
@@ -311,7 +269,6 @@ function computeDiff(
   return changes;
 }
 
-// ── State management ─────────────────────────────────────────────────────────
 
 function loadState(stateFilePath: string): SyncState {
   try {
@@ -326,7 +283,6 @@ function loadState(stateFilePath: string): SyncState {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function hashContent(content: string): string {
   return crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);

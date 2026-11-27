@@ -74,7 +74,6 @@ test("blank, padded, and non-string values are rejected", () => {
       () => buildAnalysisRunMetadata({ ...VALID, [field]: "   " }),
       /must be an identifier/,
     );
-    // Validate the exact value: a padded identifier is not trimmed into validity.
     assert.throws(
       () => buildAnalysisRunMetadata({ ...VALID, [field]: " openai" }),
       /must be an identifier/,
@@ -106,7 +105,6 @@ test("observationCount accepts 0 and rejects every non-count", () => {
 });
 
 // An error message is a log line. A caller that mis-passes prompt text or a
-// secret must not have it echoed there through the failure path.
 test("a rejected value is never echoed in the error message", () => {
   const secret = "my-api-key-value-goes-here-0123456789";
   assert.throws(
@@ -126,8 +124,6 @@ test("a rejected value is never echoed in the error message", () => {
         observationCount: circular as unknown as number,
       }),
     (error: unknown) => {
-      // JSON.stringify would throw a TypeError here instead of the intended
-      // RangeError, and would echo content for a plain object.
       assert.ok(error instanceof RangeError);
       assert.equal(error.message.includes("self"), false);
       return true;

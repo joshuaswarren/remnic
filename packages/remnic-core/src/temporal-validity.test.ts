@@ -57,9 +57,6 @@ async function readFrontmatterById(
   return mems.find((m) => m.frontmatter.id === id)?.frontmatter ?? null;
 }
 
-// ---------------------------------------------------------------------------
-// 1. Storage round-trip
-// ---------------------------------------------------------------------------
 
 test("storage: valid_at / invalid_at round-trip exactly when set", async () => {
   const { storage, cleanup } = await makeStorage();
@@ -153,7 +150,6 @@ test("storage: legacy memories without valid_at parse as undefined (no backfill)
 });
 
 // ---------------------------------------------------------------------------
-// 2. Read-time fallback
 // ---------------------------------------------------------------------------
 
 test("effectiveValidAt: explicit valid_at wins over created", () => {
@@ -170,7 +166,6 @@ test("effectiveValidAt: whitespace-only valid_at falls back to created", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Supersession integration
 // ---------------------------------------------------------------------------
 
 test("supersession: new fact propagates valid_at to old fact's invalid_at", async () => {
@@ -348,7 +343,6 @@ test("supersession: existing invalid_at is preserved (idempotent)", async () => 
       confidence: 0.9,
       tags: [],
     });
-    // Pre-set a manual invalid_at on the old fact.
     storage.invalidateAllMemoriesCacheForDir();
     const all = await storage.readAllMemories();
     const oldFile = all.find((m) => m.frontmatter.id === oldId);
@@ -388,7 +382,6 @@ test("supersession: existing invalid_at is preserved (idempotent)", async () => 
 });
 
 // ---------------------------------------------------------------------------
-// 4. as_of filter semantics
 // ---------------------------------------------------------------------------
 
 test("isValidAsOf: half-open interval [valid_at, invalid_at)", () => {
@@ -397,16 +390,12 @@ test("isValidAsOf: half-open interval [valid_at, invalid_at)", () => {
     invalid_at: "2025-12-31T00:00:00.000Z",
     created: "2025-01-01T00:00:00.000Z",
   };
-  // Before valid_at — not yet authoritative.
   assert.equal(isValidAsOf(fm, Date.parse("2024-12-31T23:59:59.999Z")), false);
-  // Exactly at valid_at — authoritative (lower bound is inclusive).
   assert.equal(isValidAsOf(fm, Date.parse("2025-01-01T00:00:00.000Z")), true);
-  // Mid-range — authoritative.
   assert.equal(isValidAsOf(fm, Date.parse("2025-06-15T12:00:00.000Z")), true);
   // Exactly at invalid_at — NOT authoritative (upper bound exclusive,
   // CLAUDE.md gotcha #35).
   assert.equal(isValidAsOf(fm, Date.parse("2025-12-31T00:00:00.000Z")), false);
-  // After invalid_at — not authoritative.
   assert.equal(isValidAsOf(fm, Date.parse("2026-01-01T00:00:00.000Z")), false);
 });
 
@@ -420,13 +409,9 @@ test("isValidAsOf: extracted end-only bound is open-start (-inf, invalid_at] (#1
     created: "2025-08-15T00:00:00.000Z",
     eventTimeSource: "extracted" as const,
   };
-  // Well before ingestion/created — still authoritative (open start).
   assert.equal(isValidAsOf(fm, Date.parse("2024-01-01T00:00:00.000Z")), true);
-  // Mid-window — authoritative.
   assert.equal(isValidAsOf(fm, Date.parse("2025-06-15T00:00:00.000Z")), true);
-  // Exactly at invalid_at — NOT authoritative (exclusive upper bound).
   assert.equal(isValidAsOf(fm, Date.parse("2025-07-01T00:00:00.000Z")), false);
-  // After invalid_at — not authoritative.
   assert.equal(isValidAsOf(fm, Date.parse("2026-01-01T00:00:00.000Z")), false);
 });
 
@@ -438,7 +423,6 @@ test("isValidAsOf: legacy memory without eventTimeSource keeps created fallback 
     invalid_at: "2025-12-31T00:00:00.000Z",
     created: "2025-06-01T00:00:00.000Z",
   };
-  // Before created — not authoritative (legacy behaviour preserved).
   assert.equal(isValidAsOf(fm, Date.parse("2025-05-01T00:00:00.000Z")), false);
   assert.equal(isValidAsOf(fm, Date.parse("2025-09-01T00:00:00.000Z")), true);
 });
@@ -473,7 +457,6 @@ test("parseAsOfTimestamp: rejects empty strings, non-strings, and malformed time
   assert.throws(() => parseAsOfTimestamp("   "), RangeError);
   assert.throws(() => parseAsOfTimestamp("not-a-date"), RangeError);
   assert.throws(() => parseAsOfTimestamp(1234), RangeError);
-  // Valid: parses and returns ms.
   assert.equal(
     parseAsOfTimestamp("2025-01-01T00:00:00.000Z"),
     Date.parse("2025-01-01T00:00:00.000Z"),

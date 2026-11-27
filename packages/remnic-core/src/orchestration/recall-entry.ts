@@ -1,13 +1,3 @@
-/**
- * Recall-entry coordinator — extracted from the orchestrator
- * (issue #1526, seam 28).
- *
- * Owns the public recall() entry surface: the init gate + timeout
- * fallback around recallInternal, recall failure logging/suppression,
- * recall result publication, and eval shadow-recall queueing.
- *
- * Behavior-preserving move (late-binding selfDeps wiring, seams 18–27).
- */
 
 import { type CapabilitySet, type GraphConstructionCapabilitySet, type MemoryLifecycleCapabilitySet, resolveCapabilities, resolveEvalCapabilities, resolveGraphConstructionCapabilities, resolveNamespaceCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import { type EvalShadowRecallRecord, recordEvalShadowRecall } from "../evals.js";

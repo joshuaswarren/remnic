@@ -10,8 +10,6 @@ test("every navigation relation parses", () => {
   }
 });
 
-// Persisted MemoryLinkType values must parse too: real frontmatter carries
-// them, and a traversal over stored links loses those neighbors otherwise.
 test("persisted MemoryLinkType values parse", () => {
   for (const type of ["follows", "references", "related"]) {
     assert.deepEqual(parseNavigateLinkType(type), { ok: true, type });
@@ -25,8 +23,6 @@ test("unknown or empty link types are refused", () => {
 });
 
 
-// Round 3: the stepper's navigation contract accepts supersedes, so the
-// shared selector vocabulary must too.
 test("supersedes parses and filters", () => {
   assert.deepEqual(parseNavigateLinkType("supersedes"), { ok: true, type: "supersedes" });
   const result = selectTraverseNeighbors({

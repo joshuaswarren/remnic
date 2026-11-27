@@ -104,10 +104,6 @@ export function loadSealedRubric(
   return { id, version, prompt, sha256 };
 }
 
-/**
- * Verify that a registered rubric still matches an expected digest. Useful in
- * tests and in CI gates that want to catch accidental edits to sealed text.
- */
 export function verifyRubricDigest(
   expectedSha256: string,
   options: { id?: string; registry?: Readonly<Record<string, string>> } = {},
@@ -116,12 +112,6 @@ export function verifyRubricDigest(
   return rubric.sha256 === expectedSha256;
 }
 
-/**
- * Build the judge message payload for a single task. Keeps the rubric prompt
- * on the system side of the conversation and the task-specific substitutions
- * in a user message so the judge never leaks rubric text back into the SUT
- * path.
- */
 export function buildJudgePayload(
   rubric: SealedRubric,
   input: SealedJudgeInput,

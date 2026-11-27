@@ -86,8 +86,6 @@ test("minDays must be an integer >= MIN_RECURRENCE_MIN_DAYS", () => {
   );
 });
 
-// minDays 1 would make a single-day key "recurring", which is the invariant
-// this helper exists to enforce — configuration must not be able to disable it.
 test("minDays 1 is refused rather than reporting one-off keys", () => {
   assert.throws(
     () =>

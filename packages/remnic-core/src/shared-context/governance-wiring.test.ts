@@ -133,7 +133,6 @@ test("curation report carries provenance and cited synthesized claims", async (t
   const { manager, dir } = await makeManager();
   t.after(() => rm(dir, { recursive: true, force: true }));
 
-  // Two agents on one topic produce a synthesized overlap claim.
   await manager.writeAgentOutput({ agentId: "agent-a", title: "deploy runbook notes", content: "deploy runbook steps" });
   await manager.writeAgentOutput({ agentId: "agent-b", title: "deploy runbook review", content: "deploy runbook feedback" });
 
@@ -145,8 +144,6 @@ test("curation report carries provenance and cited synthesized claims", async (t
     assert.ok(overlap.sourcePaths.length > 0, `overlap ${overlap.token} cites source item ids`);
   }
 
-  // The curation self-check gates the roundtable: it throws on an
-  // uncited synthesized claim and passes when every claim cites.
   const curation = await manager.curateDaily({ date: today() });
   const roundtable = await readFile(curation.roundtablePath, "utf-8");
   assert.match(roundtable, /\[sources: [^\]]+\]/, "synthesized overlap claims cite their sources");

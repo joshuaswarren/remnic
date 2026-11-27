@@ -153,14 +153,6 @@ export function buildSessionCommandDescriptors(
     },
   ];
 
-  // Top-level handler + description + acceptsArgs let the OpenClaw host
-  // registerPluginCommand validator accept this descriptor. The validator
-  // (openclaw/dist/command-registration:validatePluginCommandDefinition)
-  // requires a function `handler` and a non-empty string `description` on the
-  // registered command itself; it does not walk a `subcommands` array. The
-  // dispatcher below routes `/remnic <sub>` to the matching subcommand while
-  // keeping the `subcommands` array available for command-discovery surfaces
-  // that introspect it.
   const subcommandNames = subcommands.map((entry) => entry.name).join(", ");
   return [
     {

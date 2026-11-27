@@ -1,10 +1,3 @@
-/**
- * Issue #2783: the daemon's observe path must persist observe-derived turns
- * into the transcript store, and `memory_summarize_hourly` must report an
- * empty/stale transcript store distinctly instead of a bare unconditional
- * ok. Delegate-mode gateways (and any observe-only client) starve the
- * hourly summarizer otherwise — 11 days of silent empty runs in the field.
- */
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -136,7 +129,6 @@ test("a re-POST of the same user turn is deduped; new turns still append (#2783)
         { role: "assistant", content: ASSISTANT_TURN },
       ],
     });
-    // Un-keyed client retry of the SAME turn (no idempotencyKey).
     await service.observe({
       sessionKey: "agent:delegate-test:session-3",
       messages: [
@@ -147,7 +139,6 @@ test("a re-POST of the same user turn is deduped; new turns still append (#2783)
     const afterRetry = await readAllTranscriptLines(dir);
     assert.equal(afterRetry.length, 2);
 
-    // A genuinely new turn still appends.
     await service.observe({
       sessionKey: "agent:delegate-test:session-3",
       messages: [{ role: "user", content: "now check the failover read path end to end please" }],
@@ -184,8 +175,6 @@ test("memory_summarize_hourly warns distinctly when the transcript store is empt
 test("memory_summarize_hourly warns distinctly when the store is stale and the hour was idle (#2783)", async () => {
   await withTempDir(async (dir) => {
     const { service, orchestrator } = makeService(dir, true);
-    // Seed one transcript entry far in the past: the store is non-empty but
-    // stale, and the target hour has no entries.
     await orchestrator.transcript.append({
       timestamp: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
       role: "user",
@@ -205,22 +194,16 @@ test("memory_summarize_hourly warns distinctly when the store is stale and the h
 test("observeTranscriptSessionKey scopes transcripts to the effective write namespace (#2783 review)", async () => {
   const { observeTranscriptSessionKey } = await import("./access-observe-transcript.js");
   const config = { defaultNamespace: "generalist" } as { defaultNamespace: string };
-  // Same client-controlled sessionKey from two principals in different
-  // namespaces must not share one transcript identity.
   const a = observeTranscriptSessionKey("agent:shared-key:s1", "project-origin-aaa", config);
   const b = observeTranscriptSessionKey("agent:shared-key:s1", "project-origin-bbb", config);
   assert.notEqual(a, b);
   assert.ok(a.includes("project-origin-aaa"));
   assert.ok(b.includes("project-origin-bbb"));
-  // A default-store write keeps the raw key (single-store deployments
-  // unchanged, mirroring the LCM archive key rules).
   assert.equal(observeTranscriptSessionKey("agent:shared-key:s1", "generalist", config), "agent:shared-key:s1");
 });
 
 test("skip-listed channel types report transcriptPersisted=false, not a silent success (#2783 review)", async () => {
   await withTempDir(async (dir) => {
-    // cron is in the default skip list; a session whose channel type
-    // resolves to it must not report persisted=true for a no-op append.
     const { service } = makeService(dir, true, ["cron"]);
     const response = await service.observe({
       sessionKey: "agent:nightly:cron:job-1",

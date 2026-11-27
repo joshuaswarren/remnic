@@ -172,8 +172,6 @@ export function parseArgs(argv: string[]): ArgParseResult {
     hardware = { gpu, vramGb, quantization };
   }
 
-  // Tier L artifacts must carry the hardware envelope so a local-lab number is
-  // never conflated with a frontier number (issue #1573).
   if (tier === "local" && hardware === undefined) {
     return {
       ok: false,
@@ -229,11 +227,6 @@ export function validateResultForPromotion(result: unknown): ValidationResult {
     };
   }
 
-  // Defense in depth for artifacts produced before the harness propagated
-  // task failures to meta.status. Those legacy runs used both an `(error: …)`
-  // actual answer and details.error. Require both signals so legitimate
-  // negative metric values and benchmark-owned diagnostic fields remain
-  // publishable.
   const results = r.results as Record<string, unknown> | undefined;
   const tasks = Array.isArray(results?.tasks) ? results.tasks : [];
   const failedTask = tasks.find((task) => {
@@ -364,22 +357,15 @@ export async function promote(opts: ParsedArgs): Promise<PromotionResult> {
     throw new Error(validity.message);
   }
 
-  // validateResultForPromotion narrowed meta.benchmark to a published id, so
-  // the cast here is bounded and safe; buildBenchmarkArtifact validates the
-  // remaining task/aggregate structure and throws with a per-field diagnostic.
   const result = parsedResult as BenchmarkResult;
   const benchmarkId = result.meta.benchmark as PublishedBenchmarkId;
 
-  // meta.timestamp is the run-end stamp; derive the true start from the summed
-  // task latency. resultPath is a required positional, so there is no longer a
-  // dead "no path" branch — cost.totalLatencyMs is read unconditionally.
   const totalLatencyMs = result.cost?.totalLatencyMs ?? 0;
   const { startedAt, finishedAt } = deriveRunWindow(result.meta.timestamp, totalLatencyMs);
 
   const model = result.config.systemProvider?.model ?? "unknown";
   const seed = result.meta.seeds[0] ?? 1;
 
-  // Default dataset version per benchmark when not explicitly supplied.
   const datasetVersion =
     opts.datasetVersion ??
     (benchmarkId === "locomo"
@@ -439,9 +425,6 @@ async function main(): Promise<number> {
   }
 }
 
-// Only auto-run when invoked directly (not when imported by tests). Mirrors the
-// realpath-based direct-run check in scripts/check-test-types.mjs so a
-// symlinked or tsx-wrapped invocation still resolves correctly.
 function isDirectRun(argvPath: string | undefined, moduleUrl: string): boolean {
   if (!argvPath) return false;
   try {

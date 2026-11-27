@@ -44,7 +44,6 @@ export const SESSION_CHANNEL_TYPE = "session";
 export const LEGACY_FALLBACK_CHANNEL_TYPE = "other";
 export const LEGACY_FALLBACK_CHANNEL_ID = "default";
 
-/** Max characters of the raw session key kept in a human-readable display label. */
 const DISPLAY_LABEL_MAX_LENGTH = 64;
 
 export interface SessionIdentity {
@@ -61,9 +60,7 @@ export interface SessionIdentity {
 }
 
 export interface SessionStoragePaths {
-  /** Channel type (mirrors {@link SessionIdentity.channelType}). */
   channelType: string;
-  /** Channel id (mirrors {@link SessionIdentity.channelId}). */
   channelId: string;
   /** Primary encoded storage subdirectory: `<encodedType>/<encodedId>`. */
   dir: string;
@@ -163,33 +160,11 @@ export function sessionStoragePaths(sessionKey: string): SessionStoragePaths {
   return { channelType, channelId, dir, alternateDir, legacyDir, readbackDirs };
 }
 
-/**
- * The shared `other/default` directory every arbitrary key was routed into by
- * builds predating issue #1496. Exposed so transcript/tool-usage/summary read
- * paths and the migration scanner all agree on the same fallback location.
- */
 export const OTHER_DEFAULT_READBACK_DIR = path.join(
   LEGACY_FALLBACK_CHANNEL_TYPE,
   LEGACY_FALLBACK_CHANNEL_ID
 );
 
-/**
- * Reconstruct the transcript/tool-usage directory the OLD `getTranscriptPath`
- * parser (pre-#1496) would have produced for a key the NEW parser reclassifies
- * as a first-class `session/<hash>` identity.
- *
- * The OLD parser treated ANY key with `parts.length >= 3` as legacy — it did
- * NOT require a leading `agent` segment — so an arbitrary key like
- * `foo:bar:baz` was stored under `baz/default` and `foo:bar:baz:qux` under
- * `baz/qux`. Those directories must stay readable (and migratable) for existing
- * installs even though the key now writes to `session/<hash>` (Thread B / codex
- * review on PR #1504). Path segments are encoded exactly as the old `dir` was
- * built (`encodeStoragePathSegment`) so the candidate matches the bytes on disk.
- *
- * Returns `undefined` when the key has fewer than three colon parts (the old
- * parser would have used the `other/default` fallback, already covered), when
- * the channel type is empty, or when the result is unsafe.
- */
 export function legacyParserReadbackDir(sessionKey: string): string | undefined {
   if (typeof sessionKey !== "string" || sessionKey.length === 0) return undefined;
   const parts = sessionKey.split(":");
@@ -198,7 +173,6 @@ export function legacyParserReadbackDir(sessionKey: string): string | undefined 
   const channelType = parts[2];
   if (!channelType || channelType.length === 0) return undefined;
 
-  // Mirror the OLD parser's channelId derivation for parts.length >= 3 keys.
   let channelId = LEGACY_FALLBACK_CHANNEL_ID;
   if (channelType === "main") {
     channelId = "default";
@@ -218,15 +192,6 @@ export function legacyParserReadbackDir(sessionKey: string): string | undefined 
   return path.join(encodeStoragePathSegment(channelType), encodeStoragePathSegment(channelId));
 }
 
-/**
- * Parse the legacy `agent:<agentId>:<channelType>:...` shape. Returns
- * `undefined` for anything that is not a recognized legacy key, so the caller
- * can route it to a first-class `session/<hash>` identity instead.
- *
- * A legacy key must start with the literal `agent` segment and a non-empty
- * agent id; otherwise an arbitrary key like `pi-geek:abc123` would be
- * misread as `channelType = "abc123"`.
- */
 function parseLegacyChannelIdentity(sessionKey: string): { channelType: string; channelId: string } | undefined {
   if (sessionKey.length === 0) return undefined;
   const parts = sessionKey.split(":");
@@ -257,17 +222,11 @@ function parseLegacyChannelIdentity(sessionKey: string): { channelType: string; 
   return { channelType, channelId };
 }
 
-/**
- * A short, human-readable label for dashboards/audits. Never used for storage
- * routing — `channelId` (the hash) owns isolation. Control characters and path
- * separators are stripped so the label is safe to render.
- */
 function safeDisplayLabel(sessionKey: string): string {
   if (sessionKey.length === 0) return "(empty)";
   let out = "";
   for (const char of sessionKey) {
     const code = char.codePointAt(0) ?? 0;
-    // Drop ASCII control characters (0x00-0x1F) and DEL (0x7F).
     if (code <= 0x1f || code === 0x7f) continue;
     if (char === "/" || char === "\\") {
       out += "_";

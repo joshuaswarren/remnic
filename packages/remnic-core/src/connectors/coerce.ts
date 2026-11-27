@@ -1,9 +1,3 @@
-/**
- * Shared boolean coercion helpers.
- *
- * Extracted from connectors/index.ts so that both config.ts and
- * connectors/index.ts can import them without creating a circular dependency.
- */
 
 import { isLoggerInitialized, log } from "../logger.js";
 
@@ -12,13 +6,6 @@ const BOOL_TOKENS: Record<string, boolean> = {
   false: false, "0": false, no: false, off: false,
 };
 
-/**
- * Surface a "present but unrecognized config value" diagnostic. Routes through
- * the installed logger when a host has called `initLogger`, and otherwise falls
- * back to `console.warn` so the standalone `@remnic/core` path (documented to
- * call `parseConfig()` without a logger) does not silently discard the warning
- * and re-introduce the fail-open default this whole change exists to prevent.
- */
 export function warnUnrecognizedConfig(message: string): void {
   if (isLoggerInitialized()) {
     log.warn(message);

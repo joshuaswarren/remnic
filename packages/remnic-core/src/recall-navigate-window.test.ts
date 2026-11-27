@@ -89,8 +89,6 @@ test("empty snapshots list is not_served", () => {
 });
 
 test("malformed snapshot consumes its window slot without throwing", () => {
-  // Missing servedIds on the newest snapshot: it still burns the only
-  // window slot, so the id served by the 2nd snapshot stays not_served.
   assert.doesNotThrow(() => {
     assert.deepEqual(
       assertIdInNavigationWindow({

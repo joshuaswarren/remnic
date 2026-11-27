@@ -1,19 +1,3 @@
-/**
- * Wearable sync pipeline — pull → clean → label → correct → store →
- * (optionally) remember, for one source.
- *
- * Stage order per conversation is deliberate:
- *  1. off-the-record elision  (before anything can persist the span)
- *  2. cleanup                 (merging first lets redaction see numbers
- *                              that ASR split across segments)
- *  3. redaction               (built-in + user patterns)
- *  4. corrections             (user-specific word fixes)
- *
- * Day files are rebuilt idempotently; the per-day body hash recorded in
- * sync state lets unchanged days skip both the rewrite and the
- * (expensive) memory extraction. Sync state advances only after every
- * write for the run has succeeded.
- */
 
 import { fillWearableConversationLocations } from "../location/tagging.js";
 import { isAbortError } from "../abort-error.js";
@@ -61,12 +45,6 @@ import type {
   WearablesConfig,
 } from "./types.js";
 
-/**
- * Pathological-provider backstop on pagination loops. Day fetches are
- * intentionally UNLIMITED for real data — a full day must never be
- * truncated — so runaway protection comes from cursor-cycle detection
- * plus this far-out-of-band ceiling, not from a content-sized cap.
- */
 const PAGE_SAFETY_CEILING = 10_000;
 /** Default lookback window (today + yesterday) for unscoped syncs. */
 const DEFAULT_SYNC_DAYS = 2;
@@ -177,9 +155,6 @@ export function resolveSyncDates(
     }
     days = options.days;
   }
-  // Walk back by CALENDAR days from today's local date — subtracting
-  // fixed 24h intervals from the wall clock can skip a local day
-  // around DST transitions (Codex P2 on PR #1458).
   const dates: string[] = [];
   let cursor = dateInTimezone(now, timezone);
   for (let count = 0; count < days; count++) {
@@ -203,12 +178,6 @@ async function fetchAllConversationsForDate(
   signal: AbortSignal | undefined,
   warnings: string[],
 ): Promise<{ conversations: WearableConversation[]; partial: boolean }> {
-  // Keyed by conversation id: a looping or overlapping provider can
-  // re-serve rows it already returned, and appending blindly would
-  // store the same conversation twice in the day file (Cursor review
-  // on PR #1464). Map keeps first-seen order; a re-served id replaces
-  // its entry in place, so the provider's LATEST version of a
-  // conversation wins — exactly what the current-day refresh wants.
   const byId = new Map<string, WearableConversation>();
   let cursor: string | null | undefined = undefined;
   const seenCursors = new Set<string>();
@@ -224,8 +193,6 @@ async function fetchAllConversationsForDate(
       byId.set(conversation.id, conversation);
     }
     if (!result.nextCursor) return { conversations: collect(), partial: false };
-    // A repeated cursor means the provider's pagination is looping —
-    // following it again would refetch the same page forever.
     if (seenCursors.has(result.nextCursor)) {
       warnings.push(
         `${connector.id}: provider pagination repeated cursor on ${date} — stopped to avoid an infinite loop; day may be partially synced (every sync refetches and re-warns while the provider misbehaves)`,
@@ -245,12 +212,6 @@ async function fetchAllConversationsForDate(
 const PARTIAL_DAY_MARKER =
   "\n*Note: pagination safety cap reached during sync — this day may be incomplete.*\n";
 
-/**
- * Explicit replacement body for a day whose provider data exists but
- * whose every segment was elided or dropped (all off-the-record, all
- * ASR garbage). Written so previously-stored content for the day stops
- * being searchable instead of lingering as a stale transcript.
- */
 function emptyDayBody(sourceId: string, date: string): string {
   return (
     `# ${sourceId} transcript — ${date}\n\n` +
@@ -319,7 +280,6 @@ function cleanDay(
   return out;
 }
 
-/** Sync one source. */
 export async function syncWearableSource(
   connector: WearableSourceConnector,
   settings: WearableSourceSettings,
@@ -390,11 +350,6 @@ export async function syncWearableSource(
     summary.redactions += cleaned.redactions;
     summary.correctionsApplied += cleaned.correctionsApplied;
 
-    // Missing-only location fill (issue #2925): run before the body is
-    // composed so a qualifying dominant-overlap place reaches the day
-    // transcript and memory headers exactly like a provider-supplied
-    // location would. Source-provided values are never overwritten, and
-    // the helper no-ops unless both location gates are on.
     if (deps.locationConfig) {
       await fillWearableConversationLocations(cleaned.conversations, {
         memoryDir: deps.memoryDir,
@@ -403,9 +358,6 @@ export async function syncWearableSource(
     }
 
     if (fetched.conversations.length === 0) {
-      // No provider data at all. A transient provider hiccup can
-      // legitimately produce an empty result, so an existing stored
-      // transcript is never auto-deleted here — surface it instead.
       const existing = await deps.readDayContentHash(connector.id, date);
       if (existing !== null) {
         summary.warnings.push(
@@ -415,10 +367,6 @@ export async function syncWearableSource(
       continue;
     }
 
-    // Provider data exists but cleanup/off-the-record elided all of it:
-    // replace any stored transcript with an explicit empty-day file so
-    // elided content stops being stored and searchable (Codex P2 on PR
-    // #1458).
     const allElided = cleaned.conversations.length === 0;
     let body = allElided
       ? emptyDayBody(connector.id, date)
@@ -433,14 +381,8 @@ export async function syncWearableSource(
       body += PARTIAL_DAY_MARKER;
     }
     const bodyHash = hashTranscriptBody(body);
-    // The on-disk file is the authority for the skip decision — a hash
-    // remembered in sync state must never suppress recreating a day
-    // file that was deleted or lost (Cursor review on PR #1458). The
-    // state's dayHashes remain as bookkeeping only.
     const existingHash = await deps.readDayContentHash(connector.id, date);
     const changed = existingHash !== bodyHash;
-    // An all-elided day only writes a replacement over an existing
-    // file; it never creates an empty-day file from nothing.
     const shouldWrite = changed && (!allElided || existingHash !== null);
 
     if (shouldWrite) {
@@ -467,11 +409,6 @@ export async function syncWearableSource(
     const needsSmartContext =
       settings.memoryMode === "smart" || settings.importNativeMemories === "smart";
 
-    // The memory pass runs when the day changed, when forced, or when
-    // the last pass for this exact content didn't complete cleanly —
-    // a sync that stored the transcript but failed mid-memory-write
-    // self-heals on the next run instead of being frozen out by the
-    // unchanged-day skip (Cursor review on PR #1458).
     const memoryPassComplete =
       previousState?.memoryDayHashes?.[date] === bodyHash;
     if (
@@ -483,14 +420,6 @@ export async function syncWearableSource(
           `${connector.id}: memoryMode is '${settings.memoryMode}' but no extraction engine is available in this context — transcripts synced, memories skipped`,
         );
       } else {
-        // The whole memory pass (extraction, fact writes, digest) is
-        // warn-and-retry rather than abort: the transcript is already
-        // stored, and aborting here would leave any stale completion
-        // record from an earlier clean run in place to mask the
-        // failure (Kilo review on PR #1458 for the digest case; fact
-        // writes share the same failure class). A clean pass records
-        // completion; anything else clears it so the next sync
-        // re-runs the day.
         let passClean = false;
         try {
           const corroboration = needsSmartContext
@@ -514,10 +443,6 @@ export async function syncWearableSource(
           summary.memoriesSkipped += generated.skipped;
           summary.memoriesBlocked += generated.tombstoneBlocked;
           summary.warnings.push(...generated.warnings);
-          // Degraded-but-complete passes (e.g. judge unavailable) still
-          // record completion — only an aborted extraction should force
-          // the day to re-run on the next sync (Cursor review on PR
-          // #1462).
           passClean = generated.completed;
           const { digestEnabled } = config;
           if (digestEnabled) {
@@ -544,7 +469,6 @@ export async function syncWearableSource(
         }
       }
     } else if (settings.memoryMode !== "off" && memoryPassComplete) {
-      // Carry the completion record forward for unchanged days.
       memoryDayHashes[date] = bodyHash;
     }
   }
@@ -561,11 +485,6 @@ export async function syncWearableSource(
       const alreadyImported = new Set(
         previousState?.importedNativeMemoryIds ?? [],
       );
-      // Native memories carry no day, so same-day cross-device
-      // corroboration does not apply to them — scoring a provider fact
-      // against an arbitrary day's tokens would be wrong-day evidence
-      // (Cursor review on PR #1462). They keep only the day-independent
-      // existing-memory support boost.
       const nativeCorroboration =
         settings.importNativeMemories === "smart"
           ? {
@@ -584,11 +503,6 @@ export async function syncWearableSource(
       let cursor: string | null | undefined = undefined;
       const seenNativeCursors = new Set<string>();
       for (let page = 0; page < PAGE_SAFETY_CEILING; page++) {
-        // Native memories are derived content: transcripts and the memory
-        // pass are already stored, and the watermark only advances at the
-        // end of the run. A provider rejection here (expired scope grant,
-        // API outage) must skip the import, not abort the run — otherwise
-        // every later sync replays the same failure and never advances.
         let result;
         try {
           result = await connector.fetchNativeMemories({
@@ -649,8 +563,6 @@ export async function syncWearableSource(
     }
   }
 
-  // Watermark advances only now — after transcript writes, memory
-  // writes, and native imports all succeeded.
   syncState = updateSourceSyncState(syncState, connector.id, {
     syncedAt: now.toISOString(),
     days: dates,
@@ -659,11 +571,6 @@ export async function syncWearableSource(
     clearMemoryDays: failedMemoryDays,
     importedNativeMemoryIds: importedNativeIds,
   });
-  // New same-day evidence invalidates OTHER sources' memory-pass
-  // completion for the days this source just (re)wrote: their next
-  // sync re-scores with this transcript available, and the promotion
-  // path upgrades earlier borderline writes in place (Cursor review on
-  // PR #1462).
   if (summary.transcriptsWritten.length > 0) {
     const cleared: typeof syncState.sources = {};
     for (const [otherId, otherState] of Object.entries(syncState.sources)) {
@@ -690,15 +597,6 @@ export async function syncWearableSource(
   return summary;
 }
 
-/**
- * Assemble smart-mode corroboration evidence: other sources' same-day
- * transcript tokens + existing active memories. The memory list loads
- * fresh per day (not per run) so facts written on earlier days of a
- * multi-day backfill are visible as support evidence on later days —
- * the underlying readAllMemories is cached in storage and invalidated
- * by writes, so the per-day refresh is cheap (Cursor review on PR
- * #1462).
- */
 async function buildCorroborationContext(
   sourceId: string,
   date: string,

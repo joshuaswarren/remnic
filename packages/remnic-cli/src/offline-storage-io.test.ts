@@ -287,9 +287,6 @@ test("offline storage IO stages encrypted decryption inside the memory root, not
     let sawStagingUnderMemoryRoot = false;
     const chunks: Buffer[] = [];
     for await (const chunk of io.readFileChunks({ ...target, chunkSize: 41 })) {
-      // The whole plaintext is staged before the first chunk is yielded, so the
-      // staging dir is observable HERE - and it must live under the memory root,
-      // never in world-readable os.tmpdir().
       if ((await readdir(memoryDir)).some((e) => e.startsWith(stagingPrefix))) {
         sawStagingUnderMemoryRoot = true;
       }
@@ -333,7 +330,6 @@ test("cleanupOrphanedOfflineDecryptStaging removes stale orphans but keeps in-fl
     await writeFile(path.join(fresh, "content"), "in-flight plaintext");
     await mkdir(unrelated, { recursive: true });
     await writeFile(path.join(unrelated, "note.md"), "keep me");
-    // Age the stale dir past the orphan threshold (2h ago); leave `fresh` recent.
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
     await utimes(stale, twoHoursAgo, twoHoursAgo);
 
@@ -405,8 +401,6 @@ test("a >=16MiB changed shard rides the staged chunk transport and applies atomi
         bytes: Buffer.byteLength(oldShardBody), mtimeMs: 1 },
     ];
     const baseFiles = currentFiles;
-    // (a) The oversized changed member is selected for the staged chunk
-    // transport — never direct hydration at its live path.
     const stagedMembers = generationMembersForStagedTransport({
       incomingFiles: metadataOnly.files,
       currentFiles,
@@ -414,13 +408,10 @@ test("a >=16MiB changed shard rides the staged chunk transport and applies atomi
     });
     assert.deepEqual(stagedMembers.map((m) => m.path), ["state/embeddings/shard-0024.json"]);
     const stagedPaths = new Set(stagedMembers.map((m) => m.path));
-    // (b) ... and it is excluded from the inline base64 content fetch; the
-    // small shard still rides the batched fetch.
     const needed = offlineSnapshotContentFilesForApply({
       snapshot: metadataOnly, baseFiles, currentFiles, skipPaths: stagedPaths,
     });
     assert.deepEqual(needed.map((f) => f.path), ["state/embeddings/shard-0012.json"]);
-    // (c) Live generation untouched during staging.
     assert.equal(
       await readFile(path.join(localRoot, "state/embeddings/shard-0037.json"), "utf-8"),
       oldShardBody,
@@ -457,8 +448,6 @@ test("a >=16MiB changed shard rides the staged chunk transport and applies atomi
         minBytes: OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES,
         hydrateFileContent: hydrateOfflineFileContent,
       });
-      // (d) Hydrate the small shard via the batched fetch; the big shard's
-      // content travels only through the staged transport.
       const hydrated = await hydrateOfflineSnapshotContent({
         remoteUrl: "http://stub", token: "t",
         includeTranscripts: true,
@@ -492,8 +481,6 @@ test("a >=16MiB changed shard rides the staged chunk transport and applies atomi
         stat(path.join(localRoot, "state/embeddings/shard-0024.json")),
         "staged bytes must never land at the live shard path",
       );
-      // (e) Apply through the atomic generation transaction, consuming the
-      // staged bytes via the explicit incoming callback.
       const store = new EmbeddingIndexFileStore(
         path.join(localRoot, "state/embeddings.json"),
         path.join(localRoot, "state/embeddings"),
@@ -512,8 +499,6 @@ test("a >=16MiB changed shard rides the staged chunk transport and applies atomi
       await transport?.cleanup();
       globalThis.fetch = originalFetch;
     }
-    // (f) Payload failure (fetched bytes do not match the declared digest)
-    // rejects during staging and preserves the old generation.
     await rm(path.join(localRoot, "state/embeddings"), { recursive: true, force: true });
     await mkdir(path.join(localRoot, "state/embeddings"), { recursive: true });
     await writeFile(path.join(localRoot, "state/embeddings/shard-0037.json"), oldShardBody);
@@ -621,8 +606,6 @@ test("staged generation transport encrypts staging bytes at rest and serves AAD-
       });
     }) as typeof fetch;
 
-    // Root mtime does not establish orphanhood: an active transfer writes
-    // nested upload files and may be older than the former one-hour cutoff.
     const activeName = "generation-incoming-active";
     const activeDir = path.join(memoryDir, ".offline-sync", activeName);
     await mkdir(activeDir, { recursive: true });
@@ -677,8 +660,6 @@ test("staged generation transport encrypts staging bytes at rest and serves AAD-
         "non-staged paths must stay metadata-only",
       );
 
-      // Tampering with the staged ciphertext fails the authenticated
-      // decrypt instead of yielding forged content.
       const corrupted = Buffer.from(raw);
       corrupted[corrupted.length - 24] = (corrupted[corrupted.length - 24] ?? 0) ^ 0xff;
       await writeFile(stagedFile, corrupted);
@@ -710,10 +691,7 @@ test("locally diverged generation members defer their whole generation", async (
     { path: "state/embeddings/shard-0012.json", sha256: "base1" },
   ];
   const incomingFiles = [
-    // Unchanged vs base: no conflict (the transaction hydrates locally).
     { path: "state/embeddings/shard-0012.json", sha256: "base1" },
-    // Locally diverged AFTER the base while the remote still serves the base
-    // bytes: the daemon indexed between push and pull.
     { path: "state/embeddings/shard-0000.json", sha256: "base0" },
   ];
   const currentFiles = [
@@ -723,12 +701,10 @@ test("locally diverged generation members defer their whole generation", async (
   const deferred = divergedEmbeddingGenerationDeferrals({
     incomingFiles, baseFiles, currentFiles,
   });
-  // Every incoming member of the conflicted generation is deferred together.
   assert.deepEqual(deferred, [
     "state/embeddings/shard-0000.json",
     "state/embeddings/shard-0012.json",
   ]);
-  // Unrelated runtime files never defer.
   const unrelated = divergedEmbeddingGenerationDeferrals({
     incomingFiles: [{ path: "state/buffer.json", sha256: "x" }],
     baseFiles: [{ path: "state/buffer.json", sha256: "base" }],

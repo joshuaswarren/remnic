@@ -1,6 +1,3 @@
-// ---------------------------------------------------------------------------
-// ChatGPT data-export parser (issue #568 slice 2)
-// ---------------------------------------------------------------------------
 //
 // OpenAI publishes each account's export as a ZIP. Inside are several JSON
 // files; this parser understands the two that carry durable user-level
@@ -17,17 +14,7 @@
 //      NOT imported by default; a `--include-conversations` opt-in produces
 //      one memory per conversation summarizing the user-side turns.
 //
-// The parser accepts either the raw JSON text of a specific file OR a bundle
-// object (already-parsed envelope) that contains the known keys. This lets
-// the CLI pass either the plain `conversations.json` contents or a combined
-// manifest when a future bundle-auto-detect (PR 7) lands.
-//
-// The CLI reads the raw export ZIP itself (issue #3542): it passes the
-// memory.json, memories.json, user.json and conversations.json it finds as
-// one bundle object keyed by file name.
-
 // ---------------------------------------------------------------------------
-// Raw export shapes (subset we care about)
 // ---------------------------------------------------------------------------
 
 /**
@@ -52,7 +39,6 @@ export interface ChatGPTSavedMemory {
 }
 
 export interface ChatGPTConversationMessage {
-  /** Message id. */
   id?: string;
   /** Author role: user / assistant / system / tool. */
   author?: { role?: string; name?: string | null };
@@ -95,7 +81,6 @@ export interface ParsedChatGPTExport {
 }
 
 // ---------------------------------------------------------------------------
-// Public parse API
 // ---------------------------------------------------------------------------
 
 export interface ChatGPTParseOptions {
@@ -118,10 +103,6 @@ export function parseChatGPTExport(
   input: unknown,
   options: ChatGPTParseOptions = {},
 ): ParsedChatGPTExport {
-  // File-backed adapter contract: `runImportCommand` passes `undefined`
-  // when `--file` is omitted. ChatGPT is a file-only importer — a
-  // missing payload MUST surface as a user-facing error rather than
-  // silently succeeding with 0 memories. Codex review on PR #595.
   if (input === undefined || input === null) {
     throw new Error(
       "The 'chatgpt' importer requires a file. Pass `--file <path>` pointing at " +
@@ -135,12 +116,6 @@ export function parseChatGPTExport(
     ...(options.filePath !== undefined ? { filePath: options.filePath } : {}),
   };
 
-  // Shape 1: a top-level array. ChatGPT's `conversations.json` is literally
-  // an array of conversations. Older memory exports are also arrays (each
-  // entry a ChatGPTSavedMemory). A leading tombstone / malformed element
-  // (null, {}, etc.) would defeat a `raw[0]`-only classifier and cause us
-  // to silently drop every later valid entry. Scan the full array for the
-  // first recognized shape instead. Codex review on PR #595.
   if (Array.isArray(raw)) {
     if (raw.length === 0) return result;
     let classification: "conversation" | "memory" | undefined;
@@ -179,11 +154,9 @@ export function parseChatGPTExport(
     return result;
   }
 
-  // Shape 2: an object. We look for the known keys.
   if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
     let sawKnownSection = false;
-    // Saved memories — accept `memory`, `memories`, or nested `user.memory`.
     for (const key of ["memory", "memories"] as const) {
       const v = obj[key];
       if (Array.isArray(v)) {
@@ -204,7 +177,6 @@ export function parseChatGPTExport(
         }
       }
     }
-    // Conversations — top-level `conversations` array is the canonical shape.
     const convs = obj.conversations;
     if (Array.isArray(convs)) {
       sawKnownSection = true;
@@ -216,9 +188,6 @@ export function parseChatGPTExport(
         }
       }
     }
-    // Strict mode: if the object has none of the recognized sections, bail
-    // rather than silently returning an empty result. Non-strict mode keeps
-    // the lenient "returns empty struct" behavior for future-shape safety.
     if (!sawKnownSection && options.strict) {
       throw new Error(
         "Unknown ChatGPT export object shape: expected one of 'memory', " +
@@ -228,17 +197,12 @@ export function parseChatGPTExport(
     return result;
   }
 
-  // Primitive / unparseable payloads must NEVER return an empty success —
-  // that would mask operator mistakes and allow automation to treat a
-  // broken import as a clean "0 memories" import. Throw regardless of
-  // strict mode. Codex review on PR #595.
   throw new Error(
     "ChatGPT export must be a JSON array or object; received " + typeof raw,
   );
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
 function coerceJson(input: unknown): unknown {
@@ -297,8 +261,6 @@ function normalizeSavedMemory(
     return undefined;
   }
   if (v.deleted === true) {
-    // Soft-deleted; skip even in strict mode (it's a valid shape, just not a
-    // memory the user wants imported).
     return undefined;
   }
   const normalized: ChatGPTSavedMemory = {
@@ -344,12 +306,6 @@ export function collectUserTurnsFromConversation(
   }
 
   if (conversation.mapping && typeof conversation.mapping === "object") {
-    // Prefer walking the active chain from `current_node` up to the root via
-    // `parent` links, then reverse so we visit in chronological order. This
-    // mirrors how ChatGPT renders the conversation and excludes abandoned
-    // branches the user backed out of. If `current_node` is missing, fall
-    // back to a deterministic traversal of all nodes sorted by create_time
-    // with node id as the stable secondary key.
     const mapping = conversation.mapping;
     const chainNodes = followCurrentNodeChain(mapping, conversation.current_node);
     const ordered =
@@ -359,8 +315,6 @@ export function collectUserTurnsFromConversation(
             const delta = toNumericTime(a.message?.create_time) -
               toNumericTime(b.message?.create_time);
             if (delta !== 0) return delta;
-            // Stable secondary key: node id. Without this, nodes with equal
-            // or missing timestamps order non-deterministically.
             const aid = typeof a.id === "string" ? a.id : "";
             const bid = typeof b.id === "string" ? b.id : "";
             if (aid < bid) return -1;
@@ -385,12 +339,6 @@ export function collectUserTurnsFromConversation(
   return collected;
 }
 
-/**
- * Walk the mapping graph from `current_node` back to the root via each
- * node's `parent` pointer, then reverse so the returned array is in
- * chronological order. Returns empty when `current_node` is missing or the
- * chain is broken so callers can fall back to timestamp sort.
- */
 function followCurrentNodeChain(
   mapping: Record<string, ChatGPTConversationNode>,
   currentNode: string | null | undefined,
@@ -401,16 +349,11 @@ function followCurrentNodeChain(
   let cursor: string | null | undefined = currentNode;
   while (cursor) {
     if (visited.has(cursor)) {
-      // Cycle — refuse to trust the chain. Fall back to timestamp sort.
       return [];
     }
     visited.add(cursor);
     const node: ChatGPTConversationNode | undefined = mapping[cursor];
     if (!node) {
-      // Broken parent link (dangling reference). Don't return a partial
-      // tail — it would silently omit the root and leave the caller with
-      // an inconsistent view. Fall back to the timestamp-sorted walk.
-      // Codex review on PR #595.
       return [];
     }
     chain.push(node);
@@ -428,7 +371,6 @@ function followCurrentNodeChain(
 function extractMessageText(msg: ChatGPTConversationMessage): string | undefined {
   if (!msg) return undefined;
   if (msg.author?.role !== "user") {
-    // Even in inline-messages shape, only return user-authored text.
     return undefined;
   }
   const parts = msg.content?.parts;
@@ -454,7 +396,6 @@ function toNumericTime(value: number | string | null | undefined): number {
 export function normalizeChatGPTTimestamp(value: number | string | null | undefined): string | undefined {
   if (value === null || value === undefined) return undefined;
   if (typeof value === "string") {
-    // Already ISO? Accept.
     if (/\d{4}-\d{2}-\d{2}T/.test(value)) return value;
     const asNum = Number(value);
     if (Number.isFinite(asNum)) return epochToIso(asNum);

@@ -1,21 +1,3 @@
-/**
- * Corpus-watermark doctor check (issue #2149).
- *
- * Lives beside operator-toolkit.ts (which is at its structural-ratchet ceiling)
- * so the god file only gains the wiring. Reports each namespace's memory-file
- * count, newest write, and a short census-digest prefix, and WARNS when a
- * namespace could not be scanned (unreadable/churning) or enumeration failed —
- * a scan failure omits a namespace, so an unconditional "ok" would certify a
- * partial fleet or conflate an unreadable corpus with an empty deployment
- * (issue #2156 round-7). Peer comparison (count/age divergence thresholds) is a
- * follow-up.
- *
- * Namespaces are resolved through the shared resolveCorpusNamespaceRoots helper
- * (issue #2156 finding C) so the doctor and the /health surface enumerate the
- * SAME tenant set and cannot drift. The caller supplies `storageFactory` (a
- * `dir -> CorpusStorage`) so this module never imports the storage god-module
- * directly (issue #1533 ratchet).
- */
 
 import {
   type CorpusStorage,
@@ -39,8 +21,6 @@ export async function summarizeCorpusWatermark(
   let watermarks: CorpusWatermark[] = [];
   let enumerationFailed = false;
   try {
-    // The doctor orchestrator has no live namespace catalog, so config-driven
-    // enumeration (deduped by root inside the shared helper) is the whole set.
     const rootByNamespace = new Map<string, string>();
     for (const root of await resolveCorpusNamespaceRoots({ config, propagateDiscoveryErrors: true })) {
       rootByNamespace.set(root.namespace, root.rootDir);
@@ -52,7 +32,6 @@ export async function summarizeCorpusWatermark(
       now
     );
   } catch {
-    // Namespace ENUMERATION itself failed (distinct from a per-namespace scan).
     enumerationFailed = true;
   }
 
@@ -107,20 +86,9 @@ export function corpusWatermarksFromCheck(check: OperatorDoctorCheck): CorpusWat
   if (!details || typeof details !== "object" || !("corpus" in details) || !Array.isArray(details.corpus)) {
     return [];
   }
-  // This check always stores a CorpusWatermark[] under `corpus` (guarded above).
   return details.corpus as CorpusWatermark[];
 }
 
-/**
- * Build the corpus-watermark and replica-divergence doctor checks together.
- *
- * They are paired deliberately: the replica comparison consumes the corpus
- * check's watermarks (one scan, not two) AND its completeness — an incomplete
- * local census must not let the replica check certify convergence. The pairing
- * lives HERE, next to the corpus check + `corpusWatermarksFromCheck` it consumes
- * and the `PluginConfig` it needs, so the sibling replica module stays a light
- * tsup DTS entry free of the heavy `PluginConfig` type graph (round 6, coderabbit).
- */
 export async function summarizeCorpusAndReplica(
   config: PluginConfig,
   storageFactory: (dir: string) => CorpusStorage,

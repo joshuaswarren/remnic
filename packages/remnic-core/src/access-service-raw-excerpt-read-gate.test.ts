@@ -1,29 +1,3 @@
-/**
- * #1505 thread 2f7: the `disclosure: "raw"` excerpt path MUST pass through the
- * SAME read-authorization gate as normal recall + `lcmSearch` + the in-prompt
- * LCM sections — NOT `snapshot.namespace` (the effective WRITE/overlay
- * namespace).
- *
- * The defect class: a project-scoped session whose principal can WRITE but not
- * READ its self base (or whose `defaultRecallNamespaces` omits `self`) archives
- * LCM rows under the `<principal>-project-*` overlay key (the write key). When
- * `recall({ disclosure: "raw" })` derived the raw-excerpt LCM `session_id` from
- * `snapshot.namespace`, it prefixed the lookup with that overlay namespace and
- * surfaced `<principal>-project-*` transcript rows that normal recall and
- * `lcmSearch` intentionally EXCLUDE for that reader — a cross-tenant read leak.
- *
- * After the fix the raw-excerpt lookup routes through
- * `resolveRawExcerptReadNamespace` → `resolveLcmReadNamespace(..., "read")`,
- * which honours the overlay only when the principal SELF base is in the readable
- * recall set. When it is not, the lookup falls back to the default store (raw
- * sessionKey) exactly like normal recall + `lcmSearch`.
- *
- * These tests exercise the private `executeRecall` directly (the budget /
- * idempotency wrapper is orthogonal to the namespace gate) and assert the
- * `session_id` that reaches the LCM engine's `searchContextFull`.
- *
- * All fixtures are synthetic — no real user data.
- */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
@@ -46,7 +20,6 @@ import type { CodingContext, MemoryFile, PluginConfig } from "./types.js";
 
 interface RawExcerptProbe {
   service: EngramAccessService;
-  /** session_id values that reached the LCM engine's `searchContextFull`. */
   searchSessionIds: Array<string | undefined>;
   contexts: Map<string, CodingContext>;
 }
@@ -179,7 +152,6 @@ function makeRawExcerptProbe(options: {
 
   probeCast<{ orchestrator: Orchestrator }>(service).orchestrator = orch;
 
-  // `executeRecall` consults the cross-namespace budget; `Object.create` skips
   // the constructor that builds the real limiter, so install one. Budget is
   // disabled in config, so it never denies — orthogonal to the namespace gate.
   (service as unknown as { budget: CrossNamespaceBudget }).budget =
@@ -261,7 +233,6 @@ test("#1505 thread 2f7: WRITE-only / self-unreadable principal ⇒ raw excerpts 
   });
 
   assert.equal(probe.searchSessionIds.length, 1, "raw excerpt lookup must run once");
-  // FAIL-BEFORE: previously prefixed with `snapshot.namespace` (the overlay),
   // i.e. `${overlayNamespace()}:${SESSION_KEY}`. PASS-AFTER: gated read namespace
   // collapses to the default store ⇒ the raw sessionKey.
   assert.equal(
@@ -272,7 +243,6 @@ test("#1505 thread 2f7: WRITE-only / self-unreadable principal ⇒ raw excerpts 
 });
 
 test("#1505 thread 2f7: defaultRecallNamespaces omits 'self' ⇒ raw excerpts fall back to the default store", async () => {
-  // pi-geek may both read AND write its self base, but the operator's
   // `defaultRecallNamespaces` omits `self`, so normal recall + lcmSearch never
   // surface overlay rows for this reader. Raw disclosure must match.
   const probe = makeRawExcerptProbe({
@@ -305,7 +275,6 @@ test("#1505 thread 2f7: defaultRecallNamespaces omits 'self' ⇒ raw excerpts fa
 });
 
 test("#1505 thread 2f7 (positive): overlay IS readable ⇒ raw disclosure includes the overlay rows", async () => {
-  // pi-geek may read its self base AND `defaultRecallNamespaces` includes
   // `self`, so the overlay is in the readable recall set. Raw disclosure MUST
   // continue to prefix with the overlay key so the session finds its own
   // project-scoped transcript rows (no regression for the normal case).
@@ -353,7 +322,6 @@ test("#1505 thread NBHWz (codex P2): restrictive `default` READ policy + readabl
   // its LCM session_id with the readable self namespace (no pre-auth of default).
   const probe = makeRawExcerptProbe({
     config: {
-      // RESTRICTIVE default: pi-geek may NOT read `default`.
       namespacePolicies: [
         { name: "default", readPrincipals: [], writePrincipals: [] },
         { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
@@ -399,7 +367,6 @@ test("#1505 thread NBHWz (codex P2): restrictive `default` READ policy + readabl
   // namespace the principal may read (the `pi-geek` self base or its
   // `pi-geek-project-*` overlay), matching what normal recall + `lcmSearch`
   // search.
-  // #1495 P1: the namespaced key is sentinel-framed (`\x1f<ns>\x1f<sessionKey>`),
   // so parse the namespace out of the frame and assert it is an authorized
   // pi-geek namespace (the self base or its `pi-geek-project-*` overlay).
   const SENTINEL = "\u001f";
@@ -434,7 +401,6 @@ test("#1505 thread NBHWz (codex P2): no readable LCM namespace ⇒ raw excerpts 
     config: {
       namespacePolicies: [
         { name: "default", readPrincipals: [], writePrincipals: [] },
-        // alice can WRITE but NOT read her self namespace, and self is omitted
         // from the recall set ⇒ nothing readable to fall back to.
         { name: "alice", readPrincipals: [], writePrincipals: ["alice"] },
       ],
@@ -451,7 +417,6 @@ test("#1505 thread NBHWz (codex P2): no readable LCM namespace ⇒ raw excerpts 
     sessionKey: SESSION_KEY,
   });
 
-  // Must NOT throw.
   await (probe.service as unknown as ExecuteRecallInternals).executeRecall({
     query: "what database are we using?",
     sessionKey: SESSION_KEY,
@@ -467,7 +432,6 @@ test("#1505 thread NBHWz (codex P2): no readable LCM namespace ⇒ raw excerpts 
 });
 
 test("#1505 thread 2f7 (single-store regression): namespaces disabled ⇒ raw excerpts use the raw sessionKey", async () => {
-  // Byte-for-byte single-user behavior: no namespaces, no overlay, raw key.
   const probe = makeRawExcerptProbe({
     config: {
       namespacesEnabled: false,

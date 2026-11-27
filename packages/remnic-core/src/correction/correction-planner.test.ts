@@ -1,15 +1,3 @@
-/**
- * Correction planner tests — issue #1580 PR 1 acceptance.
- *
- * Covers:
- *   - explicit-target plan
- *   - search-located plan
- *   - not-found target → explicit error (rule 34)
- *   - LLM classify success per classification class (stubbed adapter, rule 33)
- *   - LLM failure → deterministic fallback plan (rule 13)
- *   - plan persists atomically and expires
- *   - bulk guard: > maxAffected refuses (§39)
- */
 
 import { strict as assert } from "node:assert";
 import { readFile, readdir } from "node:fs/promises";
@@ -28,9 +16,6 @@ import {
 } from "./correction-contract.js";
 import { CorrectionPlanner, type LlmClassificationResult, type PlannerCandidate, type PlannerDeps } from "./correction-planner.js";
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
 
 interface StubState {
   candidatesById: Map<string, PlannerCandidate>;
@@ -56,7 +41,6 @@ function makeDeps(stateDir: string, state: StubState, opts: { maxAffected?: numb
   const fixedNow = new Date("2026-03-15T12:00:00Z");
   return {
     searchCorpus: async ({ text, namespaces, limit }) => {
-      // Simple stub: return candidates whose content contains the text.
       const all = [...state.candidatesById.values()];
       const matched = all.filter((c) => c.content.includes(text) || text.includes(c.memoryId));
       return matched.slice(0, limit).map((c, i) => ({ ...c, score: 1 - i * 0.1 }));
@@ -80,8 +64,6 @@ function makeDeps(stateDir: string, state: StubState, opts: { maxAffected?: numb
       return { candidate, status: state.statusById?.get(memoryId) ?? "active" };
     },
     expandNeighbors: async ({ seedIds }) => {
-      // No neighbors in the stub; return the seeds themselves so neighbor
-      // expansion is exercised but produces no surprises.
       return seedIds.map((id) => state.candidatesById.get(id)).filter((c): c is PlannerCandidate => c !== undefined);
     },
     classifyAndDraft: async ({ text, candidates }) => {
@@ -102,7 +84,6 @@ const withTempDir = <T>(fn: (dir: string) => Promise<T>): Promise<T> =>
   managedWithTempDir(fn, "remnic-corr-plan-");
 
 // ---------------------------------------------------------------------------
-// Tests
 // ---------------------------------------------------------------------------
 
 test("explicit-target plan: targetIds resolve directly and the plan records them", async () => {
@@ -159,8 +140,6 @@ test("search-located plan: no targetIds → search runs and top hits become cand
     };
     const planner = new CorrectionPlanner(makeDeps(dir, state));
     const plan = await planner.plan({ text: "PostgreSQL" }, ["default"]);
-    // Both mem-a and mem-b match "PostgreSQL"; the planner offers them as
-    // candidates but only mem-a is annotated by the LLM.
     assert.equal(plan.affected.length, 1);
     assert.equal(plan.affected[0].memoryId, "mem-a");
   });
@@ -298,12 +277,10 @@ test("plan persists atomically to state/corrections/pending/<planId>.json and ro
     };
     const planner = new CorrectionPlanner(makeDeps(dir, state));
     const plan = await planner.plan({ text: "old fact", targetIds: ["mem-x"] }, ["default"]);
-    // loadPlan round-trips it.
     const reloaded = await planner.loadPlan("default", plan.planId);
     assert.ok(reloaded, "plan should round-trip via loadPlan");
     assert.equal(reloaded!.planId, plan.planId);
     assert.equal(reloaded!.actions.length, 1);
-    // listPending surfaces it.
     const pending = await planner.listPending("default");
     assert.equal(pending.length, 1);
     assert.equal(pending[0].planId, plan.planId);
@@ -358,7 +335,6 @@ test("plan expires after TTL — apply-time rejection is tested in executor; her
     const plan = await planner.plan({ text: "old fact", targetIds: ["mem-x"] }, ["default"]);
     const created = new Date(plan.createdAt).getTime();
     const expires = new Date(plan.expiresAt).getTime();
-    // TTL of 1h = 3600000ms.
     assert.equal(expires - created, 60 * 60 * 1000);
   });
 });
@@ -397,7 +373,6 @@ test("malformed action from the LLM adapter is rejected before persist (defense 
       llmResult: {
         classification: "outdated",
         confidence: 0.9,
-        // Missing required loserId.
         actions: [{ kind: "supersede" } as unknown as CorrectionAction],
         relevance: [],
         warnings: [],
@@ -441,23 +416,17 @@ test("Ug8: path-traversal planId is rejected before building the plan-file path"
       retireCalls: 0,
     };
     const planner = new CorrectionPlanner(makeDeps(dir, state));
-    // `../../meta` must NOT let path.join escape state/corrections/pending and
-    // delete arbitrary .json files under the storage root.
     for (const bad of ["../../meta", "../sibling", "a/b", "a\\b", ".", "..", ".hidden"]) {
       await assert.rejects(planner.loadPlan("default", bad), /Invalid plan id/);
       await assert.rejects(planner.markConsumed("default", bad, "discarded"), /Invalid plan id/);
       await assert.rejects(planner.deletePlan("default", bad), /Invalid plan id/);
     }
-    // A canonical corr-... id is accepted (it returns null/not-found without throwing).
     const ok = await planner.loadPlan("default", "corr-abc-123");
     assert.equal(ok, null);
   });
 });
 
 test("Of-XJ: validateMemoryDraft rejects categories outside the MemoryCategory allow-list", () => {
-  // A path-like or unexpected category must be rejected before it reaches
-  // StorageManager.writeMemory, which incorporates the category into the
-  // generated memory id/path (review thread Of-XJ).
   for (const cat of ["fact", "preference", "correction", "entity"]) {
     assert.doesNotThrow(() => validateMemoryDraft({ content: "x", category: cat }));
   }
@@ -473,12 +442,6 @@ test("Of-XJ: validateMemoryDraft rejects categories outside the MemoryCategory a
 
 test("OgIql: untargeted search uses tokenized keyword matching (not exact-prefix substring)", async () => {
   await withTempDir(async (dir) => {
-    // The wiring's searchMemories tokenizes the correction text and matches by
-    // keyword overlap, so "we migrated from Postgres to MySQL" finds a memory
-    // that says "Postgres is the database" — the old 32-char exact-prefix
-    // substring missed this. The planner delegates to deps.searchCorpus, so we
-    // verify the planner passes the FULL text and the tokenized search dep
-    // (mirroring the wiring logic) locates the memory.
     const candidates = new Map<string, PlannerCandidate>([
       ["mem-db", {
         memoryId: "mem-db",
@@ -497,7 +460,6 @@ test("OgIql: untargeted search uses tokenized keyword matching (not exact-prefix
       retireCalls: 0,
     };
     const deps = makeDeps(dir, state);
-    // Mirror the wiring's tokenized search: split into keywords, match overlap.
     deps.searchCorpus = async ({ text, limit }) => {
       const STOP = new Set(["the", "a", "an", "is", "are", "to", "of", "from", "we", "and", "or", "in", "on"]);
       const tokens = [...new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOP.has(w)))];
@@ -535,28 +497,19 @@ test("#1678: never_store plan redacts the request text in the persisted pending-
       retireCalls: 0,
     };
     const planner = new CorrectionPlanner(makeDeps(dir, state));
-    // The in-memory plan keeps the original text (the executor's audit body
-    // re-applies its own redaction).
     const plan = await planner.plan({ text: secret, targetIds: ["mem-s"] }, ["default"]);
     assert.equal(plan.request.text, secret, "in-memory plan keeps the original request text");
     assert.equal(plan.classification, "never_store");
 
-    // The persisted file MUST NOT contain the secret.
     const filePath = path.join(dir, "state", "corrections", "pending", `${plan.planId}.json`);
     const raw = await readFile(filePath, "utf-8");
     assert.ok(!raw.includes("sk-secret-DO-NOT-STORE"),
       "the persisted pending-plan file must NOT contain the never-store secret (request.text is redacted)");
     assert.ok(raw.includes("redacted"),
       "the persisted request text must be the redaction placeholder");
-    // The redaction_rule.pattern is NOT redacted on disk: the executor's apply
-    // flow reloads via loadPlan and needs the real pattern to call
-    // registerRedactionRule. Redacting it would register a placeholder (#vZln).
-    // The pattern's transient exposure is bounded by the pending-plan TTL +
-    // consumed-on-apply lifecycle.
     assert.ok(raw.includes("sk-secret"),
       "the redaction_rule.pattern survives on disk for the apply flow (bounded by pending-plan TTL)");
 
-    // loadPlan reads from disk → the reloaded plan has the redacted text.
     const reloaded = await planner.loadPlan("default", plan.planId);
     assert.ok(reloaded, "plan round-trips");
     assert.notEqual(reloaded!.request.text, secret,
@@ -566,7 +519,6 @@ test("#1678: never_store plan redacts the request text in the persisted pending-
 });
 
 // ---------------------------------------------------------------------------
-// #1713 Item 2: stale applying plan recovery
 // ---------------------------------------------------------------------------
 
 test("#1713: markConsumed(applying) stamps applyingAt", async () => {
@@ -654,8 +606,6 @@ test("#1713: recoverStaleApplyingPlans discards stale applying plans", async () 
     assert.equal(recovered.length, 1);
     assert.equal(recovered[0], plan.planId);
 
-    // Read the raw file (loadPlan/parsePlan rejects the scrubbed pattern by
-    // design — validation rejects placeholder patterns on re-load).
     const { readFile: rf } = await import("node:fs/promises");
     const rawPlan = JSON.parse(
       await rf(dir + "/state/corrections/pending/" + plan.planId + ".json", "utf-8"),
@@ -741,14 +691,12 @@ test("#1713: recoverStaleApplyingPlans recovers pre-fix plans via expiresAt fall
     const plan = await planner.plan({ text: "correct this" }, ["default"]);
 
     await planner.markConsumed("default", plan.planId, "applying");
-    // Simulate a pre-fix plan: manually strip applyingAt from the file
     const { readFile: rf, writeFile: wf } = await import("node:fs/promises");
     const planFile = dir + "/state/corrections/pending/" + plan.planId + ".json";
     const planJson = JSON.parse(await rf(planFile, "utf-8"));
     delete planJson.applyingAt;
     await wf(planFile, JSON.stringify(planJson) + "\n", "utf-8");
 
-    // Recovery 25h later (past the 24h expiry, no applyingAt → falls back to expiresAt)
     const recovered = await planner.recoverStaleApplyingPlans("default", {
       now: new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000),
     });
@@ -780,15 +728,12 @@ test("#1713: recoverStaleApplyingPlans recovers pre-fix plans immediately at exp
     const plan = await planner.plan({ text: "correct this" }, ["default"]);
 
     await planner.markConsumed("default", plan.planId, "applying");
-    // Simulate a pre-fix plan: manually strip applyingAt from the file
     const { readFile: rf, writeFile: wf } = await import("node:fs/promises");
     const planFile = dir + "/state/corrections/pending/" + plan.planId + ".json";
     const planJson = JSON.parse(await rf(planFile, "utf-8"));
     delete planJson.applyingAt;
     await wf(planFile, JSON.stringify(planJson) + "\n", "utf-8");
 
-    // Recovery at exactly expiresAt: plan is already expired -> recover now
-    // (review thread ff034716: no extra TTL wait for pre-fix plans)
     const recovered = await planner.recoverStaleApplyingPlans("default", {
       now: new Date(planJson.expiresAt),
     });

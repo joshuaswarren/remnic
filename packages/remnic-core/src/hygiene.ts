@@ -10,7 +10,6 @@ export type HygieneWarning = {
 };
 
 function toSafeTimestamp(ts: Date): string {
-  // filesystem-safe, deterministic-ish, UTC
   return ts.toISOString().replace(/[:.]/g, "");
 }
 

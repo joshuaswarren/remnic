@@ -67,7 +67,6 @@ test("ActivityHttpSourceClient authenticates and maps a snapshot page", async ()
 test("ActivityHttpSourceClient treats an omitted nextCursor as end-of-pagination", async () => {
   await withServer((_request, response) => {
     response.setHeader("content-type", "application/json");
-    // Daemon omits nextCursor entirely (not JSON null) on the final page.
     response.end(
       JSON.stringify({
         snapshots: [
@@ -106,8 +105,6 @@ test("ActivityHttpSourceClient reports an unreachable health probe without treat
 
 test("ActivityHttpSourceClient aborts a stalled request via the default timeout", async () => {
   await withServer((request) => {
-    // Never respond: hold the request open so only the client-side timeout can
-    // end it. The socket is destroyed when fetch aborts, so teardown proceeds.
     request.resume();
   }, async (baseUrl) => {
     const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl, timeoutMs: 50 });
@@ -133,8 +130,6 @@ test("ActivityHttpSourceClient rejects a non-positive timeout", () => {
 });
 
 async function closedLoopbackBaseUrl(): Promise<string> {
-  // Reserve an ephemeral loopback port, then close it so the connection is
-  // deterministically refused (no reliance on a fixed low port being free).
   const server = createServer();
   const listening = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", listening.resolve);
@@ -180,8 +175,6 @@ test("ActivityHttpSourceClient accepts an empty window title and text (untitled/
   }, async (baseUrl) => {
     const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl });
     const page = await client.fetchSnapshots({ date: "2026-07-22", timezone: "UTC" });
-    // A legitimate no-text/untitled foreground window must parse, not throw —
-    // else the runner errors the day and the cursor never advances past it.
     assert.equal(page.snapshots.length, 1);
     assert.equal(page.snapshots[0]?.windowTitle, "");
     assert.equal(page.snapshots[0]?.text, "");
@@ -202,7 +195,6 @@ test("ActivityHttpSourceClient still rejects a missing contentHash identifier", 
     );
   }, async (baseUrl) => {
     const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl });
-    // Identity/dedup fields are still required and non-empty.
     await assert.rejects(client.fetchSnapshots({ date: "2026-07-22", timezone: "UTC" }), /contentHash/);
   });
 });

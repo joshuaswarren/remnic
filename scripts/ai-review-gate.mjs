@@ -206,13 +206,6 @@ export function evaluateAiReviewGate({
       .map(normalizeLogin)
       .filter((login) => login && author && login !== author),
   );
-  /**
-   * Configured reviewers that produced ANY current-head activity, regardless of
-   * verdict — an APPROVED review, a CHANGES_REQUESTED, a bare COMMENTED review,
-   * a comment with no recognized verdict phrase, or a check run.
-   *
-   * Keep non-positive participation visible in workflow diagnostics.
-   */
   const participatedAliases = new Set();
 
   const latestReviews = new Map();
@@ -220,17 +213,11 @@ export function evaluateAiReviewGate({
     const login = normalizeLogin(review.user?.login);
     if (!login) continue;
     if (!configuredAliases.has(login)) {
-      // Agent trust comes from repository settings, not review text or association.
-      // Only formal reviews carry an exact GitHub-provided commit binding.
       if (!trustedAgents.has(login) || !/^[0-9a-f]{40}$/i.test(headSha ?? "") || review.commit_id !== headSha) continue;
       if (review.state !== "APPROVED" && !NEGATIVE_REVIEW_STATES.has(review.state)) continue;
     }
     if (!isCurrentActivity(review, headSha, headCommittedAt)) continue;
     participatedAliases.add(login);
-    // Only verdict states compete for "latest": a later COMMENTED/PENDING
-    // review (e.g. a reviewer's follow-up summary) must not overwrite an
-    // earlier current-head APPROVED. Only CHANGES_REQUESTED or DISMISSED
-    // supersede an approval (COS-404, PR #3233).
     if (review.state !== "APPROVED" && !NEGATIVE_REVIEW_STATES.has(review.state)) continue;
     const previous = latestReviews.get(login);
     if (!previous || activityTime(review) >= activityTime(previous)) {

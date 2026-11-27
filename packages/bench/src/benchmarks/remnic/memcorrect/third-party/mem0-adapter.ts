@@ -1,29 +1,3 @@
-/**
- * Mem0 MemCorrect adapter (issue #1727 — highest-priority third-party adapter).
- *
- * Drives Mem0 through its public REST API so MemCorrect can score Mem0 on the
- * same correction/steerability corpus as the Remnic adapter. This is the
- * single highest-leverage missing comparison piece: Mem0 is the most-cited
- * memory system, and "we beat Mem0 on non-resurrection" is unsubstantiable
- * without this adapter.
- *
- * Two deployment modes are supported:
- *
- *   - **OSS self-hosted** (`mode: "oss"`): synchronous REST server (FastAPI).
- *     Paths have no `/v1/` prefix: `POST /memories`, `POST /search`,
- *     `DELETE /memories?user_id=…`. Operators self-host for reproducible
- *     benchmarking — they control the deployment, the LLM, and there is no
- *     rate limiting. This is the recommended mode for lab runs.
- *
- *   - **Hosted platform** (`mode: "hosted"`): `api.mem0.ai` with the V3
- *     async pipeline. `POST /v3/memories/add/` returns an `event_id` that is
- *     polled until `SUCCEEDED`. Search uses `POST /v3/memories/search/`.
- *
- * The adapter accepts an injectable `fetch` so the deterministic fixture
- * smoke test exercises the full request/response cycle without a network.
- * No keys are embedded; without operator-provided credentials every method
- * throws `MissingCredentialError` (skip-with-reason — no keys in CI).
- */
 
 import type { MemCorrectSystemAdapter } from "../types.js";
 import {
@@ -117,9 +91,6 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
       config.baseUrl?.replace(/\/+$/, "") ??
       (this.mode === "hosted" ? "https://api.mem0.ai" : "");
     this.apiKey = config.apiKey;
-    // Default to a unique per-instance prefix so independent bench runs don't
-    // share a remote namespace. reset() only deletes ids it tracked in-process;
-    // a fixed prefix reused by a fresh process would read stale remote data.
     this.userIdPrefix = config.userIdPrefix ?? `memcorrect-${uniqueRunSuffix()}`;
     this.ossAuthMode = config.ossAuthMode ?? "x-api-key";
     this.pollIntervalMs = config.pollIntervalMs ?? 500;
@@ -129,7 +100,6 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
     this.label = `mem0-${this.mode}`;
   }
 
-  /** Whether this adapter has the credentials needed to run. */
   isConfigured(): boolean {
     if (!this.apiKey) return false;
     if (this.mode === "oss" && !this.baseUrl) return false;
@@ -163,16 +133,6 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
   }
   async reset(): Promise<void> {
     this.ensureReady();
-    // Delete memories for every session we ingested under. Mem0's DELETE
-    // matches exact user_id — the prefix alone does NOT match session-scoped
-    // ids like "memcorrect:s1". Tracking known sessions ensures every prior
-    // scenario's memories are cleared before the next scenario runs.
-    //
-    // Only HTTP not-found (404/422) is swallowed: a session with no memories
-    // yet is a harmless no-op. Real failures (auth, server error, timeout) are
-    // retained for the next reset() retry and rethrown so the bench harness
-    // knows per-scenario isolation may be broken rather than silently scoring
-    // against stale remote data.
     await resetTrackedIds("Mem0", this.knownSessions, async (sessionKey) => {
       const userId = this.userIdFor(sessionKey);
       if (this.mode === "oss") {
@@ -215,7 +175,6 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
         timeoutMs: this.timeoutMs,
       });
     } else {
-      // Hosted V3: async add → poll event until processed.
       const addResponse = (await httpJson(
         this.fetchImpl,
         "POST",
@@ -287,11 +246,6 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
     sessionKey: string,
     _at?: string,
   ): Promise<void> {
-    // Mem0 has no explicit correction-contract API. The correction is
-    // observed as a user turn; Mem0's extraction pipeline is expected to
-    // update the relevant memory. This faithfully mirrors how a Mem0
-    // integrator would apply a user correction in production. The
-    // non_resurrection metric measures whether the OLD fact survives.
     await this.ingestTurn(sessionKey, "user", text, _at ?? new Date().toISOString());
   }
 
@@ -301,7 +255,6 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
     // The protocol runs this N times between phases; a no-op is allowed.
   }
 
-  /** Poll the hosted event endpoint until the add is processed. */
   private async pollEvent(eventId: string): Promise<void> {
     for (let i = 0; i < this.maxPolls; i++) {
       await delay(this.pollIntervalMs);

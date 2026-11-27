@@ -1,6 +1,3 @@
-/**
- * Scoring utilities for ingestion benchmarks.
- */
 
 import type {
   ExtractedEntity,
@@ -12,10 +9,6 @@ import type {
 } from "./ingestion-types.js";
 
 function normalize(value: string): string {
-  // NFKC decomposition first so that composed/decomposed forms (e.g. accented
-  // letters, full-width characters, ligatures) compare equal.  Then lowercase,
-  // strip punctuation/symbols via Unicode property escapes (preserves all
-  // Unicode letters and digits, so multilingual names are not collapsed).
   return value
     .normalize("NFKC")
     .toLowerCase()
@@ -49,7 +42,6 @@ export function entityRecall(
   const matched = new Set<string>();
   const consumedExtracted = new Set<number>();
 
-  // Pass 1: exact-name matches first to avoid alias-order sensitivity.
   for (const ge of gold) {
     const idx = extracted.findIndex(
       (ee, i) =>
@@ -63,7 +55,6 @@ export function entityRecall(
     }
   }
 
-  // Pass 2: alias fallback for unmatched gold entities.
   for (const ge of gold) {
     if (matched.has(ge.id)) continue;
     const idx = extracted.findIndex((ee, i) => !consumedExtracted.has(i) && matchEntity(ee, ge));
@@ -98,7 +89,6 @@ export function linkMatches(extracted: ExtractedLink, gold: GoldLink): boolean {
   const gTgt = normalize(gold.target);
   const relMatch = normalize(extracted.relation) === normalize(gold.relation);
 
-  // Reject self-links when the gold link has distinct endpoints
   if (eSrc === eTgt && gSrc !== gTgt) return false;
 
   if (gold.bidirectional) {

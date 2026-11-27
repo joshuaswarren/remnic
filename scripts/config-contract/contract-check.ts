@@ -1,32 +1,3 @@
-/**
- * check-config-contract v2 — parser-derived contract comparisons
- * (issue #1990 PR2).
- *
- * The extractor (extract-parsed-keys.ts) derives the AUTHORITATIVE key set
- * from the parsers; this module requires every other surface to match:
- *
- *  - a parsed key path absent from BOTH plugin manifests' configSchema
- *    (packages/plugin-openclaw + packages/shim-openclaw-engram) fails as
- *    `missing-schema` — the exact #1923 class (codingKnowledge.lsp);
- *  - a schema key path with no corresponding parsed key fails as
- *    `dead-schema` (§40 validator-implementation consistency);
- *  - a dotted key documented in docs/config-reference.md that matches
- *    neither parsers nor schema fails as `documented-nonexistent`;
- *  - a parsed key never mentioned in the docs fails as `undocumented-key`
- *    (leaf-name mentions inside the docs count — block tables list leaves);
- *  - unparseable parser constructs surface as `unparseable-construct`.
- *
- * Grandfather manifest (umbrella decision C):
- * scripts/config-contract/grandfathered.json records accepted current
- * violations, each carrying the issue number tracking its removal. The
- * check FAILS when a violation is not grandfathered, and FAILS when a
- * manifest entry's violation no longer exists (staleness is a failure, not
- * a comfort — the manifest may only shrink).
- *
- * §33 disable-value checks and the v1 top-level parity checks live in
- * validate-config-contract.ts, which calls into this module — one npm
- * entry point (`npm run check-config-contract`), preserved.
- */
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -50,19 +21,9 @@ export interface ContractViolation {
 export interface GrandfatherEntry {
   kind: ContractViolation["kind"];
   key: string;
-  /** Issue tracking this entry's removal. */
   issue: string;
 }
 
-/**
- * Resolve the prior grandfather baseline for the shrink-only ban.
- *
- * Returns `baselineRequired` so the caller can FAIL CLOSED rather than run
- * open: a real Git checkout whose base ref is unavailable must not silently
- * skip the ban (a PR could then add a fresh exception and pass — issue #1990).
- * Synthetic fixtures (temp dirs with no Git work tree) and the PR that first
- * introduces the manifest legitimately have no baseline to compare against.
- */
 function readPreviousGrandfatherKeys(
   repoRoot: string,
   grandfatherPath: string,
@@ -82,10 +43,8 @@ function readPreviousGrandfatherKeys(
   } catch {
     insideWorkTree = false;
   }
-  // No Git work tree → synthetic fixture / standalone export: nothing to compare.
   if (!insideWorkTree) return { keys: null, baselineRequired: false };
 
-  // A real checkout MUST be able to resolve the base, or the ban is meaningless.
   let base = "";
   try {
     base = execFileSync("git", ["-C", repoRoot, "merge-base", "HEAD", baseRef], {
@@ -104,8 +63,6 @@ function readPreviousGrandfatherKeys(
       stdio: ["ignore", "pipe", "ignore"],
     });
   } catch {
-    // The manifest did not exist at the base → this PR introduces it; the
-    // initial population is not a "new exception" to ban.
     return { keys: null, baselineRequired: false };
   }
   let parsed: unknown;
@@ -133,7 +90,6 @@ interface JsonSchemaNode {
   [key: string]: unknown;
 }
 
-/** Flatten a configSchema into dotted paths + prefixes for arbitrary objects. */
 function flattenSchema(schema: JsonSchemaNode): {
   paths: Set<string>;
   opaque: Set<string>;
@@ -145,12 +101,6 @@ function flattenSchema(schema: JsonSchemaNode): {
   const arrayPrefixes = new Set<string>();
   const compositionTolerated = new Set<string>();
   const walk = (node: JsonSchemaNode, prefix: string[], fromAlternative = false): void => {
-    // anyOf/oneOf branches are ALTERNATIVE shapes: their declared props are
-    // recorded (so a parsed key matching one is schema-covered) but marked
-    // composition-tolerated so the dead-schema pass does not demand a parser
-    // counterpart. allOf is an INTERSECTION — enforced like normal properties.
-    // Opacity is NOT applied to the parent prefix, so a real sibling property of
-    // a block that also carries an anyOf branch still surfaces drift (#1990).
     for (const branchName of ["anyOf", "oneOf"]) {
       const branches = node[branchName];
       if (Array.isArray(branches)) {
@@ -176,8 +126,6 @@ function flattenSchema(schema: JsonSchemaNode): {
       typeof addl === "object" &&
       !Array.isArray(addl) &&
       !!(addl as JsonSchemaNode).properties;
-    // Genuine free-form object (additionalProperties allowed, no declared child
-    // shape) → opaque. A typed map flattens its value fields under `*` below.
     if (
       prefix.length > 0 &&
       isObjectType &&
@@ -187,9 +135,6 @@ function flattenSchema(schema: JsonSchemaNode): {
     ) {
       opaque.add(prefix.join("."));
     }
-    // Array item objects flatten their declared fields under the array key so
-    // item-field drift surfaces (issue #1990 review): `recallPipeline` items
-    // declare fields under items.properties → recallPipeline.<field>.
     const isArrayType =
       schemaType === "array" || (Array.isArray(schemaType) && schemaType.includes("array"));
     const items = node.items;
@@ -197,10 +142,6 @@ function flattenSchema(schema: JsonSchemaNode): {
       arrayPrefixes.add(prefix.join("."));
       walk(items as JsonSchemaNode, prefix, fromAlternative);
     }
-    // Map-shaped objects (scopeProfiles / teams) flatten their value fields under
-    // a `*` wildcard. Tracked like an array prefix: when the parser never reads
-    // the map values statically (dynamic Object.entries), the wildcard paths are
-    // skipped in dead-schema rather than false-flagged.
     if (prefix.length > 0 && isTypedMap) {
       arrayPrefixes.add(prefix.join("."));
       walk(addl as JsonSchemaNode, [...prefix, "*"], fromAlternative);
@@ -217,7 +158,6 @@ function flattenSchema(schema: JsonSchemaNode): {
   return { paths, opaque, arrayPrefixes, compositionTolerated };
 }
 
-/** A parsed path is schema-covered when declared or absorbed by an arbitrary object. */
 function coveredBySchema(keyPath: string, schema: { paths: Set<string>; opaque: Set<string> }): boolean {
   if (schema.paths.has(keyPath)) return true;
   const segments = keyPath.split(".");
@@ -235,14 +175,6 @@ function isUnderOpaqueSchema(keyPath: string, schema: { opaque: Set<string> }): 
   return false;
 }
 
-/**
- * True when a schema item path lives under an array whose items the parser never
- * parses (no parsed key below the array key). Such arrays are pass-through: the
- * parser hands the raw array on and the items are consumed downstream, so their
- * declared item fields are not parser drift and must not be dead-schema-flagged
- * (issue #1990). Arrays whose items ARE parsed (e.g. recallPipeline) keep full
- * dead-schema enforcement so a bogus item property still surfaces.
- */
 function isUnderUnparsedArray(
   keyPath: string,
   arrayPrefixes: Set<string>,
@@ -260,7 +192,6 @@ function isUnderUnparsedArray(
 }
 
 
-/** Backticked dotted identifiers mentioned in the docs (array-item `key[].field` → `key.field`). */
 function collectDocsKeys(docsText: string): Set<string> {
   const out = new Set<string>();
   const re = /`([A-Za-z_$][\w$]*(?:\[\])?(?:\.[A-Za-z_$][\w$]*(?:\[\])?)*)`/g;
@@ -270,12 +201,6 @@ function collectDocsKeys(docsText: string): Set<string> {
   return out;
 }
 
-/**
- * Backticked identifiers grouped by the heading-delimited doc section they
- * appear in. A bare leaf may only document a nested key when the leaf and the
- * key's block co-occur in the SAME section — a generic `enabled` cell under one
- * block must not document `otherBlock.enabled` (issue #1990 review).
- */
 function collectDocsSections(docsText: string): Array<Set<string>> {
   const re = /`([A-Za-z_$][\w$]*(?:\[\])?(?:\.[A-Za-z_$][\w$]*(?:\[\])?)*)`/g;
   const sections: Array<Set<string>> = [];
@@ -295,11 +220,6 @@ function collectDocsSections(docsText: string): Array<Set<string>> {
   return sections;
 }
 
-/**
- * JSON.parse keeps only the last value for a repeated object member, so a
- * doubled `meetings` (or `meetings.*`) schema key would otherwise look unique
- * after parse. Walk the raw text and fail closed on the first duplicate.
- */
 export function findFirstDuplicateJsonMember(raw: string): { key: string; path: string } | null {
   let i = raw.charCodeAt(0) === 0xfeff ? 1 : 0;
   let found: { key: string; path: string } | null = null;
@@ -540,10 +460,6 @@ export function runContractCheck(options: {
 
   const violations: ContractViolation[] = [];
 
-  // A. Parsed key must be schema-covered in EVERY manifest. Emit one violation
-  // per missing manifest, keyed `<key>@<manifest>`, so a path already
-  // grandfathered for one manifest does not suppress the same drift newly
-  // appearing in another (issue #1990 review).
   for (const key of parsedKeys) {
     for (const schema of schemas) {
       if (coveredBySchema(key, schema.flat)) continue;
@@ -556,18 +472,11 @@ export function runContractCheck(options: {
     }
   }
 
-  // B. Dead schema: a schema path must have a parser counterpart at the same
-  // path or below it. Matching an arbitrary parsed ancestor is too broad:
-  // `block.enabled` must not make a manifest-only `block.typo` appear live.
-  // Opaque schema branches absorb their documented properties; closed schema
-  // branches still require a parser counterpart for every declared path.
   for (const schema of schemas) {
     const manifestRel = path.relative(repoRoot, schema.manifestPath).split(path.sep).join("/");
     for (const schemaPath of schema.flat.paths) {
       if (isUnderOpaqueSchema(schemaPath, schema.flat)) continue;
       if (isUnderUnparsedArray(schemaPath, schema.flat.arrayPrefixes, parsedKeys)) continue;
-      // anyOf/oneOf alternative-shape props: recorded/covered but not required to
-      // have a parser counterpart (issue #1990 review).
       if (schema.flat.compositionTolerated.has(schemaPath)) continue;
       const hasParsedCounterpart = [...parsedKeys].some(
         (parsedKey) => parsedKey === schemaPath || parsedKey.startsWith(`${schemaPath}.`),
@@ -590,9 +499,6 @@ export function runContractCheck(options: {
     }
   }
 
-  // C. Docs parity. Only dotted paths whose FIRST segment is a known
-  //    top-level config key participate — everything else in backticks is
-  //    filenames, host config, or prose (signal over noise).
   const knownTopLevel = new Set<string>();
   for (const key of parsedKeys) knownTopLevel.add(key.split(".")[0]);
   for (const schema of schemas) {
@@ -601,9 +507,6 @@ export function runContractCheck(options: {
   for (const docKey of docsKeys) {
     if (!docKey.includes(".")) continue;
     if (!knownTopLevel.has(docKey.split(".")[0])) continue;
-    // An opaque schema block (additionalProperties, no listed children) absorbs
-    // any deeper documented path the same way it absorbs parsed ones — don't
-    // flag a documented-nonexistent under a legitimately-open block (review).
     if (
       !parsedPrefixes.has(docKey) &&
       !schemas.some((schema) => coveredBySchema(docKey, schema.flat))
@@ -619,12 +522,6 @@ export function runContractCheck(options: {
   for (const key of parsedKeys) {
     const leaf = key.split(".").pop() as string;
     const topSegment = key.split(".")[0];
-    // Documented when: mentioned by full path; implied by a documented
-    // DEEPER path (documenting `codingKnowledge.enabled` documents the
-    // `codingKnowledge` block); or — for nested keys only — by leaf name
-    // WHEN the docs also mention the key's top-level block (review
-    // finding: a generic \`enabled\` cell must not document every
-    // *.enabled key across unrelated blocks).
     const leafDocumented = docsSections.some(
       (section) => section.has(leaf) && (key === topSegment || section.has(topSegment)),
     );
@@ -641,18 +538,14 @@ export function runContractCheck(options: {
     }
   }
 
-  // D. Loud unparseables ride the same manifest.
   for (const entry of extraction.unparseable) {
     violations.push({
       kind: "unparseable-construct",
-      // Stable construct id (line-independent) so an unrelated edit above the
-      // construct does not restyle its grandfather key (issue #1990 review).
       key: entry.id,
       detail: `${entry.file}:${entry.line} — ${entry.reason}`,
     });
   }
 
-  // Deduplicate (kind+key) and sort for determinism (§12).
   const seen = new Set<string>();
   const uniqueViolations = violations
     .filter((violation) => {
@@ -663,9 +556,6 @@ export function runContractCheck(options: {
     })
     .sort((a, b) => a.kind.localeCompare(b.kind) || a.key.localeCompare(b.key));
 
-  // Grandfather entries are a constrained exception list, not an arbitrary
-  // suppression mechanism. Reject unknown violation kinds and empty keys
-  // before building the suppression index.
   const validViolationKinds = new Set<ContractViolation["kind"]>([
     "missing-schema",
     "dead-schema",

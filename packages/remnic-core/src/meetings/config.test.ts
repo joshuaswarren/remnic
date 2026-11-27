@@ -17,7 +17,6 @@ test("appPatterns are additive over the shipped defaults and de-duplicated", () 
   const cfg = parseMeetingsConfig({ appPatterns: ["Around", "Zoom"] });
   for (const shipped of DEFAULT_MEETING_APP_PATTERNS) assert.ok(cfg.appPatterns.includes(shipped));
   assert.ok(cfg.appPatterns.includes("Around"));
-  // "Zoom" is already shipped — no duplicate.
   assert.equal(cfg.appPatterns.filter((p) => p === "Zoom").length, 1);
 });
 
@@ -65,10 +64,7 @@ test("finding 5 — inverted trust thresholds (autoApprove < review) are rejecte
     () => parseMeetingsConfig({ autoApproveTrust: 0.4, reviewTrust: 0.6 }),
     /autoApproveTrust .* must be >= meetings\.reviewTrust/,
   );
-  // Equal thresholds are allowed (auto-approve band coincides with review bar).
   assert.equal(parseMeetingsConfig({ autoApproveTrust: 0.5, reviewTrust: 0.5 }).autoApproveTrust, 0.5);
-  // A default reviewTrust (0.45) with a lowered autoApproveTrust below it is
-  // still caught (the override interacts with the default).
   assert.throws(() => parseMeetingsConfig({ autoApproveTrust: 0.3 }), /must be >= meetings\.reviewTrust/);
 });
 
@@ -87,8 +83,6 @@ test("fully-specified valid config round-trips unchanged through the canonical p
     reviewTrust: 0.6,
   };
   const cfg = parseMeetingsConfig(full);
-  // Every knob must come back exactly as supplied — no re-normalization,
-  // no silent defaulting of valid values.
   assert.equal(cfg.enabled, true);
   assert.deepEqual(cfg.appPatterns, [...DEFAULT_MEETING_APP_PATTERNS, "CustomConf App"]);
   assert.equal(cfg.minOverlapMinutes, 5);
@@ -112,15 +106,9 @@ test("parseConfig routes meetings through exactly one canonical path — no sile
     reviewTrust: 0.5,
   };
 
-  // The one canonical entrypoint: a top-level `meetings` block.
   const viaRoot = parseConfig({ meetings: full }).meetings;
   assert.deepEqual(viaRoot, parseMeetingsConfig(full));
 
-  // No legacy-alias shapes feed the meetings block: anything other than the
-  // top-level `meetings` key must leave the subsystem at its defaults. A new
-  // alias would be a second parsed surface for the same runtime keys and
-  // must not land silently (it would also need schema + docs + snapshot
-  // updates and would flip this assertion).
   const viaAliasShapes = parseConfig({
     meeting: full,
     desktopCapture: { meetings: full },

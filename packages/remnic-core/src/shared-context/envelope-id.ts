@@ -1,8 +1,3 @@
-/**
- * Shared-item envelope id parse (issue #1957 leftover).
- *
- * Pure. Empty is missing_id. Newline is invalid_id.
- */
 
 export type ParseEnvelopeIdResult =
   | { ok: true; id: string }

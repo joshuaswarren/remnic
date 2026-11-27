@@ -1,21 +1,4 @@
 #!/usr/bin/env node
-/**
- * Fast pre-push gate: the subset of CI's `checks` job that needs no build,
- * no type-check, and no test run (issue #2774).
- *
- * Why this exists. `preflight:quick` is the mandatory gate before requesting
- * review, but it takes many minutes because it lints, type-checks, and runs a
- * long test list. In a parallel implementation batch, agents that were told to
- * run only their focused test therefore ran no repo-wide gate at all — and
- * each one missed a DIFFERENT cheap check that CI then caught, one red run per
- * branch: structural ratchets, lifecycle-matrix coverage, regex safety, and a
- * config-contract parsed-keys snapshot drift.
- *
- * Every check below is already enforced by CI. This adds no new policy; it
- * just makes the cheap half runnable in one command, in seconds, so a red CI
- * run is not the first time anyone sees it. `preflight:quick` remains the
- * pre-review gate.
- */
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -26,21 +9,8 @@ import { fileURLToPath } from "node:url";
 import { resolveTsxCliPath } from "./test-spawn-plan.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-/**
- * Candidate base refs, in the order tried when `REMNIC_PRE_PUSH_BASE_REF` is
- * unset. This repo has several remotes and `origin/main` is often stale, which
- * silently widened the diff to include unrelated `main` commits and made the
- * ratchet warning name files the branch never touched. So rather than assuming
- * a remote name, take the CLOSEST base: the candidate whose merge-base with
- * HEAD is furthest from the root.
- */
 const BASE_REF_CANDIDATES = ["github/main", "origin/main", "upstream/main", "main"];
 
-/**
- * `--conditions=remnic-source` matches how CI and the other scripts resolve
- * workspace sources; without it the config-contract extractor reads build
- * output that may not exist in a fresh worktree.
- */
 function nodeOptions() {
   const existing = process.env.NODE_OPTIONS ?? "";
   return existing.includes("--conditions=remnic-source")
@@ -53,18 +23,6 @@ function git(args) {
   return result.status === 0 ? (result.stdout ?? "") : null;
 }
 
-/**
- * Reproduce the base-derived inputs CI computes for the ratchet and
- * lifecycle gates. Without them, `check-ratchets` has no changed-file scope
- * (so the at-ceiling WARNING never prints) and `check-coverage` falls back to
- * `HEAD~1...HEAD` with no base manifests — meaning this bundle could pass
- * while the required CI gate fails on the same branch. Both were review
- * findings against the first version of this script.
- *
- * Returns the env additions, or `{}` when the base ref is unavailable (a
- * detached checkout, or no remote) — in which case the checks still run, just
- * without base scoping, and we say so.
- */
 function resolveMergeBase() {
   const override = process.env.REMNIC_PRE_PUSH_BASE_REF;
   const candidates = override ? [override] : BASE_REF_CANDIDATES;
@@ -122,10 +80,13 @@ const CHECKS = [
     hint: "A touched file is over its grandfathered ceiling. Extract the addition into a sibling module. If the branch is behind main, merge main first — CI measures the merge commit.",
   },
   {
+    name: "comment ratchet",
+    argv: ["node", "scripts/check-comment-ratchet.mjs"],
+    hint: "Comment-line counts changed. Delete comments (never add), then run: node scripts/check-comment-ratchet.mjs --update",
+  },
+  {
     name: "regex safety",
     argv: ["node", "scripts/check-regex-safety.mjs"],
-    // Same base as the ratchet/lifecycle scope — a stale `origin/main` here
-    // silently widens the changed-line set to unrelated main commits.
     env: {
       REMNIC_REGEX_SAFETY_BASE_REF:
         process.env.REMNIC_REGEX_SAFETY_BASE_REF ?? resolvedBase?.ref ?? "origin/main",
@@ -139,15 +100,7 @@ const CHECKS = [
   },
   {
     name: "config contract",
-    // `process.execPath` + the resolved tsx entry, never a bare `npx`: on
-    // Windows npm exposes it as `npx.cmd`, which `spawnSync` with the default
-    // `shell: false` cannot execute, so the whole bundle died with ENOENT
-    // before this gate ran. Same failure class as the `spawn tsx ENOENT` this
-    // PR fixes in the test runner.
     argv: [process.execPath, resolveTsxCliPath(repoRoot), "scripts/validate-config-contract.ts"],
-    // CI's Config contract step uses the real PR base; defaulting to
-    // `origin/main` here fails closed on a missing ref, or treats entries
-    // already accepted on the true base as newly grandfathered.
     env: {
       REMNIC_CONFIG_CONTRACT_BASE_REF:
         process.env.REMNIC_CONFIG_CONTRACT_BASE_REF ?? resolvedBase?.ref ?? "origin/main",

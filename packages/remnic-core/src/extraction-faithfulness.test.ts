@@ -1,10 +1,3 @@
-/**
- * Tests for extraction-faithfulness.ts (issue #1576 PR 1).
- *
- * All tests stub the LLM adapter — no network, no GPU. The stub signatures
- * match the production LocalLlmClient / FallbackLlmClient interfaces so
- * these tests exercise the real call→parse→tag path.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -28,14 +21,7 @@ import type { LocalLlmClient } from "./local-llm.js";
 import type { MemoryFrontmatter } from "./types.js";
 import { callOpenAiCompatibleChat } from "./local-model-endpoint.js";
 
-// ---------------------------------------------------------------------------
-// Helpers — stub LLM clients
-// ---------------------------------------------------------------------------
 
-/**
- * Create a stub FallbackLlmClient that returns the given content.
- * The stub's call signature matches the real client.
- */
 function stubFallbackLlm(
   content: string | null,
   captured?: Array<{ messages: unknown; options: unknown }>,
@@ -54,9 +40,6 @@ function stubFallbackLlm(
   } as unknown as FallbackLlmClient;
 }
 
-/**
- * Create a stub FallbackLlmClient that throws on call (simulates network error).
- */
 function throwingFallbackLlm(error: Error): FallbackLlmClient {
   return {
     isAvailable: () => true,
@@ -66,13 +49,6 @@ function throwingFallbackLlm(error: Error): FallbackLlmClient {
   } as unknown as FallbackLlmClient;
 }
 
-/**
- * Create a stub FallbackLlmClient that never resolves within the test timeout
- * (simulates a hung request). Respects the gate's AbortSignal: when the
- * signal fires, the stub throws — mirroring a real fetch that is aborted by
- * the gate timer. (The previous stub ignored the signal and returned "[]"
- * after the delay, which is unrealistic and masked the timeout-race fix.)
- */
 function slowFallbackLlm(delayMs: number): FallbackLlmClient {
   return {
     isAvailable: () => true,
@@ -103,14 +79,6 @@ function slowFallbackLlm(delayMs: number): FallbackLlmClient {
   } as unknown as FallbackLlmClient;
 }
 
-/**
- * Create a stub FallbackLlmClient that IGNORES the abort signal and returns
- * valid content after a delay longer than the gate's timeout. This simulates
- * the race the cursor review flagged (#1576): the abort timer fires
- * (`timedOut = true`) but the response lands a moment later with genuine
- * verdicts. The race fix must honor that content instead of discarding it as
- * a timeout error.
- */
 function racingFallbackLlm(delayMs: number, content: string): FallbackLlmClient {
   return {
     isAvailable: () => true,
@@ -131,7 +99,6 @@ function baseConfig(): ReturnType<typeof parseConfig> {
 }
 
 // ---------------------------------------------------------------------------
-// parseFaithfulnessResponse — pure, no LLM
 // ---------------------------------------------------------------------------
 
 test("parseFaithfulnessResponse: valid array with all three verdicts", () => {
@@ -224,7 +191,6 @@ test("parseFaithfulnessResponse: JSON embedded in fenced code block", () => {
 });
 
 // ---------------------------------------------------------------------------
-// checkFaithfulnessBatch — entailed / contradicted / unsupported fixtures
 // ---------------------------------------------------------------------------
 
 test("checkFaithfulnessBatch: entailed — paraphrase of duration", async () => {
@@ -358,7 +324,6 @@ test("checkFaithfulnessBatch: batch of 3 — all processed in one LLM call", asy
 });
 
 // ---------------------------------------------------------------------------
-// checkFaithfulnessBatch — error paths
 // ---------------------------------------------------------------------------
 
 test("checkFaithfulnessBatch: empty quote → no_span", async () => {
@@ -421,7 +386,6 @@ test("checkFaithfulnessBatch: malformed LLM output → malformed_output", async 
 
 test("checkFaithfulnessBatch: timeout → tagged timeout, not a crash", async () => {
   const inputs = [{ factText: "Fact", quote: "Quote" }];
-  // Use a very short timeout and a slow LLM to force the abort path.
   const config = parseConfig({ extractionFaithfulnessTimeoutMs: 50 });
   const result = await checkFaithfulnessBatch(
     inputs, config, null, slowFallbackLlm(5000),
@@ -433,22 +397,16 @@ test("checkFaithfulnessBatch: timeout → tagged timeout, not a crash", async ()
 });
 
 test("checkFaithfulnessBatch: content landing within the budget is used; content past the budget fails open as timeout", async () => {
-  // The batch races the LLM call against extractionFaithfulnessTimeoutMs so a
-  // wedged/slow backend cannot hold the extraction flush past the budget
-  // (codex review PRRT_kwDORJXyws6ObgMJ). Content that lands WITHIN the budget
-  // is used; content that lands AFTER the budget fails open as timeout.
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = parseConfig({ extractionFaithfulnessTimeoutMs: 50 });
   const llm = JSON.stringify([{ index: 0, verdict: "entailed" }]);
 
-  // Within budget (30ms < 50ms): the real verdict is used.
   const within = await checkFaithfulnessBatch(inputs, config, null, racingFallbackLlm(30, llm));
   assert.equal(within.results[0]?.ok, true, "content within the budget must be used");
   if (within.results[0]?.ok) {
     assert.equal(within.results[0].verdict, "entailed");
   }
 
-  // Past budget (80ms > 50ms): fail open as timeout, do not block the flush.
   const past = await checkFaithfulnessBatch(inputs, config, null, racingFallbackLlm(80, llm));
   assert.equal(past.results[0]?.ok, false, "content past the budget fails open as timeout");
   if (!past.results[0]?.ok) {
@@ -461,7 +419,6 @@ test("checkFaithfulnessBatch: LLM returns partial results — missing index → 
     { factText: "Fact A", quote: "Quote A" },
     { factText: "Fact B", quote: "Quote B" },
   ];
-  // LLM only returns index 0, missing index 1
   const llm = JSON.stringify([{ index: 0, verdict: "entailed" }]);
   const result = await checkFaithfulnessBatch(inputs, baseConfig(), null, stubFallbackLlm(llm));
   assert.equal(result.results.length, 2);
@@ -499,14 +456,11 @@ test("checkFaithfulnessBatch: mixed — some with quotes, some without", async (
   ]);
   const result = await checkFaithfulnessBatch(inputs, baseConfig(), null, stubFallbackLlm(llm));
   assert.equal(result.results.length, 3);
-  // Index 0: entailed
   assert.equal(result.results[0]?.ok && result.results[0].verdict, "entailed");
-  // Index 1: no_span (empty quote)
   assert.equal(result.results[1]?.ok, false);
   if (!result.results[1]?.ok) {
     assert.equal(result.results[1].error.code, "no_span");
   }
-  // Index 2: unsupported (second checkable item)
   assert.equal(result.results[2]?.ok && result.results[2].verdict, "unsupported");
 });
 
@@ -519,7 +473,6 @@ test("checkFaithfulnessBatch: elapsedMs is non-negative", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Prompt hash — stable for caching
 // ---------------------------------------------------------------------------
 
 test("FAITHFULNESS_PROMPT_HASH is a 64-char hex string", () => {
@@ -528,7 +481,6 @@ test("FAITHFULNESS_PROMPT_HASH is a 64-char hex string", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Frontmatter serialization round-trip
 // ---------------------------------------------------------------------------
 
 test("serializeFaithfulnessFields: absent field → no line emitted (byte-identical)", () => {
@@ -615,9 +567,6 @@ test("serializeFaithfulnessFields: empty verdict omitted → no line", () => {
 });
 
 // ---------------------------------------------------------------------------
-// runFaithfulnessGateBatch / applyFaithfulnessVerdict — orchestration helpers
-// (issue #1576). These are the orchestrator-facing API; the substantive
-// algorithm is covered by the checkFaithfulnessBatch tests above.
 // ---------------------------------------------------------------------------
 
 test("createFaithfulnessCounters: returns zeroed counters", () => {
@@ -653,8 +602,6 @@ test("runFaithfulnessGateBatch: facts with no span and no sourceText match skipp
 });
 
 test("runFaithfulnessGateBatch: locateFactQuote fallback feeds the gate when no #1575 sources", async () => {
-  // Fact has no `sources` but the source text contains a matching sentence →
-  // locateFactQuote finds it so the gate actually runs (P1 fix).
   const facts = [{ content: "The user prefers Vim." }];
   const llm = JSON.stringify([{ index: 0, verdict: "entailed" }]);
   const counters = createFaithfulnessCounters();
@@ -672,14 +619,10 @@ test("runFaithfulnessGateBatch: locateFactQuote fallback feeds the gate when no 
   const r0 = result.get(0);
   assert.equal(r0?.ok, true);
   if (r0?.ok) assert.equal(r0.verdict, "entailed");
-  // counters still 0 here — bumped at apply time.
   assert.equal(counters.entailed, 0);
 });
 
 test("runFaithfulnessGateBatch: builds index→result map + updates counters", async () => {
-  // Fact 0 has a source, fact 1 does NOT, fact 2 has a source. The batch
-  // skips fact 1, so the LLM sees 2 inputs and results map back to the
-  // ORIGINAL fact indices (0 and 2), not batch positions.
   const facts = [
     { content: "Fact 0", sources: [{ quote: "Quote 0" }] },
     { content: "Fact 1 (no sources)" },
@@ -707,15 +650,11 @@ test("runFaithfulnessGateBatch: builds index→result map + updates counters", a
   const r2 = result.get(2);
   assert.equal(r2?.ok, true);
   if (r2?.ok) assert.equal(r2.verdict, "contradicted");
-  // Counters are bumped at apply time (applyFaithfulnessVerdict), not here.
   assert.equal(counters.entailed, 0);
   assert.equal(counters.contradicted, 0);
 });
 
 test("runFaithfulnessGateBatch: backend throw → unchecked result, fail-open (checklist §4)", async () => {
-  // checkFaithfulnessBatch is total: it catches an LLM throw and surfaces it
-  // as an ok:false result rather than propagating. So the gate records the
-  // failure as "unchecked" and proceeds — a backend outage never blocks writes.
   const facts = [{ content: "Fact", sources: [{ quote: "Quote" }] }];
   const counters = createFaithfulnessCounters();
   const result = await runFaithfulnessGateBatch(
@@ -730,9 +669,7 @@ test("runFaithfulnessGateBatch: backend throw → unchecked result, fail-open (c
   const r0 = result.get(0);
   assert.equal(r0?.ok, false);
   if (!r0?.ok) assert.equal(r0.error.code, "backend_unavailable");
-  // Counters bump at apply time (cursor review), so still 0 after the batch.
   assert.equal(counters.unchecked, 0);
-  // Applying the verdict bumps unchecked.
   const applied = applyFaithfulnessVerdict(result, 0, "enforce", "Fact", counters);
   assert.equal(applied.faithfulness?.verdict, "unchecked");
   assert.equal(counters.unchecked, 1);
@@ -800,7 +737,6 @@ test("locateFactQuote: finds the best-overlap sentence (returns LocatedQuote, is
   const located = locateFactQuote("The user likes Vim.", src);
   assert.ok(located, "expected a located quote");
   assert.equal(located!.quote, "My favorite editor is Vim.");
-  // offset must point at the matched candidate's actual position in sourceText.
   assert.equal(located!.offset, src.indexOf("My favorite editor is Vim."));
 });
 
@@ -815,9 +751,6 @@ test("locateFactQuote: empty inputs → undefined", () => {
 });
 
 test("locateFactQuote: centers the bounded window on matched terms for >maxQuoteChars candidates (issue #1633, codex :747)", () => {
-  // The supporting terms ("PostgreSQL", "migration") fall well past the
-  // ~maxQuoteChars prefix. Returning the prefix would drop the evidence and
-  // route an actually-entailed fact to pending_review in enforce mode.
   const filler = "Lorem ipsum dolor sit amet ".repeat(28); // ~728-char preamble
   const sourceText = filler + "The team completed the PostgreSQL migration last quarter.";
   const located = locateFactQuote(
@@ -830,10 +763,8 @@ test("locateFactQuote: centers the bounded window on matched terms for >maxQuote
     located!.quote.length <= 200,
     `bounded quote must respect maxQuoteChars (got ${located!.quote.length})`,
   );
-  // The matched evidence must survive truncation — the whole point of centering.
   assert.ok(located!.quote.includes("PostgreSQL"), "bounded quote keeps 'PostgreSQL'");
   assert.ok(located!.quote.includes("migration"), "bounded quote keeps 'migration'");
-  // offset must locate the returned (possibly bounded) quote within sourceText.
   assert.equal(
     sourceText.slice(located!.offset, located!.offset + located!.quote.length),
     located!.quote,
@@ -842,18 +773,11 @@ test("locateFactQuote: centers the bounded window on matched terms for >maxQuote
 });
 
 test("locateFactQuote: tracks the matched occurrence offset for repeated anaphoric lines (issue #1633, codex :710, :710-thread-S)", () => {
-  // Two entities with the EXACT SAME anaphoric sentence afterward — the
-  // fact is about Zeta, which appears SECOND. Both "It launched in March."
-  // candidates score identically on own-overlap, so the locator must use the
-  // preceding-neighbor tiebreak to pick the occurrence whose neighbor ("Zeta")
-  // names the fact's entity. The offset must then point at the Zeta clause.
   const sourceText =
     "We started the Acme project in January. It launched in March. " +
     "Then we began the Zeta initiative in February. It launched in March.";
   const located = locateFactQuote("The Zeta initiative launched in March.", sourceText);
   assert.ok(located, "expected a located quote");
-  // The matched quote is the (identical) anaphoric line; offset must point at
-  // the SECOND occurrence (the one after the Zeta clause), not the first.
   const firstOccurrence = sourceText.indexOf("It launched in March.");
   const secondOccurrence = sourceText.indexOf("It launched in March.", firstOccurrence + 1);
   assert.ok(secondOccurrence > firstOccurrence, "test fixture must contain two occurrences");
@@ -870,14 +794,10 @@ test("locateFactQuote: tracks the matched occurrence offset for repeated anaphor
 });
 
 test("locateFactQuote: bounded window keeps the densest evidence cluster when matches span wider than maxQuoteChars (codex :747-thread-O)", () => {
-  // Fact tokens appear at BOTH ENDS of a long candidate with filler between.
-  // A naive midpoint-centered window would land in the filler and contain no
-  // evidence. The densest-cluster window must capture actual matched terms.
   const head = "PostgreSQL migration completed. "; // matches at the very start
   const filler = "and ".repeat(220); // ~880 chars of filler (no fact tokens)
   const tail = " for the user."; // matches at the very end
   const sourceText = head + filler + tail; // one long sentence, no period inside
-  // Fact spans tokens from both ends: postgresql, migration (head) + user (tail).
   const located = locateFactQuote(
     "The user completed the PostgreSQL migration.",
     sourceText,
@@ -888,9 +808,6 @@ test("locateFactQuote: bounded window keeps the densest evidence cluster when ma
     located!.quote.length <= 120,
     `bounded quote must respect maxQuoteChars (got ${located!.quote.length})`,
   );
-  // The densest cluster is the head (2 matches: postgresql, migration); the
-  // window must contain at least one of them. (user appears alone at the tail,
-  // so a tail-anchored window would be sparser and is not chosen.)
   assert.ok(
     located!.quote.includes("PostgreSQL") || located!.quote.includes("migration"),
     "bounded window must include matched evidence, not pure filler",
@@ -898,12 +815,6 @@ test("locateFactQuote: bounded window keeps the densest evidence cluster when ma
 });
 
 test("locateFactQuote: bounded window stays linear with many repeated matched tokens (codex PRRT_kwDORJXyws6Ocih3)", () => {
-  // A long unpunctuated candidate with thousands of repeats of a fact token
-  // (pasted logs / minified text). The densest-cluster selection must stay
-  // O(n) via the two-pointer sliding window; the O(n^2) nested loop would
-  // stall extraction on ~5k repeats. This test asserts both correctness (the
-  // bounded window contains the densest cluster) and that the call returns
-  // promptly — under O(n^2) this fixture (~5k repeats) would take seconds.
   const repeats = 5000;
   const token = "PostgreSQL "; // one fact token per repeat
   const filler = "x ".repeat(50); // leading filler so the cluster is mid-string
@@ -916,8 +827,6 @@ test("locateFactQuote: bounded window stays linear with many repeated matched to
     located!.quote.length <= 200,
     `bounded quote must respect maxQuoteChars (got ${located!.quote.length})`,
   );
-  // The densest cluster is the run of PostgreSQL repeats; the window must be
-  // anchored inside it (not in the leading filler) and contain evidence.
   assert.ok(
     located!.quote.includes("PostgreSQL"),
     "bounded window must anchor inside the densest cluster",
@@ -948,14 +857,9 @@ test("applyFaithfulnessVerdict: bumps verdict counters at apply time (cursor rev
 
 
 // ---------------------------------------------------------------------------
-// #1576: model-override routing — codex P2 (PRRT_kwDORJXyws6ObYQ8)
 // ---------------------------------------------------------------------------
 
 test("checkFaithfulnessBatch: extractionFaithfulnessModel override routes to gateway, skips local (codex P2)", async () => {
-  // LocalLlmClient always sends config.localLlmModel and ignores options.model,
-  // so a local success would silently run the wrong model and the override
-  // would never reach the gateway. When an override is set the local backend
-  // must be skipped and the gateway fallback must receive the override model.
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = parseConfig({
     extractionFaithfulnessModel: "verifier-ft-v1",
@@ -991,8 +895,6 @@ test("checkFaithfulnessBatch: extractionFaithfulnessModel override routes to gat
 });
 
 test("checkFaithfulnessBatch: no override keeps the local backend first (regression guard)", async () => {
-  // Without an override, the local backend must still be tried first (the
-  // override-skip is conditional, not unconditional).
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = baseConfig();
   const localCalls: number[] = [];
@@ -1015,10 +917,6 @@ test("checkFaithfulnessBatch: no override keeps the local backend first (regress
 });
 
 test("checkFaithfulnessBatch: local call is bounded by timeoutMs, not the batch signal (kilo)", async () => {
-  // LocalLlmClient.chatCompletion does not read options.signal — it uses its
-  // own per-attempt AbortController keyed on timeoutMs. The gate must forward
-  // timeoutMs (so each local attempt is bounded by the faithfulness budget)
-  // and must NOT forward the batch signal (dead code the local client drops).
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = baseConfig();
   const captured: Array<{ options: Record<string, unknown> }> = [];
@@ -1046,15 +944,9 @@ test("checkFaithfulnessBatch: local call is bounded by timeoutMs, not the batch 
 });
 
 // ---------------------------------------------------------------------------
-// #1576: multi-source verification — codex P2 (PRRT_kwDORJXyws6ObYQ_)
 // ---------------------------------------------------------------------------
 
 test("runFaithfulnessGateBatch: multi-source facts verify against ALL source spans (codex P2)", async () => {
-  // A composite fact whose support is split across two adjacent source spans.
-  // Previously only sources[0] reached the verifier; the second span (the
-  // actual support for the date/status) was discarded, risking a false
-  // unsupported verdict (and a spurious pending_review in enforce mode). The
-  // verifier must now see the full evidence.
   const facts = [
     {
       content: "The Acme project launched in March 2024 at beta status.",
@@ -1080,7 +972,6 @@ test("runFaithfulnessGateBatch: multi-source facts verify against ALL source spa
   const r0 = result.get(0);
   assert.equal(r0?.ok, true);
   if (r0?.ok) assert.equal(r0.verdict, "entailed");
-  // The verifier prompt must include BOTH source spans, not just sources[0].
   const userMsg = captured[0]?.messages.find((m) => m.role === "user");
   assert.ok(
     userMsg?.content.includes("We started the Acme project"),
@@ -1093,15 +984,9 @@ test("runFaithfulnessGateBatch: multi-source facts verify against ALL source spa
 });
 
 test("checkFaithfulnessBatch: a wedged local backend that ignores the signal still fails open at the budget (codex P2)", async () => {
-  // LocalLlmClient ignores options.signal and aborts each attempt via its own
-  // controller. A wedged local verifier that never resolves within the budget
-  // must NOT hold the batch past extractionFaithfulnessTimeoutMs — the race
-  // returns timeout promptly so the extraction flush is not blocked
-  // (codex review PRRT_kwDORJXyws6ObgMJ).
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = parseConfig({ extractionFaithfulnessTimeoutMs: 50 });
   const hungLocal = {
-    // Never resolves within the test window and ignores any signal.
     chatCompletion: async () => {
       const { promise } = Promise.withResolvers<never>();
       return promise;
@@ -1116,24 +1001,17 @@ test("checkFaithfulnessBatch: a wedged local backend that ignores the signal sti
   if (!result.results[0]?.ok) {
     assert.equal(result.results[0].error.code, "timeout");
   }
-  // The batch returned near the budget, not after the hung promise.
   assert.ok(elapsed < 1000, `batch must fail open near the budget, not block (elapsed=${elapsed}ms)`);
 });
 
 
 // ---------------------------------------------------------------------------
-// #1576: fallback-locator source context — codex P2 (PRRT_kwDORJXyws6OblI1)
-// extractionFaithfulnessContextChars must actually reach the verifier in the
-// fallback-locator path, otherwise composite facts whose support depends on
-// surrounding source text get misrouted to pending_review in enforce mode.
 // ---------------------------------------------------------------------------
 
 test("extractContextWindow: returns a bounded window centered on the quote", () => {
   const sourceText =
     "We started the Acme project earlier this year. It launched in March 2024 at beta status. The team is small.";
   const quote = "It launched in March 2024 at beta status.";
-  // contextChars=40 must bound the window; the quote itself is 42 chars so the
-  // window is at least the quote plus a sliver of neighbors on each side.
   const ctx = extractContextWindow(sourceText, quote, 40);
   assert.ok(ctx, "expected a context window");
   assert.ok(ctx!.length <= 40, `window must be bounded by contextChars (got ${ctx!.length})`);
@@ -1147,7 +1025,6 @@ test("extractContextWindow: grows neighbors when budget exceeds quote length", (
   const ctx = extractContextWindow(sourceText, quote, 120);
   assert.ok(ctx, "expected a context window");
   assert.ok(ctx!.length <= 120, `window bounded (got ${ctx!.length})`);
-  // Neighboring sentences must be pulled in now that the budget allows it.
   assert.ok(ctx!.includes("Earlier the project was unnamed"), "preceding context included");
   assert.ok(ctx!.includes("Later we renamed it"), "following context included");
 });
@@ -1159,9 +1036,6 @@ test("extractContextWindow: returns undefined when quote is absent from sourceTe
 });
 
 test("extractContextWindow: matchedOffset selects the matched occurrence, not the first (issue #1633, codex :710)", () => {
-  // The same anaphoric line appears twice — once about Acme, once about Zeta.
-  // Without matchedOffset, indexOf centers context on Acme (the first hit).
-  // With the locator's offset, the window must center on the matched (Zeta) hit.
   const sourceText =
     "Acme context before. It launched in March. Acme context after. " +
     "Zeta context before. It launched in March. Zeta context after.";
@@ -1169,8 +1043,6 @@ test("extractContextWindow: matchedOffset selects the matched occurrence, not th
   const firstOccurrence = sourceText.indexOf(quote);
   const zetaOccurrence = sourceText.indexOf("Zeta context before");
   assert.ok(firstOccurrence >= 0 && zetaOccurrence > firstOccurrence);
-  // Budget 50 captures the surrounding entity tag without spanning both
-  // occurrences (which would make them indistinguishable).
   const ctxDefault = extractContextWindow(sourceText, quote, 50);
   const ctxMatched = extractContextWindow(sourceText, quote, 50, zetaOccurrence);
   const ctxFirst = extractContextWindow(sourceText, quote, 50, firstOccurrence);
@@ -1188,10 +1060,6 @@ test("extractContextWindow: matchedOffset selects the matched occurrence, not th
 });
 
 test("runFaithfulnessGateBatch: fallback locator injects CONTEXT into the verifier prompt (codex P2 PRRT_kwDORJXyws6OblI1)", async () => {
-  // No #1575 sources → the fallback locator locates a quote from sourceText.
-  // Previously the input never set `context`, so the surrounding turn text
-  // (and thus extractionFaithfulnessContextChars) was ignored in production.
-  // The verifier prompt must now include a CONTEXT line around the quote.
   const facts = [{ content: "The Acme project launched in March." }];
   const sourceText =
     "We started the Acme project earlier this year. It launched in March at beta status. The team is small.";
@@ -1211,7 +1079,6 @@ test("runFaithfulnessGateBatch: fallback locator injects CONTEXT into the verifi
   const userMsg = captured[0]?.messages.find((m) => m.role === "user");
   assert.ok(userMsg, "verifier was called");
   assert.match(userMsg!.content, /CONTEXT:/, "fallback-locator prompt must include a CONTEXT line");
-  // The surrounding sentence must be present in the context window.
   assert.ok(
     userMsg!.content.includes("We started the Acme project"),
     "context window must include the neighboring source text",
@@ -1219,8 +1086,6 @@ test("runFaithfulnessGateBatch: fallback locator injects CONTEXT into the verifi
 });
 
 test("runFaithfulnessGateBatch: #1575 verified spans do NOT synthesize a context window (regression guard)", async () => {
-  // When per-fact sources are present, the verified span already carries full
-  // evidence — no fallback context window should be synthesized.
   const facts = [
     {
       content: "The Acme project launched in March 2024 at beta status.",
@@ -1244,27 +1109,18 @@ test("runFaithfulnessGateBatch: #1575 verified spans do NOT synthesize a context
 });
 
 test("parseFaithfulnessResponse: object-wrapped arrays unwrap (results/verdicts/entries/facts) — gate-bypass fix #1576 Ob4RO", () => {
-  // Before the fix these object-wrapped shapes were rejected as malformed, so in
-  // enforce mode the batch went `unchecked` and unsupported facts wrote ACTIVE.
   for (const key of ["results", "verdicts", "entries", "facts"]) {
     const raw = JSON.stringify({ [key]: [{ index: 0, verdict: "unsupported", rationale: "x" }] });
     const map = parseFaithfulnessResponse(raw, 1);
     assert.ok(map, `${key}-wrapped array should parse, not be rejected as malformed`);
     assert.equal(map.get(0)?.verdict, "unsupported");
   }
-  // A wrapper object with no recognized array key still returns null (no over-match).
   assert.equal(parseFaithfulnessResponse('{"data": {"nested": []}}', 1), null);
 });
 
 // ---------------------------------------------------------------------------
-// Issue #1585 model-lab pointer: local fine-tuned endpoint path
 // ---------------------------------------------------------------------------
 
-/**
- * Build a fake fetch that responds for a specific base URL with a canned
- * openai-compatible chat-completions body. Records the request body so tests
- * can assert the gate routed to the local model.
- */
 function fakeFetchFor(
   baseUrl: string,
   responder: (body: Record<string, unknown>) => unknown,
@@ -1322,7 +1178,6 @@ test("checkFaithfulnessBatch: local endpoint failure falls back to the configure
     extractionFaithfulnessTimeoutMs: 5000,
   });
   const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
-  // Local endpoint returns 500 → caller returns null → gate falls through to fallback.
   const failingFetch = (() =>
     Promise.resolve(new Response("err", { status: 500 }))) as unknown as typeof fetch;
   const result = await checkFaithfulnessBatch(
@@ -1340,9 +1195,6 @@ test("checkFaithfulnessBatch: local endpoint failure falls back to the configure
 });
 
 test("checkFaithfulnessBatch: a wedged local endpoint falls back to the chain BEFORE the batch timeout (codex P2 — probe budget)", async () => {
-  // The local probe must use a SMALLER budget than the outer batch timeout so a
-  // hanging endpoint returns null and the configured chain runs before the batch
-  // timer fires. extractionFaithfulnessTimeoutMs: 1000 → probe budget = 500ms.
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = parseConfig({
     extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
@@ -1350,9 +1202,6 @@ test("checkFaithfulnessBatch: a wedged local endpoint falls back to the chain BE
     extractionFaithfulnessTimeoutMs: 1000,
   });
   const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
-  // A fetch that hangs forever on its own but HONORS the probe's AbortSignal —
-  // the probe's controller aborts it at 500ms (half the batch budget), the call
-  // returns null, and the gate falls through to the configured chain.
   const wedgedFetch = ((_url: string, init: RequestInit) =>
     new Promise<Response>((_resolve, reject) => {
       const sig = init.signal;
@@ -1379,7 +1228,6 @@ test("checkFaithfulnessBatch: a wedged local endpoint falls back to the chain BE
 });
 
 test("checkFaithfulnessBatch: no local endpoint pointer → byte-identical routing (regression guard)", async () => {
-  // Default config (no baseUrl) must never attempt a local-endpoint fetch.
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = baseConfig();
   let fetchCalled = false;
@@ -1399,11 +1247,6 @@ test("checkFaithfulnessBatch: no local endpoint pointer → byte-identical routi
 
 
 test("checkFaithfulnessBatch: local-endpoint failure does NOT leak the local model name into the fallback chain (codex P2 PRRT_kwDORJXyws6Otp-L)", async () => {
-  // extractionFaithfulnessModel is the LOCAL served model's name. When the
-  // local endpoint is configured but fails, that name must NOT be forwarded to
-  // the gateway/fallback as options.model — otherwise the configured chain is
-  // forced onto an unavailable local-only model and a local outage becomes
-  // backend_unavailable instead of graceful fallback to the configured chain.
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = parseConfig({
     extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
@@ -1411,7 +1254,6 @@ test("checkFaithfulnessBatch: local-endpoint failure does NOT leak the local mod
     extractionFaithfulnessTimeoutMs: 5000,
   });
   const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
-  // Local endpoint returns 500 -> caller returns null -> gate falls through.
   const failingFetch = (() =>
     Promise.resolve(new Response("err", { status: 500 }))) as unknown as typeof fetch;
   const result = await checkFaithfulnessBatch(
@@ -1432,13 +1274,9 @@ test("checkFaithfulnessBatch: local-endpoint failure does NOT leak the local mod
 });
 
 // ---------------------------------------------------------------------------
-// Issue #1700 nits #5 + #6: probe signal forwarding + local parse-fallback
 // ---------------------------------------------------------------------------
 
 test("callOpenAiCompatibleChat: a pre-aborted batch signal aborts the probe immediately, not after timeoutMs (#1700 nit #5)", async () => {
-  // The batch signal is ALREADY aborted when the probe starts. With nit #5 the
-  // probe forwards it and aborts instantly; without it the probe would wait for
-  // its own timeoutMs (5000ms here). Assert the probe returns null fast.
   const endpoint = { baseUrl: "http://localhost:11434/v1", model: "remnic-faithfulness-gate-v1" };
   const batchController = new AbortController();
   batchController.abort();
@@ -1465,9 +1303,6 @@ test("callOpenAiCompatibleChat: a pre-aborted batch signal aborts the probe imme
 });
 
 test("checkFaithfulnessBatch: default surfaces malformed_output for a 200-with-garbage local response (#1700 nit #6)", async () => {
-  // extractionFaithfulnessLocalParseFallback unset (default false): a local
-  // endpoint returning 200 with non-verdict JSON surfaces malformed_output so a
-  // misconfigured endpoint is visible. The configured chain must NOT run.
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = parseConfig({
     extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
@@ -1494,8 +1329,6 @@ test("checkFaithfulnessBatch: default surfaces malformed_output for a 200-with-g
 });
 
 test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls back to the chain on local parse failure (#1700 nit #6)", async () => {
-  // Flag ON: the same 200-with-garbage local response now falls through to the
-  // configured chain instead of surfacing malformed_output (resilient fallback).
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = parseConfig({
     extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
@@ -1527,8 +1360,6 @@ test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls bac
 });
 
 test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback does NOT fall back when the local response is valid (#1700 nit #6 regression)", async () => {
-  // Flag ON but the local response IS a valid verdict array → use it, do not
-  // call the chain. Guards against the flag over-triggering on good responses.
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = parseConfig({
     extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
@@ -1556,13 +1387,6 @@ test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback does NOT 
 });
 
 test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls back when the local response is a PARTIAL verdict array (codex P2 PRRT_kwDORJXyws6O6zwZ)", async () => {
-  // Flag ON: a local endpoint that returns a valid-but-INCOMPLETE verdict
-  // array (1 of N entries) must fall through to the configured chain, NOT be
-  // accepted as-is. parseFaithfulnessResponse is truthy as soon as ONE entry
-  // is valid, so the previous guard accepted the partial response and the
-  // missing indexes surfaced as malformed_output downstream -- defeating the
-  // resilient fallback. Accept the local response only when it covers every
-  // expected index.
   const inputs = [
     { factText: "Fact A", quote: "Quote A" },
     { factText: "Fact B", quote: "Quote B" },
@@ -1574,7 +1398,6 @@ test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls bac
     extractionFaithfulnessLocalParseFallback: true,
   });
   const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
-  // Local endpoint returns only index 0 -- index 1 is missing (partial).
   const { fetch: partialFetch } = fakeFetchFor("http://localhost:11434/v1", () => ({
     model: "remnic-faithfulness-gate-v1",
     choices: [{ message: { content: JSON.stringify([{ index: 0, verdict: "contradicted" }]) } }],
@@ -1597,18 +1420,11 @@ test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls bac
     1,
     "a partial local verdict array must fall through to the configured chain",
   );
-  // The chain's complete verdict array is used for both indexes.
   assert.equal(result.results[0]?.ok && result.results[0].verdict, "entailed");
   assert.equal(result.results[1]?.ok && result.results[1].verdict, "unsupported");
 });
 
 test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls back when local indexes are fractional/non-contiguous (codex P2 PRRT_kwDORJXyws6O7PfY)", async () => {
-  // Flag ON: a malformed local response with expectedCount distinct but
-  // NON-INTEGER indexes (e.g. 0 and 0.5 for a two-item batch) must NOT be
-  // accepted. parseFaithfulnessResponse used to admit any numeric index, so a
-  // size-only check passed while index 1 stayed missing -> malformed_output.
-  // parseEntries now rejects non-integer indexes, and the gate requires every
-  // integer key 0..N-1 before accepting the local response.
   const inputs = [
     { factText: "Fact A", quote: "Quote A" },
     { factText: "Fact B", quote: "Quote B" },
@@ -1620,8 +1436,6 @@ test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls bac
     extractionFaithfulnessLocalParseFallback: true,
   });
   const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
-  // Local endpoint returns indexes 0 and 0.5 -- two distinct keys, but index 1
-  // is missing (fractional index is invalid).
   const { fetch: fracFetch } = fakeFetchFor("http://localhost:11434/v1", () => ({
     model: "remnic-faithfulness-gate-v1",
     choices: [{ message: { content: JSON.stringify([
@@ -1652,8 +1466,6 @@ test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls bac
 });
 
 test('parseConfig: extractionFaithfulnessLocalParseFallback coerces CLI string "true" (#1700 review — coerceBool parity)', () => {
-  // A CLI override reaches the parser as the string "true"; === true would
-  // silently leave the flag disabled. coerceBool must turn it on (gotcha 36).
   const onByString = parseConfig({
     extractionFaithfulnessLocalParseFallback: "true",
   });

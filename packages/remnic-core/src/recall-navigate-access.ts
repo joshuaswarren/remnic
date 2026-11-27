@@ -1,10 +1,3 @@
-/**
- * Recall navigation access wrapper (issue #1956 leftover slice).
- *
- * Validates the request, gates the budget, and delegates to the pure
- * helpers in recall-navigate.ts. Never calls orchestrator.recall — the
- * caller supplies the node for `nodeId`.
- */
 import {
   expandRecallNode,
   traverseRecallLink,

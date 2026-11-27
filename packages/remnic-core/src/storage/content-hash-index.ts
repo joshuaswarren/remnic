@@ -19,7 +19,6 @@ import { withHeldFileLock } from "../utils/serialize-mutations.js";
  * without breaking a legitimately in-progress publish.
  */
 const CONTENT_HASH_INDEX_LOCK_STALE_MS = 30_000;
-/** Version marker for the normalized Unicode hash index format. */
 const CONTENT_HASH_INDEX_FORMAT_HEADER = "# remnic-content-hash-index:v2";
 
 function parseHashIndex(raw: string): { versioned: boolean; hashes: Set<string> } {
@@ -37,19 +36,6 @@ function serializeHashIndex(hashes: Set<string>): string {
   return `${CONTENT_HASH_INDEX_FORMAT_HEADER}\n${[...hashes].join("\n")}\n`;
 }
 
-/**
- * Durable-retry policy for a deferred content-hash reconcile save whose
- * cross-process lock acquire timed out (issue #1909 / PR #2016). When the lock
- * is contended past `withHeldFileLock`'s bounded wait, the added hashes are held
- * only in this process's memory; relying on "some later batch save" is not
- * durable (the run may be the last before idle/shutdown), and a long-lived peer
- * that already built its authoritative in-memory index will not see the write.
- * So we schedule a bounded, exponentially-backed-off background retry that keeps
- * re-attempting the locked publish until it lands. Bounded because the durable
- * fact `.md` is already on disk and a process restart rebuilds the index from
- * the corpus regardless — exhausting retries degrades to that rebuild safety
- * net, never to data loss or a fatal append failure.
- */
 const CONTENT_HASH_INDEX_RETRY_MAX_ATTEMPTS = 5;
 /** Base backoff (ms) before the first deferred reconcile-save retry; doubles each attempt. */
 const CONTENT_HASH_INDEX_RETRY_BASE_MS = 500;
@@ -213,8 +199,6 @@ export class ContentHashIndex {
       const parsed = parseHashIndex(raw);
       this.formatMigrationRequired = !parsed.versioned;
       if (!parsed.versioned) {
-        // Hashes from the pre-NFC format are unsafe after normalization changes.
-        // Ignore them until an authoritative corpus rebuild publishes v2.
         this.hashes.clear();
         log.warn(`content-hash index: ignored legacy unversioned index at ${this.filePath}`);
       } else {
@@ -226,8 +210,6 @@ export class ContentHashIndex {
       if (!isErrnoCode(err, "ENOENT")) throw err;
       log.debug("content-hash index: no existing index — starting fresh");
     }
-    // The loaded set now reflects the on-disk file — baseline the fingerprint so
-    // a later peer write is detectable (PR #2016 review).
     await this.captureSyncedFingerprint();
   }
 
@@ -249,13 +231,10 @@ export class ContentHashIndex {
     }
   }
 
-  /** Record the current on-disk fingerprint as this instance's synced baseline. */
   private async captureSyncedFingerprint(): Promise<void> {
     try {
       this.lastSyncedFingerprint = await this.statIndexFile();
     } catch (err) {
-      // A stat failure other than ENOENT leaves no baseline; the next freshness
-      // check reports non-current and the caller confirms against the corpus.
       this.lastSyncedFingerprint = null;
       log.debug(`content-hash index: could not fingerprint ${this.filePath}: ${err}`);
     }
@@ -310,24 +289,13 @@ export class ContentHashIndex {
     }
   }
 
-  /** Check if content already exists in the index. */
   has(content: string): boolean {
     return this.hashes.has(ContentHashIndex.computeHash(content));
   }
 
-  /** Add content hash to the index. */
   add(content: string): void {
     const hash = ContentHashIndex.computeHash(content);
-    // A re-add supersedes a pending removal of the same hash (round 8 thread 3).
     this.removed.delete(hash);
-    // Record OUR durable delta even when the local snapshot already holds the
-    // hash (PR #2016 thread SD-nG): local membership can be STALE — a peer
-    // removed this hash on disk while this instance kept it in memory. Skipping
-    // `added`/`dirty` on that path let the reconciling save compute
-    // (on-disk \ removed) ∪ added and silently drop the reintroduced hash, so
-    // the peer never saw it again. Set semantics keep this idempotent (no
-    // duplicate entries) and the `removed.delete` above preserves remove/add
-    // ordering.
     this.hashes.add(hash);
     this.added.add(hash);
     this.dirty = true;
@@ -342,13 +310,7 @@ export class ContentHashIndex {
     if (this.hashes.size > 0) {
       this.hashes.clear();
     }
-    // The fact-only partition is rebuilt with the shared set on every
-    // authoritative corpus rebuild, so it clears here too (issue #2474).
     this.factHashes.clear();
-    // A full clear is always paired with a plain overwrite save() (rebuild);
-    // pending per-hash add/remove deltas are subsumed by writing the rebuilt set.
-    // Cancel any armed deferred-reconcile retry (PR #2016) so it cannot fire in
-    // the clear→rebuild→save window and union the pre-clear on-disk rows back.
     this.added.clear();
     this.removed.clear();
     this.cancelReconcileRetry();
@@ -359,35 +321,18 @@ export class ContentHashIndex {
   async save(): Promise<void> {
     if (!this.dirty) return;
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    // Snapshot the deltas + overwrite body THIS save publishes BEFORE the write
-    // yields the event loop. `writeMaybeEncryptedFile` materializes `serialized`
-    // eagerly, then the disk await lets a concurrent same-process add()/remove()
-    // land a late delta (PR #2016 thread PRRT_kwDORJXyws6SEBri). Clearing the
-    // LIVE added/removed sets afterward — as the previous unconditional
-    // clear()+`dirty = false` did — would drop that late hash from the index AND
-    // leave no retry, so peers never see it until a corpus rebuild. Consume only
-    // what we published; late deltas stay pending. Mirrors saveMergingWithDisk.
     const publishedAdded = new Set<string>(this.added);
     const publishedRemoved = new Set<string>(this.removed);
     const serialized = serializeHashIndex(this.hashes);
     await writeMaybeEncryptedFile(this.filePath, serialized, this.secureStoreWriteKeyProvider(), {}, this.memoryDir);
     this.formatMigrationRequired = false;
-    // Consume ONLY the deltas this overwrite published; anything that arrived
-    // during the awaits above remains pending for the next save.
     for (const h of publishedAdded) this.added.delete(h);
     for (const h of publishedRemoved) this.removed.delete(h);
-    // Honest dirty state: true iff late deltas remain unpersisted.
     this.dirty = this.added.size > 0 || this.removed.size > 0;
-    // This overwrite is now the on-disk state — re-baseline the freshness
-    // fingerprint so our own write is not later mistaken for a peer's (PR #2016).
     await this.captureSyncedFingerprint();
     if (this.dirty) {
-      // Late deltas landed mid-save: arm a bounded durable retry so they reach
-      // disk even without a further batch save — never a silent in-memory-only
-      // hash. The locked reconcile republishes only OUR delta onto the overwrite.
       this.scheduleReconcileRetry();
     } else {
-      // Clean overwrite supersedes any pending deferred reconcile work.
       this.cancelReconcileRetry();
     }
     log.debug(`content-hash index: saved ${this.hashes.size} hashes`);
@@ -418,16 +363,8 @@ export class ContentHashIndex {
    */
   async saveMergingWithDisk(): Promise<void> {
     if (!this.dirty) return;
-    // The advisory lock file lives beside the index — ensure the dir exists
-    // before acquiring it (the index dir may not exist on a first write).
     await mkdir(path.dirname(this.filePath), { recursive: true });
     const publish = async (): Promise<void> => {
-      // Snapshot the deltas this publish is responsible for. The read+rewrite
-      // below yields the event loop, so a concurrent add()/remove() can land
-      // new deltas while we await disk (PR #2016 thread SD7Tj). Consuming the
-      // LIVE sets afterward would drop those late deltas AND clear `dirty`,
-      // stranding them in no save at all. We consume only what we published;
-      // anything that arrived meanwhile stays pending for the next save.
       const publishedAdded = new Set<string>(this.added);
       const publishedRemoved = new Set<string>(this.removed);
       const merged = new Set<string>(publishedAdded);
@@ -436,11 +373,9 @@ export class ContentHashIndex {
         const parsed = parseHashIndex(raw);
         if (parsed.versioned) {
           for (const hash of parsed.hashes) {
-            // Keep prior/concurrent on-disk hashes EXCEPT the ones we removed.
             if (!publishedRemoved.has(hash)) merged.add(hash);
           }
         } else {
-          // Do not carry hashes from the pre-NFC format into a v2 write.
           log.warn(`content-hash index: discarded legacy unversioned entries from ${this.filePath}`);
         }
       } catch (err) {
@@ -457,21 +392,12 @@ export class ContentHashIndex {
         this.memoryDir
       );
       this.formatMigrationRequired = false;
-      // Consume ONLY the deltas we just published; deltas that arrived during
-      // the awaits above remain pending.
       for (const h of publishedAdded) this.added.delete(h);
       for (const h of publishedRemoved) this.removed.delete(h);
-      // Fold any still-pending deltas onto the reconciled set so the in-memory
-      // view stays consistent with what the next save will publish.
       for (const h of this.added) merged.add(h);
       for (const h of this.removed) merged.delete(h);
       this.hashes = merged;
-      // Honest dirty state: true iff late deltas remain to be persisted. A
-      // subsequent batch save or the shutdown flush drains them.
       this.dirty = this.added.size > 0 || this.removed.size > 0;
-      // The reconciled set is now the on-disk state — re-baseline the freshness
-      // fingerprint (captured under the held lock) so our own publish is not
-      // later mistaken for a peer's advance (PR #2016 review).
       await this.captureSyncedFingerprint();
     };
     await withHeldFileLock(
@@ -483,11 +409,6 @@ export class ContentHashIndex {
       },
       async (acquired) => {
         if (!acquired) {
-          // Never publish unlocked (round 9 finding 2): keep dirty AND schedule a
-          // durable background retry (PR #2016). Relying on an unguaranteed later
-          // batch save silently left the addition in this process's memory only;
-          // the retry keeps re-attempting the locked publish until the addition
-          // lands on disk.
           log.warn(
             `content-hash index: lock not acquired for ${this.filePath}; deferring reconcile save (dirty retained, scheduling durable retry)`
           );
@@ -502,13 +423,8 @@ export class ContentHashIndex {
           throw err;
         }
         if (this.dirty) {
-          // A concurrent add()/remove() landed during publish's disk awaits, so
-          // deltas remain unpersisted (PR #2016 thread SD7Tj). Arm a bounded
-          // durable retry so they reach disk even if no further batch save comes
-          // — never leave a settled barrier over pending work.
           this.scheduleReconcileRetry();
         } else {
-          // Published cleanly: any pending deferred retry is now satisfied.
           this.cancelReconcileRetry();
         }
       }
@@ -542,8 +458,6 @@ export class ContentHashIndex {
    * fired retry) simply yields `acquired=false` after the bounded wait.
    */
   async rebuildUnderLock(populate: () => Promise<void>): Promise<boolean> {
-    // The advisory lock file lives beside the index — ensure the dir exists
-    // before acquiring it (the index dir may not exist on a first rebuild).
     await mkdir(path.dirname(this.filePath), { recursive: true });
     let published = false;
     await withHeldFileLock(
@@ -555,17 +469,12 @@ export class ContentHashIndex {
       },
       async (acquired) => {
         if (!acquired) {
-          // Never publish unlocked: a concurrent locked writer holds the lock,
-          // so overwriting now could clobber its addition. Leave the index as-is
-          // and let the caller retry the authoritative rebuild on next use.
           log.warn(
             `content-hash index: lock not acquired for ${this.filePath}; deferring authoritative rebuild (index left non-authoritative, retried on next use)`
           );
           return;
         }
         await populate();
-        // Publish under the held lock. save() takes no lock (no re-entrancy) and
-        // is a full overwrite that supersedes any pending add/remove deltas.
         await this.save();
         published = true;
       }
@@ -616,7 +525,6 @@ export class ContentHashIndex {
     const maxAttempts = this.lockOptions.retryMaxAttempts ?? CONTENT_HASH_INDEX_RETRY_MAX_ATTEMPTS;
     const baseMs = this.lockOptions.retryBaseMs ?? CONTENT_HASH_INDEX_RETRY_BASE_MS;
     for (let attempt = 0; this.dirty && attempt < maxAttempts; attempt += 1) {
-      // Cancel the unref'd background timer — we drive the locked publish inline.
       if (this.reconcileRetryTimer) {
         clearTimeout(this.reconcileRetryTimer);
         this.reconcileRetryTimer = null;
@@ -628,8 +536,6 @@ export class ContentHashIndex {
         await new Promise<void>((resolve) => setTimeout(resolve, wait));
       }
     }
-    // Clear any timer the final saveMergingWithDisk armed and settle the barrier
-    // so awaiters unblock — the bounded inline drain has done its best.
     if (this.reconcileRetryTimer) {
       clearTimeout(this.reconcileRetryTimer);
       this.reconcileRetryTimer = null;
@@ -671,13 +577,9 @@ export class ContentHashIndex {
       this.reconcileRetryAttempts = attempt;
       void this.saveMergingWithDisk()
         .catch((err) => {
-          // A publish-time I/O/encryption error (not a lock timeout) is best-effort:
-          // log and let the corpus-rebuild safety net cover it rather than loop.
           log.warn(`content-hash index: deferred reconcile-save retry failed for ${this.filePath}: ${err}`);
         })
         .finally(() => {
-          // If the attempt neither published (dirty cleared → cancelReconcileRetry)
-          // nor re-armed a further retry, the chain has ended — settle the barrier.
           if (this.dirty && !this.reconcileRetryTimer) this.settleReconcileRetry();
         });
     }, delay);
@@ -694,7 +596,6 @@ export class ContentHashIndex {
     this.settleReconcileRetry();
   }
 
-  /** Resolve and clear the retry barrier if one is outstanding. */
   private settleReconcileRetry(): void {
     const resolve = this.reconcileRetryResolve;
     this.reconcileRetryBarrier = null;
@@ -702,12 +603,8 @@ export class ContentHashIndex {
     resolve?.();
   }
 
-  /** Remove a hash from the index (used when archiving/deleting). */
   remove(content: string): void {
     const hash = ContentHashIndex.computeHash(content);
-    // Record the removal (round 8 thread 3) even when the hash is not in our
-    // in-memory set — a reconciling save must still drop it from the latest
-    // on-disk state. A removal supersedes a pending add. Always mark dirty.
     this.added.delete(hash);
     this.removed.add(hash);
     this.hashes.delete(hash);
@@ -740,25 +637,11 @@ export class ContentHashIndex {
   addByHash(hash: string): void {
     // A re-add supersedes a pending removal of the same hash.
     this.removed.delete(hash);
-    // Record OUR durable delta even when the local snapshot already holds the
-    // hash (PR #2016 thread PRRT_kwDORJXyws6SEHve). Outside a rebuild
-    // (StorageManager.addActiveFactContentHash on reactivation) local
-    // membership can be STALE: a peer removed this hash on disk while this
-    // instance kept it in memory. Skipping added/dirty on that path let the
-    // reconciling save compute (on-disk \ removed) ∪ added and silently drop
-    // the reintroduced hash, so the peer never saw it again. Set semantics keep
-    // this idempotent (no duplicate entries) and the removed.delete above
-    // preserves remove/add ordering. Mirrors add().
     this.hashes.add(hash);
     this.added.add(hash);
     this.dirty = true;
   }
 
-  // ── Fact-only partition (issue #2474) ─────────────────────────────────
-  // Folded here from StorageManager's parallel `factOnlyHashes` set, which had
-  // to be kept in lockstep by hand on every add/remove/rebuild site. The
-  // partition lives on the index instance, so every path that mutates the
-  // shared set and needs fact-only truth mutates it in the same breath.
 
   /** Register fact content in BOTH the shared index and the fact-only partition. */
   addFact(content: string): void {
@@ -809,12 +692,10 @@ export class ContentHashIndex {
     return canonicalPath;
   }
 
-  /** Normalize content (delegates to content-hash.ts for a single source of truth). */
   static normalizeContent(content: string): string {
     return normalizeContent(content);
   }
 
-  /** Compute SHA-256 hash (delegates to content-hash.ts for a single source of truth). */
   static computeHash(content: string): string {
     return computeContentHash(content);
   }

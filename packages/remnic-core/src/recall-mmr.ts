@@ -1,22 +1,3 @@
-/**
- * Maximal Marginal Relevance (MMR) re-selection for recall candidates.
- *
- * After the reranker produces its ordered candidate list, we run an MMR pass
- * over the top N candidates (per-section) so that a cluster of near-duplicate
- * high-scoring facts cannot dominate the injected context.
- *
- *     MMR(d) = λ * sim(d, query) − (1 − λ) * max_{d' ∈ selected} sim(d, d')
- *
- * - λ defaults to 0.7 (tilted toward relevance, with meaningful diversity).
- * - Similarity uses cosine over pre-computed embeddings when available, and
- *   falls back to Jaccard over normalized tokens (lowercased alphanumerics)
- *   when embeddings are missing.
- * - Per-section application is the caller's responsibility: pass each
- *   section's ordered candidate slice independently so one cluster in one
- *   section cannot starve another section.
- *
- * Pure, deterministic, no IO. Input arrays are never mutated.
- */
 
 /** Minimal candidate shape used by MMR. Callers may wrap their own records. */
 export interface MmrCandidate {
@@ -79,14 +60,6 @@ export interface MmrDiversityReport {
 
 export const DEFAULT_LAMBDA = 0.7;
 export const DEFAULT_TOP_N = 40;
-/**
- * Default number of head-of-list candidates compared by
- * {@link summarizeMmrDiversity}. Small on purpose: we want to measure whether
- * MMR actually *changed* the head of the list. Comparing the full top-N slice
- * is meaningless when `budget >= candidates.length` because both slices
- * contain the same set (just reordered), making pairwise-similarity
- * order-independent and identical before vs after.
- */
 const DEFAULT_DIVERSITY_SAMPLE_SIZE = 10;
 
 /**
@@ -108,17 +81,11 @@ export function applyMmrToCandidates<C extends MmrCandidate>(
   if (budget <= 0) return [];
   if (candidates.length === 1) return [candidates[0]!];
 
-  // Only reorder the top-N slice; anything past it keeps its original position
-  // appended at the end (but will not be selected unless budget > topN).
   const pool = candidates.slice(0, topN);
   const tail = candidates.slice(topN);
 
-  // Relevance scores as `sim(d, query)`. Prefer cosine to the query embedding
-  // when we can compute it; otherwise fall back to the candidate's own score
-  // normalized into [0, 1] across the pool.
   const relevance = computeRelevanceScores(pool, opts.queryEmbedding);
 
-  // Pre-compute pairwise candidate-candidate similarity lazily as needed.
   const pairSim = new Map<string, number>();
   const pairKey = (i: number, j: number): string =>
     i < j ? `${i}:${j}` : `${j}:${i}`;
@@ -153,7 +120,6 @@ export function applyMmrToCandidates<C extends MmrCandidate>(
       const mmr = lambda * rel - (1 - lambda) * maxSimToSelected;
       if (
         mmr > bestMmr ||
-        // Stable tie-breaker: prefer the earlier original position.
         (mmr === bestMmr && (bestIdx < 0 || idx < bestIdx))
       ) {
         bestMmr = mmr;
@@ -167,9 +133,6 @@ export function applyMmrToCandidates<C extends MmrCandidate>(
 
   const selected: C[] = selectedIdx.map((i) => pool[i]!);
 
-  // If the caller set a budget larger than topN, append tail candidates in
-  // their original order until budget is filled. This keeps MMR scoped to the
-  // top-N slice while still respecting the caller's requested size.
   if (selected.length < budget && tail.length > 0) {
     for (const c of tail) {
       if (selected.length >= budget) break;
@@ -205,9 +168,6 @@ export function summarizeMmrDiversity<C extends MmrCandidate>(
   const n = clampPositiveInt(sampleSize, DEFAULT_DIVERSITY_SAMPLE_SIZE);
   const beforeSlice = before.slice(0, n);
   const afterSlice = after.slice(0, n);
-  // Count how many head-of-list positions MMR actually changed. A zero value
-  // means MMR left the head untouched; a positive value is the actionable
-  // "MMR promoted N diverse candidates" signal the previous metric lacked.
   let headReorderCount = 0;
   const compareLength = Math.min(beforeSlice.length, afterSlice.length);
   for (let i = 0; i < compareLength; i += 1) {
@@ -222,9 +182,6 @@ export function summarizeMmrDiversity<C extends MmrCandidate>(
   };
 }
 
-// -----------------------------------------------------------------------------
-// Internals
-// -----------------------------------------------------------------------------
 
 function clampLambda(value: number | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_LAMBDA;
@@ -246,8 +203,6 @@ function computeRelevanceScores<C extends MmrCandidate>(
   pool: readonly C[],
   queryEmbedding: readonly number[] | null | undefined,
 ): number[] {
-  // If we have a query embedding, use cosine against each candidate embedding
-  // where possible. Candidates without embeddings fall back to normalized score.
   const canUseQueryEmbedding =
     Array.isArray(queryEmbedding) && queryEmbedding.length > 0;
 
@@ -257,14 +212,12 @@ function computeRelevanceScores<C extends MmrCandidate>(
       if (Array.isArray(c.embedding) && c.embedding.length > 0) {
         scores.push(cosineSimilarity(queryEmbedding!, c.embedding));
       } else {
-        // Fall back to the upstream relevance score for this one candidate.
         scores.push(normalizeFinite(c.score));
       }
     }
     return normalizeVector(scores);
   }
 
-  // No query embedding — use normalized candidate scores.
   const raw = pool.map((c) => normalizeFinite(c.score));
   return normalizeVector(raw);
 }
@@ -300,9 +253,6 @@ function cosineSimilarity(
   }
   if (na === 0 || nb === 0) return 0;
   const cos = dot / (Math.sqrt(na) * Math.sqrt(nb));
-  // Clamp to [0, 1]. Negative cosines (opposite directions) are treated as 0
-  // for MMR purposes — two embeddings pointing opposite ways should be
-  // "maximally diverse", not discouraged further.
   if (cos < 0) return 0;
   if (cos > 1) return 1;
   return cos;
@@ -310,23 +260,11 @@ function cosineSimilarity(
 
 export function normalizeTokens(text: string): Set<string> {
   if (!text) return new Set();
-  // Unicode-aware normalization. We lowercase and replace any character that
-  // is NOT a Unicode letter or number with a space, then split on whitespace.
-  // This preserves non-Latin scripts (Cyrillic, Greek, Hebrew, Arabic, etc.)
-  // so the Jaccard fallback still detects near-duplicates in multilingual
-  // snippets. Without this fix, `[^a-z0-9]+` strips all non-ASCII and two
-  // identical Chinese/Japanese/Cyrillic snippets both collapse to the empty
-  // set, returning similarity 0 and letting duplicates dominate recall.
   const cleaned = text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
   if (cleaned.length === 0) {
-    // CJK fallback: scripts like Chinese/Japanese/Korean do not use word
-    // breaks, so after the Unicode strip the above split-on-whitespace yields
-    // one big token. The Latin-style split is a bad match for these scripts;
-    // use per-codepoint character tokens instead, which approximates a
-    // unigram shingle and is accurate enough for near-duplicate detection.
     const chars = new Set<string>();
     for (const ch of text.toLowerCase()) {
       if (/\s/.test(ch)) continue;
@@ -337,9 +275,6 @@ export function normalizeTokens(text: string): Set<string> {
   const tokens = new Set<string>();
   for (const token of cleaned.split(/\s+/)) {
     if (!token) continue;
-    // A single "token" that is actually a run of CJK codepoints (no spaces in
-    // the source) should still be split into per-character tokens so the
-    // Jaccard overlap works. Latin/Cyrillic/etc. keep their word-level tokens.
     if (token.length >= 2 && hasUnsegmentableScript(token)) {
       for (const ch of token) tokens.add(ch);
     } else {
@@ -349,12 +284,6 @@ export function normalizeTokens(text: string): Set<string> {
   return tokens;
 }
 
-/**
- * Returns true when `token` contains at least one codepoint in a script that
- * does not use whitespace for word segmentation (CJK Unified Ideographs,
- * Hiragana, Katakana, Hangul). These are tokenized per-character so Jaccard
- * similarity can still detect near-duplicate snippets.
- */
 function hasUnsegmentableScript(token: string): boolean {
   return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(
     token,
@@ -379,21 +308,7 @@ function normalizeFinite(value: number): number {
 
 function normalizeVector(values: number[]): number[] {
   if (values.length === 0) return values;
-  // Intentionally *not* min-max normalized. Min-max maps the lowest score to
-  // 0 and the highest to 1, which amplifies tiny relevance gaps (e.g. a tight
-  // reranker cluster like [0.93, 0.94, 0.95]) into the full [0, 1] range.
-  // That lets a near-duplicate at the top permanently beat a diverse
-  // candidate at the bottom because `lambda * 0 - (1 - lambda) * 0 = 0` is
-  // always worse than `lambda * 1 - (1 - lambda) * maxSim` for any
-  // maxSim < lambda / (1 - lambda). MMR is supposed to escape exactly that
-  // scenario; min-max defeats it.
   //
-  // Instead we preserve the relative score gaps by scaling only if the
-  // scores leave the MMR-friendly `[0, 1]` range. Negative or out-of-range
-  // scores are clamped to `[0, 1]` by dividing by the max absolute value; if
-  // everything is already inside `[0, 1]`, we pass through untouched so
-  // tight clusters stay tight and MMR can promote a diverse candidate from
-  // the bottom of the cluster.
   let max = 0;
   let min = Number.POSITIVE_INFINITY;
   for (const v of values) {
@@ -406,16 +321,8 @@ function normalizeVector(values: number[]): number[] {
     return values.map(() => 0);
   }
   if (max === 0) {
-    // All scores are zero — give everyone 1 so diversity fully drives
-    // selection (otherwise every candidate has `lambda * 0 = 0` and the
-    // first-found wins trivially, hiding any diversity benefit).
     return values.map(() => 1);
   }
-  // If scores already live in [0, 1], pass them through so tight clusters
-  // (e.g. [0.93, 0.94, 0.95]) stay tight and the (1 - lambda) * maxSim term
-  // can actually outweigh a 0.01 relevance gap, which is the whole point of
-  // MMR. Otherwise divide by `max` to bring the top score to 1 while
-  // preserving *relative* gaps (e.g. [100, 200, 300] -> [0.33, 0.67, 1.0]).
   if (min >= 0 && max <= 1) {
     return values.map((v) =>
       Number.isFinite(v) ? (v < 0 ? 0 : v > 1 ? 1 : v) : 0,
@@ -447,7 +354,6 @@ function averagePairwiseSimilarity<C extends MmrCandidate>(
 }
 
 // -----------------------------------------------------------------------------
-// Orchestration helper: MMR for recall results keyed by path-first
 // -----------------------------------------------------------------------------
 
 /**
@@ -521,12 +427,6 @@ export function reorderRecallResultsWithMmr<R extends MmrRecallResult>(
     return { reordered: [], diversity: emptyReport, lambda };
   }
   if (results.length < 2) {
-    // Single-element input: MMR is a trivial no-op but the diversity report
-    // must still reflect the real pool size so external callers see
-    // `considered=1 kept=1` rather than the `0/0` sentinel used for the
-    // empty case. This is also the exact path the orchestrator short-circuits
-    // past, but the helper is a public export and external callers cannot
-    // rely on that invariant.
     return {
       reordered: [results[0]!],
       diversity: {
@@ -542,24 +442,12 @@ export function reorderRecallResultsWithMmr<R extends MmrRecallResult>(
 
   const topN = clampPositiveInt(options.topN, DEFAULT_TOP_N);
 
-  // Build a per-result *unique* key so distinct results with colliding
-  // docids or paths are never silently collapsed by id-based lookups.
-  // Keys are always suffixed with the original input index so two results
-  // that share the same `path` (or share the same `docid` when `path` is
-  // empty) still get distinct identities.
   const candidates: MmrCandidate[] = results.map((r, index) => ({
     id: makeRecallKey(r, index),
     content: r.snippet ?? "",
     score: effectiveRelevance(r),
     embedding: null,
   }));
-  // Index lookup by id so we can map MMR-selected candidates back to their
-  // *original* position (and therefore their original `candidates[i]` object,
-  // which preserves its `id` across the reorder). Reusing those original
-  // candidate objects in the diversity comparison means
-  // `headReorderCount` works correctly even when two results in the input
-  // share the same base key: a swap at the same head position shows up
-  // because their original-index-suffixed ids still differ.
   const indexById = new Map<string, number>();
   for (let i = 0; i < candidates.length; i += 1) {
     indexById.set(candidates[i]!.id, i);
@@ -573,9 +461,6 @@ export function reorderRecallResultsWithMmr<R extends MmrRecallResult>(
   });
 
   const reordered: R[] = [];
-  // Parallel array of the *original* candidate objects in the new (post-MMR)
-  // order. Used for a faithful diversity comparison that preserves each
-  // candidate's original identity.
   const reorderedCandidates: MmrCandidate[] = [];
   const seen = new Set<string>();
   for (const c of selectedMmr) {
@@ -586,7 +471,6 @@ export function reorderRecallResultsWithMmr<R extends MmrRecallResult>(
     reordered.push(results[origIndex]!);
     reorderedCandidates.push(candidates[origIndex]!);
   }
-  // Safety: append any candidates MMR did not select so nothing is dropped.
   if (reordered.length < results.length) {
     for (let i = 0; i < results.length; i += 1) {
       const origCandidate = candidates[i]!;

@@ -1,9 +1,3 @@
-/**
- * @remnic/core — Review Inbox
- *
- * Manages low-confidence memories and suggestions pending review.
- * Integrates with the existing review-queue system.
- */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -18,16 +12,6 @@ import {
 // Write-boundary journal cache for review-queue promotions (issue #2213).
 const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
-/**
- * In-place raw rewrite under the uniform write-boundary rule (issue #2213):
- * canonicalize the effective entityRef at the write and REPAIR when the
- * journal moved across it — these rewrites re-serialize whole records, so an
- * unrelated approve/dismiss/flag must not write a legacy ref back out. On
- * repair exhaustion the ORIGINAL bytes are restored before the retryable
- * error propagates: performReview bumps the corpus sentinel only after the
- * action returns, so a half-applied rewrite would be invisible to a warm
- * cache while the caller is told the action failed.
- */
 function writeReviewFileCanonicalized(memoryDir: string, filePath: string, content: string): void {
   const stateDir = path.join(memoryDir, "state");
   const idsAtWrite = historicalIdCache.get(stateDir);
@@ -62,59 +46,42 @@ function writeReviewFileCanonicalized(memoryDir: string, filePath: string, conte
   }
 }
 
-// ── Types ────────────────────────────────────────────────────────────────────
 
 export interface ReviewItem {
-  /** Memory ID */
   id: string;
-  /** Content text */
   content: string;
-  /** Category */
   category: string;
   /** Confidence score (0-1) */
   confidence: number;
-  /** Confidence tier */
   confidenceTier: string;
-  /** Source */
   source: string;
-  /** File path if available */
   filePath?: string;
-  /** Created date */
   created: string;
   /** Reason it's in review */
   reviewReason: "low_confidence" | "suggestion" | "contradiction" | "duplicate" | "tombstone_blocked";
-  /** Additional context */
   context?: string;
 }
 
 export type ReviewAction = "approve" | "dismiss" | "flag";
 
 export interface ReviewResult {
-  /** Item acted upon */
   itemId: string;
-  /** Action taken */
   action: ReviewAction;
-  /** Updated file path (if modified) */
   updatedPath?: string;
-  /** Status message */
   message: string;
   /** Tombstone id cleared by an approve action (for the caller to revoke). */
   clearedTombstoneId?: string;
 }
 
 export interface ReviewListResult {
-  /** Items pending review */
   items: ReviewItem[];
-  /** Total count */
   total: number;
   /** Duration in ms */
   durationMs: number;
 }
 
 export interface ReviewOptions {
-  /** Memory root directory */
   memoryDir: string;
-  /** Filter by reason */
   reason?: ReviewItem["reviewReason"];
   /** Max items to return (default: 50) */
   limit?: number;
@@ -181,11 +148,7 @@ function ensureSafeDirectory(rootReal: string, dir: string): void {
   }
 }
 
-// ── Main functions ───────────────────────────────────────────────────────────
 
-/**
- * List items pending review.
- */
 export function listReviewItems(options: ReviewOptions): ReviewListResult {
   const startTime = Date.now();
   const {
@@ -208,7 +171,6 @@ export function listReviewItems(options: ReviewOptions): ReviewListResult {
     items.push(item);
   };
 
-  // Check suggestions directory
   const suggestionsDir = path.join(memoryDir, "suggestions");
   if (!isLimitReached() && fs.existsSync(suggestionsDir) && isSafeDirectory(rootReal, suggestionsDir)) {
     walkMd(rootReal, suggestionsDir, (filePath, content) => {
@@ -233,7 +195,6 @@ export function listReviewItems(options: ReviewOptions): ReviewListResult {
     });
   }
 
-  // Check review directory
   const reviewDir = path.join(memoryDir, "review");
   if (!isLimitReached() && fs.existsSync(reviewDir) && isSafeDirectory(rootReal, reviewDir)) {
     walkMd(rootReal, reviewDir, (filePath, content) => {
@@ -259,7 +220,6 @@ export function listReviewItems(options: ReviewOptions): ReviewListResult {
     });
   }
 
-  // Scan all categories for low-confidence items
   const categories = ALL_CATEGORY_DIRS;
   for (const category of categories) {
     if (isLimitReached()) break;
@@ -278,7 +238,6 @@ export function listReviewItems(options: ReviewOptions): ReviewListResult {
       if (confidence >= confidenceThreshold && !(typeof fm.blockedBy === "string" && fm.blockedBy.length > 0)) return false;
       if (parseBoolean(fm.reviewDismissed)) return false;
 
-      // Skip if already in items
       if (items.some((i) => i.id === fm.id)) return false;
 
       addItem({
@@ -303,9 +262,6 @@ export function listReviewItems(options: ReviewOptions): ReviewListResult {
   };
 }
 
-/**
- * Perform a review action on an item.
- */
 export function performReview(
   memoryDir: string,
   itemId: string,
@@ -318,18 +274,10 @@ export function performReview(
       : action === "dismiss"
         ? dismissItem(memoryDir, itemId, options)
         : flagItem(memoryDir, itemId, options);
-  // Review approval/dismissal/flagging edits, moves, or removes memory files
-  // directly (out-of-band — it does not go through a StorageManager mutation
-  // method), so bump the corpus sentinel to force the version-keyed hot cache
-  // to rescan on its next read (issue #1902). Only bump when a file was
-  // actually modified/moved (updatedPath set) — no-op early returns (item not
-  // found, unparsable frontmatter) must not advance the sentinel or needlessly
-  // clear caches (Cursor Medium).
   if (result.updatedPath !== undefined) bumpMemoryCorpusVersionForDir(memoryDir);
   return result;
 }
 
-// ── Actions ──────────────────────────────────────────────────────────────────
 
 function approveItem(
   memoryDir: string,
@@ -347,13 +295,6 @@ function approveItem(
   const fm = parseFrontmatter(content);
   if (!fm) return { itemId, action: "approve", message: "Could not parse frontmatter" };
 
-  // Issue #1579 — approving a tombstone-blocked memory fires the revocation
-  // hook so the content is re-allowed (append-only log: a `kind: "revocation"`
-  // entry supersedes the tombstone at lookup). Deferred until the approval's
-  // writes commit (Codex P2, round 19): revoking before the promote left a
-  // failed repair with the non-resurrection guard already destroyed, letting
-  // a later extraction resurrect the content. Fire-and-forget once invoked:
-  // a hook failure never fails the approval.
   const blockedBy = typeof fm.blockedBy === "string" ? fm.blockedBy : null;
   const fireBlockedRevocation = (): void => {
     if (!blockedBy || !options.onApproveBlockedMemory) return;
@@ -371,10 +312,6 @@ function approveItem(
     confidence: "0.9",
     confidenceTier: "high",
     reviewDismissed: null,
-    // Clear the tombstone-block markers so the promoted memory is active.
-    // Clear the tombstone-block markers AND restore active status so the
-    // promoted memory is fully active in recall + provenance (issue #1579
-    // review: leaving status: pending_review kept it invisible to recall).
     ...(blockedBy ? { blockedBy: null, tombstoneBlockTier: null, status: "active" } : {}),
   });
 
@@ -390,7 +327,6 @@ function approveItem(
     };
   }
 
-  // Promote queued suggestions/review items to their category directory.
   const category = (fm.category as string) ?? "fact";
   const targetDir = getCategoryDir(memoryDir, category);
   const dateDir = new Date().toISOString().split("T")[0];
@@ -398,10 +334,6 @@ function approveItem(
   const outputPath = path.join(targetDir, dateDir, path.basename(found.filePath));
 
   ensureSafeDirectory(rootReal, path.dirname(outputPath));
-  // The suggestions/review queue dirs sit OUTSIDE the migration's reference
-  // scan, so a queued pre-migration item can still carry a legacy entityRef
-  // (issue #2213): promote it canonicalized against the target journal, and
-  // REPAIR when the journal moved across the write.
   const reviewStateDir = path.join(memoryDir, "state");
   const idsAtWrite = historicalIdCache.get(reviewStateDir);
   const promotedWritten = canonicalizeEntityRefFrontmatter(updatedContent, idsAtWrite);
@@ -416,8 +348,6 @@ function approveItem(
       rewrite: (next) => fs.writeFileSync(promotedPath, next, "utf8"),
     });
   } catch (err) {
-    // Roll back so a retried approve does not clobber-fail against a partial
-    // promotion; the queue entry survives untouched (Bugbot).
     try {
       fs.unlinkSync(promotedPath);
     } catch {
@@ -426,8 +356,6 @@ function approveItem(
     throw err;
   }
 
-  // Remove from review, THEN revoke: the guard only falls once the approval
-  // has fully committed (promoted file repaired + queue entry gone).
   fs.unlinkSync(found.filePath);
   fireBlockedRevocation();
 
@@ -496,7 +424,6 @@ function flagItem(
   };
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function findReviewFileById(
   memoryDir: string,
@@ -545,13 +472,6 @@ function isLowConfidenceReviewCandidate(
   options: ReviewActionOptions,
 ): boolean {
   const threshold = options.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD;
-  // Issue #1579: tombstone-blocked facts are ALWAYS review candidates,
-  // regardless of confidence. The block sets status: pending_review +
-  // blockedBy; these must be visible in the review queue so an operator
-  // can approve (revoke the tombstone) or dismiss them. Without this, a
-  // high-confidence blocked fact is visible on disk but absent from the
-  // review UI — a silent drop, which violates the non-resurrection design
-  // (rule 34: visible, not silent).
   if (typeof fm.blockedBy === "string" && fm.blockedBy.length > 0) {
     return !parseBoolean(fm.reviewDismissed);
   }

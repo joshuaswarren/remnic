@@ -8,8 +8,6 @@ import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import { resolvePluginEntry } from "./plugin-entry-resolver.js";
 import { expandTildePath } from "./utils/path.js";
 import { getOperation } from "./access-boundary.js";
-// Importing access-operations registers the pilot boundary operations as a
-// side effect; the store command dispatches through the registry (issue #1525).
 import "./access-operations.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 
@@ -316,12 +314,6 @@ const BROWSE_SORT_VALUES = Object.freeze([
 
 type BrowseSort = (typeof BROWSE_SORT_VALUES)[number];
 
-/**
- * Type guard for {@link CommandName}. Enumerating the union (rather than a
- * bare `value in COMMAND_SPECS`) is what lets TypeScript NARROW the string
- * to `CommandName` — the `in` operator alone yields TS2322 on the
- * `command: commandRaw` assignment below (codex review P2).
- */
 function isCommandName(value: string): value is CommandName {
   return (
     value === "browse" ||
@@ -489,11 +481,6 @@ function loadPluginConfig(preferredId?: string): Record<string, unknown> {
       `OpenClaw memory slot points to non-Remnic plugin "${slotId}"; refusing to use default Remnic access config.`,
     );
   }
-  // Delegate slot → preferredId → canonical → legacy resolution to the
-  // generic helper so all config loaders stay in sync (#403).  Shim CLI
-  // callers pass `preferredId: "openclaw-engram"` so legacy shim installs
-  // target their own config block instead of falling through to the canonical
-  // "openclaw-remnic" entry.
   const entry = resolveOpenClawRemnicPluginEntry(raw, preferredId);
   if (!entry) {
     throw new Error(
@@ -561,10 +548,6 @@ async function runStore(args: ParsedArgs, preferredId?: string): Promise<void> {
   };
 
   const { config, service } = buildRuntime(preferredId);
-  // Migrated through the access boundary (issue #1525): the store command
-  // dispatches through the same registry entry as the MCP tool and HTTP
-  // route, so validation/normalization is owned in ONE place. The CLI has no
-  // write-quota hook (it is a one-shot process), so no hooks are forwarded.
   const op = getOperation("memory_store");
   if (!op) {
     throw new Error("access-boundary: operation not registered: memory_store");
@@ -625,11 +608,6 @@ function expandOptionalPath(value: string | undefined): string | undefined {
 async function runDecision(args: ParsedArgs, preferredId?: string): Promise<void> {
   const subcommand = requireOption(args, "subcommand");
   const { config, service } = buildRuntime(preferredId);
-  // The CLI creates a fresh Orchestrator per invocation, so the session
-  // coding-context map is empty. If --project-tag + --session-key are
-  // provided, attach a coding context BEFORE dispatching so the gate
-  // passes and project-scoped writes resolve to the right namespace
-  // (review P2).
   const projectTag = getLastOption(args, "project-tag");
   const sessionKey = getLastOption(args, "session-key");
   if (projectTag && projectTag.trim().length > 0 && sessionKey && sessionKey.trim().length > 0) {
@@ -685,20 +663,10 @@ async function runDecision(args: ParsedArgs, preferredId?: string): Promise<void
 async function runArchitecture(args: ParsedArgs, preferredId?: string): Promise<void> {
   const subcommand = requireOption(args, "subcommand");
   const { config, service } = buildRuntime(preferredId);
-  // Same coding-context attachment as runDecision (review P2): the CLI's
-  // fresh Orchestrator has an empty session coding-context map, so attach
-  // a context BEFORE dispatching when --project-tag + --session-key are
-  // given, so the gate passes and writes resolve to the right namespace.
   const projectTag = getLastOption(args, "project-tag");
   const sessionKey = getLastOption(args, "session-key");
   if (sessionKey && sessionKey.trim().length > 0) {
-    // refresh scans codingContext.rootPath, so it must be a REAL checkout
-    // path. Default to the CWD (or an explicit --repo-root) so a one-shot
-    // CLI refresh scans the caller's repo, not a non-existent tag path.
     const repoRoot = expandOptionalPath(getLastOption(args, "repo-root")) ?? process.cwd();
-    // --project-tag supplies the context id (namespace); when absent, derive
-    // a default from the repo-root basename so refresh works with just
-    // --session-key + --repo-root (codex review).
     const projectId =
       projectTag && projectTag.trim().length > 0
         ? projectTagProjectId(projectTag.trim())
@@ -740,9 +708,6 @@ async function runArchitecture(args: ParsedArgs, preferredId?: string): Promise<
 async function runDelta(args: ParsedArgs, preferredId?: string): Promise<void> {
   const subcommand = requireOption(args, "subcommand");
   const { config, service } = buildRuntime(preferredId);
-  // Same coding-context attachment as runArchitecture/runDecision: the CLI's
-  // fresh Orchestrator has an empty session coding-context map, so attach a
-  // context BEFORE dispatching so the gate passes.
   const projectTag = getLastOption(args, "project-tag");
   const sessionKey = getLastOption(args, "session-key");
   if (sessionKey && sessionKey.trim().length > 0) {
@@ -837,8 +802,6 @@ async function runCorrect(args: ParsedArgs, preferredId?: string): Promise<void>
     return;
   }
 
-  // Default mode: plan from text — dispatch through the boundary operation
-  // so schema validation + namespace policy reach this path (same as MCP/HTTP).
   const text = requireOption(args, "text");
   const targetIds = getAllOptions(args, "id");
   const duplicateOf = getLastOption(args, "duplicate-of");

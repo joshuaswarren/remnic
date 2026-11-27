@@ -33,8 +33,6 @@ const FAILED: ExtractionRunResult = {
   durableOutputCount: 0,
 };
 
-/** Two-part split of one oversized turn: part 1 extracts, part 2 keeps failing.
- *  The parent must reach the drop threshold (recovery copy) instead of looping. */
 test("a repeatedly failing part still reaches the drop threshold across drain passes", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-part-drop-"));
   try {
@@ -83,7 +81,6 @@ test("a repeatedly failing part still reaches the drop threshold across drain pa
       droppedReasons.length > 0,
       `the failing part must reach the drop threshold; passes ran ${seenChunks.length} chunks, last ${JSON.stringify(lastResult)}`
     );
-    // The recovery copy preserves the parent's full content, not a slice.
     assert.ok(droppedReasons[0]?.includes("dropped after 3"), droppedReasons[0]);
   } finally {
     await rm(root, { recursive: true, force: true });

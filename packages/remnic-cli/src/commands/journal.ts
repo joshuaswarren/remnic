@@ -51,7 +51,6 @@ export interface JournalCommandIo {
 /** Injectable seam: note reads, extraction-pass deps, and the clock. */
 export interface JournalCommandDeps {
   readJournal: typeof readJournalForDate;
-  /** Built lazily — only the `extract` action pays for storage + engine. */
   extractionDeps(): Promise<JournalExtractionDeps>;
   now(): Date;
 }
@@ -76,7 +75,6 @@ function defaultDeps(config: PluginConfig, storage?: StorageManager): JournalCom
   };
 }
 
-/** Build command deps with an already-resolved StorageManager (secure store, tombstones, namespace). */
 export function createJournalCommandDeps(config: PluginConfig, storage: StorageManager): JournalCommandDeps {
   return defaultDeps(config, storage);
 }
@@ -117,15 +115,10 @@ export async function runJournalCommand(
   }
   const action = rest[0];
   const journalConfig = config.activity.timeline.journal;
-  // Master gate (issue #1987 P2): when disabled, every action refuses
-  // before ANY journal read — vault note or memoryDir day file.
   if (!journalConfig.enabled) {
     io.err("journal: timeline.journal.enabled is false — enable the journal first.");
     return 1;
   }
-  // Default date derives from the configured activity timezone, not the
-  // host's local clock (issue #1987 P2): a host in Europe must not resolve
-  // "today" to yesterday for a Pacific user at their local midnight.
   const date = takeFlag(rest, "--date") ?? activityDateInTimezone(deps.now(), config.activity.timezone);
   const force = rest.includes("--force");
   const vaultMode = journalConfig.source === "vault";
@@ -159,8 +152,6 @@ export async function runJournalCommand(
         io.out(`exists:false (${read.reason})`);
         return 0;
       }
-      // Provenance header naming the file (issue #1987): review UIs and
-      // humans can trace the text back to the exact vault note.
       io.out(`# journal source: ${read.filePath} :: ${read.heading}`);
       io.out(read.text);
       return 0;
@@ -207,8 +198,6 @@ export async function runJournalCommand(
         io.err(`journal: cannot read the vault note (${read.reason}): ${read.filePath}`);
         return 1;
       }
-      // A missing note/section is a legitimate no-journal day (§22): nothing
-      // to extract, no state write, exit 0.
       if (!read.exists) {
         io.out(`no journal ${date} (${read.reason})`);
         return 0;
@@ -223,9 +212,6 @@ export async function runJournalCommand(
       text = fs.readFileSync(filePath, "utf8");
     }
 
-    // Per-date lock covers hash reread → extract/dedup/write → state commit
-    // so two processes cannot double-extract the same day. Different dates
-    // use different lock files and may run concurrently.
     return withJournalDateLock(config.memoryDir, date, async () => {
       const state = readTimelineState(config.memoryDir);
       if (journalUnchanged(state, date, text)) {
@@ -233,9 +219,6 @@ export async function runJournalCommand(
         return 0;
       }
 
-      // Review-only pass: candidates land pending_review ONLY. The judge is a
-      // maintenance-surface dep; without it every candidate survives to human
-      // review — the conservative direction for a one-shot command.
       const result = await runJournalReviewExtraction({
         date,
         journalText: text,
@@ -247,7 +230,6 @@ export async function runJournalCommand(
         io.err(`journal: extraction did not complete for ${date} — the day retries on the next run.`);
         return 1;
       }
-      // Completed runs advance the day's hash so the same content never re-runs.
       await commitJournalHash(config.memoryDir, date, hashJournalText(text));
       io.out(`pending_review: ${result.pendingReview}`);
       io.out(`rejected_by_judge: ${result.rejectedByJudge}`);
@@ -265,18 +247,12 @@ export async function runJournalCommand(
 }
 
 export async function runJournalBinaryCommand(rest: string[]): Promise<void> {
-  // Help short-circuits BEFORE config discovery and parse (issue #1987 P2):
-  // `remnic journal --help` prints usage and exits 0 even when the config
-  // file is malformed — a broken config must never hide the usage text.
   if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h" || rest[0] === "help") {
     console.log(journalHelp().trimEnd());
     return;
   }
   let config: PluginConfig;
   try {
-    // Config failures get a constant message: parseConfig error strings can
-    // embed config values (CodeQL js/clear-text-logging), so they must never
-    // reach console output.
     const configPath = resolveConfigPath();
     const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
     config = parseConfig(resolveRemnicConfigRecord(raw));

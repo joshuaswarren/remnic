@@ -53,11 +53,6 @@ export type ValidExplicitCapture = {
 export type ExplicitCaptureSource = "memory_store" | "memory_capture" | "suggestion_submit" | "inline";
 type ExplicitCaptureValidationMode = "legacy_tool" | "strict_explicit";
 
-// Bounded body {0,100000} instead of an unbounded lazy *? so scanning for the
-// closing tag cannot backtrack polynomially on unterminated <memory_note>
-// markup in hostile turn text (CodeQL js/polynomial-redos). 100 000 chars far
-// exceeds any real inline note, so matching is behavior-preserving; the outer
-// \s* groups were also dropped (body absorbs whitespace; captures are trimmed).
 const INLINE_NOTE_RE = /<memory_note>([\s\S]{0,100000}?)<\/memory_note>/gi;
 const INLINE_NOTE_MARKUP_RE = /<memory_note>[\s\S]{0,100000}?<\/memory_note>/i;
 const INLINE_ALLOWED_CATEGORIES = new Set<MemoryCategory>([
@@ -381,9 +376,6 @@ export function validateExplicitCaptureInput(
   }
   const expiresAt = parseExplicitCaptureTtl(input.ttl);
 
-  // #2014 review round: enforce the composer's tag contract HERE so a capture
-  // that passes validation can never fail later at strict compose time
-  // (validated-then-thrown was a broken contract). Same limits as TAG_LIMITS.
   const dedupedTags = Array.from(new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean)));
   if (dedupedTags.length > TAG_LIMITS.maxTags) {
     throw new Error(`too many tags: ${dedupedTags.length} exceeds the ${TAG_LIMITS.maxTags}-tag limit`);
@@ -402,9 +394,6 @@ export function validateExplicitCaptureInput(
     tags: dedupedTags,
     entityRef: asTrimmed(input.entityRef),
     sourceReason: asTrimmed(input.sourceReason),
-    // Trimmed like the other optional metadata (#2017 review round): a
-    // whitespace-only connector previously passed validation and then blew
-    // up at strict compose time - validated input must always compose.
     sourceConnector: asTrimmed(input.sourceConnector),
     expiresAt,
   };
@@ -417,22 +406,14 @@ async function findDuplicateExplicitCapture(
   storageOverride?: StorageManager
 ): Promise<{ id: string; tombstoneBlocked: boolean } | null> {
   const storage = storageOverride ?? (await orchestrator.getStorage(resolvedNamespace));
-  // Tombstone-blocked rows are absent from the active fact hash index. An
-  // authoritative miss can therefore skip the corpus scan only after the
-  // targeted blocked-row index reports a miss and remains authoritative.
   let authoritativeFactHashMiss = false;
   if (candidate.category === "fact") {
     try {
-      // One lookup returns the MISS together with the authority behind it, so
-      // a stale MISS is never paired with authority from another moment
-      // (#3312, #3354 — each separate call may rebuild the index).
       const lookup = await storage.lookupContentHash(sanitizeMemoryContent(candidate.content).text);
       if (!lookup.present && lookup.authoritative) {
         authoritativeFactHashMiss = true;
       }
     } catch (err) {
-      // Fail open: hash indexes are only an optimization, so fall back to the
-      // full corpus scan when the lookup cannot answer.
       void err;
     }
   }
@@ -448,8 +429,6 @@ async function findDuplicateExplicitCapture(
         );
         if (!result.has && result.authoritative) return null;
       } catch (err) {
-        // Fail open: an unavailable targeted index must not hide a durable
-        // pending-review duplicate.
         void err;
       }
     } else {
@@ -470,8 +449,6 @@ async function findDuplicateExplicitCapture(
             if (isIndexAuthoritative) return null;
           }
         } catch (err) {
-          // Fail open: an unavailable targeted index must not hide a durable
-          // pending-review duplicate.
           void err;
         }
       }
@@ -489,9 +466,6 @@ async function findDuplicateExplicitCapture(
     }
     if (memory.frontmatter.category !== candidate.category) return false;
     if (normalizeExplicitCaptureContent(memory.content) !== normalizedCandidate) return false;
-    // Connector-aware dedup: same content from different connectors is NOT
-    // a duplicate. Operator (undefined) and connector-tagged memories are
-    // always distinct. Normalize empty strings to undefined.
     const existingConnector = memory.frontmatter.sourceConnector?.trim() || undefined;
     const newConnector = candidate.sourceConnector?.trim() || undefined;
     if (existingConnector !== newConnector) return false;
@@ -521,8 +495,6 @@ async function persistSealedExplicitCapture(
 ): Promise<PersistedExplicitCapture> {
   const { id, duplicateOf, tombstoneBlocked } = await storage.writeSealedMemory(captureEnvelope);
   if (duplicateOf) return { id, duplicateOf, tombstoneBlocked };
-  // #1522: catalog touch handled at the storage chokepoint — the StorageManager's
-  // post-write hook records the namespace touch automatically.
 
   const created = new Date().toISOString();
   const event: MemoryLifecycleEvent = {
@@ -547,18 +519,11 @@ async function persistExplicitCaptureUnlocked(
   storage: StorageManager
 ): Promise<PersistedExplicitCapture> {
   const isFact = candidate.category === "fact";
-  // Facts take a cheap early exit here and re-check inside the dedup window.
-  // Every other category checks only under the capture lock, so its gate and
-  // its write stay one atomic step per dedup key (#3354).
   if (isFact) {
     const duplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
     if (duplicate) return duplicatePersistResult(duplicate);
   }
 
-  // #1645 (review thread yG-): surface the tombstone block so callers
-  // (memory_store tool, access-service HTTP/MCP) can report the capture as
-  // queued for review instead of a successfully stored active memory.
-  // Sealed-envelope write (issue #1989 PR2).
   const captureEnvelope = composeMemoryEnvelope(
     {
       content: candidate.content,
@@ -588,13 +553,6 @@ async function persistExplicitCaptureUnlocked(
       return duplicate ? duplicatePersistResult(duplicate) : await writeSealed();
     });
   }
-  // #3354: fact captures commit inside the per-dir fact-dedup window so a
-  // concurrent extraction write of the same fact is caught by the recheck
-  // instead of racing the persist-time gate. The tombstone capture write
-  // lock stays INSIDE the window: every other window writer (extraction,
-  // promotion) acquires the tombstone lock only inside writeMemory, so
-  // taking it here first would order tombstone→window against their
-  // window→tombstone and stall the capture on the 60s write-lock backoff.
   const raced: RacedDuplicate = { match: null };
   const outcome = await persistUnderFactDedupWindow(
     storage.dir,
@@ -706,9 +664,6 @@ export async function queueExplicitCaptureForReview(
   const reason = sanitizeReviewText(normalizeExplicitCaptureError(error), "explicit capture failed");
   const requestedNamespace = asTrimmed(input.namespace);
   const resolvedNamespace = asTrimmed(options.resolvedNamespace);
-  // A caller-pre-authorized namespace (e.g. a session-owned project overlay
-  // from the access service) routes directly; otherwise apply the static
-  // policy allow-list guard (#1434).
   const queueNamespace =
     resolvedNamespace ??
     ((input as { namespacePreResolved?: boolean }).namespacePreResolved
@@ -744,13 +699,6 @@ export async function queueExplicitCaptureForReview(
         ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
       },
       { source: source === "inline" ? "explicit-inline-review" : "explicit-review" },
-      // The review queue is the FALLBACK for a capture that already failed
-      // primary validation — it must never be un-queueable. The tag list is
-      // machine-assembled (requested tags + the two fixed review tags), so 49+
-      // requested tags would push past the 50-tag limit and strict compose
-      // would throw, losing the capture (#2014 review round). Salvage clamps
-      // instead; the fixed review tags sort first in the assembly above, so
-      // they always survive the clamp.
       { salvage: true }
     );
     const { id } = await storage.writeSealedMemory(reviewEnvelope);

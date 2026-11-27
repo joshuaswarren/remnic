@@ -1,15 +1,6 @@
-/**
- * Supersession chain resolution for shared-context curation (issue #1957).
- *
- * A shared item may supersede another item, which may itself be superseded.
- * Curation needs the live head of that chain. This module resolves the head
- * deterministically and survives malformed input: cycles, forks, and depth
- * blowups return errors instead of throwing or looping.
- */
 
 export interface SupersessionItem {
   id: string;
-  /** Id of the item this one replaces, when any. */
   supersedes?: string;
 }
 
@@ -51,8 +42,6 @@ export function resolveSupersessionHead(input: {
     return { ok: false, error: "unknown_id", chain: [] };
   }
 
-  // Build the id set and the successor map. Blank ids cannot participate,
-  // and a blank `supersedes` value cannot point at anything.
   const ids = new Set<string>();
   const successorOf = new Map<string, string>();
   for (const item of items) {
@@ -63,7 +52,6 @@ export function resolveSupersessionHead(input: {
     const target =
       typeof item.supersedes === "string" ? item.supersedes.trim() : "";
     if (target === "") continue;
-    // Fork resolution: keep the smallest successor id for determinism.
     const best = successorOf.get(target);
     if (best === undefined || id < best) {
       successorOf.set(target, id);

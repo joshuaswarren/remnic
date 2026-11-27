@@ -64,7 +64,6 @@ function makeDeps(state: StubState, queue: ExtractionQueueCoordinator): BacklogS
         const turns = state.counts.get(key)?.turns ?? 0;
         if (turns === 0) return "empty";
         state.claimedThisRun.add(key);
-        // The renamed claim holds the session's pending turns.
         state.claimed.add(key);
         state.claimTurns.set(key, turns);
         return "claimed";
@@ -94,7 +93,6 @@ function makeDeps(state: StubState, queue: ExtractionQueueCoordinator): BacklogS
     drainKey: async (key) => {
       const outcome = state.outcomes.shift() ?? emptyOutcome(key);
       state.drained.push({ key, outcome });
-      // A drained claim is an empty tombstone: authoritative, no pending turns.
       if (outcome.status === "drained") state.claimTurns.set(key, 0);
       return outcome;
     },
@@ -183,7 +181,6 @@ test("startup drains existing claims and newly buffered sessions within the queu
   try {
     await scheduler.tickForTest();
     await scheduler.settleForTest();
-    // The first tick filled the concurrency bound; the next drains the rest.
     await scheduler.tickForTest();
     await scheduler.settleForTest();
     assert.deepEqual(
@@ -222,7 +219,6 @@ test("an empty ack tombstone is authoritative: no resubmit, no recount", async (
     await scheduler.settleForTest();
     assert.equal(state.drained.length, 0, "a tombstoned key is never resubmitted");
     assert.equal(scheduler.snapshot().counters.processed, 0);
-    // No ingress: still nothing on the next tick.
     await scheduler.tickForTest();
     await scheduler.settleForTest();
     assert.equal(state.drained.length, 0);
@@ -361,7 +357,6 @@ test("the in-flight bound is the queue's own maxConcurrency", async () => {
         await new Promise<void>((resolve) => gates.set(key, resolve));
         const outcome = emptyOutcome(key);
         state.drained.push({ key, outcome });
-        // A drained claim tombstones (no pending turns left to list).
         state.claimTurns.set(key, 0);
         return outcome;
       },
@@ -475,14 +470,12 @@ test("stop aborts in-flight drains; a fresh start resumes the still-claimed back
   await stopping;
   assert.equal(observedSignals[0]?.aborted, true, "stop aborts in-flight drains");
   assert.equal(scheduler.snapshot().inFlight.length, 0);
-  // A fresh scheduler over the same (still-claimed) backlog resumes it.
   const second = new BacklogScheduler(
     {
       ...deps,
       drainKey: async (key) => {
         const outcome = emptyOutcome(key, { turnsAtStart: 9 });
         state.drained.push({ key, outcome });
-        // A drained claim tombstones (no pending turns left to list).
         state.claimTurns.set(key, 0);
         return outcome;
       },
@@ -528,7 +521,6 @@ test("a wired scheduler drains real backlog and resumes after tombstone-consumin
       }
       assert.equal(scheduler.snapshot().counters.processed, 2, "both persisted sessions drained");
       assert.equal(calls.length, 2);
-      // The native claim path: session files gone, empty tombstones remain.
       const liveFiles = await orchestrator.storage.loadBuffer();
       assert.equal(liveFiles.entries?.["wired-1"]?.turns.length ?? 0, 0, "the drained session file is consumed");
       const claims = orchestrator.storage.bufferDrainClaims();
@@ -616,7 +608,6 @@ test("a full session cap admits a new durable session after the backlog drains",
       assert.equal(scheduler.snapshot().counters.durableOutputs, 3, "one durable output per session");
       assert.equal(calls.length, 3, "the model double saw one turn slice per session");
 
-      // Durable extraction kept the content: each session's fact is on disk.
       for (const source of ["alpha one", "beta two", "gamma three"]) {
         const hits = await memoryFilesContaining(memoryDir, `cap-cycle fact for ${source}`);
         assert.ok(hits.length > 0, `content of the drained session was lost: ${source}`);
@@ -881,7 +872,6 @@ test("claim tombstones clear identical active and retained copies on live save",
     assert.deepEqual(await claims.drainedTurns(key), { turns: [source], retainedTurns: [source] });
     assert.equal(await claims.ack(key, lease.ownerId), "acked");
 
-    // A new same-key save consumes the tombstone through BufferSessionFiles.
     assert.notEqual(await buffer.addTurnBounded(key, newer), null);
     await buffer.flushPendingSave({ throwOnFailure: true });
     assert.deepEqual(buffer.getTurns(key), [newer]);
@@ -974,7 +964,6 @@ test("a claim decision unsettled mid-rename keeps the key reserved until it sett
       ...deps,
       claims: {
         ...deps.claims,
-        // Pause the claim decision AFTER the synchronous reservation.
         claimFromSessionFile: async (key) => {
           await claimGate;
           state.claimedThisRun.add(key);
@@ -994,7 +983,6 @@ test("a claim decision unsettled mid-rename keeps the key reserved until it sett
   scheduler.start();
   try {
     await scheduler.tickForTest();
-    // The decision is unsettled: the reservation is held and visible.
     assert.deepEqual(scheduler.snapshot().reservedKeys, ["racy"]);
     // A live task enqueued for the same key cannot start past the gate while
     // the reservation is held (selection skips reserved keys — proven in the
@@ -1237,7 +1225,6 @@ test("a discovery failure after the page cursor moved restores the cursor so the
   const deps = makeDeps(state, queue);
   let failLiveCounts = true;
   deps.liveBufferCounts = () => {
-    // The page is already listed when this read fails — the cursor moved.
     if (failLiveCounts) {
       failLiveCounts = false;
       throw new Error("EIO: buffer counts");

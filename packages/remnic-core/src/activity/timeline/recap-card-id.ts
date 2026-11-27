@@ -1,8 +1,3 @@
-/**
- * Parse a recap card id (issue #2051 leftover).
- *
- * Pure. Empty is missing_id. Newline is invalid_id.
- */
 
 export type ParseRecapCardIdResult =
   | { ok: true; id: string }

@@ -25,8 +25,6 @@ const CODE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
 const IMPORTER_ROOTS = ["tests", "src", "dashboard/lib", "integrations/amb"];
 const MAX_QUEUE_STEPS = 200000;
 
-// JSON-sourced values: the anti-slop gate bans runtime type-of narrowing on
-// new lines, so shape checks go through the object tag instead.
 const objectTag = (value) => Object.prototype.toString.call(value);
 const isString = (value) => objectTag(value) === "[object String]";
 const isPlainObject = (value) => objectTag(value) === "[object Object]";
@@ -51,7 +49,6 @@ function walkFiles(rootDir, extensions, out = []) {
   return out;
 }
 
-/** Repo-relative posix path of every code file under the importer roots and every package src dir. */
 export function listImportableFiles(repoRoot) {
   const files = [];
   for (const root of IMPORTER_ROOTS) {
@@ -71,7 +68,6 @@ export function listImportableFiles(repoRoot) {
   return files.sort();
 }
 
-/** Extract static/dynamic import and require specifiers from source text. */
 export function extractSpecifiers(source) {
   const specifiers = [];
   for (const match of source.matchAll(SPECIFIER_RE)) {
@@ -80,10 +76,6 @@ export function extractSpecifiers(source) {
   return specifiers;
 }
 
-/**
- * Map workspace package names (@remnic/<x>) to their package directory and
- * parsed package.json, so `exports` subpaths can resolve to remnic-source.
- */
 export function loadPackageIndex(repoRoot) {
   const index = new Map();
   const packagesDir = path.join(repoRoot, "packages");
@@ -239,10 +231,6 @@ export function resolveSpecifier(repoRoot, importerPath, specifier, packageIndex
   return resolveSpecifierAll(repoRoot, importerPath, specifier, packageIndex)[0] ?? null;
 }
 
-/**
- * Build importer -> imported-file edges for every code file under the
- * importer roots and package src dirs. Returns Map<importer, Set<imported>>.
- */
 export function buildImportGraph(repoRoot, importerFiles, packageIndex) {
   const graph = new Map();
   for (const importer of importerFiles) {
@@ -263,7 +251,6 @@ export function buildImportGraph(repoRoot, importerFiles, packageIndex) {
   return graph;
 }
 
-/** Invert the graph: Map<importedFile, Set<directImporter>>. */
 export function buildReverseIndex(graph) {
   const reverse = new Map();
   for (const [importer, deps] of graph) {

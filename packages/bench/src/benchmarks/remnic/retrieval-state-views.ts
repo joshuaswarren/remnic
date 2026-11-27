@@ -1,17 +1,3 @@
-/**
- * Deterministic LTP-style state-confusion task set (issue #1952).
- *
- * Each task is a change-oriented query over a small synthetic corpus with a
- * supersession chain. The runner replays the SAME read-side contract the
- * live recall pipeline applies (policy-filter admission → annotateStateView
- * labels): a superseded row is admitted only when its successor is in the
- * candidate set, then labeled current/historical/transition. No I/O, no
- * model, no external benchmark — exact-match expectations in both modes.
- *
- * Baseline (feature off) expects the supersession-filter view: superseded
- * rows never surface. Enabled (feature on) expects the labeled history view;
- * a non-change query stays baseline-identical even when enabled.
- */
 import {
   annotateStateView,
   isChangeOrientedQuery,
@@ -82,8 +68,6 @@ export const STATE_VIEW_TASKS: readonly StateViewTask[] = [
       fact("queue-current", "active"),
       fact("queue-old", "superseded", { supersededBy: "queue-current", supersededAt: "2026-03-01" }),
     ],
-    // No change intent: state views are inert and the supersession filter
-    // alone decides — identical to baseline, and the row carries no label.
     expectedEnabled: [{ id: "queue-current" }],
     expectedBaseline: ["queue-current"],
   },

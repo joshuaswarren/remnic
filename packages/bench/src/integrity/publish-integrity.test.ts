@@ -74,7 +74,6 @@ test("assertPublishableIntegrity rejects public split for the leaderboard", () =
 test("buildBenchmarkPublishFeed skips results with missing integrity rather than aborting", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-integrity-publish-"));
   const incomplete = buildResult("incomplete", { datasetHash: undefined });
-  // Older, valid result for the same benchmark.
   const older = buildResult("older-ok", { id: "older-ok" } as never);
   (older.meta as { id: string }).id = "older-ok";
   (older.meta as { timestamp: string }).timestamp = "2026-04-17T00:00:00.000Z";

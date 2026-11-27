@@ -1,13 +1,3 @@
-// Lazy loader for optional @remnic/import-<source> packages (issue #568).
-//
-// Each supported source (chatgpt, claude, gemini, mem0, supermemory) ships as
-// its own optional workspace package so the CLI stays à la carte — users who only
-// need one importer should not have to install the others. Loading goes
-// through this helper so the bundler cannot statically resolve the specifier
-// (computed-string-concatenation import) and so every importer gets the same
-// "install hint on miss, re-throw on every other error" treatment as the
-// existing bench / weclone-export loaders.
-//
 // Adding a new importer:
 //   1. Append its name to `SUPPORTED_IMPORTERS`.
 //   2. Publish the package as `@remnic/import-<name>`.
@@ -31,15 +21,6 @@ export interface ImporterModule {
   adapter: ImporterAdapter<unknown>;
 }
 
-/**
- * The canonical list of importer sources slice-2+ will land. Slice-1 ships
- * the infrastructure only — so `remnic import --adapter chatgpt` returns a
- * clean install hint until slice-2 merges `@remnic/import-chatgpt`.
- *
- * Optional `@remnic/import-*` peers that use non-generic command surfaces are
- * intentionally excluded here: WeClone uses the bulk-import source registry,
- * and lossless-claw uses `remnic import-lossless-claw`.
- */
 export const SUPPORTED_IMPORTERS = [
   "chatgpt",
   "claude",
@@ -71,15 +52,9 @@ export async function loadImporterModule(
     throw notInstalledError(name);
   }
 
-  // Computed specifier so the bundler cannot statically resolve the
-  // dependency. CLAUDE.md rule 57: optional packages must not be present in
-  // the CLI's runtime `dependencies` or bundled `noExternal` list.
   const specifier = "@remnic/" + "import-" + name;
   try {
     const mod = (await import(specifier)) as Partial<ImporterModule> & {
-      // Some packages export the adapter under a name-prefixed export; we
-      // accept either the canonical `adapter` export or a `<name>Adapter`
-      // alias to keep the contract flexible for slice-authoring ergonomics.
       [key: string]: unknown;
     };
     const resolved = resolveAdapterExport(mod, name);

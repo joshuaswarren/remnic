@@ -1,20 +1,3 @@
-/**
- * Policy-call LLM routing for deep recall (issue #2332).
- *
- * Mirrors `extraction-judge.ts` `callJudgeLlm` exactly: local client first
- * (json_object response format) unless modelSource is "gateway", then the
- * fallback client with the shared background-task chain options. Never a
- * raw OpenAI client. Returns null when both legs fail — the loop treats
- * that as a stop, never a crash.
- *
- * One `timeoutMs` budget spans BOTH legs (issue #2915): the fallback leg
- * receives only what the local leg left on the clock, so a single policy
- * step can no longer outlive `stepTimeoutMs` by failing slowly locally and
- * restarting the full timeout remotely. A spent budget starts neither leg.
- * The transport cancellation signal is forwarded to both legs and checked
- * before each start and after each caught failure so an abort is never
- * converted to null.
- */
 
 import { gatewayTaskChainOptions, type FallbackLlmClient } from "./fallback-llm.js";
 import type { LocalLlmClient } from "./local-llm.js";

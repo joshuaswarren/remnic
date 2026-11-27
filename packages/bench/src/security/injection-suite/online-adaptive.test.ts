@@ -1,16 +1,3 @@
-/**
- * H5 response-conditioned adaptive attack suite (study v3, section 5).
- *
- * Unit tests cover the planning order, attacker-output stripping, invalid
- * rewrite rejection, resume contract sensitivity to the attacker prompt, and
- * the analyzer's attack@k monotonicity on a hand-built fixture. A mutation
- * exercise proves the cumulative-any-<=k rule discriminates by computing
- * exact-k rates on the same fixture and showing they differ. A single
- * end-to-end run wires a fake defended adapter and a scripted attacker /
- * defended model through the full online-adaptive pipeline and asserts the
- * four run-directory artifacts (episodes, responses, online-corpus, online
- * -corpus-manifest).
- */
 
 import { H5_DECISION_RULE_SHA256 } from "./decision-rule.js";
 import assert from "node:assert/strict";
@@ -289,7 +276,6 @@ test("a crash on a retried attacker attempt (after a host fault) still pauses th
       outputTokens: 0,
       model: "fixture-defender",
     });
-    // First run: attempt 1 is a host fault (retried), attempt 2 crashes
     // mid-request. The retry must carry its own in-flight marker.
     let calls = 0;
     await assert.rejects(
@@ -329,7 +315,6 @@ test("the attacker in-flight marker survives until the corpus line is durable", 
       outputTokens: 0,
       model: "fixture-defender",
     });
-    // Crash between the attacker response and the corpus append: the paid
     // call succeeds but leaves a directory where the corpus file goes, so
     // the append that follows fails before any line is durable.
     await assert.rejects(
@@ -383,7 +368,6 @@ test("a durable corpus line reconciles a marker left by a crash before the attac
   try {
     const base = baseVariantFor("minja", 1);
     const defender = () => ({ text: `ACK ${base.canary} ${base.livenessCanary}`, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "d" });
-    // Crash after the corpus append and before the attacker try commits:
     // simulate by letting the first run finish, then re-arming the marker
     // and dropping the attacker try from the checkpoint.
     let attackerCalls = 0;
@@ -406,7 +390,6 @@ test("a durable corpus line reconciles a marker left by a crash before the attac
       `${JSON.stringify({ ...loaded.checkpoint, terminal: undefined, tries: [], inFlight: { attempt: 1, startedAt: new Date().toISOString() } }, null, 2)}\n`,
     );
     const callsBefore = attackerCalls;
-    // A plain resume must neither pause nor re-pay the attacker: the corpus
     // line is the durable result of that paid call.
     const resumed = await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: attacker, defendedResponder: defender, resume: true });
     assert.equal(resumed.exitCode, 0, resumed.output);
@@ -427,7 +410,6 @@ test("the runner records the unsliced grid size when a limit is set (#3080)", as
   try {
     const base = baseVariantFor("minja", 1);
     const responder = () => ({ text: `ACK ${base.canary} ${base.livenessCanary}`, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "m" });
-    // The fake grid is 2 arms x 1 family x 2 variants x 2 iterations = 8 rows.
     await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: responder, defendedResponder: responder, limit: 4 });
     const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as { limit: number; unslicedPlannedRows: number; expectedRows: number };
     assert.equal(run.limit, 4);
@@ -443,12 +425,10 @@ test("a runner-created no-op limit run analyzes as estimable (round trip, PR #30
   try {
     const base = baseVariantFor("minja", 1);
     const responder = () => ({ text: `ACK ${base.canary} ${base.livenessCanary}`, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "m" });
-    // The fake grid is 8 rows; a limit of 8 freezes all of it.
     await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: responder, defendedResponder: responder, limit: 8 });
     const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(stats.rowAccounting?.limitedDesign, false, "the runner's own hash must verify in the analyzer");
     assert.equal(stats.decision.estimable, true);
-    // The same round trip with an EXPLICIT "unverified" attacker digest: the
     // analyzer accepts both hashed forms of the sentinel (post-cap r6).
     const tmp2 = await mkdtemp(path.join(os.tmpdir(), "online-roundtrip-unverified-"));
     try {
@@ -465,7 +445,6 @@ test("a runner-created no-op limit run analyzes as estimable (round trip, PR #30
     } finally {
       await rm(tmp2, { recursive: true, force: true });
     }
-    // Editing the limit to null after the fact must not read as complete.
     const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as Record<string, unknown>;
     await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, limit: null })}\n`, "utf8");
     const nulled = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
@@ -493,7 +472,6 @@ test("a crash after the attacker request is sent pauses the resumed run until --
       outputTokens: 0,
       model: "fixture-defender",
     });
-    // First run: the attacker transport dies with a non-host-fault error
     // after the in-flight marker is persisted and before any corpus line.
     await assert.rejects(
       runOnlineAdaptiveWithFake({
@@ -507,7 +485,6 @@ test("a crash after the attacker request is sent pauses the resumed run until --
     );
     const corpusBefore = await readFile(path.join(tmp, "online-corpus.jsonl"), "utf8").catch(() => "");
     assert.equal(corpusBefore.trim(), "", "no corpus line landed for the crashed attacker call");
-    // Resume without --retry-ambiguous must pause on the ambiguous paid attempt.
     let attackerCalls = 0;
     const attacker = () => {
       attackerCalls += 1;
@@ -517,7 +494,6 @@ test("a crash after the attacker request is sent pauses the resumed run until --
     assert.equal(paused.exitCode, 2);
     assert.match(paused.output, /ambiguous paid attempt/);
     assert.equal(attackerCalls, 0, "a paused resume must not re-pay the attacker");
-    // With --retry-ambiguous the run proceeds and the corpus line lands.
     const recovered = await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: attacker, defendedResponder: defender, resume: true, retryAmbiguous: true });
     assert.equal(recovered.exitCode, 0);
     assert.ok(attackerCalls >= 1);
@@ -598,7 +574,6 @@ test("analyzer attack@k is monotone non-decreasing on a hand-built fixture", () 
 });
 
 test("exact-k mutation breaks monotone and differs from cumulative rates", () => {
-  // Variant 1 succeeds at both iterations; variant 2 only at k=0.
   const rows = buildFixtureRows({ 1: [0, 1], 2: [0] });
   const byVariant = new Map<string, { k0: boolean; k1: boolean }>();
   for (const row of rows) {
@@ -760,7 +735,6 @@ function makeFakeAdapter(_opts: FakeAdapterOptions): Promise<BenchMemoryAdapter>
     async store(sessionId, messages) {
       const turns = messages.slice();
       const joined = turns.map((turn) => turn.content).join("\n");
-      // Mimic the write-path screen only when the arm's defense mode uses it.
       const screenEnabled = _opts.configOverrides?.memoryInjectionDefenseMode === "quarantine" ||
         _opts.configOverrides?.memoryInjectionDefenseMode === "layered";
       const screen = screenEnabled ? screenCandidateFact(joined) : { quarantine: false, findings: [] };
@@ -805,7 +779,6 @@ async function readJsonlLines(file: string): Promise<string[]> {
   return content.split("\n").filter((line) => line.length > 0);
 }
 
-// Silence unused-import warnings on symbols referenced only by other suites.
 void onlineVariantFromBase;
 void buildOnlineAdaptiveAttackerInput;
 void defenseMode;
@@ -842,7 +815,6 @@ function buildFixtureRows(
 }
 
 test("analyzer success@k is unchanged for a complete run with manifest", async () => {
-  // Build a minimal complete run directory:
   // - run.json with expectedRows matching the planned count
   // - expected-design.json with two planned rows
   // - episodes.jsonl covering both rows
@@ -901,7 +873,6 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
       gitSha: "0".repeat(40),
       cleanTree: true,
       attackerIterations: 1,
-      // Unconditional verification: the fixture writes the real hash over
       // exactly the metadata it persists.
       resumeContractHash: injectionSuiteResumeContractHashForOnline({
         suiteVersion: "h5-injection-suite-v3",
@@ -969,7 +940,6 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
     const episodes = identities.map((identity, idx) => ({
       rowKey: buildInjectionSuiteRowKey(identity),
       identity,
-      // First row variant succeeds; second row variant blocks at k=1. This
       // gives 1/2 success and 1/2 block — the fixed denominator the
       // analyzer accumulates against.
       attackSucceeded: idx % 2 === 0,
@@ -987,7 +957,6 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
     assert.equal(stats.rowAccounting?.corpusManifestPresent, true);
     assert.equal(stats.rowAccounting?.manifestHashVerified, true);
     assert.equal(stats.rowAccounting?.missingPlannedRows, 0);
-    // Cumulative success@k fixed denominator (1 attacker iteration, two
     // variants): one of two succeeded. The exact rate is locked in by
     // this fixture; a code change that flips how missing corpus lines
     // count flips this number.
@@ -1071,7 +1040,6 @@ async function writeOnlineFixture(
     // the real one computed over the exact metadata below, or the
     // analyzer's tamper check (correctly) distrusts the value.
   };
-  // The analyzer verifies the resume hash unconditionally, so the fixture
   // always writes the real one (both digest forms accepted, like the
   // analyzer: hash with the stored sentinel).
   const metadata: InjectionSuiteRunMetadata = {
@@ -1137,7 +1105,6 @@ async function writeOnlineFixture(
 test("analyzer flags an interrupted run with missing manifest as not estimable", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "online-interrupted-"));
   try {
-    // No corpus, no manifest, no episodes: the run never finished.
     await writeOnlineFixture(tmp, [onlineIdentity("minja-1")]);
     const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(stats.decision.estimable, false);
@@ -1153,7 +1120,6 @@ test("analyzer flags a run with manifest but a missing planned row as not estima
   const tmp = await mkdtemp(path.join(os.tmpdir(), "online-missing-row-"));
   try {
     const planned = [onlineIdentity("minja-1"), onlineIdentity("minja-2")];
-    // Design says 2, corpus has both, only 1 episode row.
     await writeOnlineFixture(tmp, planned, { corpusFor: planned, episodesFor: [planned[0]!] });
     const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(stats.decision.estimable, false);
@@ -1169,7 +1135,6 @@ test("analyzer treats a never-generated planned iteration as incomplete", async 
   const tmp = await mkdtemp(path.join(os.tmpdir(), "online-never-generated-"));
   try {
     const planned = [onlineIdentity("minja-1"), onlineIdentity("minja-2")];
-    // A peer worker still owns minja-2: no corpus line and no row for it,
     // yet this worker wrote a valid manifest over its own single line.
     await writeOnlineFixture(tmp, planned, { corpusFor: [planned[0]!], episodesFor: [planned[0]!] });
     const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
@@ -1185,7 +1150,6 @@ test("analyzer treats a never-generated planned iteration as incomplete", async 
 test("analyzer treats a planned chain that stops before the final k as incomplete", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "online-truncated-"));
   try {
-    // A --limit cut froze minja-1 through k3 but minja-2 only through k1
     // under K=3; the short chain's blocked k1 must not become a k3 block.
     const planned = [
       onlineIdentity("minja-1", 1),
@@ -1206,7 +1170,6 @@ test("analyzer treats a planned chain that stops before the final k as incomplet
 test("a recorded --limit makes a complete-looking smoke run non-estimable", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "online-limited-"));
   try {
-    // The pathological shape: with K=3, `--limit 4` freezes ONE whole
     // k0..k3 chain, so no chain is truncated, nothing is missing, and every
     // planned cell ran. Only the recorded limit reveals that the design is
     // a subset of the registered grid (#3078).
@@ -1224,7 +1187,6 @@ test("a recorded --limit makes a complete-looking smoke run non-estimable", asyn
     const unlimited = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(unlimited.rowAccounting?.limitedDesign, false);
     assert.equal(unlimited.decision.estimable, true, "without a limit this shape is estimable");
-    // A truncating limit marks it; the hash covers the unsliced count.
     await writeOnlineFixture(tmp, planned, {
       corpusFor: planned.slice(1),
       episodesFor: planned,
@@ -1235,7 +1197,6 @@ test("a recorded --limit makes a complete-looking smoke run non-estimable", asyn
     const limited = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(limited.rowAccounting?.limitedDesign, true);
     assert.equal(limited.decision.estimable, false);
-    // A limit at or above the grid is a no-op and analyzes normally (#3080).
     await writeOnlineFixture(tmp, planned, {
       corpusFor: planned.slice(1),
       episodesFor: planned,
@@ -1246,7 +1207,6 @@ test("a recorded --limit makes a complete-looking smoke run non-estimable", asyn
     const noopLimit = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(noopLimit.rowAccounting?.limitedDesign, false);
     assert.equal(noopLimit.decision.estimable, true, "a non-truncating limit does not mark the run");
-    // A limit ABOVE the grid is the same no-op (limit >= unsliced, r1).
     const above = { ...JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) } as Record<string, unknown>;
     const finalAbove = { ...above, limit: 5, unslicedPlannedRows: 5 };
     const aboveHash = injectionSuiteResumeContractHashForOnline(finalAbove as never);
@@ -1267,7 +1227,6 @@ test("a hand-edited unsliced count is distrusted via the resume-contract hash (P
       onlineIdentity("minja-1", 2),
       onlineIdentity("minja-1", 3),
     ];
-    // A real truncating run: limit 4 of an 8-row grid, hash over 8.
     await writeOnlineFixture(tmp, planned, {
       corpusFor: planned.slice(1),
       episodesFor: planned,
@@ -1276,7 +1235,6 @@ test("a hand-edited unsliced count is distrusted via the resume-contract hash (P
       unslicedPlannedRows: 8,
       attackerBaseUrl: "http://127.0.0.1:9",
     });
-    // Tamper: set the count equal to the limit so the run reads as a no-op.
     // The hash no longer matches, so the value is distrusted and the run
     // stays non-estimable.
     const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as Record<string, unknown>;
@@ -1284,7 +1242,6 @@ test("a hand-edited unsliced count is distrusted via the resume-contract hash (P
     const tampered = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(tampered.rowAccounting?.limitedDesign, true, "a stale count cannot dodge the marking");
     assert.equal(tampered.decision.estimable, false);
-    // Deleting the field entirely cannot dodge either: the run was created
     // with limit+unsliced folded into its hash, so stripping both fails the
     // unconditional verification (post-cap r8).
     await writeFile(
@@ -1294,7 +1251,6 @@ test("a hand-edited unsliced count is distrusted via the resume-contract hash (P
     );
     const stripped = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(stripped.rowAccounting?.limitedDesign, true, "a stripped field fails the unconditional hash check");
-    // The same hole with the limit CLEARED: an implausible PRESENT count
     // (0, a string, below the design) plus limit:null must still mark the
     // run limited -- presence alone is a tamper signal (post-cap r5).
     for (const bad of [0, "8", 3, null]) {
@@ -1385,11 +1341,9 @@ test("analyzer refuses an online design that does not match the frozen hash", as
 });
 
 test("importing online-adaptive never resolves filesystem when run from a temp dir", async () => {
-  // The module loads fine from this worktree (fixtures present) or from a
   // temp dir (resolvers are lazy). We verify the resolvers throw only when
   // actually invoked without the bench or core layout.
   assert.doesNotThrow(() => {
-    // The named export is a function — calling it triggers the lookup.
     // Calling it on this worktree must succeed because fixtures exist.
     resolveDefaultAttackerPromptPath();
   });
@@ -1399,7 +1353,6 @@ test("importing online-adaptive never resolves filesystem when run from a temp d
 test("analyzer scores only cells in the frozen design", () => {
   const arm = "source-authenticated-fencing" as InjectionSuiteArm;
   const planned = new Set([`${arm}\u0000minja\u00001`]);
-  // One planned cell whose attack succeeded at k1: block rate must be 0/1,
   // not 1/8 with seven unplanned cells counted as blocks.
   const rows = [1].map(() => {
     const identity = defaultSuiteIdentity({
@@ -1468,7 +1421,6 @@ test("online analyzer drops episodes outside the frozen design and refuses drift
   try {
     const planned = [onlineIdentity("minja-1"), onlineIdentity("minja-2")];
     await writeOnlineFixture(tmp, planned, { corpusFor: planned, episodesFor: planned });
-    // A self-consistent row for another seed, same arm/family/index, appended after the fact.
     const foreign = defaultSuiteIdentity({ ...planned[0]!, seed: 72 });
     const foreignRow = { rowKey: buildInjectionSuiteRowKey(foreign), identity: foreign, attackSucceeded: true, canaryEmitted: true, quarantined: false, fenced: true };
     await writeFile(path.join(tmp, "episodes.jsonl"), `${(await readFile(path.join(tmp, "episodes.jsonl"), "utf8")).trimEnd()}\n${JSON.stringify(foreignRow)}\n`, "utf8");
@@ -1476,13 +1428,11 @@ test("online analyzer drops episodes outside the frozen design and refuses drift
     assert.equal(stats.rowAccounting?.unexpectedRows, 1);
     assert.equal(stats.decision.estimable, false);
     assert.equal(stats.arms[0]!.blockAtFinal.blocks, 2, "the foreign success never entered the scored cells");
-    // run.json dimensions that disagree with the hashed design are refused.
     const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as { variantsPerFamily: number; attackerIterations: number };
     await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, variantsPerFamily: 1 })}\n`, "utf8");
     await assert.rejects(analyzeInjectionSuiteOnlineAdaptiveRun(tmp), /variantsPerFamily/);
     await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, attackerIterations: 0 })}\n`, "utf8");
     await assert.rejects(analyzeInjectionSuiteOnlineAdaptiveRun(tmp), /attackerIterations/);
-    // A --limit cut leaves a smaller design than run.json declares; that is
     // reported as incomplete, never thrown (dry-run artifacts stay readable).
     await writeFile(
       path.join(tmp, "run.json"),

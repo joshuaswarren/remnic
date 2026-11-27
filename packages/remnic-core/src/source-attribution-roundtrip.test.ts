@@ -61,8 +61,6 @@ test("round-trip: citation-enriched fact content survives writeMemory → readAl
     assert.equal(parsed!.session, "main");
     assert.equal(parsed!.ts, "2026-04-10T14:25:07Z");
 
-    // stripCitation must recover the original fact body verbatim so
-    // downstream consumers that want raw text have a clean escape hatch.
     assert.equal(stripCitation(written!.content), factBody);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -85,7 +83,6 @@ test("legacy fact memories without a citation marker still read cleanly", async 
     const written = memories.find((m) => m.frontmatter.id === id);
     assert.ok(written);
     assert.equal(hasCitation(written!.content), false);
-    // Plain content is unchanged by strip, so recall sees the exact body.
     assert.equal(stripCitation(written!.content), legacyBody);
     assert.equal(parseCitation(written!.content), null);
   } finally {
@@ -94,7 +91,6 @@ test("legacy fact memories without a citation marker still read cleanly", async 
 });
 
 // ---------------------------------------------------------------------------
-// Fix #1 regression: Codex P2 — Canonicalize pre-tagged facts before hashing
 // ---------------------------------------------------------------------------
 
 test("stripCitationForTemplate: default template — strips citation and returns canonical body", () => {
@@ -119,10 +115,6 @@ test("stripCitationForTemplate: custom template — strips custom citation", () 
   assert.equal(result, body);
 });
 
-// #2330 round N+8 (P2-C): a body tagged under the DEFAULT format can later
-// receive a CUSTOM template marker after a config change. Canonicalization
-// must strip BOTH recognized forms in either order — the default fast path
-// alone left the custom marker inside the hash input.
 test("stripCitationForTemplate: mixed default + custom markers — strips both, in either order", () => {
   const body = "Cache TTL is 30 seconds.";
   const template = "[src:{agent}@{date}]";
@@ -141,10 +133,6 @@ test("stripCitationForTemplate: mixed default + custom markers — strips both, 
 });
 
 test("stripCitationForTemplate: all-placeholder template (no literal anchors) — text returned unchanged", () => {
-  // A template with no literal prefix, suffix, or separator between
-  // placeholders cannot produce a reliable matcher. hasCitationForTemplate
-  // returns false for such templates, so stripCitationForTemplate passes the
-  // text through unchanged — it cannot detect a citation to strip.
   const body = "Some fact plannermain";
   const template = "{agent}{sessionId}";
   const result = stripCitationForTemplate(body, template);
@@ -152,7 +140,6 @@ test("stripCitationForTemplate: all-placeholder template (no literal anchors) �
 });
 
 // ---------------------------------------------------------------------------
-// Fix #2 regression: Cursor Medium — legacy hash rebuild on ensureFactHashIndexAuthoritative
 // ---------------------------------------------------------------------------
 
 /**
@@ -192,8 +179,6 @@ test("legacy fact rebuild: ensureFactHashIndexAuthoritative indexes legacy facts
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    // Write a legacy fact WITH a default-format citation but WITHOUT a
-    // contentHash frontmatter field, simulating a pre-#369 memory.
     const rawBody = "The production database uses connection pooling.";
     const citedBody = attachCitation(rawBody, {
       agent: "planner",

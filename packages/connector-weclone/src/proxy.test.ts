@@ -10,10 +10,6 @@ import {
 } from "./proxy.js";
 import type { WeCloneConnectorConfig } from "./config.js";
 
-/**
- * Create a mock HTTP server that responds with a fixed body for any request.
- * Listens on port 0 (OS-assigned) to avoid conflicts.
- */
 function createMockServer(
   handler: (
     req: http.IncomingMessage,
@@ -37,16 +33,10 @@ function createMockServer(
   });
 }
 
-/**
- * Read a response body as string.
- */
 async function readResponse(res: Response): Promise<string> {
   return res.text();
 }
 
-/**
- * Build a test config pointing at the given mock ports.
- */
 function testConfig(
   weclonePort: number,
   remnicPort: number,
@@ -66,7 +56,6 @@ function testConfig(
   };
 }
 
-// Track servers to clean up
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
@@ -96,7 +85,6 @@ describe("WeCloneProxy", () => {
     assert.ok(proxy.port > 0, "proxy should have a valid port");
     assert.equal(proxy.host, "127.0.0.1");
     await proxy.stop();
-    // Remove from cleanups since we already stopped
     cleanups.pop();
   });
 
@@ -211,7 +199,6 @@ describe("WeCloneProxy", () => {
     const responseBody = JSON.parse(await readResponse(res));
     assert.equal(responseBody.choices[0].message.content, "Hello from WeClone!");
 
-    // Verify memory was injected into the forwarded request
     assert.ok(receivedBody, "WeClone should have received a request");
     const messages = (receivedBody as Record<string, unknown>).messages as Array<{
       role: string;
@@ -291,7 +278,6 @@ describe("WeCloneProxy", () => {
     });
     cleanups.push(weclone.close);
 
-    // Remnic returns 500
     const remnic = await createMockServer((_req, res) => {
       res.writeHead(500);
       res.end("Internal Server Error");
@@ -324,7 +310,6 @@ describe("WeCloneProxy", () => {
       "Response without memory"
     );
 
-    // Verify the system message was NOT modified (no memory block)
     assert.ok(receivedBody);
     const messages = (receivedBody as Record<string, unknown>).messages as Array<{
       role: string;
@@ -420,7 +405,6 @@ describe("WeCloneProxy", () => {
       }),
     });
 
-    // Wait briefly for fire-and-forget observe
     await new Promise((r) => setTimeout(r, 100));
 
     assert.equal(
@@ -460,11 +444,9 @@ describe("WeCloneProxy", () => {
     const remnic = await createMockServer((req, res) => {
       requestCount++;
       if (requestCount === 1) {
-        // recall request
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ results: [] }));
       } else {
-        // observe request
         const chunks: Buffer[] = [];
         req.on("data", (c: Buffer) => chunks.push(c));
         req.on("end", () => {
@@ -492,7 +474,6 @@ describe("WeCloneProxy", () => {
       }),
     });
 
-    // Wait for fire-and-forget observe
     await new Promise((r) => setTimeout(r, 200));
 
     assert.ok(observeBody, "Observe request should have been sent");
@@ -538,7 +519,6 @@ describe("WeCloneProxy", () => {
     });
     cleanups.push(weclone.close);
 
-    // Remnic returns results with preview field (EngramAccessMemorySummary format)
     const remnic = await createMockServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
@@ -590,7 +570,6 @@ describe("WeCloneProxy", () => {
   });
 
   it("streams SSE responses for stream: true requests", async () => {
-    // WeClone mock returns SSE chunks
     const weclone = await createMockServer((req, res) => {
       const chunks: Buffer[] = [];
       req.on("data", (c: Buffer) => chunks.push(c));
@@ -621,11 +600,9 @@ describe("WeCloneProxy", () => {
     const remnic = await createMockServer((req, res) => {
       requestCount++;
       if (requestCount === 1) {
-        // recall
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ results: [] }));
       } else {
-        // observe
         const chunks: Buffer[] = [];
         req.on("data", (c: Buffer) => chunks.push(c));
         req.on("end", () => {
@@ -671,7 +648,6 @@ describe("WeCloneProxy", () => {
       "Response should have SSE content type"
     );
 
-    // Read the full streamed response
     const streamedBody = await res.text();
     assert.ok(
       streamedBody.includes("data: [DONE]"),
@@ -682,7 +658,6 @@ describe("WeCloneProxy", () => {
       "Streamed response should include content chunks"
     );
 
-    // Wait for fire-and-forget observe
     await new Promise((r) => setTimeout(r, 200));
 
     assert.ok(
@@ -820,7 +795,6 @@ describe("WeCloneProxy", () => {
   });
 
   it("does not expose error details in 502 responses", async () => {
-    // WeClone is unreachable (no mock server started on this port)
     const fakeWeclonePort = 59999;
 
     const remnic = await createMockServer((_req, res) => {
@@ -948,7 +922,6 @@ describe("WeCloneProxy", () => {
     });
     cleanups.push(remnic.close);
 
-    // Config with trailing slash -- should NOT produce /v1//chat/completions
     const proxy = createWeCloneProxy(
       testConfig(weclone.port, remnic.port, {
         wecloneApiUrl: `http://127.0.0.1:${weclone.port}/v1/`,
@@ -987,7 +960,6 @@ describe("WeCloneProxy", () => {
     });
 
     const weclone = await createMockServer((_req, res) => {
-      // Simulate upstream with transfer-encoding: chunked
       res.writeHead(200, {
         "Content-Type": "application/json",
         "Transfer-Encoding": "chunked",
@@ -1119,7 +1091,6 @@ describe("WeCloneProxy", () => {
       const chunks: Buffer[] = [];
       req.on("data", (c: Buffer) => chunks.push(c));
       req.on("end", () => {
-        // Return a 401 JSON error, not SSE
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(errorPayload);
       });
@@ -1164,7 +1135,6 @@ describe("WeCloneProxy", () => {
       const chunks: Buffer[] = [];
       req.on("data", (c: Buffer) => chunks.push(c));
       req.on("end", () => {
-        // Upstream responds with hop-by-hop headers that must be stripped
         res.writeHead(200, {
           "Content-Type": "application/json",
           "Transfer-Encoding": "chunked",
@@ -1271,18 +1241,14 @@ describe("WeCloneProxy", () => {
       socket.on("error", reject);
     });
 
-    // Parse HTTP response: skip headers, extract body after blank line
     const bodyStart = responseBody.indexOf("\r\n\r\n");
     assert.ok(bodyStart > 0, "Response should have headers and body");
-    // The body might be chunked; extract the JSON payload
     const rawBody = responseBody.slice(bodyStart + 4);
-    // Handle possible chunked transfer encoding in the response
     const jsonMatch = rawBody.match(/\{[^]*\}/);
     assert.ok(jsonMatch, "Response body should contain JSON");
     const reqBody = JSON.parse(jsonMatch[0]);
     assert.equal(reqBody.data[0].id, "model-1");
 
-    // Verify hop-by-hop headers were stripped
     assert.equal(
       receivedHeaders["proxy-authorization"],
       undefined,
@@ -1317,7 +1283,6 @@ describe("WeCloneProxy", () => {
     // adds its own Connection header for transport. The proxy strips the
     // *original* client Connection header; fetch replaces it with its own.
 
-    // Verify non-hop-by-hop headers survive
     assert.equal(
       receivedHeaders["x-custom-header"],
       "should-survive",
@@ -1342,9 +1307,7 @@ describe("WeCloneProxy", () => {
     const compressed = gzipSync(Buffer.from(payload));
 
     const weclone = await createMockServer((_req, res) => {
-      // Serve actually-gzipped body with the matching header.
       // fetch() auto-decompresses, so the proxy receives decoded bytes.
-      // The proxy must NOT forward content-encoding to the client.
       res.writeHead(200, {
         "Content-Type": "application/json",
         "Content-Encoding": "gzip",
@@ -1376,7 +1339,6 @@ describe("WeCloneProxy", () => {
       "application/json",
       "Other headers should still be forwarded"
     );
-    // Verify the body is readable as decompressed JSON
     const body = JSON.parse(await readResponse(res));
     assert.equal(body.data, "test", "Body should be decompressed and readable");
   });
@@ -1411,8 +1373,6 @@ describe("WeCloneProxy", () => {
     await proxy.start();
     cleanups.push(() => proxy.stop());
 
-    // Simulate Azure-OpenAI style query string; route matching must not fall
-    // through to the transparent proxy.
     const res = await fetch(
       `http://127.0.0.1:${proxy.port}/v1/chat/completions?api-version=2024-01-01`,
       {
@@ -1553,7 +1513,6 @@ describe("WeCloneProxy", () => {
 
     const proxy = createWeCloneProxy(
       testConfig(weclone.port, remnic.port, {
-        // Trailing slash must not produce `//engram/v1/recall`.
         remnicDaemonUrl: `http://127.0.0.1:${remnic.port}/`,
       })
     );
@@ -1850,7 +1809,6 @@ describe("WeCloneProxy", () => {
     await proxy.start();
     cleanups.push(() => proxy.stop());
 
-    // Chat completions: should prepend /weclone/v1.
     const chatRes = await fetch(
       `http://127.0.0.1:${proxy.port}/v1/chat/completions`,
       {
@@ -1869,7 +1827,6 @@ describe("WeCloneProxy", () => {
       "Chat path must be prefixed with configured base path"
     );
 
-    // Transparent proxy: GET /v1/models should also be prefixed.
     const modelsRes = await fetch(`http://127.0.0.1:${proxy.port}/v1/models`);
     assert.equal(modelsRes.status, 200);
     assert.equal(
@@ -1882,7 +1839,6 @@ describe("WeCloneProxy", () => {
 
 describe("WeClone Installer", () => {
   it("generates instructions with --config flag matching CLI", async () => {
-    // Dynamic import to avoid circular dependency issues
     const { generateWeCloneInstructions } = await import("./installer.js");
     const result = generateWeCloneInstructions({
       wecloneApiUrl: "http://localhost:8000/v1",

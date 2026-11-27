@@ -77,8 +77,6 @@ export async function reportBufferSurpriseDistribution(
   const limit = normalizeReportLimit(options.limit);
   const raw = await readEvents({ limit, since: options.since });
 
-  // Filter for sanity: finite numeric scores in [0, 1], event tag match,
-  // and the optional `since` lower bound. Malformed rows are skipped.
   const sinceMs =
     typeof options.since === "string" && options.since.length > 0
       ? Date.parse(options.since)
@@ -90,11 +88,6 @@ export async function reportBufferSurpriseDistribution(
     if (typeof row.surpriseScore !== "number") return false;
     if (!Number.isFinite(row.surpriseScore)) return false;
     if (row.surpriseScore < 0 || row.surpriseScore > 1) return false;
-    // `triggeredFlush` must be a real boolean — not a string or other
-    // truthy value. A row with `triggeredFlush: "false"` (string from a
-    // JSON-parsing bug upstream) would otherwise be counted as
-    // triggered, inflating the rate and misleading operators tuning the
-    // threshold from real traffic.
     if (typeof row.triggeredFlush !== "boolean") return false;
     if (Number.isFinite(sinceMs)) {
       if (!Number.isFinite(ts) || ts <= sinceMs) return false;
@@ -127,14 +120,9 @@ export async function reportBufferSurpriseDistribution(
   const sum = scores.reduce((acc, v) => acc + v, 0);
   const mean = sum / scores.length;
 
-  // Nearest-rank percentiles keep the output stable for small windows.
   const median = percentile(scores, 0.5);
   const p90 = percentile(scores, 0.9);
 
-  // "Current" threshold is whichever was in force for the most recent row
-  // — not necessarily the one configured right now, but the value the
-  // ledger rows were judged against. That's what operators need to reason
-  // about the distribution.
   const mostRecent = windowRows[windowRows.length - 1];
   const currentThreshold =
     mostRecent && typeof mostRecent.threshold === "number"

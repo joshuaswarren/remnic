@@ -1,25 +1,3 @@
-/**
- * Entity synthesis coordinator — extracted from the orchestrator (issue #1526).
- *
- * Owns the entity-synthesis lifecycle: processing the queued entities whose
- * evidence has changed since their last synthesis, gathering timeline +
- * structured-section evidence, deduplicating it, batch-feeding it through the
- * fast-tier LLM to produce a compact "current truth" synthesis, and persisting
- * the result with drift/bookkeeping metadata.
- *
- * Moved here (behavior-preserving):
- *   - module-level helpers `dedupeEntitySynthesisEvidenceEntries`,
- *     `flattenStructuredSectionEvidence`, `fingerprintEntitySynthesisEvidence`
- *   - the queue-processing method, now owned by this coordinator as
- *     `processQueue` (originally the orchestrator's `processEntitySynthesisQueue`)
- *
- * The orchestrator constructs one instance and exposes it as
- * `orchestrator.entitySynthesisCoordinator`; call sites invoke `processQueue`
- * directly (issue #1800 removed the orchestrator's forwarding delegate once
- * every caller migrated). Storage is resolved per-call via the injected
- * accessor so namespace-scoped and default-namespace calls share one
- * coordinator.
- */
 
 import { createHash } from "node:crypto";
 
@@ -37,9 +15,6 @@ import type {
 import { log } from "../logger.js";
 import { resolvePresentationCapabilities } from "../capabilities.js";
 
-// ---------------------------------------------------------------------------
-// Evidence helpers (moved verbatim from orchestrator.ts module scope)
-// ---------------------------------------------------------------------------
 
 /**
  * Deduplicate synthesis-evidence entries by normalized text, keeping the
@@ -132,15 +107,12 @@ function fingerprintEntitySynthesisEvidence(entity: {
 }
 
 // ---------------------------------------------------------------------------
-// Coordinator
 // ---------------------------------------------------------------------------
 
-/** Dependencies injected by the orchestrator. */
 export interface EntitySynthesisCoordinatorDeps {
   config: PluginConfig;
   /** Resolve the storage manager for a namespace (or the default). */
   getStorage: (namespace?: string) => Promise<StorageManager>;
-  /** Fast-tier LLM completion (same signature as Orchestrator.fastChatCompletion). */
   fastChatCompletion: (
     messages: Array<{ role: string; content: string }>,
     options: {
@@ -153,11 +125,6 @@ export interface EntitySynthesisCoordinatorDeps {
   ) => Promise<{ content: string } | null>;
 }
 
-/**
- * Coordinates entity synthesis refresh for queued entities. Owns the
- * evidence-gathering, dedup, batched-LLM-synthesis, and persistence logic
- * that previously lived inline in the orchestrator.
- */
 export class EntitySynthesisCoordinator {
   constructor(private readonly deps: EntitySynthesisCoordinatorDeps) {}
 

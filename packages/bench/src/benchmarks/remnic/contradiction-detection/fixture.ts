@@ -27,19 +27,13 @@ export type ContradictionFixtureVerdict =
 export interface ContradictionBenchCase {
   id: string;
   title: string;
-  /** Text of memory A. */
   textA: string;
-  /** Text of memory B. */
   textB: string;
-  /** Ground-truth relationship between the two memories. */
   expectedVerdict: ContradictionFixtureVerdict;
-  /** Category label for A (optional). */
   categoryA?: string;
-  /** Category label for B (optional). */
   categoryB?: string;
 }
 
-// ── True contradictions ──────────────────────────────────────────────────────
 
 const TRUE_CONTRADICTIONS: ContradictionBenchCase[] = [
   {
@@ -89,7 +83,6 @@ const TRUE_CONTRADICTIONS: ContradictionBenchCase[] = [
   },
 ];
 
-// ── Near-paraphrase duplicates ───────────────────────────────────────────────
 
 const NEAR_PARAPHRASE: ContradictionBenchCase[] = [
   {
@@ -130,7 +123,6 @@ const NEAR_PARAPHRASE: ContradictionBenchCase[] = [
   },
 ];
 
-// ── Independent but similar (same topic, no conflict) ────────────────────────
 
 const INDEPENDENT_SIMILAR: ContradictionBenchCase[] = [
   {
@@ -171,7 +163,6 @@ const INDEPENDENT_SIMILAR: ContradictionBenchCase[] = [
   },
 ];
 
-// ── Independent and dissimilar ───────────────────────────────────────────────
 
 const INDEPENDENT_DISSIMILAR: ContradictionBenchCase[] = [
   {
@@ -203,7 +194,6 @@ const INDEPENDENT_DISSIMILAR: ContradictionBenchCase[] = [
   },
 ];
 
-// ── Needs-user (ambiguous / defer to human) ──────────────────────────────────
 
 const NEEDS_USER: ContradictionBenchCase[] = [
   {
@@ -235,7 +225,6 @@ const NEEDS_USER: ContradictionBenchCase[] = [
   },
 ];
 
-// ── Exports ──────────────────────────────────────────────────────────────────
 
 export const CONTRADICTION_DETECTION_FIXTURE: ContradictionBenchCase[] = [
   ...TRUE_CONTRADICTIONS,

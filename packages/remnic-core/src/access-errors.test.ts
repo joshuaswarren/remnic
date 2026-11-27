@@ -1,10 +1,3 @@
-/**
- * Tests for the enriched error builders (issue #3035).
- *
- * Covers: nearest-tool suggestions, alias-family awareness,
- * invalid-arg hints, schema round-trip, and deterministic ordering.
- * Every test is mutation-proven (checklist 6).
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -12,7 +5,6 @@ import { z } from "zod";
 
 import { invalidArgsError, levenshtein, nearestSuggestions, unknownToolError } from "./access-errors.js";
 
-// ─── Levenshtein ──────────────────────────────────────────────────────────
 
 test("levenshtein: exact match is distance 0", () => {
   assert.equal(levenshtein("engram.recall", "engram.recall"), 0);
@@ -30,7 +22,6 @@ test("levenshtein: completely different string", () => {
   assert.ok(levenshtein("engram.recall", "zzzzzzzzz") > 3);
 });
 
-// ─── nearestSuggestions ───────────────────────────────────────────────────
 
 const TOOLS = [
   "engram.recall",
@@ -75,7 +66,6 @@ test("nearestSuggestions: equal-distance suggestions are deterministic across ru
   assert.deepEqual(result1, result2);
 });
 
-// ─── unknownToolError ─────────────────────────────────────────────────────
 
 test("unknownToolError: close typo includes a suggestion", () => {
   const msg = unknownToolError("engram.recal", TOOLS);
@@ -92,7 +82,6 @@ test("unknownToolError: wholly unrelated name lists the full tool set", () => {
   assert.doesNotMatch(msg, /Did you mean/);
 });
 
-// ─── invalidArgsError ─────────────────────────────────────────────────────
 
 const MEMORY_GET_SCHEMA = z.object({
   memory_id: z.string().describe("Memory id to retrieve"),
@@ -125,7 +114,6 @@ test("invalidArgsError: the shown example actually parses against the schema", (
     `the advertised example must round-trip through its own schema; zod said: ${JSON.stringify(reparsed.error?.issues)}`,
   );
 
-  // And it must not smuggle the tool name in as an unrecognized property.
   assert.ok(
     typeof example === "object" && example !== null && !("engram.memory_get" in example),
     "the example must not contain the tool name as a property",
@@ -158,7 +146,6 @@ test("invalidArgsError: an example that cannot round-trip is withheld, not shown
   assert.doesNotMatch(msg, /Example arguments/, "a non-parsing example must be withheld");
 });
 
-// ─── Rejection semantics are unchanged ─────────────────────────────────────
 
 test("invalidArgsError: invalid args still reject — the error is enriched, not accepted", () => {
   const parse = MEMORY_GET_SCHEMA.safeParse({});
@@ -167,16 +154,13 @@ test("invalidArgsError: invalid args still reject — the error is enriched, not
   assert.ok(msg.length > 0, "error message is non-empty");
 });
 
-// ─── Privacy: no secrets in error messages ─────────────────────────────────
 
 test("unknownToolError: no sentinel secret values appear in the message", () => {
   const msg = unknownToolError("engram.recal", TOOLS);
-  // No absolute paths, no credentials, no internal values
   assert.doesNotMatch(msg, /\/home\//);
   assert.doesNotMatch(msg, /\/Users\//);
   assert.doesNotMatch(msg, /api_key|token|secret|password/i);
 });
-// ─── Cap on requested tool name (#3042 P2) ──────────────────────────────────
 
 test("nearestSuggestions: refuses overlong requests without running Levenshtein", () => {
   const huge = "x".repeat(10_000);
@@ -189,6 +173,5 @@ test("unknownToolError: rejects overlong names with a teaching message", () => {
   const huge = "x".repeat(200);
   const msg = unknownToolError(huge, ["alpha", "beta"]);
   assert.match(msg, /exceeds 64 characters/);
-  // Should NOT run a suggestion pass over a 200-char name.
   assert.doesNotMatch(msg, /Did you mean/);
 });

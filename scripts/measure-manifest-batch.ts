@@ -30,9 +30,6 @@ for (let i = 0; i < N; i++) {
   });
 }
 
-// readFile with the real per-file async shape (two awaited hops) returning
-// each file's ACTUAL content from disk, so the sha matches and the manifest
-// builder exercises the full pipeline: read -> sha verify -> parse -> identity.
 const readFile = async (file: ReconcileFileState): Promise<string> => {
   const { promise: rawPromise, resolve: resolveRaw } = Promise.withResolvers<Buffer>();
   setImmediate(() => resolveRaw(Buffer.from(contentByPath.get(file.path) ?? "")));
@@ -43,7 +40,6 @@ const readFile = async (file: ReconcileFileState): Promise<string> => {
   return raw.toString("utf8");
 };
 
-// The sha mismatch (synthetic ids differ) keeps every file uncached.
 const t0 = performance.now();
 const manifest = await buildReconcileManifest({
   files,
@@ -56,7 +52,6 @@ console.log(`files=${manifest.files.length} batched=${ms.toFixed(0)}ms (${((N / 
 rmSync(root, { recursive: true, force: true });
 process.exit(0);
 
-// Minimal parse matching parseFrontmatter's contract for our synthetic files.
 function parseMinimal(raw: string | Buffer): { frontmatter: Record<string, string>; content: string } | null {
   const text = raw.toString("utf8");
   if (!text.startsWith("---\n")) return null;

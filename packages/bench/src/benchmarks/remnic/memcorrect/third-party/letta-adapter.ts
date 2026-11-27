@@ -1,25 +1,3 @@
-/**
- * Letta MemCorrect adapter (issue #1727 — third priority).
- *
- * Drives Letta (formerly MemGPT) through its public REST API so MemCorrect
- * can score Letta on the same correction/steerability corpus.
- *
- * Letta's model: stateful agents with editable memory blocks. Each
- * MemCorrect session maps to one Letta agent. Messages are sent through
- * `POST /v1/agents/{id}/messages`; the agent autonomously updates its memory
- * blocks via the built-in `memory_insert` / `memory_replace` tools. Recall
- * reads the memory blocks back — this is Letta's normal memory surface, not
- * an internal hack.
- *
- * REST endpoints used (base: operator-provided Letta server URL):
- *   - `POST   /v1/agents/`                    — create a stateful agent
- *   - `POST   /v1/agents/{id}/messages`       — send a user message (ingest + correct)
- *   - `GET    /v1/agents/{id}/core-memory/blocks` — read memory blocks (recall)
- *   - `DELETE /v1/agents/{id}`                — destroy agent (reset)
- *
- * The adapter accepts an injectable `fetch` so the deterministic fixture
- * smoke test exercises the full request/response cycle without a network.
- */
 
 import type { MemCorrectSystemAdapter } from "../types.js";
 import {
@@ -45,7 +23,6 @@ interface LettaAgent {
   id?: string;
 }
 
-/** Letta memory block. */
 interface LettaBlock {
   label?: string;
   value?: string;
@@ -72,7 +49,6 @@ export class LettaMemCorrectAdapter implements MemCorrectSystemAdapter {
   private readonly personaBlock: string;
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number | undefined;
-  /** Maps MemCorrect sessionKey → Letta agent_id. */
   private readonly agentsBySession = new Map<string, string>();
 
   constructor(config: LettaAdapterConfig = {}) {
@@ -110,12 +86,6 @@ export class LettaMemCorrectAdapter implements MemCorrectSystemAdapter {
 
   async reset(): Promise<void> {
     this.ensureReady();
-    // Destroy every agent created during this bench process for a clean slate.
-    // Remove each session→agent mapping as its delete succeeds (or is not-found)
-    // so a partial failure cannot leave mappings to already-deleted agents —
-    // otherwise ensureAgent would hand back a cached id for a dead agent. Real
-    // failures (auth, server error, timeout) retain the mapping for the next
-    // reset() retry and rethrow so a broken clean-slate surfaces.
     const failed: string[] = [];
     for (const [sessionKey, agentId] of [...this.agentsBySession]) {
       try {
@@ -142,7 +112,6 @@ export class LettaMemCorrectAdapter implements MemCorrectSystemAdapter {
     }
   }
 
-  /** Create a Letta agent for the session if one does not yet exist. */
   private async ensureAgent(sessionKey: string): Promise<string> {
     const existing = this.agentsBySession.get(sessionKey);
     if (existing) return existing;
@@ -184,9 +153,6 @@ export class LettaMemCorrectAdapter implements MemCorrectSystemAdapter {
   ): Promise<void> {
     this.ensureReady();
     const agentId = await this.ensureAgent(sessionKey);
-    // Send the message through the agent. The agent processes it and
-    // autonomously updates its memory blocks via memory_insert/memory_replace.
-    // We use stream=false to get a complete response.
     await httpJson(
       this.fetchImpl,
       "POST",
@@ -208,8 +174,6 @@ export class LettaMemCorrectAdapter implements MemCorrectSystemAdapter {
   async recall(_query: string, sessionKey: string): Promise<string[]> {
     this.ensureReady();
     const agentId = await this.ensureAgent(sessionKey);
-    // Read the agent's memory blocks — this is Letta's normal memory surface.
-    // The blocks contain the facts the agent has extracted and stored.
     const response = (await httpJson(
       this.fetchImpl,
       "GET",
@@ -230,9 +194,6 @@ export class LettaMemCorrectAdapter implements MemCorrectSystemAdapter {
       if (block.label === "persona") continue;
       const value = block.value ?? block.text ?? block.content;
       if (value && value.trim().length > 0) {
-        // Split multi-line block content into individual lines so each fact
-        // is a separate recalled string (MemCorrect scores token containment
-        // over individual strings, not a monolithic blob).
         for (const line of value.split(/\n+/)) {
           const trimmed = line.trim();
           if (trimmed) strings.push(trimmed);
@@ -243,9 +204,6 @@ export class LettaMemCorrectAdapter implements MemCorrectSystemAdapter {
   }
 
   async correct(text: string, sessionKey: string, _at?: string): Promise<void> {
-    // Letta agents have memory_replace/memory_insert tools. Sending the
-    // correction as a user message triggers the agent to update its memory
-    // blocks. non_resurrection measures whether the old fact survives.
     await this.ingestTurn(
       sessionKey,
       "user",

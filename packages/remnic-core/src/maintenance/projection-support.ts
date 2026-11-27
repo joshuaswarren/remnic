@@ -1,9 +1,3 @@
-/**
- * Projection maintenance support (issue #2119) — helpers shared by the
- * scheduled projection rebuild, the CLI rebuild, and the ledger rebuild.
- * Lives beside the rebuild ops so the at-ceiling store/rebuild modules stay
- * within their structural ratchets.
- */
 
 import path from "node:path";
 import {
@@ -23,7 +17,6 @@ import {
 import type { MemoryLifecycleEvent } from "../types.js";
 import type { BetterSqlite3Database } from "../runtime/better-sqlite.js";
 
-/** Read the projection meta rebuiltAt timestamp; null when absent/unopenable. */
 export function readProjectionRebuiltAt(memoryDir: string): string | null {
   const db = openProjectionReadonly(memoryDir);
   if (!db) return null;
@@ -39,7 +32,6 @@ export function readProjectionRebuiltAt(memoryDir: string): string | null {
   }
 }
 
-/** Format projection age description string for fallback warning telemetry. */
 export function formatProjectionAge(rebuiltAt: string | null): string {
   if (!rebuiltAt) return "projection never rebuilt";
   const ageMs = Date.now() - Date.parse(rebuiltAt);
@@ -144,7 +136,6 @@ export function openProjectionLifecycleLedgerLagTracker(
     return null;
   }
 }
-/** Write the high-water ledger marker counts to projection meta store. */
 export function writeProjectionMetaHighWater(
   insertMeta: { run: (key: string, value: string) => void },
   sourceLifecycleLedgerEventCount: number,
@@ -205,14 +196,6 @@ export function readProjectedGovernanceRows(memoryDir: string): {
   };
 }
 
-/**
- * Assert an optionally injected storage (e.g. the daemon's live unlocked
- * secure-store instance) is rooted at `memoryDir`, and hand it back. Shared
- * by the projection and lifecycle-ledger rebuilds so the containment guard
- * cannot drift between them; callers construct their own StorageManager when
- * nothing was injected (keeps this module off the direct-storage-import
- * ratchet, issue #1533).
- */
 export function assertInjectedStorageRooted<T extends { dir: string }>(
   label: string,
   memoryDir: string,

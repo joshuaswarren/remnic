@@ -31,8 +31,6 @@ export class XrayCaptureQueue {
     try {
       await this.waitForTurn(previous, signal);
     } catch (error) {
-      // Keep this abandoned node as a barrier until its predecessor settles,
-      // so later callers cannot overtake the still-active operation.
       void previous.then(release, release);
       throw error;
     }

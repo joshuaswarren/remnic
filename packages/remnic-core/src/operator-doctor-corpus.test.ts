@@ -2,13 +2,6 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-/**
- * Corpus-watermark doctor check (issue #2149).
- *
- * Verifies `summarizeCorpusWatermark` reports per-namespace counts + a short
- * digest prefix and always resolves `ok` (this PR has no peer to compare
- * against, so it never warns), and that `runOperatorDoctor` wires it in.
- */
 import test from "node:test";
 import { parseConfig } from "./config.js";
 import type { CorpusWatermark } from "./corpus-watermark.js";
@@ -20,13 +13,9 @@ import type { PluginConfig } from "./types.js";
 
 const storageFactory = (dir: string) => new StorageManager(dir);
 
-// The doctor stores the watermark array under `details.corpus`; `details` is
-// typed `unknown`, so narrow it once here rather than at each read.
 function corpusOf(check: OperatorDoctorCheck | undefined): CorpusWatermark[] {
   const details = check?.details;
   if (!details || typeof details !== "object" || !("corpus" in details)) return [];
-  // `details.corpus` is `unknown` after the `in` guard; the doctor always
-  // stores the watermark array here.
   const corpus = details.corpus as CorpusWatermark[];
   return corpus;
 }
@@ -163,9 +152,6 @@ test("runOperatorDoctor: includes the corpus_watermark check", async () => {
 test("summarizeCorpusWatermark: warns (not ok) when a namespace scan fails", async () => {
   const { root, config } = await makeFixture();
   try {
-    // A storage factory that fails every scan (e.g. an EACCES permission
-    // regression). The namespace is omitted, so the check must WARN — not
-    // certify ok, and not conflate the failure with an empty deployment.
     const throwingFactory = (_dir: string): never => {
       throw new Error("simulated backend read failure");
     };

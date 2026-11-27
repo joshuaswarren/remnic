@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
 // End-to-end integration test — synthetic WeClone export → bulk-import pipeline
-// ---------------------------------------------------------------------------
 //
 // This test exercises the full WeClone import path against the `@remnic/core`
 // bulk-import pipeline using synthetic fixture data.  No real conversations
@@ -44,25 +42,11 @@ import { parseWeCloneExport } from "./parser.js";
 // Synthetic fixture — multi-thread export covering all code paths
 // ---------------------------------------------------------------------------
 
-/**
- * Build a synthetic WeClone-preprocessed export covering:
- *
- *   - A morning conversation between Alice (self) and Bob
- *     (4 messages, all within 30 min)
- *   - A mid-day conversation with Bob, Carol, and a ChatGPT Bot
- *     (6 messages, including reply chains)
- *   - An evening out-of-band reply that threader should merge into
- *     the morning thread via reply_to_id
- *   - A lonely late-night message that will be filtered by minThreadSize
- *
- * All timestamps are ISO-8601 UTC. Message content is fabricated.
- */
 function buildSyntheticExport(): unknown {
   return {
     platform: "telegram",
     export_date: "2025-03-15T00:00:00.000Z",
     messages: [
-      // Thread 1: morning conversation
       {
         sender: "Alice",
         text: "good morning team",
@@ -89,7 +73,6 @@ function buildSyntheticExport(): unknown {
         message_id: "m-004",
       },
 
-      // Thread 2: mid-day collaboration with a bot
       {
         sender: "Alice",
         text: "anyone seen the deployment doc?",
@@ -129,7 +112,6 @@ function buildSyntheticExport(): unknown {
         message_id: "m-015",
       },
 
-      // Thread 3: evening reply that references thread 1
       // (time gap > 30 min but reply chain should merge it into thread 1)
       {
         sender: "Carol",
@@ -146,7 +128,6 @@ function buildSyntheticExport(): unknown {
         reply_to_id: "m-020",
       },
 
-      // Thread 4: late-night lonely message (filtered by minThreadSize=2)
       {
         sender: "Alice",
         text: "note to self: push the docs",
@@ -188,20 +169,17 @@ describe("integration: WeClone → @remnic/core bulk-import", () => {
       "2025-03-15T23:45:00.000Z",
     );
 
-    // Alice is the first non-bot sender → user role
     const alice = source.turns.filter((t) => t.participantId === "Alice");
     assert.ok(alice.length >= 4);
     for (const turn of alice) {
       assert.equal(turn.role, "user");
     }
 
-    // ChatGPT Bot should be classified as assistant
     const bot = source.turns.find(
       (t) => t.participantId === "ChatGPT Bot",
     );
     assert.equal(bot?.role, "assistant");
 
-    // Bob and Carol are "other"
     const bob = source.turns.find((t) => t.participantId === "Bob");
     const carol = source.turns.find((t) => t.participantId === "Carol");
     assert.equal(bob?.role, "other");
@@ -268,7 +246,6 @@ describe("integration: WeClone → @remnic/core bulk-import", () => {
         file: filePath,
         platform: "telegram",
         batchSize: 4,
-        // dryRun omitted → non-dryRun path; ingestBatch is the persistence hook.
         ingestBatch: async (turns: ImportTurn[]) => {
           seenBatchSizes.push(turns.length);
           return {
@@ -280,7 +257,6 @@ describe("integration: WeClone → @remnic/core bulk-import", () => {
         stderr: nullStream(),
       });
 
-      // 13 turns at batchSize=4 → 4 batches (4, 4, 4, 1)
       assert.deepEqual(seenBatchSizes, [4, 4, 4, 1]);
       assert.equal(result.turnsProcessed, 13);
       assert.equal(result.batchesProcessed, 4);
@@ -292,7 +268,6 @@ describe("integration: WeClone → @remnic/core bulk-import", () => {
   });
 
   it("pipeline flows turns through processBatch in correct batch sizes", async () => {
-    // Simulates what the orchestrator integration will do once persistence is
     // wired — the callback receives each batch and records how many turns
     // were seen per batch. Using a mock callback lets us exercise batching
     // without depending on the orchestrator.
@@ -312,7 +287,6 @@ describe("integration: WeClone → @remnic/core bulk-import", () => {
       },
     );
 
-    // 13 turns / 4 per batch = 4 batches (sizes 4, 4, 4, 1)
     assert.deepEqual(seenBatches, [4, 4, 4, 1]);
     assert.equal(result.turnsProcessed, 13);
     assert.equal(result.batchesProcessed, 4);
@@ -321,7 +295,6 @@ describe("integration: WeClone → @remnic/core bulk-import", () => {
   });
 
   it("adapter accepts a file-shaped input via parse() like the CLI does", async () => {
-    // Mirrors runBulkImportCliCommand's contract: the CLI reads the file,
     // JSON.parses it, then calls adapter.parse(inputParsed, {strict, platform}).
     registerBulkImportSource(wecloneImportAdapter);
 
@@ -345,7 +318,6 @@ describe("integration: WeClone → @remnic/core bulk-import", () => {
   });
 
   it("nullStream helper is usable for CLI-surface tests", () => {
-    // Sanity: the helper is wired correctly so downstream CLI integration
     // tests can rely on it without redefining.
     const stream = nullStream();
     assert.ok(stream instanceof Writable);

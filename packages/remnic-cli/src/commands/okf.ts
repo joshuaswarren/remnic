@@ -6,9 +6,6 @@ export async function runOkfBinaryCommand(rest: string[]): Promise<void> {
   const argv = rest.length === 0 || rest[0] === "--help" || rest[0] === "-h" ? ["help"] : rest;
   let orchestrator: Orchestrator | undefined;
   try {
-    // Config/bootstrap failures get a constant message: parseConfig error
-    // strings can embed config values (CodeQL js/clear-text-logging), so
-    // they must never reach console output.
     try {
       const configPath = resolveConfigPath();
       const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};

@@ -458,11 +458,8 @@ test("replace refreshes a cold-tier target via the cold-aware id lookup (final r
   } as unknown as StorageManager;
   const snapshots = new ExtractionAnchorSnapshot();
 
-  // A first same-entity fact warms the cache with the pre-merge cold body.
   assert.deepEqual(await snapshots.get(storage, "person:alice"), [preMerge]);
   await snapshots.replace(storage, "fact-cold-target", "fact", new Map());
-  // A later same-entity fact in the same extraction localizes against this
-  // cache; it must see the merged body, not the stale pre-merge one.
   assert.deepEqual(await snapshots.get(storage, "person:alice"), [merged]);
 });
 

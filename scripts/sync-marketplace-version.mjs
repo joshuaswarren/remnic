@@ -1,9 +1,3 @@
-/**
- * sync-marketplace-version.mjs
- *
- * Reads the version from the root package.json and updates the version field
- * in the root marketplace.json to keep them in sync during releases.
- */
 
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";

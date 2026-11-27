@@ -133,9 +133,6 @@ function judgeAll(kind: JudgeVerdict["kind"]): (candidates: JudgeCandidate[]) =>
   };
 }
 
-// ---------------------------------------------------------------------------
-// Extractor
-// ---------------------------------------------------------------------------
 
 test("extractor categorizes decisions, commitments, and open questions from a JSON response", async () => {
   const llm = fakeLlm([DECISION_COMMITMENT_QUESTION_JSON]);
@@ -209,7 +206,6 @@ test("parseMeetingSummaryResponse never throws on garbage and salvages prose", (
 });
 
 // ---------------------------------------------------------------------------
-// Judge adapter
 // ---------------------------------------------------------------------------
 
 test("judge adapter maps shared judge verdicts aligned to candidate order", async () => {
@@ -237,8 +233,6 @@ test("judge adapter degrades to no verdicts (empty array) when the shared judge 
 });
 
 // ---------------------------------------------------------------------------
-// Production wiring: the SAME factory workspace-ops injects, driven through the
-// real trust-gated generateMeetingSummaryFacts path.
 // ---------------------------------------------------------------------------
 
 test("createMeetingSummaryDeps: smart mode writes a trust-gated decision + commitment with meeting provenance", async () => {

@@ -1,7 +1,3 @@
-/**
- * Help text for `remnic bench`, extracted from index.ts under the
- * structural ratchet (issue #1995).
- */
 
 export function getBenchUsageText(): string {
   return `Usage: remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|attribute|drift-gen|coding|security> [options] [benchmark...]

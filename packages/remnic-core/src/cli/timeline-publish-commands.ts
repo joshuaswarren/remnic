@@ -23,10 +23,6 @@ export function registerTimelineCommands(cmd: CliCommand, orchestrator: Orchestr
     .option("--what <kinds>", "Comma-separated artifacts to publish (default: timeline)")
     .option("--dry-run", "Report per-file outcomes without writing")
     .action((...args: unknown[]) => {
-      // Commander passes declared positional args before the options
-      // object; `publish` declares none, so a stray positional would
-      // displace the options object and silently publish with defaults
-      // (issue #2917). Reject any string arg outright.
       if (args.some((arg) => typeof arg === "string")) {
         process.stderr.write("timeline publish takes no positional arguments.\n");
         process.exitCode = 1;

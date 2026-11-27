@@ -511,13 +511,6 @@ function containsSpacelessScriptCharacter(text: string): boolean {
   return SPACELESS_SCRIPT_CHARACTER_PATTERN.test(text);
 }
 
-/**
- * Scripts without word separators (CJK, Hangul, Thai, ...) must not become one
- * whitespace-delimited token: a paraphrase never matches a whole-run token, so
- * grounded CJK facts and entity names were dropped. Split those runs into
- * per-character lexemes so contiguous-token matching behaves as substring
- * matching for these scripts.
- */
 function splitSpacelessScriptToken(rawToken: string): string[] {
   if (!containsSpacelessScriptCharacter(rawToken)) return [rawToken];
   const parts: string[] = [];

@@ -35,7 +35,6 @@ export function readTimelineState(memoryDir: string): TimelineState {
   try {
     parsed = JSON.parse(readFileSync(filePath, "utf8"));
   } catch {
-    // A corrupt state file must never block extraction: treat as empty.
     return { version: 1, journal: {} };
   }
   if (typeof parsed !== "object" || parsed === null || !("journal" in parsed)) {
@@ -50,7 +49,6 @@ export function readTimelineState(memoryDir: string): TimelineState {
   return { version: 1, journal: hashes };
 }
 
-/** Write new before deleting old (§42): unique temp file first, then an atomic rename. */
 export function writeTimelineState(memoryDir: string, state: TimelineState): void {
   const filePath = timelineStatePath(memoryDir);
   mkdirSync(path.dirname(filePath), { recursive: true });

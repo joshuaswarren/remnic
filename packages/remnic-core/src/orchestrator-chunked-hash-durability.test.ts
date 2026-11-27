@@ -31,7 +31,6 @@ import { sanitizeMemoryContent } from "./sanitize.js";
 import type { ExtractionResult, MemoryFile } from "./types.js";
 import type { PersistExtractionFn } from "./testing/orchestrator-lite.js";
 
-/** persistExtraction is private; reach it through an unknown-cast surface. */
 interface OrchestratorTestSurface {
   persistExtraction: PersistExtractionFn;
   getStorage: (namespace: string) => Promise<StorageManager>;
@@ -101,8 +100,6 @@ test("#2016: a chunked parent's fact hash is durable on disk before fallible chu
       "the chunk write failure must propagate — chunked post-write work is not swallowed",
     );
 
-    // The chunked parent .md is durable (and no chunk landed, since the first
-    // writeChunk threw).
     const all = await storage.readAllMemories();
     const parents = all.filter((m: MemoryFile) =>
       m.content.includes("Sentence 0 records"),

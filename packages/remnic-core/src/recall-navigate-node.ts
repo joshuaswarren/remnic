@@ -1,8 +1,3 @@
-/**
- * Recall navigation node-id parse (issue #1956 leftover).
- *
- * Pure. Surfaces wait. Empty is missing_node. Newline is invalid_node.
- */
 
 export type ParseNavigateNodeIdResult =
   | { ok: true; nodeId: string }

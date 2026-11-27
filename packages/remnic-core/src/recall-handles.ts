@@ -110,8 +110,6 @@ export function renderHandle(memoryId: string, widthOverride?: number): string {
  */
 export function appendHandle(line: string, memoryId: string, widthOverride?: number): string {
   const handle = renderHandle(memoryId, widthOverride);
-  // Single trailing space before the handle; collapse a double space if the
-  // line already ended in whitespace so output stays clean.
   const trimmed = line.replace(/\s+$/, "");
   return `${trimmed} ${handle}`;
 }
@@ -138,10 +136,6 @@ export interface InjectionHandleEntry {
 export function renderHandlesForInjection(
   memoryIds: readonly string[],
 ): InjectionHandleEntry[] {
-  // Group ids by their default-width handle so every member of a 4-char
-  // collision group widens to 6 together — not just the later one. Widening
-  // only the second id would leave the first rendering a 4-char token whose
-  // resolution is ambiguous against the group (codex review).
   const idsByDefaultHandle = new Map<string, string[]>();
   for (const memoryId of memoryIds) {
     if (!memoryId) continue;
@@ -158,13 +152,6 @@ export function renderHandlesForInjection(
     const width = group.length > 1 ? HANDLE_EXTENDED_WIDTH : HANDLE_DEFAULT_WIDTH;
     entries.push({ memoryId, width, handle: `[m:${handleFor(memoryId, width)}]` });
   }
-  // Reconciliation pass: if two DIFFERENT ids still produce the same rendered
-  // token at their assigned width — the pathological case where they also
-  // collide at the extended 6-char width — widen ALL members of the collision
-  // group together, never just the later one. Leaving the first at 6 chars
-  // while widening the second to 7 makes the first token resolve ambiguously
-  // (both ids match at width 6). Iterate until no collision remains or every
-  // member reaches HANDLE_MAX_WIDTH (codex review).
   let widened = true;
   while (widened) {
     widened = false;
@@ -179,10 +166,6 @@ export function renderHandlesForInjection(
       if (indices.length < 2) continue;
       const uniqueIds = new Set(indices.map((idx) => entries[idx]!.memoryId));
       if (uniqueIds.size < 2) continue; // same id listed twice — same handle is fine
-      // Only continue widening if at least one entry has room to grow.
-      // When every member has reached HANDLE_MAX_WIDTH the collision is
-      // irreducible (two ids with identical sha256 8-char prefixes —
-      // astronomically unlikely for real data); stop to avoid an infinite loop.
       let anyWidened = false;
       for (const idx of indices) {
         const entry = entries[idx]!;
@@ -268,11 +251,6 @@ export function parseHandles(text: string): string[] {
  */
 export function stripHandles(text: string): string {
   if (typeof text !== "string" || text.length === 0) return text;
-  // Remove the token and the single preceding space that {@link appendHandle}
-  // added, then tidy any double space left behind.
-  // \\s? (not \\s*): the renderer appends exactly one preceding space, and a
-  // bounded quantifier avoids the polynomial-ReDoS flag on uncontrolled input.
-  // A stray run of spaces is collapsed by the following line.
   return text
     .replace(/\s?\[m:[0-9a-f]{4,8}\]/g, "")
     .replace(/[ \t]{2,}/g, " ")
@@ -292,14 +270,10 @@ export function stripHandles(text: string): string {
 export function normalizeHandle(token: string): string | null {
   if (typeof token !== "string" || token.length === 0) return null;
   const trimmed = token.trim().toLowerCase();
-  // [m:4f2a]
   const bracketed = /^\[m:([0-9a-f]{4,8})\]$/.exec(trimmed);
   if (bracketed) return bracketed[1] ?? null;
-  // m:4f2a
   const prefixed = /^m:([0-9a-f]{4,8})$/.exec(trimmed);
   if (prefixed) return prefixed[1] ?? null;
-  // bare 4f2a — only treat as a handle when it is pure hex in the width range,
-  // so we don't mis-classify a real memory id that happens to be 4 hex chars.
   const bare = /^([0-9a-f]{4,8})$/.exec(trimmed);
   if (bare) return bare[1] ?? null;
   return null;
@@ -327,9 +301,6 @@ export interface ParsedIdOrHandle {
   value: string;
 }
 
-/**
- * Classify a single caller reference as id-or-handle.
- */
 export function parseIdOrHandle(ref: string): ParsedIdOrHandle {
   const hex = normalizeHandle(ref);
   if (hex !== null) {
@@ -381,9 +352,6 @@ export function resolveHandle(
   if (hex === null) {
     return { ok: false, reason: "not_found" };
   }
-  // A handle resolves when a memory id's handle is a PREFIX of `hex` (handles
-  // widened to 6 chars for collision still match their own 4-char core, and a
-  // user citing the short form must still resolve the widened memory).
   const width = hex.length;
   const limit = Math.max(0, Math.min(depth, snapshots.length));
   const matches = new Set<string>();
@@ -406,9 +374,4 @@ export function resolveHandle(
   return { ok: false, reason: "ambiguous", candidates: [...matches] };
 }
 
-/**
- * Default snapshot lookback depth for handle resolution (issue #1582 config
- * `recall.handleSnapshotDepth`). Older-than-N snapshots are not searched and a
- * miss is tagged rather than widening the window.
- */
 export const DEFAULT_HANDLE_SNAPSHOT_DEPTH = 5;

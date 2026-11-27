@@ -38,7 +38,6 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // ---------------------------------------------------------------------------
-// Types (moved from orchestrator.ts; re-exported by the orchestrator barrel)
 // ---------------------------------------------------------------------------
 
 export interface GraphRecallRankedResult {
@@ -75,7 +74,6 @@ export interface GraphRecallExpansionResult {
   seedResults: QmdSearchResult[];
 }
 // ---------------------------------------------------------------------------
-// Utility functions (moved from orchestrator.ts; re-exported for callers)
 // ---------------------------------------------------------------------------
 
 export function mergeGraphExpandedResults(
@@ -151,7 +149,6 @@ function normalizeInferredPathNodeStatus(value: unknown): PathNodeState["status"
 }
 
 // ---------------------------------------------------------------------------
-// Coordinator
 // ---------------------------------------------------------------------------
 
 export class GraphRecallCoordinator {

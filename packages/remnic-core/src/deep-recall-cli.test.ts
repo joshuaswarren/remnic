@@ -1,13 +1,3 @@
-/**
- * Deep-recall CLI identity regression (issue #2915).
- *
- * With namespaces enabled the read path refuses an unauthenticated caller,
- * and the standalone CLI has no transport to authenticate one — so the CLI
- * must carry the SAME identity options the access CLI uses
- * (`--principal` / `--session-key`) into the service call. This drives the
- * registered commander action against a minimal orchestrator double and
- * asserts the authenticated principal reaches namespace resolution.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";

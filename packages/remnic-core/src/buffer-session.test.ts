@@ -440,9 +440,6 @@ test("SmartBuffer prunes stale logical session buffers to a bounded entry set", 
   assert.ok(!persistedKeys.includes("thread-0"));
 });
 
-// ---------------------------------------------------------------------------
-// Issue #562 PR 2 — defer retention
-// ---------------------------------------------------------------------------
 
 test("retainDeferredTurns preserves turns across clearAfterExtraction", async () => {
   const storage = new FakeStorage({
@@ -643,13 +640,6 @@ test("getTurns prepends retained deferred turns before live turns", async () => 
 });
 
 test("SmartBuffer refuses new sessions instead of dropping backlog at the cap (#1908 policy)", async () => {
-  // Pre-#1908 this contract was "never prune non-empty entries". With retry
-  // retention (failed extractions keep their turns), unbounded non-empty
-  // growth during a provider outage would eventually OOM the daemon — the
-  // documented policy (#1908 step 7) bounds the ENTRY COUNT, not by dropping
-  // buffered turns: a NEW session is refused (retryable backpressure) when
-  // only non-empty backlog fills the cap. Empty entries are still evicted
-  // first, and already-admitted sessions keep buffering.
   const entries = Object.fromEntries(
     Array.from({ length: 205 }, (_, index) => [
       `thread-${index}`,
@@ -681,8 +671,6 @@ test("SmartBuffer refuses new sessions instead of dropping backlog at the cap (#
     "a new session must be refused while only non-empty backlog fills the cap",
   );
 
-  // Already-admitted sessions keep buffering; the save reflects the
-  // post-refusal state: nothing was evicted, nothing refused was buffered.
   await buffer.addTurn("thread-204", makeTurn("thread-204", "another turn"));
   assert.equal(buffer.getTurns("thread-204").length, 2);
 
@@ -695,12 +683,6 @@ test("SmartBuffer refuses new sessions instead of dropping backlog at the cap (#
 });
 
 test("pruneEntries never evicts non-empty backlog; live admission is refused past the cap (#1908 retry-retention bound)", async () => {
-  // Retained failed extractions keep their turns in the buffer, so during a
-  // provider outage non-empty entries can exceed MAX_BUFFER_ENTRY_COUNT (200).
-  // The cap is still the documented bound: buffered turn data is never the
-  // release valve — a NEW session is refused (retryable backpressure) until
-  // extraction drains an entry, so the daemon cannot OOM on unbounded growth
-  // and no buffered turn is dropped (codex review).
   const entries: NonNullable<BufferState["entries"]> = {};
   for (let i = 0; i < 210; i += 1) {
     const at = new Date(1_700_000_000_000 + i * 60_000).toISOString();
@@ -727,10 +709,6 @@ test("pruneEntries never evicts non-empty backlog; live admission is refused pas
 });
 
 test("per-session turn cap refuses live admission past the cap without dropping retained turns (#3415 bound)", async () => {
-  // A sustained outage with retention on keeps every failed turn. The
-  // session-entry cap does not bound turns inside one entry, so a second
-  // cap refuses new turns for a full session (retryable backpressure) while
-  // a healthy session keeps admitting.
   const at = "2026-04-12T12:00:00.000Z";
   const fullTurns = [0, 1, 2, 3].map((i) => ({ role: "user" as const, content: `retained turn ${i}`, timestamp: at, sessionKey: "session-full" }));
   const storage = new FakeStorage({
@@ -753,7 +731,6 @@ test("per-session turn cap refuses live admission past the cap without dropping 
     "a full session refuses rather than growing without bound",
   );
   assert.equal(buffer.getTurns("session-full").length, 4, "retained turns are kept, not dropped");
-  // retainedTurns count toward the cap: 2 live + 2 kept already reach it.
   await assert.rejects(
     buffer.addTurnWithOutcome("session-mixed", makeTurn("session-mixed", "one too many")),
     BufferSessionTurnRefusedError,
@@ -765,27 +742,21 @@ test("per-session turn cap refuses live admission past the cap without dropping 
   const batch = await buffer.addTurnsBounded([{ bufferKey: "session-full", turns: [makeTurn("session-full", "batched")] }]);
   assert.equal(batch, null, "bounded batch admission refuses atomically, recording nothing");
   assert.equal(buffer.getTurns("session-full").length, 4);
-  // A new key is capped too: 0 held + 5 incoming exceeds the cap of 4.
   const over = await buffer.addTurnsBounded([{ bufferKey: "session-brand-new", turns: [0, 1, 2, 3, 4].map((i) => makeTurn("session-brand-new", `turn ${i}`)) }]);
   assert.equal(over, null, "a new key cannot land more than the cap in one batch");
   assert.deepEqual(buffer.getTurns("session-brand-new"), [], "refused batch records nothing");
-  // Repeated batches for one key sum within a call: session-healthy holds 2,
-  // and 1 + 2 more would reach 5.
   const rep = await buffer.addTurnsBounded([
     { bufferKey: "session-healthy", turns: [makeTurn("session-healthy", "r1")] },
     { bufferKey: "session-healthy", turns: [makeTurn("session-healthy", "r2"), makeTurn("session-healthy", "r3")] },
   ]);
   assert.equal(rep, null, "repeated batches compare against the running total, not the original count");
   assert.equal(buffer.getTurns("session-healthy").length, 2, "refused batches record nothing");
-  // New keys admit a single turn under a normal cap.
   const fresh = await buffer.addTurnBounded("session-fresh", makeTurn("session-fresh", "first turn"));
   assert.notEqual(fresh, null, "a new key under the cap is admitted");
   assert.equal(buffer.getTurns("session-fresh").length, 1);
 });
 
 test("addTurnBounded checks the single turn against the per-session cap for new keys too (#3415)", async () => {
-  // A hand-built config can carry cap 0 (parseConfig itself rejects it, but
-  // direct constructions must still fail closed rather than admit one turn).
   const storage = new FakeStorage({ turns: [], lastExtractionAt: null, extractionCount: 0 });
   const tightConfig = { ...parseConfig({ bufferSaveDebounceMs: 0 }), bufferMaxTurnsPerSession: 0 };
   // SAFETY: FakeStorage implements the load/save surface this test exercises;
@@ -801,7 +772,6 @@ test("addTurnBounded checks the single turn against the per-session cap for new 
 });
 
 // ---------------------------------------------------------------------------
-// Issue #1909 (Part D) — debounced buffer save
 // ---------------------------------------------------------------------------
 
 function emptyBufferState(): BufferState {
@@ -815,7 +785,6 @@ interface DebouncedBufferInternals {
 
 test("debounce on: N keep_buffering turns coalesce into one save on flush", async () => {
   const storage = new FakeStorage(emptyBufferState());
-  // Large window + high turn cap so every turn keeps buffering (no trigger).
   const buffer = new SmartBuffer(
     parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 100 }),
     storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
@@ -831,7 +800,6 @@ test("debounce on: N keep_buffering turns coalesce into one save on flush", asyn
   assert.equal(storage.saveCount, 1, "the trailing-edge flush writes exactly once");
   assert.equal(storage.saved?.entries?.["thread-a"]?.turns.length, 5, "flush persists all buffered turns");
 
-  // Idempotent: a second flush with nothing pending does not write again.
   await buffer.flushPendingSave();
   assert.equal(storage.saveCount, 1, "flushPendingSave is idempotent");
 });
@@ -863,7 +831,6 @@ test("debounce on: clearAfterExtraction cancels the pending timer and persists p
   assert.equal(storage.saveCount, 1, "clearAfterExtraction persists exactly once (post-clear state)");
   assert.equal(storage.saved?.entries?.["thread-a"]?.turns.length, 0, "the persisted state is cleared");
 
-  // The pending debounce timer was cancelled — it must not fire a stale write.
   const internals = buffer as unknown as DebouncedBufferInternals;
   assert.equal(internals.saveTimer, null, "no armed timer remains after clear");
   assert.equal(internals.pendingSave, false, "no pending save remains after clear");
@@ -892,7 +859,6 @@ test("parseConfig validates bufferSaveDebounceMs (accepts valid, defaults undefi
     2_147_483_647,
     "max (32-bit setTimeout limit) accepted",
   );
-  // CLI numeric strings coerce, then validate.
   assert.equal(parseConfig({ bufferSaveDebounceMs: "5000" }).bufferSaveDebounceMs, 5_000, "numeric string coerces");
 });
 
@@ -921,14 +887,11 @@ test("debounce on: each turn re-arms the trailing edge (save fires one window af
 test("debounce on: sustained activity forces an inline save at the 5x staleness cap", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
   const storage = new FakeStorage(emptyBufferState());
-  // Window 100ms → cap at 5x = 500ms of continuously-deferred pending state.
   const buffer = new SmartBuffer(
     parseConfig({ bufferSaveDebounceMs: 100, triggerMode: "smart", bufferMaxTurns: 10_000 }),
     storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
   );
 
-  // Add a turn every 80ms (< window) so the trailing-edge timer never fires —
-  // each turn re-arms it. The pending save is deferred continuously.
   await buffer.addTurn("thread-a", makeTurn("thread-a", "turn 0")); // firstPendingAt = 0
   for (let elapsed = 80; elapsed <= 480; elapsed += 80) {
     t.mock.timers.tick(80);
@@ -936,7 +899,6 @@ test("debounce on: sustained activity forces an inline save at the 5x staleness 
     assert.equal(storage.saveCount, 0, `still deferred at t=${elapsed} (< 5x window)`);
   }
 
-  // Next turn crosses t=560 (>= 500ms cap): scheduleSave forces an inline save.
   t.mock.timers.tick(80); // t=560
   await buffer.addTurn("thread-a", makeTurn("thread-a", "turn @560"));
   assert.equal(storage.saveCount, 1, "the 5x staleness cap forced an inline save mid-activity");
@@ -962,9 +924,6 @@ class FailOnceBufferStorage {
 }
 
 test("debounce on: a failed flush keeps the save pending so a retry (or shutdown) persists", async () => {
-  // Issue #1909 review round 2 finding 1: flushPendingSave must not clear
-  // pendingSave until the write SUCCEEDS — otherwise a failed write diverges
-  // memory from disk and a later shutdown flush early-returns, dropping turns.
   const storage = new FailOnceBufferStorage();
   const buffer = new SmartBuffer(
     parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 10_000 }),
@@ -972,13 +931,11 @@ test("debounce on: a failed flush keeps the save pending so a retry (or shutdown
   );
 
   await buffer.addTurn("thread-a", makeTurn("thread-a", "buffered turn")); // schedules a save
-  // First flush: the underlying write throws (swallowed, fail-open).
   await buffer.flushPendingSave();
   const internals = buffer as unknown as DebouncedBufferInternals;
   assert.equal(internals.pendingSave, true, "a failed save leaves the save pending for retry");
   assert.equal(storage.saveCount, 0, "nothing was persisted on the failed attempt");
 
-  // Retry (mirrors the re-armed timer or graceful-shutdown flush) succeeds.
   await buffer.flushPendingSave();
   assert.equal(storage.saveCount, 1, "the retry performed exactly one successful write");
   assert.equal(
@@ -990,9 +947,6 @@ test("debounce on: a failed flush keeps the save pending so a retry (or shutdown
 });
 
 test("parseConfig rejects invalid bufferSaveDebounceMs (round 8: throw, do not clamp/floor)", () => {
-  // Review round 8: reject invalid user input explicitly instead of silently
-  // flooring fractions / clamping negatives to 0 / clamping oversized to the
-  // timer max (AGENTS.md #1/#39).
   const cases: unknown[] = [
     -1, // negative
     0.5, // fraction
@@ -1011,7 +965,6 @@ test("parseConfig rejects invalid bufferSaveDebounceMs (round 8: throw, do not c
       `expected ${JSON.stringify(value)} to be rejected`,
     );
   }
-  // Boundary + coercion: valid inputs pass.
   assert.equal(parseConfig({ bufferSaveDebounceMs: 0 }).bufferSaveDebounceMs, 0);
   assert.equal(parseConfig({ bufferSaveDebounceMs: 2_147_483_647 }).bufferSaveDebounceMs, 2_147_483_647);
   assert.equal(parseConfig({ bufferSaveDebounceMs: "5000" }).bufferSaveDebounceMs, 5_000);
@@ -1037,7 +990,6 @@ test("debounce cap: the buffer never arms setTimeout above the 32-bit limit", as
   const fakeHandle = { unref() {}, ref() {} } as unknown as NodeJS.Timeout;
   timerGlobal.setTimeout = ((_fn: (...a: unknown[]) => void, delay?: number) => {
     if (typeof delay === "number") armedDelays.push(delay);
-    // Do not schedule the real callback — we only assert on the delay argument.
     return fakeHandle;
   }) as typeof setTimeout;
   try {
@@ -1056,28 +1008,18 @@ test("debounce cap: the buffer never arms setTimeout above the 32-bit limit", as
 });
 
 test("debounce on: a failed clearAfterExtraction save keeps pending so other sessions' turns are not lost", async () => {
-  // Issue #1909 review round 13: clearAfterExtraction must NOT clear the global
-  // pending-save state/timer before its post-clear save is durable. If any
-  // session has a debounced save pending and the post-clear write throws, the
-  // pending state must be retained + re-armed so shutdown/the timer retries —
-  // otherwise buffered turns from OTHER sessions that only ever existed in the
-  // debounced state are lost.
   const storage = new FailOnceBufferStorage();
   const buffer = new SmartBuffer(
     parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 10_000 }),
     storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
   );
 
-  // Session A buffers a turn — only a debounced save is pending (nothing on disk).
   await buffer.addTurn("session-a", makeTurn("session-a", "A only lives in the pending save"));
-  // Session B buffers a turn too — the pending debounced save now covers A + B.
   await buffer.addTurn("session-b", makeTurn("session-b", "B is about to be extracted"));
   assert.equal(storage.saveCount, 0, "both turns are still only in the debounced pending save");
 
   const internals = buffer as unknown as DebouncedBufferInternals;
 
-  // Extract + clear session B. The post-clear save FAILS (FailOnce). The global
-  // pending state must survive so A (and the cleared-B state) can still land.
   await assert.rejects(
     () => buffer.clearAfterExtraction("session-b"),
     /simulated buffer write failure/,
@@ -1091,7 +1033,6 @@ test("debounce on: a failed clearAfterExtraction save keeps pending so other ses
   );
   assert.notEqual(internals.saveTimer, null, "a background retry timer is re-armed after the failure");
 
-  // Retry (mirrors the re-armed timer or graceful shutdown) succeeds.
   await buffer.flushPendingSave();
   assert.equal(storage.saveCount, 1, "the retry performed exactly one successful write");
   assert.equal(internals.pendingSave, false, "pending is cleared only after the durable write");
@@ -1159,36 +1100,23 @@ class GatedSaveStorage {
 }
 
 test("debounce on: a turn recorded around a forced flush is not dropped by the flush's clear (PR #2016)", async () => {
-  // Issue #1909 PR #2016 review: flushPendingSave used to clear
-  // pendingSave/firstPendingAtMs AFTER the serialized write mutation resolved,
-  // i.e. OUTSIDE the serializer. A turn recorded around that flush re-arms a
-  // debounced save (pendingSave = true); if the flush's late clear then wiped
-  // that flag, the interleaved turn's own scheduled flush would early-return
-  // and its persistence would be lost. The fix makes write + clear atomic on
-  // the existing serializer mutex. This drives the interleave deterministically
-  // and proves BOTH the pre-flush turn and the interleaved turn reach disk.
   const storage = new GatedSaveStorage(emptyBufferState());
   const buffer = new SmartBuffer(
     parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 10_000 }),
     storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
   );
 
-  // Pre-flush turn: schedules a debounced save (pendingSave = true, timer armed).
   assert.equal(
     await buffer.addTurn("thread-a", makeTurn("thread-a", "pre-flush")),
     "keep_buffering",
   );
 
-  // Force a flush whose write blocks mid-flight, holding the serializer.
   storage.blockNextSave();
   const flushP = buffer.flushPendingSave();
   await storage.saveStarted();
 
-  // Interleave a turn while the flush write is in flight. It queues behind the
-  // flush's write mutation on the serializer and records only after it settles.
   const addP = buffer.addTurn("thread-a", makeTurn("thread-a", "post-flush"));
 
-  // Let the flush write land and everything settle.
   storage.releaseSave();
   await Promise.all([flushP, addP]);
 
@@ -1204,8 +1132,6 @@ test("debounce on: a turn recorded around a forced flush is not dropped by the f
     "the interleaved turn's debounced save survives the flush's clear (owns its own flush)",
   );
 
-  // The interleaved turn's pending save must still land — the flush's clear must
-  // not have silently dropped it.
   await buffer.flushPendingSave();
   assert.deepEqual(
     storage.saved?.entries?.["thread-a"]?.turns.map((t) => t.content) ?? [],

@@ -65,12 +65,10 @@ export interface LocalLabManifestNotes {
 }
 
 export interface LocalLabManifest {
-  /** Manifest discriminator; always the literal `"local-lab"`. */
   profile: "local-lab";
   responder: LocalLabRoleConfig;
   judge: LocalLabRoleConfig;
   embedding?: LocalLabRoleConfig;
-  /** Phase scheduling mode. PR2 ships `"sequential"` only. */
   phases: "sequential";
   notes?: LocalLabManifestNotes;
 }
@@ -127,9 +125,6 @@ export async function loadLocalLabManifest(
   try {
     text = await readFile(filePath, "utf8");
   } catch (error) {
-    // Do not echo raw error.message — Node read errors embed the absolute
-    // path and system diagnostics. Use the errno code (ENOENT, EACCES, …)
-    // which is stable and free of path leakage (cursor review, #1573 PR2).
     const code = (error as NodeJS.ErrnoException)?.code ?? "EUNKNOWN";
     throw new Error(`local-lab manifest at ${filePath} could not be read (${code})`);
   }
@@ -138,7 +133,6 @@ export async function loadLocalLabManifest(
   try {
     parsed = JSON.parse(text);
   } catch (error) {
-    // JSON.parse errors carry a position hint but no file-system paths.
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`local-lab manifest at ${filePath} contains invalid JSON: ${detail}`);
   }
@@ -159,9 +153,6 @@ function parseRole(value: unknown, label: string): LocalLabRoleConfig {
   const ctx = parsePositiveInteger(value.ctx, label, "ctx");
   const seed = parseInteger(value.seed, label, "seed");
 
-  // `temperature` must be exactly the number 0 — local-lab reproducibility
-  // contract. Anything else (string "0", null, missing, non-zero) is rejected
-  // rather than silently coerced (rule 39).
   if (value.temperature !== 0) {
     throw new Error(
       `local-lab manifest ${label}.temperature must be the number 0; received ${describeValue(value.temperature)}`,
@@ -190,7 +181,6 @@ function parseProviderKind(value: unknown, label: string): LocalLabProviderKind 
       return kind;
     }
   }
-  // Rule 51: reject invalid enum values with the valid options listed.
   throw new Error(
     `local-lab manifest ${label}.provider must be one of [${LOCAL_LAB_PROVIDER_KINDS.join(
       ", ",

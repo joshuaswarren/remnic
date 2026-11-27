@@ -43,7 +43,6 @@ export function parseOriginClass(value: unknown): OriginClass {
   return "unknown";
 }
 
-/** Classify a write origin. Import and connector identity outrank turn role. */
 export function classifyOrigin(input: {
   turnRole?: "user" | "assistant" | "tool" | string;
   connectorId?: string;
@@ -57,7 +56,6 @@ export function classifyOrigin(input: {
 }
 
 export const DEFAULT_UNTRUSTED_ORIGINS: readonly string[] = ["tool_output", "import:*", "unknown"];
-/** Full attacker-controlled boundary used by the packaged defense modes. */
 export const HARDENED_UNTRUSTED_ORIGINS: readonly string[] = [
   "user",
   "tool_output",
@@ -66,7 +64,6 @@ export const HARDENED_UNTRUSTED_ORIGINS: readonly string[] = [
   "unknown",
 ];
 
-/** Match exact origins and prefix wildcards such as connector:* and import:*. */
 export function isUntrustedOrigin(origin: OriginClass, untrustedOrigins: readonly string[]): boolean {
   return untrustedOrigins.some((pattern) => {
     if (pattern.endsWith("*")) return origin.startsWith(pattern.slice(0, -1));

@@ -66,7 +66,6 @@ export interface ActivitySyncRegistrarDeps {
 
 export class ActivitySyncRegistrar {
   private scheduler: ActivitySyncSchedulerLike | null = null;
-  /** Latched by dispose() so a draining tick's onRun cannot re-arm maintenance. */
   private disposed = false;
   private readonly createScheduler: (options: ActivitySyncSchedulerOptions) => ActivitySyncSchedulerLike;
 
@@ -84,37 +83,24 @@ export class ActivitySyncRegistrar {
    * safe to call repeatedly; always stops a prior scheduler first.
    */
   async register(signal: AbortSignal): Promise<void> {
-    // Re-arm or teardown: stop any prior scheduler before anything else, so a
-    // repeated registration never orphans a running interval.
     const prior = this.scheduler;
     this.scheduler = null;
     await prior?.stop();
-    // Teardown began (possibly during the drain above). Never arm nor clear the
-    // latch: dispose() may already have set it, and it must stay set.
     if (signal.aborted) return;
-    // Opted-in at-rest encryption must not be silently bypassed: activity
-    // digests + SQLite are written in the clear, so refuse to run under it.
     if (this.deps.secureStoreEnabled && this.deps.config.enabled) {
       log.warn(
         "activity sync disabled: secure store is enabled but activity digests/SQLite are not encrypted at rest",
       );
       return;
     }
-    // Committed to a fresh lifecycle: clear the latch so this scheduler's
-    // reindex retries fire again.
     this.disposed = false;
     try {
       const scheduler = this.createScheduler({
         config: this.deps.config,
         memoryDir: this.deps.memoryDir,
         intervalMs: this.deps.config.autoSyncIntervalMinutes * 60_000,
-        // Strict refresh after each digest write (rule 31): bypasses the
-        // min-interval gate and throws on a real failure.
         reindexSearch: (sig) => refreshActivityIndex(this.deps.getQmd(), this.deps.qmdCollection, sig),
         ...(this.deps.pluginConfig === undefined ? {} : { pluginConfig: this.deps.pluginConfig }),
-        // A failed reindex (QMD down) leaves the next unchanged-digest tick
-        // skipping afterWrites, so route the retry through the durable,
-        // throttled QMD path — but never after teardown.
         onRun: (summary: ActivitySyncRunSummary) => {
           if (summary.reindexErrorCount > 0 && !this.disposed) {
             log.warn(
@@ -122,9 +108,6 @@ export class ActivitySyncRegistrar {
             );
             this.deps.requestReindexRetry();
           }
-          // Tail step: a durable tick that ingested snapshots may have changed a
-          // meeting's screen context; notify the dependent builder. Never after
-          // teardown.
           if (summary.enabled && summary.totalInserted > 0 && !this.disposed) {
             this.deps.onSynced?.(summary);
           }
@@ -132,7 +115,6 @@ export class ActivitySyncRegistrar {
       });
       this.scheduler = scheduler;
       scheduler.start();
-      // Close the race where abort fires between the guard above and start().
       if (signal.aborted) {
         await scheduler.stop();
         this.scheduler = null;

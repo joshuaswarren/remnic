@@ -158,11 +158,6 @@ export const ExtractedFactSchema = z.object({
         // already enforces this, keeping the two paths symmetric).
         .min(2)
         .describe("Ordered reasoning steps the user walked through (require >=2)."),
-      // Accept snake_case aliases so a loose gateway model using
-      // `final_answer` / `observed_outcome` does not fail schema parsing
-      // and drop the entire extraction result. Local/direct-client
-      // normalization already tolerates these keys; the gateway path must
-      // too. Zod's `union` keeps the parse successful either way.
       finalAnswer: z
         .string()
         .optional()
@@ -364,12 +359,6 @@ export const ExtractionResultSchema = z.object({
     ),
 });
 
-/**
- * Provider-facing extraction contract. Keep this free of transforms/refinements:
- * JSON Schema generators cannot faithfully represent salvageArray's ZodEffects.
- * ExtractionResultSchema remains the authoritative tolerant parser after the
- * provider returns.
- */
 export const ExtractionProviderOutputSchema = z.object({
   facts: z.array(ExtractedFactSchema),
   profileUpdates: z.array(z.string()),
@@ -447,7 +436,6 @@ export type IdentityConsolidationResultParsed = z.infer<
   typeof IdentityConsolidationResultSchema
 >;
 
-// Contradiction Verification (Phase 2B)
 export const ContradictionVerificationSchema = z.object({
   isContradiction: z
     .boolean()
@@ -469,7 +457,6 @@ export type ContradictionVerificationResult = z.infer<
   typeof ContradictionVerificationSchema
 >;
 
-// Memory Linking (Phase 3A)
 export const MemoryLinkSchema = z.object({
   targetId: z
     .string()
@@ -498,7 +485,6 @@ export const SuggestedLinksSchema = z.object({
 export type MemoryLink = z.infer<typeof MemoryLinkSchema>;
 export type SuggestedLinks = z.infer<typeof SuggestedLinksSchema>;
 
-// Memory Summarization (Phase 4A)
 export const MemorySummarySchema = z.object({
   summaryText: z
     .string()

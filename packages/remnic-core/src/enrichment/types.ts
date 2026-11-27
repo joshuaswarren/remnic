@@ -1,15 +1,6 @@
-/**
- * Enrichment pipeline types (issue #365).
- *
- * Defines the provider interface, candidate shape, pipeline config,
- * and result types for the external enrichment subsystem.
- */
 
 import type { ImportanceLevel, MemoryCategory } from "../types.js";
 
-// ---------------------------------------------------------------------------
-// Provider config & interface
-// ---------------------------------------------------------------------------
 
 export type EnrichmentCostTier = "free" | "cheap" | "expensive";
 
@@ -37,7 +28,6 @@ export interface EnrichmentProvider {
 }
 
 // ---------------------------------------------------------------------------
-// Entity enrichment input
 // ---------------------------------------------------------------------------
 
 export interface EntityEnrichmentInput {
@@ -48,7 +38,6 @@ export interface EntityEnrichmentInput {
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline result
 // ---------------------------------------------------------------------------
 
 export interface EnrichmentResult {
@@ -62,7 +51,6 @@ export interface EnrichmentResult {
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline config
 // ---------------------------------------------------------------------------
 
 export interface EnrichmentPipelineConfig {

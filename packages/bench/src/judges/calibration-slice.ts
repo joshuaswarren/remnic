@@ -1,25 +1,3 @@
-/**
- * Cross-tier judge calibration — issue #1573 PR3.
- *
- * The two-tier protocol (#1573) trusts local-judge numbers for regression only
- * when the local judge agrees with the frontier judge closely enough. This
- * module owns three things:
- *
- *   1. A deterministic, content-free calibration slice — a reproducible
- *      selection of question ids per benchmark. The slice is "committed" in
- *      the sense that the selection algorithm is fixed and content-free
- *      (rule: no dataset content in repo per docs/benchmarks.md ethics): the
- *      same universe of question ids always yields the same slice, so two
- *      operators running the same dataset compare the same questions.
- *   2. `runJudgeCalibration` — runs both judges over the slice's cached
- *      answers, bins each verdict to a category, and reports Cohen's kappa.
- *   3. The kappa threshold + warning that downstream local artifacts carry
- *      (see the `judgeCalibration` field on `BenchmarkArtifact`).
- *
- * The module is I/O-free except for the judge calls the caller injects; it has
- * no module-level mutable state (rule 11) and never interpolates model/answer
- * text into shell strings (rule 10).
- */
 
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -40,13 +18,6 @@ import {
   type CohenKappaResult,
   type JudgeCategory,
 } from "./cohen-kappa.js";
-/**
- * Judge identities recorded alongside a persisted calibration so a later run
- * can verify the kappa was computed for the SAME judge pair (issue #1573 PR3,
- * codex P2 review). Without this binding, a run that swaps the local-lab
- * manifest or the frontier judge would inherit a stale kappa computed for a
- * different pair.
- */
 export interface JudgeCalibrationIdentities {
   localJudgeProvider: string;
   localJudgeModel: string;
@@ -54,13 +25,6 @@ export interface JudgeCalibrationIdentities {
   frontierJudgeModel: string;
 }
 
-/**
- * The full persisted calibration record as loaded from disk: the artifact
- * subset plus the (optional) judge identities that produced it. Identities
- * are optional because state files written before they existed still load —
- * the attach path treats absent identities as "unbound, attach anyway" to
- * preserve backwards compatibility.
- */
 export type LoadedJudgeCalibrationState = BenchmarkArtifactJudgeCalibration &
   Partial<JudgeCalibrationIdentities> & {
     /** Stored-result id that pins the answer payload across recalibrations. */
@@ -76,21 +40,8 @@ export type LoadedJudgeCalibrationState = BenchmarkArtifactJudgeCalibration &
     frontierJudgeConfigHash?: string;
   };
 
-/**
- * Fixed slice size per benchmark. Issue #1877 raises the calibration target
- * from 50 to 200 to reduce slice sensitivity; a
- * benchmark with fewer available questions uses all of them.
- */
 export const CALIBRATION_SLICE_SIZE = 200;
 
-/**
- * Minimum number of completed tasks a stored result must have to be a valid
- * calibration source (codex P2 review). A `--limit 1` full run produces
- * `mode === "full"` with a single task, yielding a degenerate one-sample κ
- * (often 1.0). Below this floor, Cohen's kappa is statistically meaningless.
- * Benchmarks with fewer total questions are unaffected — the slice uses all
- * available tasks, but a capped run of a larger benchmark is rejected.
- */
 export const MIN_CALIBRATION_SOURCE_TASKS = 10;
 
 /**
@@ -100,19 +51,14 @@ export const MIN_CALIBRATION_SOURCE_TASKS = 10;
  */
 export const JUDGE_CALIBRATION_KAPPA_THRESHOLD = 0.7;
 
-/** A cached answer the calibration runs both judges over. */
 export interface CalibrationAnswer {
   /** Stable question id (matches `BenchmarkArtifactPerTaskScore.taskId`). */
   questionId: string;
-  /** The prompt/question text the responder was asked. */
   question: string;
-  /** The responder's produced answer text. */
   predicted: string;
-  /** The reference / gold answer text. */
   expected: string;
 }
 
-/** Per-question verdict pair produced while running calibration. */
 export interface CalibrationVerdictPair {
   questionId: string;
   localCategory: JudgeCategory;
@@ -121,7 +67,6 @@ export interface CalibrationVerdictPair {
 
 export const JUDGE_CALIBRATION_PROTOCOL_VERSION = "judge-calibration-v3";
 
-/** Identity of the default score-to-category mapping used by calibration. */
 export const DEFAULT_JUDGE_BINNING_IDENTITY =
   "default-binary-score-v1:incorrect<0.5,correct>=0.5,nonfinite=incorrect";
 
@@ -137,13 +82,9 @@ export interface JudgeCalibrationCheckpointProvenance {
 }
 
 export interface RunJudgeCalibrationOptions {
-  /** Benchmark id the calibration is scoped to (recorded in the result). */
   benchmarkId: string;
-  /** The cheap local-lab judge (Tier L). */
   localJudge: BenchJudge;
-  /** The expensive frontier judge (Tier F) — the gold standard. */
   frontierJudge: BenchJudge;
-  /** Cached answers to judge; the slice is selected from these by question id. */
   answers: readonly CalibrationAnswer[];
   /**
    * Maps a numeric judge score to a category label. Defaults to
@@ -173,11 +114,8 @@ export interface RunJudgeCalibrationOptions {
 
 export interface JudgeCalibrationResult extends CohenKappaResult {
   benchmarkId: string;
-  /** Question ids that made up the calibrated slice. */
   sliceQuestionIds: readonly string[];
-  /** Configured warning threshold. */
   threshold: number;
-  /** True when `kappa < threshold` — local judge is unreliable for this benchmark. */
   warning: boolean;
   /** Paired-bootstrap percentile interval for kappa. */
   confidenceInterval: KappaConfidenceInterval;
@@ -197,15 +135,6 @@ export interface JudgeCalibrationResult extends CohenKappaResult {
   };
 }
 
-/**
- * Select the calibration slice from a universe of question ids.
- *
- * The selection is deterministic and content-free: ids are ordered by the
- * hex digest of `sha256(id)` and the first `size` are taken. This commits the
- * slice to a fixed algorithm rather than a hardcoded id list (which we cannot
- * ship without the dataset). Same universe → same slice, every time, across
- * operators and reruns — so the slice is reproducible and comparable.
- */
 export function selectCalibrationSlice(
   questionIds: readonly string[],
   size: number = CALIBRATION_SLICE_SIZE,
@@ -231,15 +160,6 @@ export function selectCalibrationSlice(
     .map((entry) => entry.id);
 }
 
-/**
- * Run both judges over the calibration slice and report Cohen's kappa.
- *
- * For each answer in the slice the local and frontier judges each score
- * `(question, predicted, expected)`; each numeric score is binned to a
- * category (default: correct/incorrect) and the two parallel category arrays
- * feed `computeCohensKappa`. The result is exactly the value that lands in
- * subsequent local artifacts' `judgeCalibration.kappa`.
- */
 export async function runJudgeCalibration(
   options: RunJudgeCalibrationOptions,
 ): Promise<JudgeCalibrationResult> {
@@ -252,10 +172,6 @@ export async function runJudgeCalibration(
     ? validatePinnedQuestionIds(options.pinnedQuestionIds, availableIds)
     : selectCalibrationSlice([...availableIds], sliceSize);
   const sliceIdSet = new Set(sliceIds);
-  // Dedupe by questionId (cursor review: a stored result with duplicate
-  // taskIds would otherwise double-count the same question, inflating
-  // sampleSize and skewing kappa). First answer per id wins; slice order
-  // is preserved so verdicts line up with sliceQuestionIds.
   const answerById = new Map<string, CalibrationAnswer>();
   for (const answer of options.answers) {
     if (sliceIdSet.has(answer.questionId) && !answerById.has(answer.questionId)) {
@@ -551,21 +467,6 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-/**
- * Persist a calibration result so subsequent local artifacts can carry the
- * kappa (issue #1573 done-when: "a kappa number that lands in subsequent
- * local artifacts"). The state is a single JSON file per benchmark under
- * `<calibrationDir>/<benchmarkId>.json`, written atomically via temp-write-
- * then-rename (cursor review: a direct writeFile can leave truncated JSON on
- * crash, which loadJudgeCalibrationState would silently drop as a miss).
- *
- * The artifact-relevant subset (`BenchmarkArtifactJudgeCalibration`) plus
- * private source provenance is persisted — never the per-question verdicts
- * or answer text (repo ethics + rule 10: nothing interpolated into shell).
- * Optional `identities` record the judge pair that produced the kappa so a
- * later run can refuse a stale kappa for a different pair (codex P2 review);
- * omitted on pre-binding state files.
- */
 export async function writeJudgeCalibrationState(
   result: JudgeCalibrationResult,
   calibrationDir: string,
@@ -593,8 +494,6 @@ export async function writeJudgeCalibrationState(
     ...(identities ? identities : {}),
   };
   const filePath = path.join(calibrationDir, `${sanitizeCalibrationSegment(result.benchmarkId)}.json`);
-  // Atomic write: land bytes on a temp file, then rename into place. The
-  // rename is atomic on POSIX; best-effort temp cleanup on failure.
   const tempPath = `${filePath}.${randomBytes(6).toString("hex")}.tmp`;
   await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   try {
@@ -607,13 +506,6 @@ export async function writeJudgeCalibrationState(
   return filePath;
 }
 
-/**
- * Load a previously persisted calibration result for a benchmark. Returns
- * `undefined` when no calibration has been run yet (the run path treats
- * absence as "no calibration recorded" and omits `judgeCalibration` from
- * the artifact). A corrupt/unparseable file is a miss returning `undefined`,
- * never a crash (rule 34) — the operator re-runs `judge-calibrate`.
- */
 export async function loadJudgeCalibrationState(
   benchmarkId: string,
   calibrationDir: string,
@@ -691,11 +583,6 @@ export async function loadJudgeCalibrationState(
     loaded.localJudgeConfigHash = record.localJudgeConfigHash;
     loaded.frontierJudgeConfigHash = record.frontierJudgeConfigHash;
   }
-  // Identities are optional (older state files predate them). If ANY identity
-  // field is present, ALL four must be present and string — otherwise the
-  // binding is unreliable and identities are dropped (the calibration subset
-  // still loads; the attach path treats unbound state as "attach anyway" for
-  // backwards compatibility).
   const identityKeys = [
     "localJudgeProvider",
     "localJudgeModel",
@@ -714,18 +601,8 @@ export async function loadJudgeCalibrationState(
   return loaded;
 }
 
-/**
- * Sanitize a benchmark id for use as a calibration-state filename. Only
- * `[a-z0-9._-]` survives (mirrors the artifact filename sanitizer) so a
- * forged benchmark id cannot escape `calibrationDir`.
- */
 function sanitizeCalibrationSegment(value: string): string {
   const lowered = value.trim().toLowerCase();
-  // Character-by-character sanitization (CodeQL: avoids polynomial regex on
-  // uncontrolled input). Disallowed characters become a single "-" separator
-  // so distinct benchmark ids stay distinct (cursor review: the old filter-drop
-  // mapped "foo.bar" and "foobar" to the same file). Consecutive separators
-  // are collapsed and edges are trimmed.
   const chars: string[] = [];
   let prevWasSeparator = false;
   for (const ch of lowered) {
@@ -747,7 +624,6 @@ function sanitizeCalibrationSegment(value: string): string {
       prevWasSeparator = true;
     }
   }
-  // Trim leading/trailing separators (array-based, no regex).
   while (chars.length > 0 && chars[0] === "-") {
     chars.shift();
   }

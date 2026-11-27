@@ -30,7 +30,6 @@ import type { MemoryCategory, MemoryFile, MemoryFrontmatter } from "../types.js"
 
 type FrontmatterLifecycleOptions = Parameters<StorageManager["writeMemoryFrontmatter"]>[2];
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
 
 async function makeTempDir(prefix = "contradiction-test-"): Promise<{
   dir: string;
@@ -119,7 +118,6 @@ function makeResolutionStorage(options: {
       const memory = memories.get(id);
       return memory ? cloneMemory(memory) : null;
     },
-    // Production mapper keeps this legacy-shaped double faithful (§21).
     async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: Record<string, unknown>) {
       const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
       const writeOptions = options as {
@@ -202,7 +200,6 @@ function makeScanStorage(memories: MemoryFile[]) {
   return storage as typeof storage & StorageManager;
 }
 
-// ── Pair ID determinism ────────────────────────────────────────────────────────
 
 test("computePairId is deterministic and order-independent", () => {
   const ab = computePairId("a", "b");
@@ -228,7 +225,6 @@ test("computePairId includes namespace scope when present", () => {
   assert.equal(computePairId("a", "b", "  "), unscoped);
 });
 
-// ── Review queue write/read ────────────────────────────────────────────────────
 
 test("writePair and readPair round-trip", async () => {
   const { dir, cleanup } = await makeTempDir();
@@ -515,13 +511,11 @@ test("writePair refreshes expired both-valid resolutions with actionable results
   }
 });
 
-// ── Batch dedup (rule 49) ──────────────────────────────────────────────────────
 
 test("writePairs deduplicates batch inputs", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {
     const pair = makePair();
-    // Same pair submitted 3 times
     const results = writePairs(dir, [pair, pair, pair]);
     assert.equal(results.length, 1, "Should deduplicate identical pairs in batch");
   } finally {
@@ -529,7 +523,6 @@ test("writePairs deduplicates batch inputs", async () => {
   }
 });
 
-// ── List and filter ────────────────────────────────────────────────────────────
 
 test("listPairs filters by verdict", async () => {
   const { dir, cleanup } = await makeTempDir();
@@ -1616,7 +1609,6 @@ test("listPairs returns empty when dir does not exist", async () => {
   }
 });
 
-// ── Cooldown ───────────────────────────────────────────────────────────────────
 
 test("isCoolingDown returns false when no lastReviewedAt", () => {
   const pair: ContradictionPair = {
@@ -1702,7 +1694,6 @@ test("isCoolingDown uses deferredUntil instead of generic cooldown for deferrals
   assert.equal(isCoolingDown(expired, 14), false);
 });
 
-// ── Resolution verbs ───────────────────────────────────────────────────────────
 
 test("isValidResolutionVerb accepts valid verbs", () => {
   assert.equal(isValidResolutionVerb("keep-a"), true);
@@ -1953,19 +1944,12 @@ test("executeResolution rolls back memory changes when pair resolution persisten
   }
 });
 
-// ── Catalog-write touch ordering (NH1dX, rule #25) ──────────────────────────────
-// The merge catalog touch (onMergedMemoryWritten) must fire ONLY after the
-// resolution durably commits past the rollback point. If resolvePair fails and
-// the merge rolls back, NO catalog write may be recorded for a write that did
-// not survive.
 
 test("executeResolution merge records NO catalog write touch when resolution persistence fails and rolls back", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {
     const written = writePair(dir, makePair({ namespace: "work" }));
     const pairFile = path.join(dir, ".review", "contradictions", `${written.pairId}.json`);
-    // Force resolvePair to fail by removing the pair file once supersession runs,
-    // mirroring the existing rollback test. This drives the rollback path.
     const storage = makeResolutionStorage({
       dir: "/tmp/work-namespace-storage",
       onSupersede: () => {
@@ -1984,8 +1968,6 @@ test("executeResolution merge records NO catalog write touch when resolution per
 
     assert.match(result.message, /Resolution persistence failed; rolled back memory changes/);
     assert.deepEqual(result.affectedIds, []);
-    // The merged memory was created then cleaned up by the rollback, and the
-    // resolution never persisted — so the catalog touch must NOT have fired.
     assert.deepEqual(
       catalogTouches,
       [],
@@ -2015,7 +1997,6 @@ test("executeResolution merge records exactly one catalog write touch for the pa
     assert.match(result.message, /Both memories superseded by merged/);
     assert.deepEqual(result.affectedIds, ["mem-a-001", "mem-b-002"]);
     assert.equal(readPair(dir, written.pairId)?.resolution, "merge");
-    // Exactly one touch, carrying the pair namespace and the routed storage dir.
     assert.deepEqual(catalogTouches, [
       { namespace: "work", storageDir: "/tmp/work-namespace-storage" },
     ]);
@@ -2024,8 +2005,6 @@ test("executeResolution merge records exactly one catalog write touch for the pa
   }
 });
 
-// NH3X3: supersede-only resolutions (keep-a / keep-b) also mutate the namespace,
-// so they must record a catalog touch — post-commit, never on rollback.
 
 test("executeResolution keep-a records exactly one catalog write touch on success", async () => {
   const { dir, cleanup } = await makeTempDir();
@@ -2137,7 +2116,6 @@ test("executeResolution keep-a records a catalog write touch when resolution per
   }
 });
 
-// Non-mutating verbs never touch the catalog (no namespace memory changed).
 test("executeResolution both-valid records no catalog write touch", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {
@@ -2680,7 +2658,6 @@ test("legacy needs-more-context resolutions honor cooldown before returning to u
   }
 });
 
-// ── resolvePair ────────────────────────────────────────────────────────────────
 
 test("resolvePair sets resolution and lastReviewedAt", async () => {
   const { dir, cleanup } = await makeTempDir();
@@ -2761,7 +2738,6 @@ test("resolvePair returns null for nonexistent pair", async () => {
   }
 });
 
-// ── ACTIVE_STATUSES (rule 53) ──────────────────────────────────────────────────
 
 test("ACTIVE_STATUSES contains only active", () => {
   assert.ok(ACTIVE_STATUSES.has("active"));
@@ -2772,13 +2748,11 @@ test("ACTIVE_STATUSES contains only active", () => {
   assert.equal(ACTIVE_STATUSES.has("pending_review"), false);
 });
 
-// ── Judge helper: pairKey ──────────────────────────────────────────────────────
 
 test("pairKey is order-independent", () => {
   assert.equal(_pairKey("a", "b"), _pairKey("b", "a"));
 });
 
-// ── Judge helper: contentHash ──────────────────────────────────────────────────
 
 test("contentHash is deterministic", () => {
   const a = { memoryIdA: "1", memoryIdB: "2", textA: "hello", textB: "world" };
@@ -2812,7 +2786,6 @@ test("contentHash does not collide when text and category contain delimiters", (
   assert.notEqual(_contentHash(a), _contentHash(b));
 });
 
-// ── JSON parse safety (rule 18) ────────────────────────────────────────────────
 
 test("readPair returns null for invalid JSON", async () => {
   const { dir, cleanup } = await makeTempDir();
@@ -2838,12 +2811,6 @@ test("readPair returns null for non-object JSON", async () => {
   }
 });
 
-// ── issue #1499 sweep: a contradiction merge that CREATES a new merged memory
-// writes durable data to the pair's (possibly dynamic) namespace storage,
-// bypassing the extraction write path. executeResolution must invoke
-// onMergedMemoryWritten(namespace, storageDir) so the caller records the catalog
-// write — otherwise a dynamic namespace whose only durable mutation is a merge
-// stays invisible to QMD maintenance / writtenSince.
 test("executeResolution merge fires onMergedMemoryWritten with the pair namespace when a new memory is created", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {
@@ -2878,9 +2845,6 @@ test("executeResolution merge fires onMergedMemoryWritten with the pair namespac
   }
 });
 
-// Reusing an EXISTING merged memory id still supersedes BOTH sources — a durable
-// namespace mutation — so the catalog touch MUST fire so `lastWriteAt` refreshes
-// (NH3X3). It fires exactly once, post-commit.
 test("executeResolution merge fires onMergedMemoryWritten exactly once when reusing an existing merged id", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {

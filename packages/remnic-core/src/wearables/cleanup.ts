@@ -86,31 +86,12 @@ interface FillerMatchers {
   inline: RegExp | null;
 }
 
-/**
- * Compiled matchers are cached per (script hints + extra tokens) key.
- * A day of transcripts is thousands of segments over a handful of
- * scripts, so this compiles a few regexes instead of one per segment.
- */
 const FILLER_MATCHER_CACHE = new Map<string, FillerMatchers>();
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/**
- * Build one alternation from `tokens`, or `null` when none remain.
- *
- * Each token contributes BOTH its composed and its decomposed spelling,
- * so `ähm` also matches an ASR that emits `a\u0308hm`. Matching both
- * forms keeps the surrounding transcript byte-identical, which
- * normalizing the text before stripping would not.
- *
- * JavaScript alternation is first-match, not longest-match, so the
- * tokens are sorted longest-first. Without that a built-in prefix such
- * as 「あのー」 would match ahead of a longer operator token that starts
- * with it and leave the tail in the transcript. Ties break on the token
- * itself so the pattern is stable across runs.
- */
 function buildAlternation(
   tokens: readonly string[],
   shape: (pattern: string) => { source: string; flags: string },
@@ -132,9 +113,6 @@ function buildFillerMatchers(
   hints: readonly ScriptHint[],
   extraTokens: readonly string[],
 ): FillerMatchers {
-  // Structural key: comma-joining collapses `["a,b"]` and `["a","b"]`
-  // onto one entry, and the first caller's regex would then clean the
-  // second caller's transcripts.
   const key = JSON.stringify([hints, extraTokens]);
   const cached = FILLER_MATCHER_CACHE.get(key);
   if (cached) return cached;
@@ -145,8 +123,6 @@ function buildFillerMatchers(
     tokens.push(...(TOKEN_FILLERS[hint] ?? []));
     inline.push(...(INLINE_FILLERS[hint] ?? []));
   }
-  // Operator tokens apply to every script: the operator knows their own
-  // language, and routing them by script hint would silently drop them.
   for (const extra of extraTokens) {
     const trimmed = extra.trim();
     if (trimmed.length === 0) continue;
@@ -168,17 +144,9 @@ function buildFillerMatchers(
   return matchers;
 }
 
-/**
- * A token whose first character belongs to a space-delimited script.
- *
- * Anything outside this set is removed INLINE, so a script that does
- * space its words must appear here. Hebrew `אה` routed to the inline
- * matcher would strip the suffix of `נראה` and corrupt the transcript.
- */
 const SPACE_DELIMITED_TOKEN =
   /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Hangul}\p{Script=Arabic}\p{Script=Hebrew}\p{N}]/u;
 
-/** Apply configured cleanup passes to one conversation. */
 export function cleanConversation(
   conversation: WearableConversation,
   settings: WearableCleanupSettings,
@@ -187,8 +155,6 @@ export function cleanConversation(
   let segments = conversation.segments.map((segment) => ({ ...segment }));
   let droppedSegments = 0;
   let mergedSegments = 0;
-  // Optional on the type so other connectors keep the legacy no-op
-  // default; absent means "off" (unchanged merge behavior).
   const preserveBoundaries = settings.preserveUtteranceBoundaries === true;
 
   if (settings.stripFillers) {
@@ -218,8 +184,6 @@ export function cleanConversation(
     }
     segments = kept;
   } else {
-    // Even without the quality heuristic, segments whose text became
-    // empty after filler stripping carry no information.
     const kept = segments.filter((segment) => segment.text.length > 0);
     droppedSegments += segments.length - kept.length;
     segments = kept;
@@ -253,11 +217,6 @@ function canMerge(
   preserveUtteranceBoundaries: boolean,
 ): boolean {
   if (previous.speakerKey !== next.speakerKey) return false;
-  // A generic/low-confidence speaker label ("Unknown", empty) carries no
-  // real diarization: merging on it collapses unrelated utterances. When
-  // the source opts into boundary preservation, refuse to merge across
-  // such a label (issue #1811). The keys are equal here, so checking one
-  // suffices; diarized labels still merge normally.
   if (preserveUtteranceBoundaries) {
     const label = previous.speakerKey.trim();
     if (label.length === 0 || GENERIC_SPEAKER_PATTERN.test(label)) return false;
@@ -266,7 +225,6 @@ function canMerge(
     ? Date.parse(previous.endIso)
     : Number.NaN;
   const nextStart = next.startIso ? Date.parse(next.startIso) : Number.NaN;
-  // Without timestamps, adjacency is the only signal — still merge.
   if (Number.isNaN(previousEnd) || Number.isNaN(nextStart)) return true;
   return nextStart - previousEnd <= MERGE_GAP_MS;
 }
@@ -302,17 +260,12 @@ export function collapseImmediateRepeats(text: string): string {
   while (index < words.length) {
     out.push(words[index]);
     index += 1;
-    // Greedily consume every adjacent repeat of the phrase that just
-    // ended at the output tail (largest phrase first, then re-check so
-    // "I I I think" fully collapses to "I think").
     let matched = true;
     while (matched) {
       matched = false;
       for (let size = 4; size >= 1; size--) {
         if (out.length < size || index + size > words.length) continue;
         const tail = out.slice(-size).join(" ").toLowerCase();
-        // Spoken digit sequences legitimately repeat ("555 555 1234");
-        // never collapse a phrase that carries no letters.
         if (!/\p{L}/u.test(tail)) continue;
         const ahead = words.slice(index, index + size).join(" ").toLowerCase();
         if (tail === ahead) {
@@ -333,16 +286,12 @@ export function collapseImmediateRepeats(text: string): string {
 export function isLowQualitySegment(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.length === 0) return true;
-  // Single repeated character runs ("aaaaaa", "######").
   if (/^(.)\1{4,}$/.test(trimmed)) return true;
-  // Mostly non-letter content with no digits (timestamps/amounts are
-  // information; "%$#@!" is not).
   const letters = trimmed.replace(/[^\p{L}\p{N}]/gu, "");
   if (letters.length === 0) return true;
   if (trimmed.length >= 12 && letters.length / trimmed.length < 0.3) {
     return true;
   }
-  // One identical token repeated many times ("yeah yeah yeah yeah yeah").
   const words = trimmed.toLowerCase().split(/\s+/);
   if (words.length >= 5) {
     const unique = new Set(words);

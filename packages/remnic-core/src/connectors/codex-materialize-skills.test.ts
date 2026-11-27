@@ -102,7 +102,6 @@ test("retiring a procedure removes its projected folder and leaves hand-created 
     });
     assert.ok(existsSync(path.join(memoriesDir, "skills", "rotate-the-token", "SKILL.md")));
 
-    // A skill folder the user curated by hand — never in projected_skills.
     const handMade = path.join(memoriesDir, "skills", "hand-authored");
     mkdirSync(handMade, { recursive: true });
     writeFileSync(path.join(handMade, "SKILL.md"), "---\nname: hand-authored\n---\n\nMine.\n");
@@ -131,7 +130,6 @@ test("omitting the skills option leaves an existing skills/ directory untouched"
       skills: projectProceduresToSkills([kept]),
     });
 
-    // Gate turned off on a later run: `skills` omitted entirely.
     const later = makeProcedure("procedure-1", "Ship a focused change", "2026-08-19T00:00:00Z");
     materializeForNamespace("synthetic-ns", { memories: [later], codexHome: root });
     assert.ok(existsSync(path.join(memoriesDir, "skills", "ship-a-focused-change", "SKILL.md")));

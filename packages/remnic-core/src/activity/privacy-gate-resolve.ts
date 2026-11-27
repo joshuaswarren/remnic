@@ -10,11 +10,6 @@
 
 import { parsePrivacyEnabled } from "./privacy-enabled.js";
 
-// Frozen at runtime AND still literal-typed: `Object.freeze` preserves the
-// `as const` tuple, so ActivityFeatureGate stays a five-member union for
-// TypeScript consumers while a JavaScript consumer cannot push a key into
-// the array and have resolveActivityGates accept it forever. An explicit
-// `readonly string[]` annotation would widen the union back to `string`.
 export const ACTIVITY_FEATURE_GATES = Object.freeze([
   "analysis",
   "journal",
@@ -46,9 +41,6 @@ export function resolveActivityGates(input: {
     throw new TypeError("activity gates must be an object");
   }
   if (rawGates) {
-    // getOwnPropertyNames, not Object.keys: a non-enumerable own property
-    // would skip the unknown-key check below while still being readable by
-    // the hasOwn path that resolves values.
     for (const key of Object.getOwnPropertyNames(rawGates)) {
       if (!(ACTIVITY_FEATURE_GATES as readonly string[]).includes(key)) {
         throw new TypeError(
@@ -63,15 +55,6 @@ export function resolveActivityGates(input: {
 
   const result = {} as Record<ActivityFeatureGate, boolean>;
   for (const gate of ACTIVITY_FEATURE_GATES) {
-    // Object.keys above enumerates OWN properties only, so an inherited
-    // "analysis" never reaches the unknown-key check. Reading it here anyway
-    // would let a gate object with an altered prototype enable a gate the
-    // caller never set: read own properties only.
-    // A PRESENT own key whose value is undefined is not the same as an
-    // absent key: composed config objects often carry explicit undefined,
-    // and the API promises to throw for invalid values, so present-but-
-    // undefined goes through parseGateValue (which refuses it) rather than
-    // silently reading as false.
     const present = rawGates !== undefined && Object.hasOwn(rawGates, gate);
     result[gate] = present ? parseGateValue(gate, (rawGates as Record<string, unknown>)[gate]) : false;
   }

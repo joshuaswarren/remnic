@@ -53,7 +53,6 @@ function makeConfig(memoryDir: string, overrides: ConfigOverrides = {}) {
   });
 }
 
-/** Complete typed SearchBackend stub (no casts): one settled QMD candidate. */
 function settledQmdBackend(result: QmdSearchResult): SearchBackend {
   return {
     async probe() {
@@ -155,7 +154,6 @@ interface HarmonicHarness {
   correlationIdsSeen: string[];
 }
 
-/** Park the harmonic source read behind a gate (the house ordering-harness pattern). */
 async function makeHarmonicHarness(memoryDir: string): Promise<HarmonicHarness> {
   const storage = new StorageManager(memoryDir);
   await storage.ensureDirectories();
@@ -234,8 +232,6 @@ test("recall timing requestId equals the HTTP x-request-id response header", asy
     assert.ok(requestIdHeader, "recall response must carry x-request-id");
 
     const records = getRecallTimings(config);
-    // The record's requestId IS the server-generated HTTP correlation id
-    // surfaced as x-request-id — not a second, unrelated uuid.
     assert.equal(records[0]?.requestId, requestIdHeader);
     assert.equal(records[0]?.outcome, "ok");
   } finally {
@@ -342,8 +338,6 @@ test("aborted HTTP recall records outcome aborted under its own request id", asy
     const records = getRecallTimings(config);
     assert.equal(records.length, 1, "exactly one record for the attempt");
     assert.equal(harness.correlationIdsSeen.length, 1);
-    // Same id: the one the HTTP layer minted for this request, observed from
-    // inside the request's own async context while the recall was in flight.
     assert.equal(records[0]?.requestId, harness.correlationIdsSeen[0]);
     assert.match(records[0]?.requestId ?? "", UUID_PATTERN);
   } finally {
@@ -367,7 +361,6 @@ test("phase-2 await fields are populated, bounded, and skipped for disabled sect
   assertPhase2("compounding", record.phase2CompoundingMs, record.phase2CompoundingStatus);
   assertPhase2("questions", record.phase2QuestionsMs, record.phase2QuestionsStatus);
   assertPhase2("prefilter", record.phase2PrefilterMs, record.phase2PrefilterStatus);
-  // Default config disables these sections: 0 ms, skipped, no invented time.
   assert.equal(record.phase2HarmonicStatus, "skipped");
   assert.equal(record.phase2HarmonicMs, 0);
   assert.equal(record.phase2CompressionStatus, "skipped");
@@ -376,7 +369,6 @@ test("phase-2 await fields are populated, bounded, and skipped for disabled sect
   assert.equal(record.phase2QuestionsMs, 0);
   assert.equal(record.phase2PrefilterStatus, "skipped");
   assert.equal(record.phase2PrefilterMs, 0);
-  // The intent snapshot always runs.
   assert.equal(record.phase2IntentSnapshotStatus, "ok");
   await cleanupDir(memoryDir);
 });
@@ -392,7 +384,6 @@ test("enrichment timeout records timeout status while recall still succeeds", as
   const harness = await makeHarmonicHarness(memoryDir);
   stubQmd(orchestrator, harness);
   const service = new EngramAccessService(orchestrator);
-  // The recall must still settle (fail-open unchanged) despite the parked read.
   await service.recall({ query: "atlas source lookup", sessionKey: "phase2:timeout" });
   const record = getRecallTimings(config)[0];
   assert.ok(record);
@@ -410,7 +401,6 @@ test("failed enrichment records error status while recall still succeeds", async
   mock.method(CompoundingEngine.prototype, "buildRecallSection", () =>
     Promise.reject(new Error("synthetic compounding failure")));
   const service = new EngramAccessService(orchestrator);
-  // Fail-open is unchanged: the recall still resolves; only the status says why.
   await service.recall({ query: "compounding failure probe", sessionKey: "phase2:error" });
   const record = getRecallTimings(config)[0];
   assert.ok(record);
@@ -437,8 +427,6 @@ test("started-earlier awaits also record total time since their promise was crea
   assert.ok(record);
   assert.equal(record.phase2HarmonicStatus, "ok");
   assert.ok(record.phase2HarmonicMs !== undefined && record.phase2HarmonicTotalMs !== undefined);
-  // Total time since the promise was created covers the await itself: the two
-  // overlap, they are not additive.
   assert.ok(record.phase2HarmonicTotalMs >= record.phase2HarmonicMs);
   assert.ok(record.phase2PrefilterMs !== undefined && record.phase2PrefilterTotalMs !== undefined);
   assert.ok(record.phase2PrefilterTotalMs >= record.phase2PrefilterMs);
@@ -456,7 +444,6 @@ test("recall response body carries no timing-contract fields", async () => {
     for (const expected of ["query", "namespace", "context", "count", "memoryIds", "results", "fallbackUsed", "sourcesUsed"]) {
       assert.ok(keys.includes(expected), `recall body must still carry ${expected}`);
     }
-    // Timing-contract fields live only in the operator-gated timing record.
     for (const key of keys) {
       assert.doesNotMatch(key, /requestId|outcome|httpTotal|phase2|timingsMs/, `timing field leaked into recall body: ${key}`);
     }
@@ -470,17 +457,12 @@ test("a recall the outer timeout cuts short records outcome error, not ok", asyn
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-timing-outer-timeout-"));
   const config = makeConfig(memoryDir, { recallOuterTimeoutMs: 50 });
   const orchestrator = new Orchestrator(config);
-  // Enrichment deadlines can now degrade a slow section inside the request
-  // budget, so park the corpus read itself: a recall that never gets its
-  // memories still owes the outer timeout its cut.
   mock.method(
     NamespaceReadFanoutCoordinator.prototype,
     "readAllMemoriesForNamespaces",
     () => new Promise<MemoryFile[]>(() => {}),
   );
   const service = new EngramAccessService(orchestrator);
-  // The entry coordinator swallows the timeout and returns a degraded context,
-  // so the surface call resolves; the record must still say it did not complete.
   await service.recall({ query: "atlas source lookup", sessionKey: "outer:timeout" });
   const records = getRecallTimings(config);
   assert.equal(records.length, 1);

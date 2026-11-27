@@ -1,11 +1,3 @@
-/**
- * Shared renderer for the recall-miss diagnosis (issue #3033).
- *
- * CLI, HTTP, and MCP all render the same {@link RecallWhyReport} through
- * this module — never their own formatting (AGENTS.md rule 22, the same
- * contract `recall-xray-renderer.ts` and `recall-explain-renderer.ts`
- * hold).
- */
 
 import type { RecallWhyReport } from "./recall-why.js";
 
@@ -57,7 +49,6 @@ export function renderRecallWhyMarkdown(report: RecallWhyReport): string {
   lines.push("");
 
   if (report.failure !== undefined) {
-    // An outage is never rendered as an empty pipeline (checklist #22).
     lines.push("## Backend unavailable", "");
     lines.push(`The diagnosis could not run: \`${report.failure.reason}\` — ${report.failure.detail}`);
     lines.push("");
@@ -136,7 +127,5 @@ export function summarizeRecallWhy(report: RecallWhyReport): string {
 }
 
 function escapeCell(value: string | undefined): string {
-  // A pipe inside a markdown table cell breaks the row; the filter ladder
-  // joins with "; " and can legitimately contain one.
   return value === undefined ? "" : value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }

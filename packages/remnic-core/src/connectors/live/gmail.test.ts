@@ -32,9 +32,6 @@ import type { ConnectorCursor } from "./framework.js";
  * no real email addresses. All inputs are obviously-synthetic strings.
  */
 
-// ---------------------------------------------------------------------------
-// Synthetic test data
-// ---------------------------------------------------------------------------
 
 const SYNTHETIC_CREDS = Object.freeze({
   clientId: "synthetic-gmail-client-id.apps.googleusercontent.com",
@@ -77,7 +74,6 @@ function makeMessage(
 }
 
 // ---------------------------------------------------------------------------
-// Minimal fetch builder
 // ---------------------------------------------------------------------------
 
 type FetchCall = { url: string; method: string };
@@ -154,7 +150,6 @@ function getHandler(
   return {
     match: (url) => /\/messages\/[^?]+/.test(url) && url.includes("format=full"),
     respond: (url) => {
-      // Extract message id from URL path.
       const m = url.match(/\/messages\/([^?]+)/);
       const id = m ? decodeURIComponent(m[1]) : "";
       const statusCode = statusOverride?.[id] ?? 200;
@@ -177,7 +172,6 @@ function getHandler(
 }
 
 // ---------------------------------------------------------------------------
-// Config validation
 // ---------------------------------------------------------------------------
 
 test("validateGmailConfig accepts a minimal valid config", () => {
@@ -254,7 +248,6 @@ test("validateGmailConfig rejects empty userId string", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Connector identity
 // ---------------------------------------------------------------------------
 
 test("createGmailConnector exposes the documented id and display name", () => {
@@ -266,7 +259,6 @@ test("createGmailConnector exposes the documented id and display name", () => {
 });
 
 // ---------------------------------------------------------------------------
-// First-sync bootstrap behavior
 // ---------------------------------------------------------------------------
 
 test("first sync (cursor=null) returns no docs and seeds the cursor with now", async () => {
@@ -282,7 +274,6 @@ test("first sync (cursor=null) returns no docs and seeds the cursor with now", a
   assert.deepEqual(result.newDocs, []);
   assert.equal(result.nextCursor.kind, GMAIL_CURSOR_KIND);
 
-  // Cursor must store watermarkMs (epoch-ms string), NOT watermarkIso (Thread 1).
   const payload = JSON.parse(result.nextCursor.value) as { watermarkMs: string; watermarkIso?: string };
   assert.ok(typeof payload.watermarkMs === "string", "cursor must have watermarkMs");
   assert.equal(payload.watermarkIso, undefined, "cursor must NOT have watermarkIso (use watermarkMs)");
@@ -292,7 +283,6 @@ test("first sync (cursor=null) returns no docs and seeds the cursor with now", a
 });
 
 // ---------------------------------------------------------------------------
-// pollOnce — basic happy-path incremental sync
 // ---------------------------------------------------------------------------
 
 test("incremental sync emits ConnectorDocument entries for new messages", async () => {
@@ -306,7 +296,6 @@ test("incremental sync emits ConnectorDocument entries for new messages", async 
   ]);
   const connector = createGmailConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CREDS });
-  // Use new watermarkMs format.
   const cursor: ConnectorCursor = {
     kind: GMAIL_CURSOR_KIND,
     value: JSON.stringify({ watermarkMs: String(Number(T1) - 1000), skippedIds: {}, seenIds: {} }),
@@ -343,23 +332,15 @@ test("watermark advances to the highest internalDate of successfully processed m
 
   const result = await connector.syncIncremental({ cursor, config });
 
-  // Watermark must be stored as epoch-ms string (Thread 1 precision fix).
   const payload = JSON.parse(result.nextCursor.value) as { watermarkMs: string };
   assert.ok(typeof payload.watermarkMs === "string", "cursor must use watermarkMs");
-  // Watermark should equal T3 (the highest internalDate).
   assert.equal(Number(payload.watermarkMs), Number(T3));
 });
 
 // ---------------------------------------------------------------------------
-// Watermark does NOT advance on partial drain (Codex P1)
 // ---------------------------------------------------------------------------
 
 test("watermark does NOT advance when nextPageToken present (partial drain)", async () => {
-  // Simulate a paginated list: first page has a nextPageToken, second call
-  // returns empty — but the cap is NOT hit here; we're testing that having
-  // a nextPageToken path that is followed and then exhausted DOES advance.
-  // The opposite: if a nextPageToken causes the second list call to fail
-  // with a transient error, we never mark the list fully drained.
   const initialWatermark = new Date(Number(T1)).toISOString();
   const msg1 = makeMessage("msg-partial-1", T2, "partial drain message");
 
@@ -367,8 +348,6 @@ test("watermark does NOT advance when nextPageToken present (partial drain)", as
   const partialDrainFetch = makeFetch([
     tokenHandler(),
     {
-      // First list call returns a nextPageToken (partial).
-      // Second call throws a transient error mid-drain.
       match: (url) => url.startsWith("https://gmail.googleapis.com/") && url.includes("/messages") && !url.includes("format=full"),
       respond: () => {
         listCallCount++;
@@ -378,7 +357,6 @@ test("watermark does NOT advance when nextPageToken present (partial drain)", as
             data: { messages: [{ id: "msg-partial-1" }], nextPageToken: "pg2" },
           };
         }
-        // Second page: transient error — list not fully drained.
         return {
           status: 503,
           data: { error: { message: "service unavailable", code: 503 } },
@@ -396,7 +374,6 @@ test("watermark does NOT advance when nextPageToken present (partial drain)", as
     updatedAt: "2026-04-25T00:00:00.000Z",
   };
 
-  // The 503 on the second list page rethrows (transient), stopping the pass.
   await assert.rejects(
     connector.syncIncremental({ cursor, config }),
     /service unavailable/,
@@ -409,7 +386,6 @@ test("watermark advances when list is fully drained (no nextPageToken)", async (
 
   const fetchFn = makeFetch([
     tokenHandler(),
-    // No nextPageToken — fully drained.
     listHandler([makeMessageRef("msg-full-1"), makeMessageRef("msg-full-2")]),
     getHandler({ "msg-full-1": msg1, "msg-full-2": msg2 }),
   ]);
@@ -425,12 +401,10 @@ test("watermark advances when list is fully drained (no nextPageToken)", async (
   const result = await connector.syncIncremental({ cursor, config });
 
   const payload = JSON.parse(result.nextCursor.value) as { watermarkMs: string };
-  // Watermark should advance to T3 (the highest), stored as epoch-ms string.
   assert.equal(Number(payload.watermarkMs), Number(T3));
 });
 
 // ---------------------------------------------------------------------------
-// Watermark does NOT advance when all messages fail or are skipped
 // ---------------------------------------------------------------------------
 
 test("watermark does NOT advance when all messages are inaccessible (404)", async () => {
@@ -450,16 +424,13 @@ test("watermark does NOT advance when all messages are inaccessible (404)", asyn
 
   const result = (await connector.syncIncremental({ cursor, config })) as GmailSyncResult;
 
-  // No docs, watermark unchanged.
   assert.equal(result.newDocs.length, 0);
   assert.equal(result.skippedInaccessible, 2);
   const payload = JSON.parse(result.nextCursor.value) as { watermarkMs: string };
-  // Watermark must remain at T1 (epoch ms).
   assert.equal(Number(payload.watermarkMs), Number(T1));
 });
 
 // ---------------------------------------------------------------------------
-// Skip inaccessible messages (404 / 403) — terminal, continue the pass
 // ---------------------------------------------------------------------------
 
 test("a 404 on a single message skips it without stopping the pass", async () => {
@@ -509,7 +480,6 @@ test("a 403 permission-denied is terminal (skip-and-continue)", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Transient error rethrow (429 / 5xx / AbortError / network)
 // ---------------------------------------------------------------------------
 
 test("a transient 429 re-throws and the cursor does NOT advance", async () => {
@@ -620,7 +590,6 @@ test("a network-layer ECONNRESET re-throws as transient", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// AbortSignal honored between messages
 // ---------------------------------------------------------------------------
 
 test("syncIncremental honors abortSignal between messages", async () => {
@@ -638,7 +607,6 @@ test("syncIncremental honors abortSignal between messages", async () => {
       respond: (url) => {
         messageGetCount++;
         if (messageGetCount === 1) {
-          // Abort after the first message is fetched.
           controller.abort();
         }
         const id = (url.match(/\/messages\/([^?]+)/) ?? [])[1] ?? "";
@@ -662,7 +630,6 @@ test("syncIncremental honors abortSignal between messages", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Empty and too-large message handling
 // ---------------------------------------------------------------------------
 
 test("messages with empty body are skipped (skippedEmpty)", async () => {
@@ -694,8 +661,6 @@ test("messages with empty body are skipped (skippedEmpty)", async () => {
 });
 
 test("watermark advances past empty messages on full drain (immutable skip)", async () => {
-  // Gmail messages are immutable. An empty message must not stall the watermark
-  // forever — the Cursor Medium review fix records its internalDate and advances.
   const emptyMsg: GmailMessage = {
     id: "msg-empty-adv",
     internalDate: T3, // highest internalDate in the batch
@@ -705,7 +670,6 @@ test("watermark advances past empty messages on full drain (immutable skip)", as
 
   const fetchFn = makeFetch([
     tokenHandler(),
-    // No nextPageToken — fully drained.
     listHandler([makeMessageRef("msg-good-adv"), makeMessageRef("msg-empty-adv")]),
     getHandler({ "msg-good-adv": goodMsg, "msg-empty-adv": emptyMsg }),
   ]);
@@ -722,49 +686,38 @@ test("watermark advances past empty messages on full drain (immutable skip)", as
 
   assert.equal(result.skippedEmpty, 1);
   assert.equal(result.newDocs.length, 1);
-  // Watermark should advance to T3 (the empty message's internalDate) so the
-  // next poll does not re-fetch it.
   const payload = JSON.parse(result.nextCursor.value) as { watermarkMs: string };
   assert.equal(Number(payload.watermarkMs), Number(T3), "watermark must advance past immutable empty message");
 });
 
 // ---------------------------------------------------------------------------
-// isTransientGmailError classification
 // ---------------------------------------------------------------------------
 
 test("isTransientGmailError classifies common error shapes", () => {
-  // Terminal — skip-and-continue.
   assert.equal(isTransientGmailError({ status: 404 }), false);
   assert.equal(isTransientGmailError({ response: { status: 403 } }), false);
   assert.equal(isTransientGmailError({ response: { status: 400 } }), false);
   assert.equal(isTransientGmailError({ response: { status: 410 } }), false);
-  // Transient — re-throw.
   assert.equal(isTransientGmailError({ response: { status: 429 } }), true);
   assert.equal(isTransientGmailError({ response: { status: 500 } }), true);
   assert.equal(isTransientGmailError({ response: { status: 503 } }), true);
   assert.equal(isTransientGmailError({ gmailStatus: 429 }), true);
   assert.equal(isTransientGmailError({ gmailStatus: 503 }), true);
   assert.equal(isTransientGmailError({ status: 504 }), true);
-  // String-numeric codes.
   assert.equal(isTransientGmailError({ code: "429" }), true);
   assert.equal(isTransientGmailError({ code: "503" }), true);
-  // Network errors.
   assert.equal(isTransientGmailError({ code: "ECONNRESET" }), true);
   assert.equal(isTransientGmailError({ code: "ETIMEDOUT" }), true);
   assert.equal(isTransientGmailError({ code: "ENOTFOUND" }), true);
   assert.equal(isTransientGmailError({ code: "EAI_AGAIN" }), true);
-  // AbortError.
   assert.equal(isTransientGmailError({ name: "AbortError" }), true);
-  // Bare Error with no metadata — conservatively transient.
   assert.equal(isTransientGmailError(new Error("unknown")), true);
-  // Non-objects.
   assert.equal(isTransientGmailError(null), false);
   assert.equal(isTransientGmailError(undefined), false);
   assert.equal(isTransientGmailError("oops"), false);
 });
 
 // ---------------------------------------------------------------------------
-// Cursor shape and validation
 // ---------------------------------------------------------------------------
 
 test("syncIncremental rejects a cursor of an unexpected kind", async () => {
@@ -802,7 +755,6 @@ test("validateConfig is enforced again on every sync pass", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Helper function tests
 // ---------------------------------------------------------------------------
 
 test("internalDateToEpochSeconds converts epoch-ms string correctly", () => {
@@ -828,7 +780,6 @@ test("buildListQuery combines watermark and user query correctly", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Multipart / HTML body extraction
 // ---------------------------------------------------------------------------
 
 test("incremental sync extracts text/plain from multipart/alternative messages", async () => {
@@ -870,7 +821,6 @@ test("incremental sync extracts text/plain from multipart/alternative messages",
   const result = await connector.syncIncremental({ cursor, config });
 
   assert.equal(result.newDocs.length, 1);
-  // Should prefer text/plain over text/html.
   assert.ok(result.newDocs[0].content.includes("Plain text body here"), "should use plain text part");
   assert.ok(!result.newDocs[0].content.includes("HTML body"), "should not include HTML part");
 });
@@ -908,7 +858,6 @@ test("incremental sync extracts plain text from HTML when no text/plain part exi
 });
 
 // ---------------------------------------------------------------------------
-// OAuth2 token exchange failure
 // ---------------------------------------------------------------------------
 
 test("OAuth2 token exchange failure propagates as transient error", async () => {
@@ -960,11 +909,9 @@ test("OAuth2 token exchange 401 failure (invalid credentials) also throws", asyn
 });
 
 // ---------------------------------------------------------------------------
-// Thread 1 regression: watermark precision — sub-second messages
 // ---------------------------------------------------------------------------
 
 test("cursor stores watermarkMs as epoch-ms string, not ISO (Thread 1 precision)", async () => {
-  // Watermark with sub-second precision (ms digit is non-zero).
   const preciseMs = "1745000000500"; // epoch ms ending in 500 ms
   const msg = makeMessage("msg-precise-1", preciseMs, "precise message");
 
@@ -984,11 +931,8 @@ test("cursor stores watermarkMs as epoch-ms string, not ISO (Thread 1 precision)
   const result = await connector.syncIncremental({ cursor, config });
 
   const payload = JSON.parse(result.nextCursor.value) as Record<string, unknown>;
-  // Must store exact ms, not an ISO string.
   assert.ok(typeof payload.watermarkMs === "string", "cursor must use watermarkMs");
   assert.equal(payload.watermarkIso, undefined, "cursor must NOT use watermarkIso");
-  // Must preserve sub-second precision: the stored value must equal the exact
-  // internalDate ms, not a truncation to the second boundary.
   assert.equal(
     Number(payload.watermarkMs as string),
     Number(preciseMs),
@@ -997,16 +941,11 @@ test("cursor stores watermarkMs as epoch-ms string, not ISO (Thread 1 precision)
 });
 
 test("sub-second messages in seenIds are not re-imported on the next poll (Thread 1)", async () => {
-  // Two messages with internalDate within the same second: 1745000000200 and
-  // 1745000000800. After poll 1 both are processed and watermark = 1745000000800.
-  // Poll 2 queries after:1745000000 (same second floor). Both message ids must
-  // be skipped via seenIds — not re-imported.
   const msA = "1745000000200";
   const msB = "1745000000800"; // highest — becomes watermark after poll 1
   const msgA = makeMessage("msg-subsec-a", msA, "sub-second message A");
   const msgB = makeMessage("msg-subsec-b", msB, "sub-second message B");
 
-  // --- Poll 1: process both messages ---
   const fetchFn1 = makeFetch([
     tokenHandler(),
     listHandler([makeMessageRef("msg-subsec-a"), makeMessageRef("msg-subsec-b")]),
@@ -1014,10 +953,6 @@ test("sub-second messages in seenIds are not re-imported on the next poll (Threa
   ]);
   const connector1 = createGmailConnector({ fetchFn: fetchFn1 });
   const config = connector1.validateConfig({ ...SYNTHETIC_CREDS });
-  // Watermark starts within the SAME second as msA and msB (floor=1745000000).
-  // Use 50ms before msA — this puts the initial watermark in second 1745000000
-  // so the watermark advance from initial to msB stays within the same second
-  // and seenIds are NOT cleared (they're still needed for sub-second dedup).
   const initialWatermarkMs = String(Number(msA) - 50); // 1745000000150, floor=1745000000
   const startCursor: ConnectorCursor = {
     kind: GMAIL_CURSOR_KIND,
@@ -1028,14 +963,11 @@ test("sub-second messages in seenIds are not re-imported on the next poll (Threa
   const result1 = await connector1.syncIncremental({ cursor: startCursor, config });
   assert.equal(result1.newDocs.length, 2, "poll 1 should import both messages");
 
-  // The cursor after poll 1 must carry seenIds for both messages (same-second dedup).
   const cursor1Payload = JSON.parse(result1.nextCursor.value) as {
     watermarkMs: string;
     seenIds: Record<string, string>;
   };
   assert.equal(Number(cursor1Payload.watermarkMs), Number(msB), "watermark after poll 1 must be msB");
-  // All three timestamps (initial, msA, msB) are in the same second (floor=1745000000),
-  // so seenIds must NOT be cleared — they're retained for same-second dedup.
   assert.equal(
     Math.floor(Number(initialWatermarkMs) / 1000),
     Math.floor(Number(msB) / 1000),
@@ -1050,7 +982,6 @@ test("sub-second messages in seenIds are not re-imported on the next poll (Threa
     "seenIds must include msg-subsec-b for sub-second dedup",
   );
 
-  // --- Poll 2: same messages returned by Gmail (after: is second-granular) ---
   let getCallCount = 0;
   const fetchFn2 = makeFetch([
     tokenHandler(),
@@ -1067,14 +998,11 @@ test("sub-second messages in seenIds are not re-imported on the next poll (Threa
   const connector2 = createGmailConnector({ fetchFn: fetchFn2 });
   const result2 = await connector2.syncIncremental({ cursor: result1.nextCursor, config });
 
-  // Both messages must be skipped via seenIds — no new docs, no API get calls.
   assert.equal(result2.newDocs.length, 0, "poll 2 must not re-import same-second messages");
   assert.equal(getCallCount, 0, "poll 2 must not call messages.get for seenIds messages");
 });
 
 test("backward-compat: old watermarkIso cursor is migrated to watermarkMs (Thread 1)", async () => {
-  // An old cursor stored watermarkIso. The parser must convert it to watermarkMs
-  // and the next cursor must use watermarkMs (never write watermarkIso back).
   const isoWatermark = new Date(Number(T1)).toISOString();
   const msg = makeMessage("msg-compat-1", T2, "compat migration test");
 
@@ -1085,7 +1013,6 @@ test("backward-compat: old watermarkIso cursor is migrated to watermarkMs (Threa
   ]);
   const connector = createGmailConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CREDS });
-  // Old cursor format (no watermarkMs, no skippedIds, no seenIds).
   const legacyCursor: ConnectorCursor = {
     kind: GMAIL_CURSOR_KIND,
     value: JSON.stringify({ watermarkIso: isoWatermark }),
@@ -1102,7 +1029,6 @@ test("backward-compat: old watermarkIso cursor is migrated to watermarkMs (Threa
 });
 
 // ---------------------------------------------------------------------------
-// Thread 2 regression: skipped messages recorded in skippedIds
 // ---------------------------------------------------------------------------
 
 test("empty message id is recorded in skippedIds (Thread 2)", async () => {
@@ -1128,7 +1054,6 @@ test("empty message id is recorded in skippedIds (Thread 2)", async () => {
   const result = (await connector.syncIncremental({ cursor, config })) as GmailSyncResult;
   assert.equal(result.skippedEmpty, 1);
 
-  // The cursor must record the empty message id in skippedIds.
   const nextPayload = JSON.parse(result.nextCursor.value) as { skippedIds: Record<string, unknown> };
   assert.ok(
     typeof nextPayload.skippedIds["msg-empty-skip"] === "string" &&
@@ -1138,7 +1063,6 @@ test("empty message id is recorded in skippedIds (Thread 2)", async () => {
 });
 
 test("too-large message id is recorded in skippedIds (Thread 2)", async () => {
-  // Build a message whose body exceeds MAX_TEXT_BYTES (2 MB).
   const largeBody = "x".repeat(2 * 1024 * 1024 + 1);
   const largeMsg: GmailMessage = {
     id: "msg-toolarge-skip",
@@ -1199,8 +1123,6 @@ test("inaccessible (404) message id is recorded in skippedIds (Thread 2)", async
 });
 
 test("skippedIds messages are not re-fetched on subsequent polls (Thread 2 stall fix)", async () => {
-  // Poll 2 has the empty message id already in skippedIds from poll 1.
-  // We verify messages.get is never called for it and it does not consume the cap.
   const goodMsg = makeMessage("msg-good-skip-bypass", T2, "good content for next poll");
 
   let getCallsForSkipped = 0;
@@ -1222,7 +1144,6 @@ test("skippedIds messages are not re-fetched on subsequent polls (Thread 2 stall
   ]);
   const connector = createGmailConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CREDS });
-  // Cursor carries the previously-skipped id in skippedIds.
   const cursor: ConnectorCursor = {
     kind: GMAIL_CURSOR_KIND,
     value: JSON.stringify({
@@ -1235,7 +1156,6 @@ test("skippedIds messages are not re-fetched on subsequent polls (Thread 2 stall
 
   const result = (await connector.syncIncremental({ cursor, config })) as GmailSyncResult;
 
-  // Only the new good message is imported.
   assert.equal(result.newDocs.length, 1, "only the new good message should be imported");
   assert.equal(result.newDocs[0].source.externalId, "msg-good-skip-bypass");
   assert.equal(result.skippedEmpty, 0, "skipped-id messages must not count toward skippedEmpty again");
@@ -1243,29 +1163,18 @@ test("skippedIds messages are not re-fetched on subsequent polls (Thread 2 stall
 });
 
 // ---------------------------------------------------------------------------
-// Thread 1 regression: after: query uses Math.floor (inclusive of watermark second)
-// (Codex P1 PRRT_kwDORJXyws59sh5H)
 // ---------------------------------------------------------------------------
 
 test("after: query uses floor(watermarkMs/1000) — inclusive of the watermark second (Codex P1 PRRT_kwDORJXyws59sh5H)", async () => {
-  // Watermark at exactly 1745000001000 ms (a second boundary): both floor and
-  // ceil equal 1745000001. Use a sub-second watermark to distinguish them:
-  // watermark = 1745000000500ms → floor = 1745000000, ceil = 1745000001.
   //
-  // Floor is correct: Gmail's `after:N` matches internalDate > N*1000, so
-  // floor ensures messages at the watermark second are still queryable.
-  // Ceil would skip messages whose internalDate is exactly at the watermark
-  // second boundary (between floor and ceil), causing permanent data loss.
   const subSecondWatermark = "1745000000500";
 
-  // Track what `after:` value is used in the list URL.
   let capturedAfterValue = "";
   const fetchFn = makeFetch([
     tokenHandler(),
     {
       match: (url) => url.includes("/messages") && !url.includes("format=full"),
       respond: (url) => {
-        // Extract `after:N` from the encoded `q` parameter.
         const qMatch = url.match(/[?&]q=([^&]+)/);
         if (qMatch) {
           const q = decodeURIComponent(qMatch[1]);
@@ -1286,8 +1195,6 @@ test("after: query uses floor(watermarkMs/1000) — inclusive of the watermark s
 
   await connector.syncIncremental({ cursor, config });
 
-  // With Math.floor: floor(1745000000500 / 1000) = 1745000000 ✓
-  // With Math.ceil:  ceil(1745000000500 / 1000)  = 1745000001 ✗ (misses boundary messages)
   assert.equal(
     capturedAfterValue,
     "1745000000",
@@ -1296,32 +1203,13 @@ test("after: query uses floor(watermarkMs/1000) — inclusive of the watermark s
 });
 
 // ---------------------------------------------------------------------------
-// Thread 2 regression: page-token resume prevents livelock
 // ---------------------------------------------------------------------------
 
 test("cursor persists pageToken when cap is hit mid-page with more pages remaining (Thread 2 Codex P1)", async () => {
-  // Set up: poll where cap is hit on page 1 and there is a page 2.
-  // MAX_MESSAGES_PER_PASS = 200, but we test the mechanism with a cap hit
-  // by placing enough messages to saturate the cap and having a nextPageToken.
-  // We simulate this by using the cursor's pageToken field directly.
   //
-  // Simplified test: verify cursor.pageToken is set when cap is hit mid-page.
-  // We use a custom MAX_MESSAGES_PER_PASS-aware approach: add a nextPageToken
-  // to a list response and verify the cursor stores it when cap hits.
 
-  // Use a listHandler that returns N messages (one below cap) + nextPageToken,
-  // then a second page. The cap won't actually be hit with 1 message, so we
-  // instead directly verify that the cursor's pageToken field is populated
-  // when there are more pages and the processing stops mid-window.
 
-  // Simplified: Build a scenario where:
-  // - Page 1 returns [msg-cap-1] with nextPageToken="page2-token"
-  // - Page 2 would have more messages but we use a stub that verifies the
-  //   cursor stores pageToken="page2-token" if cap is hit.
   //
-  // To trigger cap within a single-message page, we use the cursor's `pageToken`
-  // resume path: start with a cursor that has pageToken="page2-token", verify
-  // the list request uses it.
 
   let listRequestUrls: string[] = [];
   const fetchFn = makeFetch([
@@ -1330,7 +1218,6 @@ test("cursor persists pageToken when cap is hit mid-page with more pages remaini
       match: (url) => url.includes("/messages") && !url.includes("format=full"),
       respond: (url) => {
         listRequestUrls.push(url);
-        // Return empty — no messages, no nextPageToken.
         return { status: 200, data: {} };
       },
     },
@@ -1338,7 +1225,6 @@ test("cursor persists pageToken when cap is hit mid-page with more pages remaini
   const connector = createGmailConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CREDS });
 
-  // Cursor with a persisted pageToken from a previous cap-hit pass.
   const cursor: ConnectorCursor = {
     kind: GMAIL_CURSOR_KIND,
     value: JSON.stringify({
@@ -1352,7 +1238,6 @@ test("cursor persists pageToken when cap is hit mid-page with more pages remaini
 
   await connector.syncIncremental({ cursor, config });
 
-  // The list request URL must include the persisted pageToken.
   assert.ok(listRequestUrls.length > 0, "at least one list request was made");
   assert.ok(
     listRequestUrls[0].includes("pageToken=synthetic-page2-token-from-prev-pass"),
@@ -1361,20 +1246,16 @@ test("cursor persists pageToken when cap is hit mid-page with more pages remaini
 });
 
 test("cursor's pageToken is cleared when the after: window is fully drained (Thread 2)", async () => {
-  // After a cap-hit pass stored a pageToken, a subsequent pass that fully
-  // drains the window must clear the pageToken from the cursor.
   const msg1 = makeMessage("msg-drain-1", T2, "drain test message");
 
   const fetchFn = makeFetch([
     tokenHandler(),
-    // The list returns one message, no nextPageToken — fully drained.
     listHandler([makeMessageRef("msg-drain-1")]),
     getHandler({ "msg-drain-1": msg1 }),
   ]);
   const connector = createGmailConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CREDS });
 
-  // Start with a cursor that has a stale pageToken from a prior cap-hit pass.
   const cursor: ConnectorCursor = {
     kind: GMAIL_CURSOR_KIND,
     value: JSON.stringify({
@@ -1388,10 +1269,8 @@ test("cursor's pageToken is cleared when the after: window is fully drained (Thr
 
   const result = await connector.syncIncremental({ cursor, config });
 
-  // One message imported.
   assert.equal(result.newDocs.length, 1);
 
-  // The next cursor must NOT contain a pageToken (window fully drained).
   const payload = JSON.parse(result.nextCursor.value) as {
     pageToken?: string;
     watermarkMs: string;
@@ -1401,16 +1280,13 @@ test("cursor's pageToken is cleared when the after: window is fully drained (Thr
     undefined,
     "pageToken must be cleared from cursor when the after: window is fully drained",
   );
-  // Watermark must also advance.
   assert.equal(Number(payload.watermarkMs), Number(T2));
 });
 
 // ---------------------------------------------------------------------------
-// Thread 3: shared isTransientHttpError helper
 // ---------------------------------------------------------------------------
 
 test("isTransientHttpError classifies transient and terminal HTTP errors (Thread 3)", () => {
-  // Transient — re-throw.
   assert.equal(isTransientHttpError({ status: 429 }), true);
   assert.equal(isTransientHttpError({ status: 500 }), true);
   assert.equal(isTransientHttpError({ status: 503 }), true);
@@ -1423,13 +1299,11 @@ test("isTransientHttpError classifies transient and terminal HTTP errors (Thread
   assert.equal(isTransientHttpError({ code: "EAI_AGAIN" }), true);
   assert.equal(isTransientHttpError(new Error("plain network error")), true);
 
-  // Terminal — skip-and-continue.
   assert.equal(isTransientHttpError({ status: 404 }), false);
   assert.equal(isTransientHttpError({ response: { status: 403 } }), false);
   assert.equal(isTransientHttpError({ response: { status: 400 } }), false);
   assert.equal(isTransientHttpError({ response: { status: 410 } }), false);
 
-  // Non-objects.
   assert.equal(isTransientHttpError(null), false);
   assert.equal(isTransientHttpError(undefined), false);
   assert.equal(isTransientHttpError("error string"), false);
@@ -1437,24 +1311,18 @@ test("isTransientHttpError classifies transient and terminal HTTP errors (Thread
 });
 
 test("isTransientHttpError resolves connector-specific statusProps (Thread 3)", () => {
-  // gmailStatus (used by Gmail connector).
   assert.equal(isTransientHttpError({ gmailStatus: 429 }, ["gmailStatus"]), true);
   assert.equal(isTransientHttpError({ gmailStatus: 503 }, ["gmailStatus"]), true);
   assert.equal(isTransientHttpError({ gmailStatus: 404 }, ["gmailStatus"]), false);
 
-  // notionStatus (used by Notion connector).
   assert.equal(isTransientHttpError({ notionStatus: 429 }, ["notionStatus"]), true);
   assert.equal(isTransientHttpError({ notionStatus: 500 }, ["notionStatus"]), true);
   assert.equal(isTransientHttpError({ notionStatus: 403 }, ["notionStatus"]), false);
 
-  // statusProps takes priority over generic `status` field.
-  // Object has generic status=200 (terminal) but customStatus=503 (transient).
   assert.equal(isTransientHttpError({ status: 200, customStatus: 503 }, ["customStatus"]), true);
 });
 
 test("isTransientGmailError delegates to isTransientHttpError with gmailStatus (Thread 3)", () => {
-  // Verify that isTransientGmailError and isTransientHttpError give the same
-  // results for the same inputs, confirming delegation is working correctly.
   const cases: Array<[unknown, boolean]> = [
     [{ gmailStatus: 429 }, true],
     [{ gmailStatus: 503 }, true],
@@ -1479,14 +1347,9 @@ test("isTransientGmailError delegates to isTransientHttpError with gmailStatus (
 });
 
 // ---------------------------------------------------------------------------
-// pruneSeenIds — seenIds bounding and date-based pruning
-// (Codex P1 PRRT_kwDORJXyws59se73)
 // ---------------------------------------------------------------------------
 
 test("pruneSeenIds removes entries that cannot be returned by after:floor(watermarkMs/1000)", () => {
-  // watermarkMs = 1745000000500 → floorSecBoundaryMs = 1745000000000
-  // after:1745000000 returns messages with internalDate > 1745000000000
-  // So messages AT or BELOW the floor-second boundary are pruned; above are kept.
   const seenIds: Record<string, string> = {
     "msg-at-floor":  "1745000000000", // exactly at floor boundary → pruned (not strictly above)
     "msg-above-1":   "1745000000100", // strictly above floor boundary → retained
@@ -1506,9 +1369,6 @@ test("pruneSeenIds removes entries that cannot be returned by after:floor(waterm
 });
 
 test("pruneSeenIds prunes entries from a previous second (different second boundary)", () => {
-  // watermarkMs = 1745000002500 → floorSecBoundaryMs = 1745000002000
-  // Messages in second 1745000001 (all <= 1745000002000) are pruned.
-  // Messages in second 1745000002 that are > 1745000002000 are kept.
   const seenIds: Record<string, string> = {
     "msg-prev-sec": "1745000001500", // second 1745000001 → pruned (< floor boundary)
     "msg-at-sec2":  "1745000002000", // exactly at floor boundary → pruned
@@ -1527,8 +1387,6 @@ test("pruneSeenIds with empty seenIds returns empty map", () => {
 });
 
 test("pruneSeenIds retains all entries when all are in the same floor-second as watermark", () => {
-  // watermarkMs = 1745000000500 → floorSec = 1745000000000
-  // All entries at 1745000000100+ are strictly above the floor boundary → retained.
   const seenIds: Record<string, string> = {
     "msg-a": "1745000000100",
     "msg-b": "1745000000900",
@@ -1574,15 +1432,9 @@ test("pruneSeenIds does not evict when below cap", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Codex P1 PRRT_kwDORJXyws59sh5I + Cursor PRRT_kwDORJXyws59sji9:
-// Cap-hit mid-page must save the CURRENT page token, not the next page token.
 // ---------------------------------------------------------------------------
 
 test("cursor saves the CURRENT page token when cap is hit mid-page (not next page token)", async () => {
-  // Generate exactly MAX_MESSAGES_PER_PASS + 1 messages on one page so the
-  // cap fires mid-page. The response also advertises nextPageToken="next-page".
-  // With the fix, the saved cursor.pageToken must equal "current-page-token"
-  // (the token used to fetch this page), NOT "next-page" (the next page).
   const baseMs = Number(T1);
   const msgRefs: GmailMessageRef[] = [];
   const msgMap: Record<string, GmailMessage> = {};
@@ -1591,7 +1443,6 @@ test("cursor saves the CURRENT page token when cap is hit mid-page (not next pag
     msgRefs.push({ id });
     msgMap[id] = makeMessage(id, String(baseMs + i), `body ${i}`);
   }
-  // One extra message to trigger the cap.
   msgRefs.push({ id: "msg-cpt-extra" });
   msgMap["msg-cpt-extra"] = makeMessage("msg-cpt-extra", String(baseMs + MAX_MESSAGES_PER_PASS), "extra");
 
@@ -1609,7 +1460,6 @@ test("cursor saves the CURRENT page token when cap is hit mid-page (not next pag
 
   const connector = createGmailConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CREDS });
-  // Cursor with a prior pageToken ("current-page-token").
   const cursor: ConnectorCursor = {
     kind: GMAIL_CURSOR_KIND,
     value: JSON.stringify({
@@ -1658,7 +1508,6 @@ test("cursor saves undefined pageToken when cap is hit on page 1 (no prior pageT
 
   const connector = createGmailConnector({ fetchFn });
   const config = connector.validateConfig({ ...SYNTHETIC_CREDS });
-  // No prior pageToken (page 1 from the start).
   const cursor: ConnectorCursor = {
     kind: GMAIL_CURSOR_KIND,
     value: JSON.stringify({ watermarkMs: String(Number(T1) - 1000), skippedIds: {}, seenIds: {} }),
@@ -1677,8 +1526,6 @@ test("cursor saves undefined pageToken when cap is hit on page 1 (no prior pageT
 });
 
 // ---------------------------------------------------------------------------
-// Codex P2 PRRT_kwDORJXyws59se75: validateGmailConfig rejects NaN / non-numeric
-// Per CLAUDE.md gotcha #51: invalid values must throw, not silently default.
 // ---------------------------------------------------------------------------
 
 test("validateGmailConfig rejects non-numeric string pollIntervalMs (Codex P2)", () => {

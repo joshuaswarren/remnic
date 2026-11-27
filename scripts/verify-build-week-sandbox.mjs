@@ -249,7 +249,6 @@ try {
     packageDirs.map((packageDir) => [packageMetadata(packageDir).name, expectedTarball(packageDir)]),
   );
 
-  // Prove the CLI stays à la carte before installing the optional bench package.
   installTarballs([
     tarballs["@remnic/core"],
     tarballs["@remnic/server"],
@@ -275,12 +274,10 @@ try {
     tarballs["@remnic/bench"],
   ]);
 
-  // Preserve the issue's original zero-dataset smoke contract.
   remnic(["bench", "run", "--quick", "longmemeval", "--results-dir", longMemResultsDir]);
   resultArtifact(longMemResultsDir, "longmemeval");
   assertNonEmptyFile(path.join(longMemResultsDir, "MANIFEST.json"), "LongMemEval manifest");
 
-  // Exercise the actual Build Week feature: a packaged MCP memory server.
   remnic([
     "bench",
     "run",

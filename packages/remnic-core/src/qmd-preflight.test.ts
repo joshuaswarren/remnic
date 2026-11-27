@@ -3,11 +3,6 @@ import test from "node:test";
 import { abortError } from "./abort-error.js";
 import { QmdClient } from "./qmd.js";
 
-/**
- * Internals exposed only for preflight testing. Cast once to a NAMED type (not
- * an inline shape) so the compiler never fabricates a one-off member type; the
- * unchecked access is scoped to these deliberately-injected seams. Issue #1841.
- */
 type QmdPreflightInternals = {
   configuredQmdPath: string | undefined;
   runVersionProbe: (qmdPath: string, signal?: AbortSignal) => Promise<{ stdout: string; stderr: string }>;
@@ -21,7 +16,6 @@ type QmdPreflightInternals = {
 
 const CONFIGURED_PATH = "/opt/qmd/bin/qmd";
 
-/** Build the Node spawn ENOENT error shape (Error carrying `code: "ENOENT"`). */
 function spawnENOENT(qmdPath: string): Error & { code: string } {
   return Object.assign(new Error(`spawn ${qmdPath} ENOENT`), {
     code: "ENOENT" as const,
@@ -29,15 +23,11 @@ function spawnENOENT(qmdPath: string): Error & { code: string } {
 }
 
 function timeoutError(): Error & { timedOut: true } {
-  // Mirrors the error runCommandWithTimeout rejects with on deadline: a plain
-  // Error flagged with `timedOut: true` — the structured signal classifyProbeFailure
-  // keys on (never the message text). Issue #1841.
   return Object.assign(new Error("qmd --version timed out after 8000ms"), {
     timedOut: true as const,
   });
 }
 
-/** Wire a fresh client whose probe runner + warning sink are fully scripted. */
 function harness(opts: {
   configuredBehavior: () => Promise<{ stdout: string; stderr: string }>;
 }): {
@@ -60,8 +50,6 @@ function harness(opts: {
       configuredCalls += 1;
       return opts.configuredBehavior();
     }
-    // Any non-configured path (PATH/fallback probing) is a hard miss here so
-    // probeCli returns false without spawning a real qmd binary.
     throw spawnENOENT(qmdPath);
   };
   return {
@@ -72,7 +60,6 @@ function harness(opts: {
 }
 
 test("QmdClient preflight: transient timeout retries then succeeds with NO failure warning", async () => {
-  // Two timeouts, then success on the second retry.
   const scripted: Array<"timeout" | "ok"> = ["timeout", "timeout", "ok"];
   let i = 0;
   const { internals, warnings, configuredProbeCalls } = harness({
@@ -151,14 +138,10 @@ test("QmdClient preflight: non-timeout exit-code failure keeps the generic confi
 });
 
 test("QmdClient preflight: caller abort emits NO warning and does not retry", async () => {
-  // The caller cancelled (aborted signal + AbortError). Other QMD paths treat
-  // this as non-actionable noise via isCallerCancellation; the configured-path
-  // probe must do the same — no under-load warning, no transient retry. #1841.
   const controller = new AbortController();
   controller.abort();
   const { internals, warnings, configuredProbeCalls } = harness({
     configuredBehavior: async () => {
-      // A real probe rejects with an AbortError when the caller's signal fires.
       throw abortError("qmd --version aborted");
     },
   });
@@ -171,11 +154,6 @@ test("QmdClient preflight: caller abort emits NO warning and does not retry", as
 });
 
 test("QmdClient preflight: non-zero exit whose stderr says 'timed out'/'not found' is classified 'other' (not transient/missing)", async () => {
-  // Mirrors runCommandWithTimeout's non-zero-exit rejection: the child's stderr
-  // (here containing "timed out" and "not found") is embedded in the message.
-  // A healthy binary can emit those words in error text; they must NOT upgrade
-  // the failure to transient/missing. classifyProbeFailure keys on structured
-  // signals, so this generic exit-code failure stays 'other'. Issue #1841.
   const { internals, warnings, configuredProbeCalls } = harness({
     configuredBehavior: async () => {
       throw new Error("qmd --version failed (code 2): error: model timed out while loading; config not found");

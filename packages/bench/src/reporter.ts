@@ -1,6 +1,3 @@
-/**
- * Result enrichment and JSON writing helpers.
- */
 
 import { execSync } from "node:child_process";
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
@@ -273,9 +270,6 @@ function replaceLoneSurrogates(value: string): string {
 }
 
 export async function writeBenchmarkResult(result: BenchmarkResult, outputDir: string): Promise<string> {
-  // Validate before mkdir so a malformed preset or empty env writes
-  // nothing. A present preset must be a valid floor; otherwise the env
-  // parser supplies the override or the canonical 0.1 default.
   const canaryFloor = resolveEffectiveCanaryFloor(result.meta.canaryFloor);
   const outputRoot = path.resolve(outputDir);
   await mkdir(outputRoot, { recursive: true });
@@ -355,7 +349,6 @@ export function captureBenchmarkExecutionProvenance(): BenchmarkExecutionProvena
       gitDirtyEntryCount: dirtyEntries.length,
     };
   } catch {
-    // Unknown state must fail closed for evidence publication.
     return {
       gitSha: getGitSha(),
       runId: resolveBenchmarkRunId(),

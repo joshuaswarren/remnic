@@ -53,5 +53,4 @@ export class CommittedWriteFinalization {
   }
 }
 
-/** A pass method's parameter list without its leading CommittedWriteFinalization. */
 export type ArgsAfterFinalization<Params> = Params extends [CommittedWriteFinalization, ...infer Rest] ? Rest : never;

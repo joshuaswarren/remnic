@@ -23,7 +23,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // Restore the no-op backend so later suites do not inherit this capture sink.
   initLogger({ info() {}, warn() {}, error() {}, debug() {} });
 });
 
@@ -64,8 +63,6 @@ test("coerceBool does not warn on inherited Object keys (prototype safety)", () 
   assert.equal(coerceBool("constructor"), undefined);
   assert.equal(coerceBool("toString"), undefined);
   assert.equal(coerceBool("hasOwnProperty"), undefined);
-  // These are unrecognized strings, so each warns exactly once — never matched
-  // as a truthy/falsy token via the prototype chain.
   assert.equal(warnings.length, 3);
 });
 

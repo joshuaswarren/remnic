@@ -1,6 +1,3 @@
-/**
- * Deterministic taxonomy benchmark for Remnic's category resolver.
- */
 
 import { randomUUID } from "node:crypto";
 import { resolveCategory } from "@remnic/core";

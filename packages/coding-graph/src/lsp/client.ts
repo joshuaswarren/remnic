@@ -473,11 +473,9 @@ export function uriToPath(uri: string): string {
     } catch {
       // Malformed escape sequence — keep raw path (best-effort).
     }
-    // Windows: file:///C:/foo → C:/foo
     if (/^\/[A-Za-z]:/.test(rest)) {
       return rest.slice(1).replace(/\//g, path.sep);
     }
-    // Unix: file:///foo → /foo
     return rest.replace(/\//g, path.sep);
   }
   return uri;

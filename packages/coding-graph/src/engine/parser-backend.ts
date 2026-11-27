@@ -1,18 +1,3 @@
-/**
- * ParserBackend — the abstraction layer between the tree-sitter parsing
- * engine and the per-language extractors.
- *
- * Design rationale (issue #1551): everything goes through this interface so
- * that a native `node-tree-sitter` backend (or the external C binary via the
- * subprocess provider) can slot in later without touching extractors. The WASM
- * backend (`WasmTreeSitterBackend`) is the default; it costs ~2–3× parse speed
- * vs native but has no per-platform build toolchain — the class of pain
- * documented in #1518 and #1538.
- *
- * Rule 11 (no module-level caches): every parser instance, grammar cache, and
- * initialization flag lives on the *engine instance*, never at module scope.
- * This means two engines in the same process have fully isolated state.
- */
 import { Parser, Language, type Node as TSNode, type Tree as TSTree, type Language as TSLanguage } from "web-tree-sitter";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -22,10 +7,6 @@ import type { CodingGraphLanguage } from "@remnic/core";
 /** Re-export tree-sitter types so extractors don't depend on web-tree-sitter directly. */
 export type { TSNode, TSTree, TSLanguage };
 
-/**
- * The opaque interface a backend exposes to extractors. Each method is keyed
- * per-instance so the engine lifecycle (`dispose()`) can clean everything up.
- */
 export interface ParserBackend {
   /** Initialize the backend runtime (e.g. load the WASM core). Idempotent per instance. */
   init(): Promise<void>;
@@ -44,16 +25,6 @@ export interface ParserBackend {
   dispose(): Promise<void>;
 }
 
-// ---------------------------------------------------------------------------
-// Grammar directory resolution.
-//
-// The .wasm grammar files ship inside the package at `grammars/`. Their
-// location relative to the running module varies by context:
-//   - tsx source run (src/engine/):  ../../grammars
-//   - tsup dist (dist/):              ../grammars
-//   - published package (dist/):      ../grammars
-// We probe candidates and pick the first that exists. This avoids hard-coding
-// a depth that breaks under different bundler layouts.
 // ---------------------------------------------------------------------------
 
 function resolveGrammarDir(): string {
@@ -76,13 +47,6 @@ function resolveGrammarDir(): string {
   );
 }
 
-/**
- * web-tree-sitter 0.25 WASM backend.
- *
- * Per rule 11, all mutable state (init flag, parser instance, grammar cache)
- * lives on the instance — never at module scope. The backend is constructed by
- * `createCodingGraphEngine` and disposed alongside the engine.
- */
 export class WasmTreeSitterBackend implements ParserBackend {
   private initialized = false;
   private initializing: Promise<void> | null = null;
@@ -94,9 +58,6 @@ export class WasmTreeSitterBackend implements ParserBackend {
   private readonly grammarDirHint: string | null;
 
   constructor(grammarDir?: string) {
-    // Defer resolveGrammarDir() to first use so that a missing grammars/
-    // directory surfaces as a per-file parse_failed (rule 44) rather than
-    // a constructor exception that bricks createCodingGraphEngine.
     this.grammarDirHint = grammarDir ?? null;
   }
 
@@ -116,10 +77,6 @@ export class WasmTreeSitterBackend implements ParserBackend {
         this.parser = new Parser();
         this.initialized = true;
       } finally {
-        // Clear the in-flight promise on BOTH success and failure. Without
-        // this, a transient Parser.init() rejection leaves the rejected
-        // promise cached in `initializing`, so every subsequent call
-        // re-awaits the same failure instead of retrying.
         this.initializing = null;
       }
     })();
@@ -136,11 +93,6 @@ export class WasmTreeSitterBackend implements ParserBackend {
         const language = await Language.load(wasmPath);
         this.languages.set(lang, language);
       } finally {
-        // Drop the in-flight promise on BOTH success and failure. Without
-        // this, a transient Language.load() rejection leaves the rejected
-        // promise cached in `loadingLanguages`, permanently bricking that
-        // language until dispose() — the next call would re-await the same
-        // failure instead of retrying the load.
         this.loadingLanguages.delete(lang);
       }
     })();

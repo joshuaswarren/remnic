@@ -1,11 +1,3 @@
-/**
- * Shared `timeline publish` implementation (issue #1985).
- *
- * Both CLI trees dispatch this one function: the host command group in
- * `cli/timeline-publish-commands.ts` and the standalone binary's shared
- * runner in `timeline/query.ts`. A documented command that exists on only
- * one tree is a defect — the shipped `@remnic/cli` binary must publish too.
- */
 import { existsSync, readFileSync } from "node:fs";
 
 import type { PluginConfig } from "../../types.js";

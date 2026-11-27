@@ -49,7 +49,6 @@ const DATA_FILE_EXTENSIONS = new Set([
   ".csv",
 ]);
 
-// Regex matching URL shapes
 const URL_REGEX = /\bhttps?:\/\/[^\s"'<>()]+/gi;
 
 // Email addresses: Standard regex. Synthetic example domains (.example, .synthetic, .test, .invalid, .localhost per RFC 2606 / bench conventions) are permitted in test datasets.
@@ -61,7 +60,6 @@ const HOME_PATH_REGEXES = [
   /\b[A-Za-z]:[\\/]Users[\\/][^\\/\s"'`]+(?:[\\/][^\s"'`]*)?/gi,
 ];
 
-// API-key shapes
 const API_KEY_REGEXES = [
   /sk-[A-Za-z0-9]{20,}/,
   /ghp_[A-Za-z0-9]{36}/,

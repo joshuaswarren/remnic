@@ -57,9 +57,6 @@ function stripMarkerRegions(text: string, warnings: string[]): string {
         openName = marker.name;
       } else {
         for (let j = 0; j < i; j++) keep[j] = false;
-        // Stray end marker: the matching start lives outside this section
-        // (a pair split across the section boundary). Everything before it
-        // in the section is presumed published output — fail closed.
         warnings.push(`unmatched remnic region end "${marker.name}"`);
 
       }

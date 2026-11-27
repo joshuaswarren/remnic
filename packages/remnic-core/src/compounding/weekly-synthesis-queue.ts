@@ -1,10 +1,3 @@
-/**
- * Single-flight boundary for weekly synthesis, keyed by memory directory.
- * The daemon scheduler and the access surface each drive their own engine
- * instance against the same files; without serialization, concurrent
- * read-modify-write of mistakes.json, rubrics, and the calibration index
- * would let the last finisher discard the other run's updates.
- */
 
 const weeklySynthesisTails = new Map<string, Promise<void>>();
 

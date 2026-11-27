@@ -67,7 +67,6 @@ test("registers reitti from env credentials with timezone threaded through", asy
     { baseUrl: ENV.baseUrl, token: ENV.token, timezone: "Europe/Berlin", authMode: "x-api-token" },
   ]);
 
-  // Idempotent: a second call sees the registry and never re-imports.
   const registeredAgain = await ensureConfiguredLocationProviders(config, { env: ENV, importModule: loader.importModule });
   assert.deepEqual(registeredAgain, []);
   assert.equal(loader.calls.length, 1);

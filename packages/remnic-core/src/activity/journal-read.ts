@@ -58,8 +58,6 @@ export function readJournalForDate(input: {
       return { ok: false, reason: "not_directory", filePath };
     }
   } catch {
-    // The vault root itself is missing: no note can exist, so this is a
-    // no-journal day, not a configuration error.
     return { ok: true, exists: false, reason: "missing_file", filePath };
   }
 
@@ -76,8 +74,6 @@ export function readJournalForDate(input: {
     return { ok: false, reason: "symlink_escape", filePath };
   }
 
-  // One read of a no-follow fd. Ancestor/note symlink swaps cannot redirect
-  // the bytes: the path is verified, then the same fd is read once.
   let fileText: string;
   try {
     fileText = readVerifiedDailyNote(root, filePath);

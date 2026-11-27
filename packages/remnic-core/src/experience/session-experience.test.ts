@@ -1,12 +1,3 @@
-/**
- * Session-end agent-experience extraction (issue #2979).
- *
- * Deterministic Situation/Approach/Reflection episode extraction from a
- * completed session transcript, plus the privacy/trust gate: with
- * `sessionExperience.enabled` off the run performs ZERO storage calls
- * (not even reads), and when on it writes at most one agent-subject,
- * `pending_review` procedure memory per session key.
- */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -30,7 +21,6 @@ function turn(role: "user" | "assistant", content: string): BufferTurn {
   return { role, content, timestamp: "2026-01-15T10:00:00.000Z" };
 }
 
-/** A representative successful coding session transcript. */
 function successSession(): BufferTurn[] {
   return [
     turn("user", "Fix the failing integration test in the payments module. The test times out after 30 seconds."),
@@ -40,7 +30,6 @@ function successSession(): BufferTurn[] {
   ];
 }
 
-/** A representative failed session transcript (refusal/failure is signal). */
 function failureSession(): BufferTurn[] {
   return [
     turn("user", "Migrate the billing export job to the new queue library before the release cut."),
@@ -49,7 +38,6 @@ function failureSession(): BufferTurn[] {
   ];
 }
 
-/** Minimal structural stand-in for StorageManager; records every call. */
 function recordingStorage(existing: MemoryFile[] = []) {
   const calls: { readAllMemories: number; writeSealedMemory: SealedMemoryEnvelope[] } = {
     readAllMemories: 0,
@@ -80,7 +68,6 @@ test("extractExperienceEpisode derives the situation/approach/reflection classes
   assert.match(episode.approach, /inspect the payments test file/);
   assert.equal(episode.outcomeKind, "success");
   assert.match(episode.reflection, /succeed|pass/i);
-  // Deterministic: identical transcript, identical episode.
   assert.deepEqual(extractExperienceEpisode(successSession()), episode);
 });
 

@@ -357,7 +357,6 @@ test("indexed search escapes the query and decodes the snippet (#1849)", async (
       searchBackend: {
         async search(query: string) {
           receivedQueries.push(query);
-          // Simulate a hit whose preview carries the escaped form.
           return [
             {
               path: "/memory/wearables/limitless/2026-06-10.md",
@@ -768,7 +767,6 @@ test("fuseDay honors the wearables master gate before the fusion gate (issue #18
 test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcripts untouched", async () => {
   const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
   try {
-    // Two enabled sources recorded the same overlapping window.
     storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."]);
     storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."]);
     const service = makeService(storage, {
@@ -783,7 +781,6 @@ test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcrip
       },
     });
 
-    // No fused artifact yet.
     assert.equal(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
 
     const first = await service.fuseDay("2026-06-10");
@@ -791,7 +788,6 @@ test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcrip
     assert.ok(first.conversationCount >= 1, "overlapping sources fuse into >=1 conversation");
     assert.deepEqual([...first.sources].sort(), ["bee", "limitless"]);
 
-    // The derived artifact is readable via the listing surface.
     const conversations = await service.fusedConversations("2026-06-10");
     assert.equal(conversations.length, first.conversationCount);
     assert.ok(conversations[0]!.id.startsWith("fusion-"));
@@ -800,12 +796,10 @@ test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcrip
       ["bee", "limitless"],
     );
 
-    // Idempotent re-run: identical inputs -> not written again.
     const second = await service.fuseDay("2026-06-10");
     assert.equal(second.written, false, "unchanged inputs must not rewrite the artifact");
     assert.equal(second.contentHash, first.contentHash);
 
-    // Raw per-source transcripts remain readable and untouched.
     const limitlessRaw = await storage.readWearableDayTranscript("limitless", "2026-06-10");
     const beeRaw = await storage.readWearableDayTranscript("bee", "2026-06-10");
     assert.notEqual(limitlessRaw, null);
@@ -815,7 +809,6 @@ test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcrip
     assert.ok(limitlessRaw?.includes("We agreed to ship Friday."));
     assert.ok(beeRaw?.includes("We agreed to ship Friday."));
 
-    // listFusedDays surfaces the fused date.
     assert.deepEqual(await service.listFusedDays(), ["2026-06-10"]);
   } finally {
     rmSync(storage.dir, { recursive: true, force: true });
@@ -825,7 +818,6 @@ test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcrip
 test("fuseDay rebuilds the artifact when fusion config changes (not skipped)", async () => {
   const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
   try {
-    // Two enabled sources recorded the same overlapping window.
     storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."]);
     storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."]);
 
@@ -839,17 +831,14 @@ test("fuseDay rebuilds the artifact when fusion config changes (not skipped)", a
       fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
     });
 
-    // Initial fuse writes the artifact.
     const first = await serviceGap5m.fuseDay("2026-06-10");
     assert.equal(first.written, true);
     const firstHash = first.contentHash;
 
-    // Unchanged inputs + config => idempotent skip.
     const rerun = await serviceGap5m.fuseDay("2026-06-10");
     assert.equal(rerun.written, false, "unchanged inputs+config must not rewrite");
     assert.equal(rerun.contentHash, firstHash);
 
-    // Tune proximityGapMs => new content hash => artifact rebuilt, not skipped.
     const serviceGap10m = makeService(storage, {
       sources: baseSources,
       fusion: { enabled: true, proximityGapMs: 600_000, windowToleranceMs: 30_000 },
@@ -858,12 +847,10 @@ test("fuseDay rebuilds the artifact when fusion config changes (not skipped)", a
     assert.equal(afterGap.written, true, "proximityGapMs change must trigger a rebuild");
     assert.notEqual(afterGap.contentHash, firstHash);
 
-    // Re-run under the new config => idempotent skip again.
     const afterGapRerun = await serviceGap10m.fuseDay("2026-06-10");
     assert.equal(afterGapRerun.written, false);
     assert.equal(afterGapRerun.contentHash, afterGap.contentHash);
 
-    // Tune per-source trust => new content hash => artifact rebuilt.
     const serviceTrust = makeService(storage, {
       sources: {
         limitless: { ...defaultWearableSourceSettings(), enabled: true, sourceTrust: 0.95 },
@@ -891,12 +878,10 @@ test("fuseDay regenerates a stale artifact written under an older algorithm vers
     const fusionConfig = { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 };
     const service = makeService(storage, { sources: baseSources, fusion: fusionConfig });
 
-    // Initial fuse writes the artifact under the current algorithm version.
     const first = await service.fuseDay("2026-06-10");
     assert.equal(first.written, true);
     const currentHash = first.contentHash;
 
-    // Unchanged inputs + same version => idempotent skip.
     const rerun = await service.fuseDay("2026-06-10");
     assert.equal(rerun.written, false, "same version must be idempotent");
 
@@ -962,8 +947,6 @@ test("fuseDay regenerates a stale artifact written under an older algorithm vers
       serializeFusionDay(staleMeta, parsedArtifact!.conversations),
     );
 
-    // Re-fuse: the recomputed hash (current version) != stale stored hash, so
-    // the artifact is regenerated rather than skipped.
     const afterStale = await service.fuseDay("2026-06-10");
     assert.equal(afterStale.written, true, "stale algo-version artifact must be regenerated");
     assert.equal(afterStale.contentHash, currentHash, "regenerated hash matches the current algorithm");
@@ -989,7 +972,6 @@ test("fuseDay rewrites an artifact whose body is corrupt despite a matching cont
       },
     });
 
-    // Initial fuse writes a valid artifact.
     const first = await service.fuseDay("2026-06-10");
     assert.equal(first.written, true);
     assert.ok(first.conversationCount >= 1, "overlapping sources fuse into >=1 conversation");
@@ -1017,7 +999,6 @@ test("fuseDay rewrites an artifact whose body is corrupt despite a matching cont
     assert.equal(repaired.contentHash, hash, "inputs+config are unchanged so the hash is stable");
     assert.equal(repaired.conversationCount, first.conversationCount);
 
-    // Subsequent read returns the correct conversations again.
     const conversations = await service.fusedConversations("2026-06-10");
     assert.equal(conversations.length, first.conversationCount);
     assert.ok(conversations[0]!.id.startsWith("fusion-"));
@@ -1040,7 +1021,6 @@ test("fuseDay rewrites an artifact whose body is corrupt despite a matching cont
 test("fuseDay rewrites a corrupt body even when the expected conversation count is zero", async () => {
   const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
   try {
-    // No stored transcripts for this day -> fusion yields ZERO conversations.
     const service = makeService(storage, {
       sources: {
         limitless: { ...defaultWearableSourceSettings(), enabled: true },
@@ -1052,7 +1032,6 @@ test("fuseDay rewrites a corrupt body even when the expected conversation count 
       },
     });
 
-    // First fuse writes a valid (empty) artifact.
     const first = await service.fuseDay("2026-06-10");
     assert.equal(first.written, true);
     assert.equal(first.conversationCount, 0);
@@ -1143,7 +1122,6 @@ test("fuseDay rewrites an artifact whose body has malformed elements despite mat
     assert.equal(repaired.contentHash, hash);
     assert.equal(repaired.conversationCount, first.conversationCount);
 
-    // Repaired body is valid again, so the next run skips idempotently.
     const idempotent = await service.fuseDay("2026-06-10");
     assert.equal(idempotent.written, false, "a repaired artifact must skip on the next run");
     assert.equal(idempotent.contentHash, hash);
@@ -1165,14 +1143,11 @@ test("fusedConversations surfaces a corrupt artifact distinctly, not as a clean 
       fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
     });
 
-    // Initial fuse writes a valid artifact with >= 1 conversation.
     const first = await service.fuseDay("2026-06-10");
     assert.ok(first.conversationCount >= 1);
 
-    // A day that was never fused returns [] — the "no artifact" path.
     assert.deepEqual(await service.fusedConversations("2026-07-01"), []);
 
-    // Corrupt the body: valid frontmatter, garbled JSON body.
     const fusionStore = storage.fusionArtifactStore();
     const validRaw = await fusionStore.readFusedDay("2026-06-10");
     assert.ok(validRaw);
@@ -1191,7 +1166,6 @@ test("fusedConversations surfaces a corrupt artifact distinctly, not as a clean 
       /corrupt/,
     );
 
-    // The "never fused" path is unchanged — still returns [].
     assert.deepEqual(await service.fusedConversations("2026-07-01"), []);
   } finally {
     rmSync(storage.dir, { recursive: true, force: true });
@@ -1252,7 +1226,6 @@ test("fuseDay rewrites an artifact whose body bytes drifted despite matching con
     assert.equal(repaired.contentHash, hash);
     assert.equal(repaired.conversationCount, first.conversationCount);
 
-    // The repaired body no longer carries the tampered text.
     const restored = await service.fusedConversations("2026-06-10");
     assert.ok(!restored[0]!.segments[0]!.text.includes("[tampered]"));
 
@@ -1297,7 +1270,6 @@ test("fuseDay skips a day whose sources were rendered under conflicting timezone
     assert.equal(result.written, false);
     assert.equal(result.skipped?.reason, "conflicting-timezones");
     assert.equal(result.sources.length, 0);
-    // No artifact is written for the conflicting day.
     assert.equal(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
   } finally {
     rmSync(storage.dir, { recursive: true, force: true });
@@ -1307,7 +1279,6 @@ test("fuseDay skips a day whose sources were rendered under conflicting timezone
 test("fuseDay clears a stale fused artifact when a later run skips on conflicting timezones", async () => {
   const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
   try {
-    // First, both sources share one timezone -> the day fuses successfully.
     storeDay(
       storage,
       "limitless",
@@ -1333,7 +1304,6 @@ test("fuseDay clears a stale fused artifact when a later run skips on conflictin
     const first = await service.fuseDay("2026-06-10");
     assert.equal(first.written, true);
     assert.ok(first.conversationCount >= 1, "same-timezone sources fuse");
-    // A fused artifact now exists and is served by the listing surface.
     assert.notEqual(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
     assert.ok((await service.fusedConversations("2026-06-10")).length >= 1);
 

@@ -114,9 +114,7 @@ test("replayQuarantine defaults the principal to the record and sets a stable id
       },
     });
     assert.equal(result.replayed, 1);
-    // No --principal override: authz falls back to the parked principal.
     assert.equal(seen[0]?.authenticatedPrincipal, "dave");
-    // A stable idempotency key lets a re-run after a failed delete dedupe.
     assert.equal(typeof seen[0]?.idempotencyKey, "string");
     assert.match(String(seen[0]?.idempotencyKey), /^quarantine-replay:/);
   });

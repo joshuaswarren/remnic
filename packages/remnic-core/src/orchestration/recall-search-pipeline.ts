@@ -1,20 +1,3 @@
-/**
- * Recall search-pipeline coordinator — extracted from the orchestrator
- * (issue #1526, seam 19).
- *
- * Owns the QMD search post-processing helpers that feed recall assembly:
- *   - query-aware prefiltering and artifact top-up fetch
- *   - embedding/archive/cold-collection fallback pipelines
- *   - recall-safety filtering and memory-map loading
- *   - result boosting (recency, access, importance, relevance)
- *
- * Behavior-preserving move from orchestrator.ts. No logic changes — the
- * orchestrator keeps thin delegating methods (the private API callers and
- * tests keep working), and every member the moved code consults flows back
- * through RecallSearchPipelineDeps into the orchestrator's own overridable
- * members, so instance-level test stubs keep taking effect (the same
- * late-binding rule as seam 18).
- */
 
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -301,12 +284,10 @@ export class RecallSearchPipelineCoordinator {
       ? await this.deps.searchScopedMemoryCandidates(
           queryAwarePrefilter.candidatePaths,
           prompt,
-          // Exclude dedicated surfaces before capping the bounded prefilter set.
           queryAwarePrefilter.candidatePaths.size,
           { allowArchived: options.collection !== undefined },
         )
       : [];
-    // Drop generic-recall-excluded records before the fetchLimit cap so they can't starve valid memories (#1995).
     const recallable = (r: QmdSearchResult) => !isGenericRecallExcludedPath(r.path, this.deps.config, "qmd");
 
     let fetchLimit = Math.max(qmdFetchLimit, qmdHybridFetchLimit);
@@ -451,10 +432,6 @@ export class RecallSearchPipelineCoordinator {
         if (debugSearchOptions?.intent) {
           lastHybridTopUpSkippedReason = "intent_hint_active";
         } else if (this.deps.config.qmdSearchStrategy === "lex") {
-          // BM25-only strategy: a hybrid top-up runs vectorSearch (see
-          // QmdClient.hybridSearch), which would reintroduce the vector path the
-          // operator opted out of. Keep "lex" BM25-only end-to-end so the gate is
-          // uniform across primary + top-up (gotcha #39). Issue #1335 (codex review #1422).
           lastHybridTopUpSkippedReason = "lex_strategy";
         } else {
           let hybridResults = options.collection
@@ -483,7 +460,6 @@ export class RecallSearchPipelineCoordinator {
           lastHybridResultCount = hybridResults.length;
           lastHybridTopUpUsed = hybridResults.length > 0;
           if (hybridResults.length > 0) {
-            // Dedup by composite (namespace, path) so a hit never injects twice (#2020).
             mergedResults = dedupeResultsByNamespace(
               [...primaryResults, ...hybridResults],
               this.deps.namespaceFromPath,
@@ -527,8 +503,6 @@ export class RecallSearchPipelineCoordinator {
       if (filteredResults.length > bestFiltered.length) {
         bestFiltered = filteredResults;
       }
-      // A full raw page may filter down to nothing (for example, archive-only
-      // hits). Keep widening until the backend itself underfills the page.
       if (primaryResults.length < fetchLimit) {
         await emitDebugSnapshot(filteredResults, fetchLimit);
         return await applyDirectorySidecarDrillDown(this.deps.storage?.dir ?? "", prompt, filteredResults, { enabled: Boolean(this.deps.storage?.dir) && isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
@@ -554,10 +528,6 @@ export class RecallSearchPipelineCoordinator {
     return searchEmbeddingFallbackHelper(this.deps, query, limit);
   }
 
-  /**
-   * Cold fallback retains qualifying query-aware candidates. Archive records
-   * belong to dedicated surfaces and never re-enter generic recall.
-   */
   async searchQueryAwareFallback(
     prompt: string,
     limit: number,
@@ -572,14 +542,7 @@ export class RecallSearchPipelineCoordinator {
     recallNamespaces: string[];
     recallResultLimit: number;
     recallMode: RecallPlanMode;
-    /**
-     * Recall-operation capability gates resolved once at recall entry (#1523).
-     * OPTIONAL and additive: the recall pipeline threads a resolved set, but
-     * callers that omit it (e.g. direct unit-test invocations) get an
-     * equivalent config-derived set — behavior-preserving.
-     */
     caps?: CapabilitySet;
-    /** Graph-construction gates resolved at recall entry (#1566 Cluster A). */
     graphCaps?: GraphConstructionCapabilitySet;
     queryAwarePrefilter?: QueryAwarePrefilter;
     abortSignal?: AbortSignal;
@@ -605,8 +568,6 @@ export class RecallSearchPipelineCoordinator {
     stateViewActive?: boolean;
     searchOptions?: SearchQueryOptions;
   }): Promise<QmdSearchResult[]> {
-    // Prefer the threaded set; fall back to a config-derived set so direct
-    // callers (unit tests) behave identically to the recall pipeline (#1523).
     const caps = options.caps ?? resolveCapabilities(this.deps.config);
     const graphCaps = options.graphCaps ?? resolveGraphConstructionCapabilities(this.deps.config);
     if (options.queryAwarePrefilter?.candidatePaths?.size === 0) {
@@ -621,15 +582,10 @@ export class RecallSearchPipelineCoordinator {
       label: string,
       fallback: T,
       task: (stepSignal: AbortSignal) => Promise<T>,
-      // Invoked when the deadline abandons this step (before it started or
-      // while it runs), so callers can report the abandonment and gate off
-      // late observer callbacks (#1536, cursor round-6 on #1544).
       onDeadline?: () => void,
     ): Promise<T> => {
       throwIfRecallAborted(options.abortSignal);
       const remainingMs = deadlineRemainingMs();
-      // Step-level deadline abort (#1907): compose the caller's request signal with
-      // a per-step controller so a disconnect OR this step's deadline stops the task.
       const stepController = new AbortController();
       const stepSignal = options.abortSignal
         ? AbortSignal.any([options.abortSignal, stepController.signal])
@@ -691,11 +647,6 @@ export class RecallSearchPipelineCoordinator {
           false,
           0,
         );
-        // Deadline-gated observer (#1536, cursor round-6 on #1544): when the
-        // shared assembly deadline abandons this lookup, the still-running
-        // fetch's LATE reports must not land after the recall snapshot has
-        // been recorded — gate them off and report the abandonment itself
-        // deterministically at resolution time instead.
         let coldQmdObserverActive = true;
         const reportColdQmdDeadline = () => {
           coldQmdObserverActive = false;
@@ -734,9 +685,6 @@ export class RecallSearchPipelineCoordinator {
             ),
           reportColdQmdDeadline,
         );
-        // Normal completion also closes the gate: a deadline that fires
-        // after this await has nothing left to suppress, and a fetch that
-        // limps home later cannot mutate a recorded recall's collector.
         coldQmdObserverActive = false;
         if (longTerm.length > 0) {
           log.debug(`cold-tier recall source=cold-qmd collection=${coldCollection} hits=${longTerm.length}`);
@@ -808,7 +756,6 @@ export class RecallSearchPipelineCoordinator {
       }
       results = scopedResults;
     }
-    // Dedicated-surface isolation keeps generic recall out of artifacts, activity digests, and archives.
     results = results.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config, "qmd"));
     if (results.length === 0) return [];
 
@@ -914,7 +861,6 @@ export class RecallSearchPipelineCoordinator {
     }
 
     if (caps.rerank && this.deps.config.rerankProvider === "local") {
-      // (namespace, path) id so same-relative-path cross-namespace hits are not collapsed (#2020).
       const rerankId = (r: QmdSearchResult): string => `${r.namespace ?? ""}|${r.path}`;
       const ranked = await rerankLocalOrNoop({
         query: options.prompt,
@@ -959,9 +905,6 @@ export class RecallSearchPipelineCoordinator {
         });
       }
     }
-    // Cold fallback boosts inline rather than through applyTrustScoreToBranch,
-    // so the preference-drift stage is applied here explicitly — otherwise
-    // damping would silently not apply to this branch (§27 fallback parity).
     if (results.length > 0) {
       results = await this.deps.recallRerankCoordinator.applyPreferenceDriftStage(
         results,
@@ -983,7 +926,6 @@ export class RecallSearchPipelineCoordinator {
         options.recallResultLimit,
         options.prompt,
         caps,
-        // #2859: packet semantics are off under a historical asOf pin.
         stateViewPacketActive(options.stateViewActive, options.asOfMs),
       );
       options.resultPartitionSink.partition = partition;
@@ -1118,24 +1060,9 @@ export class RecallSearchPipelineCoordinator {
       asOfMs?: number;
       blockedPaths?: Set<string>;
       requestingConnector?: string;
-      /**
-       * #1952 state-aware recall views. When true (config `recallStateViews`
-       * or per-call override, AND a change-intent query — resolved by the
-       * caller), a superseded candidate is admitted iff its successor
-       * (`frontmatter.supersededBy`) is also in this candidate set. The
-       * admitted row carries `id`/`status`/`supersededBy`/`supersededAt` so
-       * the inject seam can label it; every other path is unchanged.
-       */
       stateViewActive?: boolean;
     },
   ): QmdSearchResult[] {
-    // #1952 state-aware recall views. A superseded row is admitted only
-    // when its successor SURVIVES this filter — a successor rejected by
-    // the connector/lifecycle/validity/dedicated-surface/status gates
-    // must never anchor (or spend a result slot on) its superseded row.
-    // #2859: anchors are namespace-qualified and include the successor
-    // `supersedes` back-pointer (see StateViewAnchorTracker); superseded
-    // rows defer admission to the post-pass fixpoint.
     const stateViewActive = options?.stateViewActive === true;
     const stateViewAnchors = stateViewActive ? new StateViewAnchorTracker() : null;
     const stateViewDeferred: number[] = [];
@@ -1144,13 +1071,10 @@ export class RecallSearchPipelineCoordinator {
       : null;
     const buildRecallRow = (r: QmdSearchResult, memory: MemoryFile | undefined): QmdSearchResult => ({
       ...r,
-      // Render loaded flat memories, not QMD's front-matter/chunk preview (#3194).
       snippet: memory && !resolveNamespaceCapabilities(this.deps.config).namespaces ? memory.content : r.snippet,
       line: memory && !resolveNamespaceCapabilities(this.deps.config).namespaces ? undefined : r.line,
       sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
       origin: memory ? memory.frontmatter.origin : undefined,
-      // #1952: an active state view carries the chain fields the inject
-      // seam labels from (id/status/supersededBy/supersededAt).
       ...(stateViewActive && memory
         ? {
             id: memory.frontmatter.id,
@@ -1195,11 +1119,6 @@ export class RecallSearchPipelineCoordinator {
           connectorPartitionFilteredCount += 1;
           continue;
         }
-        // Review-lifecycle statuses never enter active recall injection
-        // (forgotten, pending_review, rejected, quarantined). Superseded and
-        // archived have dedicated filters below. #1576: the faithfulness gate
-        // routes unsupported/contradicted facts to pending_review — they must
-        // not leak back via the QMD/embedding path. chatgpt P2.
         const recallStatus = memory.frontmatter.status;
         if (
           recallStatus === "forgotten" ||
@@ -1228,14 +1147,6 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
 
-        // Historical recall (issue #680): when the caller pinned the
-        // recall to a specific point in time, evaluate temporal validity
-        // at that instant FIRST and bypass the supersession filter
-        // entirely. A fact that is currently superseded but was valid
-        // at `as_of` is exactly what historical recall should surface;
-        // running supersession filtering before the as_of check would
-        // drop it and break the worked example in docs/temporal-recall.md
-        // (codex P1 / cursor High on PR #713).
         const asOfActive =
           typeof options?.asOfMs === "number" && Number.isFinite(options.asOfMs);
         if (asOfActive) {
@@ -1244,19 +1155,6 @@ export class RecallSearchPipelineCoordinator {
             continue;
           }
         } else if (
-          // Temporal supersession filter (issue #375): drop memories that
-          // a newer fact has retired, unless the caller opted in to history.
-          // NOTE: This check is intentionally independent of
-          // allowLifecycleFiltered (Finding A fix) — cold fallback sets
-          // allowLifecycleFiltered=true to include archived/retired
-          // candidates, but superseded memories must still be filtered
-          // unless temporalSupersessionIncludeInRecall is set.
-          // #1952: an active state view ADMITS the superseded row when its
-          // successor also survives this filter — history never renders
-          // unanchored, and a successor rejected by any gate here can
-          // never anchor. Admission defers to the post-pass fixpoint.
-          // Skipped entirely when `as_of` is active (above branch);
-          // isValidAsOf stays the authoritative historical gate.
           shouldFilterSupersededFromRecall(memory.frontmatter, {
             enabled: lifecycleCaps.temporalSupersession,
             includeInRecall: this.deps.config.temporalSupersessionIncludeInRecall,
@@ -1269,17 +1167,6 @@ export class RecallSearchPipelineCoordinator {
             continue;
           }
         }
-        // Bi-temporal INJECTION filter (issue #1578): when the master gate
-        // is on and the caller did NOT pin `as_of`, drop facts whose event-
-        // time interval has ended before now. This lives ONLY in the recall
-        // injection path (filterSearchResultsByRecallSafety) — explicit
-        // search (access-service.memorySearch → searchAcrossNamespaces /
-        // qmd.search) never routes through here, so expired-validity facts
-        // remain findable by memory_search and `as_of` queries (escape
-        // hatch: the as_of branch above also admits historically-valid
-        // records). Gated off entirely when `temporalExpiredInInjection` is
-        // set. Status-orthogonal: an `active` fact can be validity-expired;
-        // a `superseded` one may still be within its window.
         if (
           !asOfActive &&
           this.deps.config.temporalBiTemporal &&
@@ -1290,10 +1177,6 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
 
-        // Activity day-digests are a dedicated searchable surface (explicit
-        // activity search), never generic recall — captured screen text must not
-        // auto-inject into ordinary prompts (issue #1899). Keyed on the PATH:
-        // the digest's `kind` frontmatter marker does not survive parseFrontmatter.
         if (
           options?.allowDedicatedSurface !== true &&
           (memory.frontmatter.memoryKind === "dream" ||
@@ -1304,11 +1187,7 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
       }
-      // Derive persisted provenance exclusively from hydrated frontmatter.
-      // The formatter parses this value at the model-context render site.
       if (stateViewPending) {
-        // Survived every other gate; admission now hinges on the
-        // successor surviving too — decided by the fixpoint below.
         stateViewDeferred.push(resultIdx);
         continue;
       }
@@ -1320,10 +1199,6 @@ export class RecallSearchPipelineCoordinator {
       filtered.push(builtRow);
     }
     if (stateViewDeferred.length > 0) {
-      // #1952 admission fixpoint: a deferred superseded row joins the
-      // output only when its successor is (or becomes) part of the
-      // filter-surviving set. An admitted row can itself anchor the next
-      // link of a chain, so iterate to a fixpoint.
       const admitted = new Set<number>();
       for (let progress = true; progress; ) {
         progress = false;
@@ -1348,8 +1223,6 @@ export class RecallSearchPipelineCoordinator {
           temporalSupersededFilteredCount += 1;
         }
       }
-      // Re-emit in the order candidates entered this filter so an
-      // admitted predecessor keeps its rank position (no slot swap).
       filtered.length = 0;
       for (const builtRow of stateViewBuilt!) {
         if (builtRow) filtered.push(builtRow);
@@ -1436,9 +1309,6 @@ export class RecallSearchPipelineCoordinator {
         `recall safety filter stopped before validating all candidates (${candidateResults.length}/${results.length} eligible)`,
       );
     }
-    // Always block secure-store-locked candidates that failed to load: they
-    // must never re-enter ranking/injection without a loaded memory, whether or
-    // not dropUnresolved is set. Keyed by composite (namespace, path).
     const blockedPaths = new Set<string>(loaded.unreadablePaths);
     if (options?.dropUnresolved === true) {
       for (const result of candidateResults) {
@@ -1457,10 +1327,6 @@ export class RecallSearchPipelineCoordinator {
     };
   }
 
-  /**
-   * Apply recency, access count, and importance boosting to QMD search results.
-   * Returns re-ranked results.
-   */
   async boostSearchResults(
     results: QmdSearchResult[],
     _recallNamespaces: string[],
@@ -1496,7 +1362,6 @@ export class RecallSearchPipelineCoordinator {
 
     const now = Date.now();
 
-    // Determine temporal/tag query params before index I/O (pure computation).
     const resultPaths = new Set(
       safeResults.map((r) => r.path).filter(Boolean) as string[],
     );
@@ -1509,9 +1374,6 @@ export class RecallSearchPipelineCoordinator {
       promptTags = extractTagsFromPrompt(prompt);
     }
 
-    // Consistent temporal+tag snapshot (issue #1911, Codex Medium): read both
-    // indexes under one op-lock so an in-flight async mutation is never observed
-    // half-applied.
     const [rawTemporal, rawTags] = await readIndexSnapshotAsync(
       this.deps.config.memoryDir,
       () =>
@@ -1531,14 +1393,12 @@ export class RecallSearchPipelineCoordinator {
         : null;
 
     // v8.1: Temporal + Tag prefilter candidate set
-    // Scope to result paths first so cross-namespace paths don't consume the cap.
     let temporalCandidates: Set<string> | null = null;
     let tagCandidates: Set<string> | null = null;
     if (resolveIndexingCapabilities(this.deps.config).queryAwareIndexing && prompt) {
       const maxCandidates = this.deps.config.queryAwareIndexingMaxCandidates;
       const capSet = (s: Set<string> | null): Set<string> | null => {
         if (!s) return null;
-        // Intersect with result paths first so out-of-scope paths don't exhaust the budget
         const scoped = new Set(Array.from(s).filter((p) => resultPaths.has(p)));
         if (maxCandidates === 0 || scoped.size <= maxCandidates)
           return scoped;
@@ -1554,8 +1414,6 @@ export class RecallSearchPipelineCoordinator {
 
     const boosted: QmdSearchResult[] = [];
     const recencyWeight = this.deps.effectiveRecencyWeight();
-    // #2976: mtime backs age only for memories without content dates, and a
-    // same-day mtime cluster (bulk import / restore / cp -r) is distrusted.
     const mtimeFallback =
       recencyWeight > 0
         ? await collectMtimeFallbackContext(
@@ -1583,7 +1441,6 @@ export class RecallSearchPipelineCoordinator {
           );
         }
 
-        // Importance boost (Phase 1B): higher importance = higher rank
         if (memory.frontmatter.importance) {
           const importanceScore = memory.frontmatter.importance.score;
           // Boost important memories, slightly penalize trivial ones
@@ -1645,7 +1502,6 @@ export class RecallSearchPipelineCoordinator {
         }
 
         // v8.1: Temporal + Tag index boost
-        // Results that match the detected temporal window or tag query get a small additive boost.
         if (resolveIndexingCapabilities(this.deps.config).queryAwareIndexing && r.path) {
           if (temporalCandidates?.has(r.path)) {
             score += applyUtilityRankingRuntimeDelta(
@@ -1709,7 +1565,6 @@ export class RecallSearchPipelineCoordinator {
 
     if (outcomePriorBoostActive(this.deps.config)) applyOutcomePriorScores(boosted, memoryByPath, this.deps.config);
 
-    // Re-sort by boosted score
     return boosted.sort((a, b) => b.score - a.score);
   }
 }

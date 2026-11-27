@@ -87,7 +87,6 @@ export async function selectArtifactMatches(
 
   const artifacts = await loadArtifacts();
   // The scan below never awaits real I/O, so this is the last chance to observe a
-  // signal that fired while the tier was being read.
   throwIfAborted(options.abortSignal, "artifact search aborted");
   const hits: Array<{ score: number; memory: MemoryFile }> = [];
   let scanned = 0;

@@ -18,11 +18,6 @@ import type { CasRevisionTransaction } from "./cas-revision-store.js";
 export { isTombstoneBlockedCaptureWriteLockBusy } from "../capture-write-lock-backoff.js";
 
 const TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS = 60_000;
-/**
- * One exclusive-create probe. The bounded wait lives in the outer backoff,
- * which runs only after every lock from this attempt has been released.
- * A multi-second poll here would hold an already-acquired sibling lock.
- */
 const CAPTURE_WRITE_LOCK_PROBE_MS = 1;
 const CAPTURE_WRITE_LOCK_RETRY = Symbol("capture-write-lock-retry");
 const CAPTURE_WRITE_LOCK_PERMANENT = Symbol("capture-write-lock-permanent-failure");
@@ -66,7 +61,6 @@ export type TombstoneBlockedCaptureWriteLockOptions = {
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly logDebug?: (message: string) => void;
   readonly logWarn?: (message: string) => void;
-  /** Direct seam. Converge passes the same signal through `lockOptions` instead. */
   readonly signal?: AbortSignal;
 };
 
@@ -101,16 +95,10 @@ export class TombstoneBlockedCaptureWriteLock {
     log.warn(message);
   }
 
-  /** Prefer the constructor seam; converge installs the signal on lock options at acquire time. */
   private captureAbortSignal(): AbortSignal | undefined {
     return this.options.signal ?? this.options.lockOptions?.()?.captureWriteLockSignal;
   }
 
-  /**
-   * One probe of a single lock file. Returns the retry symbol when the lock
-   * is busy and the permanent symbol on a filesystem error. Does not sleep:
-   * the caller backs off only after the whole chain has unwound.
-   */
   private async withSingleCaptureWriteLockOnce<T>(
     lockPath: string,
     task: () => Promise<T | typeof CAPTURE_WRITE_LOCK_RETRY>
@@ -150,8 +138,6 @@ export class TombstoneBlockedCaptureWriteLock {
       index: number
     ): Promise<T | typeof CAPTURE_WRITE_LOCK_RETRY | typeof CAPTURE_WRITE_LOCK_PERMANENT> => {
       throwIfAborted(signal);
-      // The deadline gates each probe: a chain that started before the
-      // deadline must not keep probing locks (or run the write) after it.
       const runTask = async (): Promise<T> => {
         if (this.now() >= deadline) giveUp();
         return await task();
@@ -178,8 +164,6 @@ export class TombstoneBlockedCaptureWriteLock {
       );
       if (delay <= 0) giveUp();
       this.debug(`tombstone-blocked capture write lock busy; backing off ${delay}ms before retry ${attempt + 1}`);
-      // raceAbort covers seam sleeps that ignore the signal; the default
-      // sleepAbortable also clears its timer so abort holds no Timeout.
       await raceAbort((this.options.sleep ?? sleepAbortable)(delay, signal), signal);
     }
   }
@@ -334,21 +318,11 @@ export async function runTombstoneBlockedMutation(
       };
       let transaction: CasRevisionTransaction | undefined;
       try {
-        // #2813 (P1 C): a two-phase receipt transaction under this same
-        // path lock. The PENDING reservation is minted BEFORE the durable
-        // file publish, so a failed reservation leaves the memory file
-        // untouched — never a mutated record without a receipt. The
-        // COMMITTED receipt publishes only AFTER the write lands, so a
-        // failed write can never leave the reservation posing as
-        // ownership.
         transaction = mutation.shouldMintRevision?.(current)
           ? await host.beginDurableMemoryRevision?.(mutation.pathname, mutation.fileContent)
           : undefined;
         await host.writeStorageSecureFile(mutation.pathname, mutation.fileContent);
       } catch (err) {
-        // The memory write failed (or never ran): abort the reservation so
-        // no pending marker survives a write that did not land. A failed
-        // abort keeps the marker — ambiguity, recovered later.
         if (transaction) {
           try {
             await transaction.abort();
@@ -362,11 +336,6 @@ export async function runTombstoneBlockedMutation(
         throw err;
       }
       if (transaction) {
-        // #2807: record the post-write fingerprint in the PENDING marker
-        // BEFORE publishing, so a crash between the durable write and the
-        // COMMITTED receipt is decisively recoverable. The evidence only
-        // guards that crash window — a recording failure must not fail the
-        // landed write, so commit still runs and publishes truthfully.
         try {
           await transaction.writeLanded();
         } catch (evidenceError) {
@@ -377,11 +346,6 @@ export async function runTombstoneBlockedMutation(
         try {
           await transaction.commit();
         } catch (err) {
-          // #2813 (P1 C): the memory file LANDED but the COMMITTED receipt
-          // never published. The PENDING marker stays: readers must see
-          // unavailable/recovery-needed — never ownership, never absence —
-          // and promotion/rollback refuse until recovery reconciles. The
-          // reservation must NOT be aborted: the write is on disk.
           host.logWarning(
             `storage.tombstoneBlocked receipt publication failed after the memory write (pending marker preserved for recovery): ${err}`
           );

@@ -30,8 +30,6 @@ import { mapInBatches } from "./map-in-batches.js";
 type SourceMemoryMap = Map<string, MemoryFile>;
 
 
-// An index older than this is treated as unusable: the date window needed to
-// cover "created since the last rebuild" would stop being cheap.
 const INDEX_MAX_AGE_MS = 7 * 86_400_000;
 const DAY_MS = 86_400_000;
 
@@ -44,10 +42,6 @@ function utcDaysSince(rebuiltMs: number, nowMs: number): string[] {
 }
 
 
-// Memories the projection has no row for were written after its last rebuild, so
-// their dated directory is normally one of `days`. Hot and cold tiers are probed
-// by exact path. Only recall-corpus categories are probed: `questions/` is a queue
-// and `artifacts/` is outside the recall surface, so neither can be a source.
 function unprojectedCandidatePaths(memoryDir: string, id: string, days: string[]): string[] {
   const paths: string[] = [];
   for (const root of [memoryDir, path.join(memoryDir, "cold")]) {
@@ -59,14 +53,12 @@ function unprojectedCandidatePaths(memoryDir: string, id: string, days: string[]
   return paths;
 }
 
-/** Resolve indexed sources first, then use the durable unresolved-id path cache. */
 async function readIndexedSourceMemories(options: {
   memoryDir: string;
   abortSignal?: AbortSignal;
   sourceMemoryIds: string[];
   nowMs: number;
 }): Promise<SourceMemoryMap | null> {
-  // The ids go to SQL as bound parameters, so any id the projection holds is safe to look up.
   const batch = readProjectedMemoryStates(options.memoryDir, options.sourceMemoryIds);
   const rebuiltMs = Date.parse(batch?.rebuiltAt ?? "");
   if (!batch?.complete || !batch.rebuiltAt || !Number.isFinite(rebuiltMs) || options.nowMs - rebuiltMs > INDEX_MAX_AGE_MS) return null;
@@ -79,14 +71,12 @@ async function readIndexedSourceMemories(options: {
   const pending: string[] = [];
   const resolved = await mapInBatches(options.sourceMemoryIds, async (id) => {
     const state = batch.states.get(id);
-    // An id is only ever joined into a path when it is a single safe segment.
     let safeId = true;
     try {
       assertSafePathSegment(id, "sourceMemoryId");
     } catch {
       safeId = false;
     }
-    // state.path was containment-checked by the projection reader.
     const candidates = state
       ? [state.path, path.join(options.memoryDir, "cold", state.pathRel)]
       : safeId ? unprojectedCandidatePaths(options.memoryDir, id, days) : [];
@@ -129,8 +119,6 @@ async function readCorpusSourceMemories(options: {
   } catch (err) {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
     if (err instanceof SecureStoreLockedError) return new Map();
-    // Source validation fails closed when the authorized memory directory is
-    // unreadable. Source-less nodes remain eligible for retrieval.
     sourceMemories.clear();
   }
   return sourceMemories;
@@ -173,13 +161,6 @@ function parseSourceMemoryInsertedAt(node: AbstractionNode): Map<string, string>
   return insertedAtById;
 }
 
-/**
- * Whether a source memory can back a projected node at all. Shared with `earliestInvalidAtMs`, so the cache
- * deadline only follows a source that the projection would use.
- * #2332: a private support-passport record leaves the eligible set the same way a rejected one does — a node
- * title or anchor attribution rebuilt from it would leak governed metadata into the deep-recall frontier (and
- * every other graph reader) before any content check runs.
- */
 function isEligibleSourceMemory(memory: MemoryFile, memoryDir: string): boolean {
   return (
     !isSupportPassportPrivateMemory(memory) &&
@@ -207,9 +188,6 @@ function projectSourceBackedNode(
   });
   if (activeSourceMemoryIds.length === 0) return null;
 
- // Newest-first source order keeps the projected title and summary on the most
- // recently inserted facts. Equal or missing timestamps fall back to ascending
- // id order, which matches the stored sourceMemoryIds order.
  const insertedAtById = parseSourceMemoryInsertedAt(node);
  const insertedAtMs = (memoryId: string): number => {
    const parsedMs = Date.parse(insertedAtById.get(memoryId) ?? "");
@@ -339,8 +317,6 @@ function getHarmonicSearchIndex(graph: ProjectedHarmonicGraph): HarmonicSearchIn
   if (cached) return cached;
   harmonicSearchIndexStats.builds += 1;
   const nodesById = new Map(graph.nodes.map((node) => [node.nodeId, node]));
-  // Node ids are only unique per record day (nodes/<day>/<nodeId>.json), so
-  // tokens are indexed by position in graph.nodes.
   const nodeTokens = graph.nodes.map((node) => ({
     title: normalizeRecallTokenSet(node.title ?? ""),
     summary: normalizeRecallTokenSet(node.summary ?? ""),
@@ -348,8 +324,6 @@ function getHarmonicSearchIndex(graph: ProjectedHarmonicGraph): HarmonicSearchIn
     entities: normalizeRecallTokenSet(node.entityRefs?.join(" ") ?? ""),
     kind: normalizeRecallTokenSet(`${node.kind} ${node.abstractionLevel}`),
   }));
-  // Anchor ids are only unique per anchorType (cue-anchors dedups by
-  // type+id), so tokens are indexed by position in graph.anchors.
   const anchorTokens = graph.anchors.map((anchor) => {
     const eligibleNodeTags = new Set(anchor.nodeRefs.flatMap((nodeRef) => nodesById.get(nodeRef)?.tags ?? []));
     const eligibleAnchorTags = anchor.tags?.filter((tag) => eligibleNodeTags.has(tag)) ?? [];
@@ -440,7 +414,6 @@ export async function readAbstractionNodes(options: {
     try {
       return validateAbstractionNode(await readJsonFile(filePath));
     } catch {
-      // fail-open: invalid artifacts stay visible via status tooling instead of recall
       return null;
     }
   });
@@ -458,7 +431,6 @@ export async function readCueAnchors(options: {
     try {
       return validateCueAnchor(await readJsonFile(filePath));
     } catch {
-      // fail-open: invalid artifacts stay visible via status tooling instead of recall
       return null;
     }
   });
@@ -470,31 +442,13 @@ export interface ProjectedHarmonicGraph {
   anchors: CueAnchor[];
 }
 
-/**
- * Read nodes + anchors and project BOTH against the namespace's current active
- * memories. This is the single projection every graph reader shares: a raw
- * `readAbstractionNodes` / `readCueAnchors` pair still carries the stored title,
- * summary, tags, and anchor attribution of a memory that was later rejected,
- * quarantined, or otherwise moved out of the active set, so a second reader
- * that skipped the projection could leak governed metadata even when the
- * memory itself is excluded from the final results.
- *
- * - A node whose every source memory left the active set is dropped.
- * - A surviving node's title/summary/tags/entityRefs are rebuilt from its
- *   active sources only.
- * - An anchor keeps a node reference only while its attribution runs through
- *   one of that node's surviving active sources, and is dropped once no
- *   reference survives.
- */
 interface ExpiringHarmonicGraph extends ProjectedHarmonicGraph {
-  /** First instant a source memory's `invalid_at` passes: from then on the graph is wrong without any write. */
   validUntilMs: number;
 }
 
 function earliestInvalidAtMs(sourceMemories: SourceMemoryMap, memoryDir: string, nowMs: number): number {
   let earliest = Number.POSITIVE_INFINITY;
   for (const memory of sourceMemories.values()) {
-    // An ineligible source drops out of the projection whatever its `invalid_at`, so its deadline changes nothing.
     if (!isEligibleSourceMemory(memory, memoryDir)) continue;
     const invalidAtMs = Date.parse(memory.frontmatter.invalid_at?.trim() ?? "");
     if (Number.isFinite(invalidAtMs) && invalidAtMs > nowMs && invalidAtMs < earliest) earliest = invalidAtMs;
@@ -538,12 +492,9 @@ async function buildExpiringHarmonicGraph(options: {
       })
     : new Map();
   const nowMs = options.nowMs ?? Date.now();
-  // With temporalExpiredInInjection the validity filter is off, so no `invalid_at` can age the graph.
   const validUntilMs = options.temporalExpiredInInjection === true
     ? Number.POSITIVE_INFINITY
     : earliestInvalidAtMs(sourceMemories, options.memoryDir, nowMs);
-  // A node whose full stored source set survived projection keeps legacy
-  // anchor attribution (an anchor written before per-node source ids existed).
   const legacyCompatibleNodeRefs = new Set<string>();
   const projectedNodes = nodes.flatMap((node) => {
     const projected = projectSourceBackedNode(
@@ -580,16 +531,11 @@ async function buildExpiringHarmonicGraph(options: {
 }
 
 const GRAPH_CACHE_TTL_MS = 30_000;
-/**
- * Past the TTL a graph whose stamp is unchanged is still served while a refresh runs behind it, so no
- * recall waits for a rebuild just because the TTL lapsed. This is how long past the TTL; after it the graph is rebuilt first.
- */
 const GRAPH_CACHE_MAX_STALE_MS = 300_000;
 const GRAPH_CACHE_MAX_ENTRIES = 8;
 
 interface GraphCacheEntry {
   stamp: string;
-  /** When the build finished, so the TTL measures how long the graph has been available. */
   builtAtMs: number;
   validUntilMs: number;
   graph: ProjectedHarmonicGraph;
@@ -598,16 +544,12 @@ interface GraphCacheEntry {
 interface GraphBuild {
   stamp: string;
   promise: Promise<ProjectedHarmonicGraph>;
-  /** Cancels the build's source scan; fired when no caller is waiting for it. */
   controller: AbortController;
-  /** Callers currently waiting for this build. */
   waiting: number;
 }
 
 const graphCache = new Map<string, GraphCacheEntry>();
-/** One build per cache key at a time: every recall that lands on a miss waits for the same build. */
 const graphBuilds = new Map<string, GraphBuild>();
-/** When a background refresh last failed, per key: stale reads retry at most once per TTL. Capped like the cache. */
 const refreshFailedAtMs = new Map<string, number>();
 
 function rememberRefreshFailure(key: string): void {
@@ -620,11 +562,6 @@ function rememberRefreshFailure(key: string): void {
   }
 }
 
-/**
- * A source's `invalid_at` can pass while the build is still reading anchors, which would hand every caller
- * that joined this build a graph that is already expired. Rebuild until the graph is unexpired at completion.
- * Each round drops the sources that expired, so the set of future deadlines shrinks and the loop ends.
- */
 async function buildUnexpiredHarmonicGraph(options: GraphReadOptions, abortSignal: AbortSignal): Promise<ExpiringHarmonicGraph> {
   for (;;) {
     const built = await buildExpiringHarmonicGraph({
@@ -661,9 +598,7 @@ export function setHarmonicGraphBuildTestHooks(hooks: HarmonicGraphBuildTestHook
   harmonicGraphBuildTestHooks = hooks;
 }
 
-/** Freeze records and their nested arrays/objects so a caller cannot corrupt the shared cache. */
 function deepFreeze<T extends object>(value: T): T {
-  // isFrozen is true for primitives and null, and a frozen value is not revisited, so this ends on cycles too.
   if (Object.isFrozen(value)) return value;
   Object.freeze(value);
   for (const child of Object.values(value)) deepFreeze(child);
@@ -687,17 +622,12 @@ export async function settleHarmonicGraphBuilds(): Promise<void> {
 
 type GraphReadOptions = Parameters<typeof buildProjectedHarmonicGraph>[0];
 
-/**
- * Start the one build for `key`. The build owns an abort controller instead of using one caller's signal,
- * so a caller that leaves does not cancel it for the others; `joinGraphBuild` cancels it when the last caller leaves.
- */
 function startGraphBuild(key: string, stamp: string, options: GraphReadOptions): GraphBuild {
   harmonicGraphCacheStats.misses++;
   const controller = new AbortController();
   const promise: Promise<ProjectedHarmonicGraph> = buildUnexpiredHarmonicGraph(options, controller.signal)
     .then((built) => {
       const graph = { nodes: deepFreeze(built.nodes), anchors: deepFreeze(built.anchors) };
-      // A cleared cache or a newer build for this key has replaced this one: do not store a stale graph.
       if (graphBuilds.get(key)?.promise !== promise) return graph;
       refreshFailedAtMs.delete(key);
       graphCache.delete(key);
@@ -717,12 +647,6 @@ function startGraphBuild(key: string, stamp: string, options: GraphReadOptions):
   return build;
 }
 
-/**
- * Wait for `build` on behalf of one caller. The caller's own signal ends only its own wait. When the last
- * waiting caller has left, the build is cancelled and dropped, so abandoned recalls do not leave full scans running
- * (cancelling a build that already finished does nothing). A caller that leaves on `waitBudgetMs` is the exception:
- * the build keeps running so its completed graph warms the cache for the next caller.
- */
 function joinGraphBuild(
   key: string,
   build: GraphBuild,
@@ -747,9 +671,6 @@ function joinGraphBuild(
   return waited.finally(() => {
     if (timer) clearTimeout(timer);
     build.waiting--;
-    // A caller that left on the wait budget does not cancel the build: it keeps
-    // running and stores the fresh graph, so the next caller gets a cache hit
-    // instead of restarting the scan a write storm keeps invalidating.
     if (timedOut) harmonicGraphCacheStats.deadlineExits++;
     if (build.waiting > 0 || timedOut) return;
     if (graphBuilds.get(key) === build) graphBuilds.delete(key);
@@ -786,7 +707,6 @@ export async function readProjectedHarmonicGraph(options: {
   waitBudgetMs?: number;
 }): Promise<ProjectedHarmonicGraph> {
   if (options.useCache !== true || options.nowMs !== undefined) return buildProjectedHarmonicGraph(options);
-  // Same cancellation contract as the builder: a cache hit must not mask an aborted signal.
   throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
   const nodeStoreDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
   const key = JSON.stringify([
@@ -795,13 +715,9 @@ export async function readProjectedHarmonicGraph(options: {
     options.anchorsEnabled === true,
     options.temporalExpiredInInjection === true,
   ]);
-  // The stamp is read BEFORE the build, so a write that lands mid-build leaves the
-  // entry stale and the next call rebuilds.
   const stamp = readHarmonicGraphStamp(options.memoryDir, nodeStoreDir);
   const nowMs = Date.now();
   const hit = graphCache.get(key);
-  // A source's `invalid_at` passing changes the projection without bumping the stamp, so it ends the entry
-  // at the exact instant, however fresh the entry is.
   if (hit && hit.stamp === stamp && nowMs < hit.validUntilMs && nowMs - hit.builtAtMs < GRAPH_CACHE_TTL_MS + GRAPH_CACHE_MAX_STALE_MS) {
     harmonicGraphCacheStats.hits++;
     graphCache.delete(key);
@@ -848,8 +764,6 @@ export async function searchHarmonicRetrieval(options: {
   const queryTokens = new Set(normalizeRecallTokens(options.query, ["what", "which"]));
   if (queryTokens.size === 0 || options.maxResults <= 0) return [];
 
-  // One projection for every graph reader: nodes and anchors both arrive
-  // already narrowed to the namespace's current active memories.
   const graph = await readProjectedHarmonicGraph({
     ...options,
     useCache: options.useGraphCache === true,
@@ -878,7 +792,6 @@ export async function searchHarmonicRetrieval(options: {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
     for (const [anchorIndex, anchor] of anchors.entries()) {
       throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-      // `nodeRefs` are the projection's surviving references already.
       const eligibleNodeRefs = anchor.nodeRefs;
       const anchorTokens = searchIndex.anchorTokens[anchorIndex];
       const { score, matchedFields } = scoreAnchor(anchorTokens, queryTokens);

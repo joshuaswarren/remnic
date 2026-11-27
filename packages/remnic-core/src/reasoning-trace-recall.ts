@@ -1,37 +1,9 @@
-/**
- * Reasoning-trace recall boost (issue #564 PR 3).
- *
- * Pure helpers for:
- * - detecting whether a user query looks like a problem-solving ask
- *   ("how do I…", "step by step", etc.)
- * - boosting stored reasoning_trace memories within a result list when that
- *   condition matches.
- *
- * Callers gate these helpers behind the `recallReasoningTraceBoostEnabled`
- * config flag (default false); the helpers themselves are also no-ops when
- * `enabled` is false so they can be safely chained into the recall pipeline.
- */
 
-/**
- * Heuristic: does the incoming query read like the user wants a stored
- * solution chain (reasoning trace)?
- *
- * Positive signals:
- *  - starts with "how do I", "how can I", "how would I", "how to"
- *  - contains "step by step", "walk me through", "work through"
- *  - contains "reasoning", "think through", "figure out", "debug"
- *  - explicitly mentions "trace" or "chain of thought"
- *
- * This is intentionally conservative — the boost is OFF by default, so false
- * negatives are cheap, but false positives would shift retrieval for ordinary
- * queries on an opt-in install.
- */
 export function looksLikeProblemSolvingQuery(query: string): boolean {
   if (typeof query !== "string") return false;
   const q = query.trim().toLowerCase();
   if (q.length === 0) return false;
 
-  // Starts-with patterns.
   const startsWithPatterns = [
     /^how\s+do\s+i\b/,
     /^how\s+can\s+i\b/,
@@ -49,12 +21,6 @@ export function looksLikeProblemSolvingQuery(query: string): boolean {
     if (re.test(q)) return true;
   }
 
-  // Anywhere-in-string phrases. These mirror the doc-comment's stated
-  // positive signals: broader variants ("work through", "figure out",
-  // "debug this") are included so "how do I debug this" doesn't have to
-  // lean on the `help me debug` starts-with entry alone, and so queries
-  // like "work through the problem" or "figure out why it broke" trigger
-  // the heuristic as the docstring claims.
   const phrases = [
     "step by step",
     "step-by-step",
@@ -79,11 +45,6 @@ export function looksLikeProblemSolvingQuery(query: string): boolean {
   return false;
 }
 
-/**
- * Minimal shape the boost helper needs to read from a recall result. Matches
- * QmdSearchResult as of issue #564 but kept structural so tests and future
- * callers don't have to import orchestrator-level types.
- */
 export interface BoostableResult {
   path: string;
   score: number;
@@ -92,26 +53,11 @@ export interface BoostableResult {
   effectiveScore?: number;
 }
 
-/**
- * Path-based marker for memories that live in the dedicated
- * reasoning-traces/ subtree. Using a path segment keeps this cheap: no
- * frontmatter parsing or extra I/O is needed.
- */
 export function isReasoningTracePath(candidatePath: string): boolean {
   if (typeof candidatePath !== "string") return false;
-  // Match "/reasoning-traces/" as a full path segment to avoid false
-  // positives like "my-reasoning-traces-notes/".
   return /(^|[\\/])reasoning-traces([\\/]|$)/.test(candidatePath);
 }
 
-/**
- * Default additive boost applied to a reasoning_trace candidate when the
- * current query looks like a problem-solving ask.
- *
- * Chosen to be roughly the same magnitude as the existing CATEGORY_BOOSTS
- * entry for reasoning_trace (0.09 in importance scoring), keeping the signal
- * visible but not overwhelming stronger lexical/vector matches.
- */
 export const DEFAULT_REASONING_TRACE_BOOST = 0.15;
 
 export interface ApplyReasoningTraceBoostOptions {
@@ -173,16 +119,12 @@ export function applyReasoningTraceBoost<R extends BoostableResult>(
       ? options.boost
       : DEFAULT_REASONING_TRACE_BOOST;
 
-  // Step 1: boost the scores of matching traces, preserving positions.
   const boosted: R[] = [];
   let changed = false;
   for (const r of results) {
     if (isReasoningTracePath(r.path)) {
       changed = true;
       const baseScore = typeof r.score === "number" && Number.isFinite(r.score) ? r.score : 0;
-      // Compose the boost into the effective relevance too: a downstream MMR
-      // pass prefers it over the raw score, so a stale value would drop the
-      // boost.
       const effective =
         typeof r.effectiveScore === "number" && Number.isFinite(r.effectiveScore)
           ? r.effectiveScore + boostAmount
@@ -198,13 +140,6 @@ export function applyReasoningTraceBoost<R extends BoostableResult>(
   }
   if (!changed) return boosted;
 
-  // Step 2: promote each boosted trace upward past any non-trace neighbor
-  // whose relevance is strictly lower than the boosted trace's. The
-  // comparison uses the SAME basis MMR ranks on — the effective relevance a
-  // rerank stage left behind, else the raw score — so the boost cannot
-  // promote a trace the pipeline deliberately demoted. Non-trace items never
-  // move past each other, so reranker-driven ordering on non-trace items is
-  // preserved.
   const out = boosted.slice();
   for (let i = 0; i < out.length; i++) {
     if (!isReasoningTracePath(out[i].path)) continue;

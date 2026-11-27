@@ -1,11 +1,3 @@
-/**
- * Behavior-focused tests for the staged-memory runner (issue #2346):
- * staged invariants (persistence across resets, zero leakage, zero scope
- * violations, supersession), arm separation, NA accounting, paired
- * statistics, gate enforcement, determinism, and the sanitized public
- * projection. Controller modes beyond "off" are explicit refusals until
- * the #2348 coordinator lands.
- */
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -100,7 +92,6 @@ test("resetContext removes appended distractors; static-context keeps them", asy
   const staticTasks = tasksByArm.get("static-context") as typeof result.results.tasks;
   const stagedTasks = tasksByArm.get("staged-memory") as typeof result.results.tasks;
   assert.ok(staticTasks.length > 0);
-  // Distractors were demonstrably present in Stage 2 active context.
   for (const task of [...staticTasks, ...stagedTasks]) {
     const details = task.details as { distractorPresenceDuringStage2?: number };
     assert.ok((details.distractorPresenceDuringStage2 ?? 0) > 0, "distractors must be present in the Stage 2 context");
@@ -149,7 +140,6 @@ test("same-session and same-ID collisions stay isolated across namespaces", asyn
     namespace: STAGED_MEMORY_NAMESPACES[1] as string,
   };
   const sessionId = "shared-session-id";
-  // Same principal, same session ID, same statement — different namespaces.
   await engine.store(scope, sessionId, ["Riley Marsh works at Norvig Dynamics."], 2);
   await engine.appendContext(scope, sessionId, ["alpha context line"]);
   await engine.store(other, sessionId, ["Lux Bannister lives in Cinder Falls."], 2);
@@ -160,7 +150,6 @@ test("same-session and same-ID collisions stay isolated across namespaces", asyn
   assert.ok(!recallAlpha.text.includes("Lux Bannister"));
   assert.match(recallBeta.text, /Lux Bannister lives/);
   assert.ok(!recallBeta.text.includes("Riley Marsh"));
-  // A context reset in one namespace cannot clear the other.
   await engine.resetContext(other, sessionId);
   assert.deepEqual(engine.contextSnapshot(scope, sessionId), ["alpha context line"]);
   assert.deepEqual(engine.contextSnapshot(other, sessionId), []);
@@ -187,9 +176,7 @@ test("NA metrics are recorded with reasons and excluded from aggregates", async 
   assert.ok(naMetrics["empty:construction_recall"], "empty-arm construction recall must be NA with a reason");
   const armMeans = stagedOptions.armMeans as Record<string, Record<string, number | "NA">>;
   assert.equal(armMeans.empty.construction_recall, "NA");
-  // NA values never contaminate numeric means.
   assert.equal(typeof armMeans["staged-memory"].task_success, "number");
-  // NA metrics are excluded from bootstrap intervals.
   const statistics = result.results.statistics;
   assert.ok(statistics);
   assert.ok(!Object.keys(statistics.confidenceIntervals).includes("staged-memory:construction_recall_empty"));

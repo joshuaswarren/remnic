@@ -1,6 +1,3 @@
-/**
- * Bounded overlapping observation batches for timeline analysis (issue #2050).
- */
 import type { TimelineObservation } from "./types.js";
 
 export type TimelineBatchObservation = Pick<TimelineObservation, "id" | "capturedAtUtc">;

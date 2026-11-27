@@ -530,7 +530,6 @@ test("remnic converge apply: successful pull & push execution via buffer maps", 
     assert.equal(result.transfers.pushed, 1);
     assert.equal(result.transfers.failed, 0);
 
-    // Verify local received pulled file and peer received pushed file
     assert.equal(localBufs.get("default")?.get("facts/peer_only.md")?.toString(), "peer content");
     assert.equal(peerBufs.get("default")?.get("facts/local_only.md")?.toString(), "local content");
 
@@ -625,7 +624,6 @@ test("remnic converge apply: an aborted signal stops transfer batches instead of
       if (url.includes("/offline-sync/apply-file-content")) {
         pushes.push(url);
         requestSignals.push(init?.signal);
-        // The operator hits Ctrl+C while the FIRST transfer is in flight.
         controller.abort();
         return Response.json({ done: true, applied: true, skipped: false });
       }
@@ -1779,7 +1777,6 @@ test("converge watch: abort during the sleep stops after the current cycle", asy
     apply: async () => {
       calls += 1;
       if (calls === 1) {
-        // Abort while the watch is sleeping after cycle 1.
         queueMicrotask(() => controller.abort());
       }
       return applyResult();
@@ -1964,7 +1961,6 @@ test("converge plan: a tombstone file that grew (append-only race) is accepted v
     localFilesByNamespace: fixture.localFilesByNamespace,
     fetchImpl: fixture.fetchImpl,
   });
-  // Completed without the fatal mismatch despite the grown file.
   assert.ok(plan.entries.some((entry) => entry.path === "state/tombstones.jsonl"));
 });
 
@@ -1999,11 +1995,9 @@ test("reconcile plan: POSIX-origin paths with colons are accepted off-Windows an
 
 test("converge --timeout seconds convert to milliseconds before normalization (#2802 follow-up)", async () => {
   const { convergeTimeoutFlagToMs } = await import("./converge.js");
-  // The round-1 form produced 3600 (ms) for `--timeout 3600` — 3.6 seconds.
   assert.equal(convergeTimeoutFlagToMs(3600), 3_600_000);
   assert.equal(convergeTimeoutFlagToMs(30), 30_000);
   assert.equal(convergeTimeoutFlagToMs(0.5), 500);
-  // The one-hour ceiling still clamps.
   assert.equal(convergeTimeoutFlagToMs(7_200), 3_600_000);
   assert.throws(() => convergeTimeoutFlagToMs(Number.NaN), /--timeout/);
 });
@@ -2011,7 +2005,6 @@ test("converge --timeout seconds convert to milliseconds before normalization (#
 test("converge --timeout rounds fractional seconds before integer normalization (#2804 round 1)", async () => {
   const { convergeTimeoutFlagToMs } = await import("./converge.js");
   assert.equal(convergeTimeoutFlagToMs(1.001), 1001);
-  // Sub-millisecond values normalize-reject (positive integer required).
   assert.throws(() => convergeTimeoutFlagToMs(0.0001), /--timeout/);
 });
 

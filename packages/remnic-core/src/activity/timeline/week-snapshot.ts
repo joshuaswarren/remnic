@@ -21,7 +21,6 @@ function compareDates(a: WeekSnapshotDay, b: WeekSnapshotDay): number {
   return 0;
 }
 
-/** Render a byte-stable Markdown week snapshot. */
 export function renderWeekSnapshot(options: WeekSnapshotOptions): string {
   const days = [...options.days].sort(compareDates);
   const body =

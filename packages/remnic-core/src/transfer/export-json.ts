@@ -35,7 +35,6 @@ export async function exportJsonBundle(opts: ExportCommonOptions): Promise<void>
     manifestFiles.push({ path: relPosix, sha256, bytes });
   }
 
-  // Optionally include workspace identity file (outside memoryDir).
   if (opts.includeWorkspaceIdentity !== false && opts.workspaceDir) {
     const identityPath = path.join(opts.workspaceDir, "IDENTITY.md");
     try {

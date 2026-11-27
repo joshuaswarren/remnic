@@ -63,7 +63,6 @@ test("parse: client principal/namespace overrides are rejected", () => {
     () => parseSharedWriteOutputControls({ namespace: "victim-ns" }),
     /namespace is server-resolved and cannot be supplied by the caller/,
   );
-  // Absent keys (and stripped nulls) pass through untouched.
   assert.deepEqual(parseSharedWriteOutputControls({ sessionKey: "ctx" }), {});
 });
 

@@ -120,7 +120,6 @@ test("enabled: registers a periodic timer that invokes the runner on cadence", a
   assert.equal(timer.armed.length, 1, "exactly one periodic timer armed");
   assert.equal(timer.armed[0].ms, ACTIVITY_SYNC_DEFAULT_INTERVAL_MS);
 
-  // Each cadence tick invokes one durable sync pass.
   for (let i = 0; i < 3; i++) {
     timer.armed[0].fn();
     await flush();
@@ -177,12 +176,10 @@ test("stop cancels the timer so no later tick invokes", async () => {
   await scheduler.stop();
   assert.equal(timer.cleared, 1, "stop cancels the underlying timer");
 
-  // A stray callback firing after stop must not invoke (latched-stop guard).
   timer.armed[0].fn();
   await flush();
   assert.equal(calls, 1, "no invocation after stop");
 
-  // Restart after stop is a no-op: a stopped scheduler stays stopped.
   const restart = scheduler.start();
   assert.equal(restart.registered, false);
   assert.equal(timer.armed.length, 1, "no new timer armed after stop");
@@ -214,7 +211,6 @@ test("overlapping ticks do not stack: a slow sync blocks the next tick", async (
 
   releaseFirst();
   await flush();
-  // Once the first settles, a later tick runs again.
   timer.armed[0].fn();
   await flush();
   assert.equal(calls, 2, "a tick after the sync settles invokes again");
@@ -243,12 +239,6 @@ test("parser -> scheduler -> durable sync: a tick performs a real durable sync",
       },
     };
 
-    // Event-driven completion: the scheduler calls onRun(summary) in its .then,
-    // i.e. AFTER invoke() (runActivitySyncOnce) has fully resolved — every fs
-    // write and setCursor durable. Awaiting this signal is deterministic; a bare
-    // setImmediate flush races the runner's real fs I/O on the libuv threadpool.
-    // onError rejects the same deferred so a runner failure (SQLite/digest write
-    // regression, temp-dir fault) surfaces promptly instead of hanging to timeout.
     const {
       promise: syncCompleted,
       resolve: signalSyncCompleted,
@@ -258,8 +248,6 @@ test("parser -> scheduler -> durable sync: a tick performs a real durable sync",
     const scheduler = new ActivitySyncScheduler({
       config: enabledConfig(),
       memoryDir,
-      // Real durable runner, fixture daemon + shared store — the scheduler
-      // drives the same code path the default invoke uses.
       invoke: (signal) =>
         runActivitySyncOnce({
           config: enabledConfig(),

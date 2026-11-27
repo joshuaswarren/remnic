@@ -37,9 +37,6 @@ import {
 } from "./byte-position.js";
 import type { LspLocation } from "./types.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Input types — what the resolution pass consumes
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * A call site that Phase A left unresolved or at low confidence. The
@@ -99,9 +96,6 @@ export interface ResolvedLocation {
   readonly endByte: number;
 }
 
-/**
- * Result of the resolution pass.
- */
 export interface ResolutionResult {
   /** Edges upgraded from heuristic → lsp with resolved dst node. */
   readonly upgraded: number;
@@ -114,9 +108,6 @@ export interface ResolutionResult {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Node-location lookup — the seam between LSP locations and graph nodes.
-// Implemented by the caller (the store-backed resolution executor) so
-// the planner stays pure and testable without a database.
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -149,7 +140,6 @@ export interface MapLocationContext {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Planner — pure function, no side effects
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -165,7 +155,6 @@ export function planLspUpgrades(
   callSites: readonly UnresolvedCallSite[],
   budget: LspBudget,
 ): PlanResult {
-  // Sort for deterministic ordering (rule 38): by file path, then byte offset.
   const sorted = [...callSites].sort(
     (a, b) =>
       a.filePath.localeCompare(b.filePath) ||
@@ -176,8 +165,6 @@ export function planLspUpgrades(
   const planned = sorted.slice(0, max);
   const exhausted = sorted.length - planned.length;
 
-  // Pre-compute line-offset maps per unique file to avoid recomputation
-  // in the executor. Group by content identity (same content → same map).
   const maps = new Map<string, LineOffsetMap>();
   const requests: PlannedLspRequest[] = planned.map((cs) => {
     let map = maps.get(cs.filePath);
@@ -200,7 +187,6 @@ export function planLspUpgrades(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Executor — sends definition requests, maps locations, applies upgrades
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -276,22 +262,12 @@ const LANGUAGE_ID_MAP: Partial<Record<CodingGraphLanguage, string>> = {
   bash: "shellscript",
 };
 
-/**
- * Execute the resolution pass: for each planned request, send a
- * `textDocument/didOpen` + `textDocument/definition` query, map the
- * returned location to a graph node, and collect edge upgrades. Upgrades
- * are applied in file-batched transactions — a mid-batch failure leaves
- * zero partial upgrades.
- *
- * Never throws — degrades to Phase A results with a tagged degradation.
- */
 export async function executeLspResolution(
   requests: readonly PlannedLspRequest[],
   options: ResolveOptions,
 ): Promise<ResolutionResult> {
   const { client, nodeLocator, applyUpgrades } = options;
 
-  // Group requests by file for batched transactional application.
   const byFile = new Map<string, PlannedLspRequest[]>();
   for (const req of requests) {
     let batch = byFile.get(req.filePath);
@@ -306,23 +282,12 @@ export async function executeLspResolution(
   let unresolved = 0;
   let degradation: LspDegradation | undefined;
 
-  // Warm-up tracking (issue #1933): false until the server returns its
-  // first NON-EMPTY definition, or until one warm-up retry has been paid.
-  // tsserver answers pre-project-load requests with [] instead of an
-  // error, so without the retry every first-run resolution silently
-  // reports unresolved and Phase B never upgrades anything.
   let serverWarm = false;
   const warmupRetryDelayMs = options.warmupRetryDelayMs ?? 2_500;
 
   for (const [filePath, batchReqs] of byFile) {
-    // Send all definition requests for this file, collecting upgrades.
     const upgrades: EdgeUpgrade[] = [];
     let batchFailed = false;
-    // Track whether EVERY request in this file batch was processed to a
-    // definitive result (resolved or definitively-not-found). A timeout,
-    // request_error, or server-crash mid-batch makes the batch
-    // non-exhaustive: reconciliation must NOT run because the asserted
-    // set would be incomplete, deleting valid lsp edges for call sites
     // that were never queried (cursor High + codex P1 on #1914).
     let batchExhaustive = true;
 
@@ -339,7 +304,6 @@ export async function executeLspResolution(
     for (let i = 0; i < batchReqs.length; i++) {
       const req = batchReqs[i];
       if (degradation) {
-        // Server died in a previous batch — count remaining unattempted.
         unresolved += batchReqs.length - i;
         break;
       }
@@ -349,10 +313,6 @@ export async function executeLspResolution(
         position: req.position,
       });
 
-      // Warm-up retry (issue #1933): an empty result from a not-yet-warm
-      // server is indeterminate, not definitive. Pay ONE bounded delay,
-      // re-ask, and treat the server as warm from then on — whatever the
-      // retry returns is the real answer.
       if (defResult.ok && defResult.locations.length === 0 && !serverWarm && warmupRetryDelayMs > 0) {
         await new Promise<void>((resolve) => setTimeout(resolve, warmupRetryDelayMs));
         serverWarm = true;
@@ -367,26 +327,15 @@ export async function executeLspResolution(
       }
 
       if (!defResult.ok) {
-        // Distinguish "server problem" (stop the whole pass) from
-        // "this particular definition returned nothing" (continue).
         if (
           defResult.degradation.code === "server_crashed" ||
           defResult.degradation.code === "protocol_error"
         ) {
           degradation = defResult.degradation;
-          // Count this request plus all remaining unattempted requests
-          // in this batch as unresolved for accurate reporting.
           unresolved += batchReqs.length - i;
-          // Mark the batch failed so collected upgrades are NOT committed
-          // (rule 25 — per-batch atomicity; a degraded batch must not
-          // persist partial LSP edges).
           batchFailed = true;
           break;
         }
-        // request_timeout / request_error — count as unresolved, continue.
-        // request_timeout / request_error — count as unresolved.
-        // The batch is non-exhaustive: this call site's LSP result is
-        // indeterminate, so reconciliation for this file is suppressed.
         batchExhaustive = false;
         unresolved++;
         continue;
@@ -416,25 +365,15 @@ export async function executeLspResolution(
     }
 
     if (batchFailed) {
-      // The batch was poisoned — collected upgrades must NOT be committed.
-      // Count them as unresolved for reporting accuracy.
       unresolved += upgrades.length;
       break;
     }
 
-    // Apply upgrades transactionally per file batch, then reconcile stale
-    // lsp edges for this file (issue #1895). If the apply throws, zero
-    // upgrades from this batch persist (rule 25 — the applyUpgrades
-    // callback MUST be transactional).
     try {
       if (upgrades.length > 0) {
         await applyUpgrades(upgrades);
         upgraded += upgrades.length;
       }
-      // Reconcile ONLY when the batch was exhaustive (every call site
-      // processed to a definitive result). A partial batch's asserted
-      // set would be incomplete and retire valid edges for unprocessed
-      // call sites (cursor High + codex P1 on #1914).
       if (batchExhaustive && options.reconcileLspEdges) {
         options.reconcileLspEdges(
           filePath,
@@ -446,11 +385,6 @@ export async function executeLspResolution(
         );
       }
     } catch {
-      // The apply failed — degrade but don't crash. Upgrades from this
-      // batch are lost (the callback's transaction rolled back). Edges
-      // from already-applied batches survive (they were in separate
-      // transactions — this is the documented per-batch isolation).
-      // Count the lost upgrades as unresolved for reporting.
       unresolved += upgrades.length;
     }
   }
@@ -464,7 +398,6 @@ export async function executeLspResolution(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Location → node mapping (rule 35 — half-open span containment)
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -490,21 +423,14 @@ export function mapLocationToNode(
   for (const loc of locations) {
     const filePath = normalizeLocationPath(loc.uri, context.workspaceRoot);
 
-    // Resolve content for this location's file.
     let content: string;
     if (filePath === context.callerFilePath) {
-      // Same file as the caller — use the caller's exact content.
       content = context.callerContent;
     } else if (context.resolveContent) {
-      // Cross-file — use the content resolver for exact conversion.
       const resolved = context.resolveContent(filePath);
       if (resolved === null) continue; // file not indexed — skip
       content = resolved;
     } else {
-      // Cross-file without a resolver — best-effort fallback to caller
-      // content. The byte offset may be imprecise for files with different
-      // line lengths or Unicode, but the half-open containment check
-      // tolerates small offsets.
       content = context.callerContent;
     }
 
@@ -517,7 +443,6 @@ export function mapLocationToNode(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// URI helpers
 // ──────────────────────────────────────────────────────────────────────────
 
 /**

@@ -5,19 +5,11 @@ import type { RuntimePolicyValues } from "./policy-runtime.js";
 import type { UtilityRuntimeValues } from "./utility-runtime.js";
 import type { MemoryActionEligibilityContext, MemoryActionType, RecallPlanMode } from "./types.js";
 
-/**
- * Gated unified memory controller (#2348).
- *
- * One state enters, one choice leaves. Host-free: every effectful collaborator
- * (adapters, executors, report reader, recorder, telemetry, clock) is injected.
- * The coordinator creates no store and claims no counterfactual lift.
- */
 
 export type MemoryControllerMode = "off" | "shadow" | "active";
 
 export type MemoryControllerActionFamily = "persistent_memory" | "recall" | "active_context" | "no_op";
 
-/** #2347 adapter seam: the host supplies plans, core only picks one. */
 export interface ActiveContextMessage {
   id: string;
   text: string;
@@ -33,7 +25,6 @@ export interface ActiveContextAdapter {
   plan(messages: ActiveContextMessage[]): ActiveContextPlan | null;
 }
 
-/** #2345 report + #2346 paired-seed evidence, read through one port. */
 export interface MemoryControllerEvidenceReport {
   status: "pass" | "fail";
   version: string;
@@ -109,7 +100,6 @@ export interface MemoryControllerRecorder {
 
 export interface MemoryControllerConfig {
   mode: MemoryControllerMode;
-  /** Expected #2345 report schema version. */
   reportVersion: string;
   /** Evidence older than this is stale and forces shadow. */
   evidenceMaxAgeMs: number;
@@ -163,7 +153,6 @@ export interface MemoryControllerDeps {
 }
 
 const NO_OP_FLOOR = 0.35;
-/** `discard` (and any destructive change) stays review-only in active mode. */
 const REVIEW_ONLY_ACTIONS: Partial<Record<MemoryActionType, true>> = { discard: true };
 
 export function controllerConfigHash(config: MemoryControllerConfig): string {
@@ -231,12 +220,10 @@ export function chooseAction(input: {
 }): { choice: MemoryControllerChoice; scores: Record<MemoryControllerActionFamily, number> } {
   const { state, activeContextAdapter, runtimeValues, utilityValues } = input;
 
-  // recall: current recall path.
   const recallMode = planRecallMode(state.prompt ?? "");
   const recallScore =
     recallMode === "no_recall" ? 0 : recallMode === "minimal" ? 0.4 : 0.6 + 0.2 * (runtimeValues?.recencyWeight ?? 0);
 
-  // persistent_memory: current action path + policy.
   let persistentScore = 0;
   const candidate = state.persistentMemoryCandidate;
   if (candidate) {
@@ -250,13 +237,11 @@ export function chooseAction(input: {
     } else if (policy.decision === "defer") {
       persistentScore = 0.2;
     }
-    // Utility runtime may suppress the persistent family.
     if (utilityValues && utilityValues.rankingSuppressMultiplier > 1) {
       persistentScore *= 1 / utilityValues.rankingSuppressMultiplier;
     }
   }
 
-  // active_context: current context path through the #2347 adapter.
   let contextScore = 0;
   let contextPlan: ActiveContextPlan | null = null;
   const pressure = state.contextPressure;
@@ -274,7 +259,6 @@ export function chooseAction(input: {
     no_op: NO_OP_FLOOR,
   };
 
-  // Bad scores fail closed.
   if (Object.values(scores).some((score) => !Number.isFinite(score) || score < 0 || score > 1)) {
     return { choice: { family: "no_op" }, scores };
   }
@@ -356,7 +340,6 @@ export class MemoryControllerCoordinator {
     const stateHash = hashControllerState(state);
     const requestedMode = this.deps.config.mode;
 
-    // off: no choice, no read, no write, no call.
     if (requestedMode === "off") {
       return {
         decisionId,
@@ -411,7 +394,6 @@ export class MemoryControllerCoordinator {
       ...(demotionReasons.length > 0 ? { demotionReasons } : {}),
     };
 
-    // Shadow records before any active dispatch.
     let recorded = false;
     if (this.deps.recorder) {
       try {
@@ -419,7 +401,6 @@ export class MemoryControllerCoordinator {
         this.deps.telemetry?.(baseEvent);
         recorded = true;
       } catch {
-        // Bad recorder stops work: no dispatch, no outcome event.
         return {
           decisionId,
           requestedMode,
@@ -450,7 +431,6 @@ export class MemoryControllerCoordinator {
       };
     }
 
-    // First active scope: reversible actions only.
     if (choice.family === "persistent_memory" && REVIEW_ONLY_ACTIONS[choice.action]) {
       const event: MemoryControllerEvent = {
         ...baseEvent,
@@ -513,7 +493,6 @@ export class MemoryControllerCoordinator {
         if (!executors.executeActiveContext) throw new Error("no_executor:active_context");
         receipt = await executors.executeActiveContext({ decisionId, plan: choice.plan });
       } else {
-        // no_op executed trivially; no executor call.
         receipt = { decisionId, ok: true };
       }
       if (!isValidReceipt(receipt, decisionId)) {
@@ -544,7 +523,6 @@ export class MemoryControllerCoordinator {
     try {
       recorded = await reader.call(this.deps.recorder);
     } catch {
-      // Unknown receipt health keeps the gate closed.
       recorded = 1;
     }
     if (!Number.isFinite(recorded)) {

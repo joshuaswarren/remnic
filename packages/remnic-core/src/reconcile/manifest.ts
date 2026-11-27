@@ -20,24 +20,8 @@ import {
 export const RECONCILE_MANIFEST_FORMAT = "remnic-reconcile-manifest";
 export const RECONCILE_MANIFEST_SCHEMA_VERSION = 1;
 export const CONTENT_HASH_NORMALIZER_VERSION = 4;
-/**
- * Version of the identity-resolution LOGIC (alias recovery, candidate
- * ordering), independent of the content normalizer: a cached manifest entry
- * written before an identity-resolution change carries an older value and is
- * reparsed even when its normalizerVersion still matches (issue #2367
- * review round 2). Bump when parsedMemoryIdentity's output shape or
- * semantics change.
- */
 export const IDENTITY_RESOLUTION_VERSION = 2;
 
-/**
- * Identity of the manifest-affecting implementation this peer builds
- * STREAMED manifests with. Advertised via offline-sync capabilities so the
- * client can key peer-side plan caches on it: a peer that upgrades its
- * normalization logic or citation template without rewriting stored files
- * keeps the same file hashes, and only this revision invalidates the stale
- * cached identities (#2803 / #2956 review).
- */
 export function peerManifestRevision(citationTemplate?: string): string {
   return `schema=${RECONCILE_MANIFEST_SCHEMA_VERSION};normalizer=${CONTENT_HASH_NORMALIZER_VERSION};identity=${IDENTITY_RESOLUTION_VERSION};citation=${citationTemplateFingerprint(citationTemplate)}`;
 }
@@ -46,12 +30,6 @@ export interface ReconcileMemoryIdentity {
   id: string;
   category: string;
   contentHash: string;
-  /**
-   * Recovered current-normalizer identities for a record whose persisted hash
-   * is ambiguous under the legacy normalizer (issue #2367). The persisted
-   * hash stays primary; these participate in duplicate bucketing so a
-   * replica carrying the current form of the same fact still collapses.
-   */
   contentHashAliases?: readonly string[];
   /** See IDENTITY_RESOLUTION_VERSION; absent on pre-versioning cache entries. */
   normalizerVersion?: number;
@@ -123,19 +101,10 @@ function parsedMemoryIdentity(
   if (currentMatch) {
     contentHash = ContentHashIndex.computeHash(currentMatch);
   } else if (legacyMatch && normalizeLegacyContent(legacyMatch).length > 0) {
-    // A non-empty legacy equality is ambiguous (issue #2367): the persisted
-    // hash may be an explicit contentHashSource identity that merely collides
-    // with the body's ASCII skeleton under the lossy legacy normalizer, and
-    // nothing in the record proves which it is. Keep the persisted hash as
-    // the primary identity and expose the recovered current identity as an
-    // alias so replicas carrying either form still collapse.
     contentHash = storedHash ?? bodyHash;
     const recovered = ContentHashIndex.computeHash(legacyMatch);
     if (recovered !== contentHash) contentHashAliases = [recovered];
   } else {
-    // An EMPTY legacy skeleton identifies nothing (every non-ASCII body maps
-    // to it), so preserving it would collapse unrelated records. Recovering
-    // the current identity here is repair, not replacement.
     contentHash = legacyMatch ? ContentHashIndex.computeHash(legacyMatch) : (storedHash ?? bodyHash);
   }
 
@@ -150,13 +119,6 @@ function parsedMemoryIdentity(
   };
 }
 
-/**
- * Stable fingerprint of the citation template that `parsedMemoryIdentity` uses
- * to strip inline attribution before hashing. A persisted identity cache is
- * only reusable while this matches: identical file content under a different
- * template yields a different `contentHash`, which would silently change
- * duplicate and conflict decisions on a warm plan.
- */
 export function citationTemplateFingerprint(citationTemplate?: string): string {
   return createHash("sha256")
     .update(citationTemplate ?? DEFAULT_CITATION_FORMAT)
@@ -164,13 +126,6 @@ export function citationTemplateFingerprint(citationTemplate?: string): string {
     .slice(0, 16);
 }
 
-/**
- * Structural guard for identities read back from an on-disk cache. A cache file
- * is untrusted JSON: without this an entry carrying `memory: null` survives the
- * loader's cast and then throws when the hit path dereferences
- * `memory.normalizerVersion`, aborting a manifest build that should instead
- * fall back to a cold parse.
- */
 export function isReconcileMemoryIdentity(value: unknown): value is ReconcileMemoryIdentity {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const memory = value as Record<string, unknown>;
@@ -192,10 +147,6 @@ export function isReconcileMemoryIdentity(value: unknown): value is ReconcileMem
   return true;
 }
 
-/** A cache hit is valid only when the entry was built by the current parser.
- * Positive hits carry versions on `memory`; sha-only negatives stamp the same
- * versions on the entry itself. Unversioned negatives are pre-upgrade leftovers
- * and must miss so a newer parser can recognize an identity it previously skipped. */
 export function isCachedIdentityReusable(cached: ReconcileManifestFile): boolean {
   if (cached.memory !== undefined) {
     return (
@@ -229,8 +180,6 @@ export async function buildReconcileManifestFile(
     raw = null;
   }
   const memory = raw === null ? undefined : parsedMemoryIdentity(file.path, raw, parseMemory, citationTemplate);
-  // A thrown read is not a negative identity. Stamping versions here would
-  // make the next warm cycle treat the failure as "this file has no id".
   if (readFailed) return { ...file };
   return {
     ...file,
@@ -243,13 +192,6 @@ export async function buildReconcileManifestFile(
   };
 }
 
-/** Read-batch size for manifest builds. Uncached files are independent (a
- * per-file read + sha256 + frontmatter parse); processing them in bounded
- * batches amortizes the per-file promise/async-hook overhead that dominates
- * boot-scale corpus builds (measured: ~66% of CPU in async_hooks._propagate +
- * GC at ~100k files) and overlaps IO waits, while the bound keeps memory flat.
- * Order is preserved: results land in input order regardless of completion
- * order, so the manifest output is byte-identical to the sequential form. */
 const MANIFEST_BUILD_BATCH_SIZE = 50;
 
 export async function buildReconcileManifest(options: BuildReconcileManifestOptions): Promise<ReconcileManifest> {
@@ -259,14 +201,7 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
   }
 
   const allFiles = [...options.files];
-  // Every result — cache hit or rebuild — is stored at its own input index.
-  // Pushing hits onto a dense array while rebuilds are assigned by index
-  // silently drops entries whenever a miss precedes a hit: the rebuild lands
-  // on the slot the hit already occupied.
   const files: ReconcileManifestFile[] = new Array(allFiles.length);
-  // Cache hits stay on a synchronous fast path (no promise allocation, no
-  // Promise.all — a fully-cached rebuild must not regress); only the uncached
-  // entries ride the bounded batches.
   const uncached: Array<{ index: number; file: ReconcileFileState }> = [];
   for (let i = 0; i < allFiles.length; i += 1) {
     const file = allFiles[i]!;
@@ -290,9 +225,6 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
     }
   }
   for (let i = 0; i < uncached.length; i += MANIFEST_BUILD_BATCH_SIZE) {
-    // Between batches, not within one: an abort mid-batch lets the in-flight
-    // reads settle (their own fetch signal does the aborting) and stops the
-    // NEXT batch from ever being scheduled.
     options.signal?.throwIfAborted();
     const batch = uncached.slice(i, i + MANIFEST_BUILD_BATCH_SIZE);
     const results = await Promise.all(

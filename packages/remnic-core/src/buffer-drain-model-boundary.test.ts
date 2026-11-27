@@ -1,22 +1,4 @@
-// Model-boundary integration tests for the claim drain: a REAL loopback
-// OpenAI-compatible model boundary stands in for the extraction model so the
-// ACTUAL chat input (renderer + truncation included) is what gets asserted —
-// no extraction seam swap, no stub bookkeeping.
 //
-//   1. Large pinned accepted claim group spanning the configured window
-//      budget: every source marker (early/middle/last) must appear in the
-//      actual chat inputs and every request must respect the budget the
-//      drain chunked on — no truncate-and-ack.
-//   2. Legacy unpinned native claim groups under an ACTIVE scope profile
-//      whose write layer is unwritable: the CURRENT profile gate must refuse
-//      the write (a flattened plan=null would bypass it and persist) and the
-//      canonical turns stay claimed.
-//   3. A malformed/null extraction result is a retained failure: the claim's
-//      canonical turns survive repeated attempts above the drop threshold.
-//   4. An unpinned legacy drain under an ACTIVE profile that IS writable: the
-//      fact lands in the profile's write namespace. Flattening the group to
-//      plan=null bypasses the profile gate and persists it in the
-//      principal's default namespace instead.
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import http from "node:http";
@@ -38,7 +20,6 @@ interface ModelBoundary {
   close(): Promise<void>;
 }
 
-/** Loopback OpenAI-compatible boundary: records every completion prompt. */
 async function startModelBoundary(): Promise<ModelBoundary> {
   const prompts: string[] = [];
   const server = http.createServer((req, res) => {
@@ -49,8 +30,6 @@ async function startModelBoundary(): Promise<ModelBoundary> {
     req.on("end", () => {
       if (req.method === "POST") {
         try {
-          // SAFETY: the loopback model posts OpenAI-compatible JSON; the shape
-          // named here is the only part the probe reads.
           const parsed = JSON.parse(raw) as { messages?: { role?: string; content?: string }[] };
           const user =
             parsed.messages
@@ -58,8 +37,6 @@ async function startModelBoundary(): Promise<ModelBoundary> {
               .map((m) => m.content ?? "")
               .join("\n") ?? "";
           if (user) prompts.push(user);
-          // The model returns the user text VERBATIM as a grounded, quoted
-          // fact — the shape source grounding requires to keep a fact.
           const extractionJson = JSON.stringify({
             facts: [{ content: user.trim(), category: "fact", confidence: 0.9, tags: [], quote: user.trim() }],
             entities: [],
@@ -91,7 +68,6 @@ async function startModelBoundary(): Promise<ModelBoundary> {
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 30_000): Promise<boolean> {
-  // Real pipeline (daemon poll cadence + model round-trips) — platform clock.
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     if (predicate()) return true;
@@ -149,14 +125,7 @@ async function hasFactFile(dir: string, needle: string): Promise<boolean> {
   return false;
 }
 
-/**
- * SAFETY: test seams bridge to orchestrator-private internals whose shape is
- * locally declared and exercised by the test itself; this is the single
- * trusted cast point for those seams.
- */
 function asTestSeam<T>(cause: unknown): T {
-  // SAFETY: the caller supplies the locally-declared seam contract; the cast
-  // re-labels the orchestrator-private instance to that contract.
   return cause as T;
 }
 
@@ -195,8 +164,6 @@ test("a large pinned accepted claim group sends every turn to the ACTUAL chat in
       openaiApiKey: "sk-test",
       qmdEnabled: false,
       workspaceDir: path.join(memoryDir, "workspace"),
-      // FINITE window budget for the local path so chunking is exercised
-      // against the REAL renderer/truncation, not a stubbed seam.
       modelSource: "local",
       localLlmEnabled: true,
       localLlmModel: "test-local-model",
@@ -207,8 +174,6 @@ test("a large pinned accepted claim group sends every turn to the ACTUAL chat in
       extractionMinUserTurns: 1,
     });
     orchestrator = new Orchestrator(config);
-    // The real daemon initializes before serving; the model-input budget
-    // (model registry) only exists after that.
     await orchestrator.initialize();
     const runner = new BufferDrainRunner(orchestrator);
 
@@ -220,15 +185,10 @@ test("a large pinned accepted claim group sends every turn to the ACTUAL chat in
     for (const [index, content] of contents.entries()) {
       await orchestrator.buffer.addTurn("budget-sess", {
         role: "user",
-        // Connector-tagged: the renderer prepends a "Source: <connector>"
-        // header for these, so the conversation-only budget measure must
-        // include the same gate/margin the engine applies.
         sourceConnector: "omp",
         content,
         timestamp: `2026-11-01T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
         sessionKey: "budget-sess",
-        // A pinned ACCEPTED capture in the mix: the exact class that used to
-        // bypass chunking and truncate-and-ack.
         acceptedCapture: true,
         writeNamespaceOverride: "alice",
         principalOverride: "alice",
@@ -240,11 +200,6 @@ test("a large pinned accepted claim group sends every turn to the ACTUAL chat in
     const outcome = await runner.drainSession("budget-sess", { ownerId: "drain-budget" });
     assert.equal(outcome.status, "drained", `expected a full drain, got ${outcome.reason ?? "deferred"}`);
 
-    // ACTUAL chat inputs: ALL source markers reached the model, and every
-    // request's USER conversation respects the EXACT house budget helper
-    // (ModelRegistry.calculateContextSizes with the configured maxContext —
-    // the same derivation extractionWindowBudgetChars uses). System
-    // instructions are legitimately outside the conversation budget.
     const { ModelRegistry } = await import("./model-registry.js");
     const maxInputChars = new ModelRegistry(memoryDir).calculateContextSizes("test-local-model", 2_000).maxInputChars;
     assert.ok(
@@ -255,9 +210,6 @@ test("a large pinned accepted claim group sends every turn to the ACTUAL chat in
     for (const marker of contents) {
       assert.ok(allPrompts.includes(marker), `source marker never reached the actual chat input: ${marker}`);
     }
-    // The recorded user message = fixed instruction block + the conversation
-    // after the "Conversation:" label. The helper budget governs exactly that
-    // conversation portion — assert it directly, self-derived per prompt.
     for (const [index, prompt] of model.prompts.entries()) {
       const label = "Conversation:\n";
       const labelIndex = prompt.lastIndexOf(label);
@@ -291,16 +243,11 @@ test("legacy unpinned claim groups refuse under an active profile with no writab
       memoryDir,
       debug: true,
       openaiApiKey: "sk-test",
-      // The controlled boundary serves the extraction — no network fallback.
       openaiBaseUrl: model.url,
       qmdEnabled: false,
       workspaceDir: path.join(memoryDir, "workspace"),
       extractionMinChars: 0,
       extractionMinUserTurns: 1,
-      // House scope-profile fixture (orchestrator-flush "no writable layer"
-      // shape): an ACTIVE profile whose write layer cannot resolve —
-      // userProject without any project context is unwritable. The current
-      // policy therefore REFUSES this scope's write.
       scopeProfiles: {
         "denied-profile": {
           readOrder: ["userProject"],
@@ -312,8 +259,6 @@ test("legacy unpinned claim groups refuse under an active profile with no writab
       defaultScopeProfile: "denied-profile",
     });
     orchestrator = new Orchestrator(config);
-    // The real daemon initializes before serving; the model-input budget
-    // (model registry) only exists after that.
     await orchestrator.initialize();
     const runner = new BufferDrainRunner(orchestrator);
 
@@ -328,10 +273,6 @@ test("legacy unpinned claim groups refuse under an active profile with no writab
 
     const outcome = await runner.drainSession("alice:legacy", { ownerId: "drain-legacy" });
 
-    // Current policy refuses the scope: the drain must NOT flatten the
-    // legacy group to plan=null (which would bypass the profile gate and
-    // write the fact into the principal's default namespace) — it must
-    // refuse, keep the canonical turn in the claim, and report the denial.
     assert.equal(
       outcome.status,
       "deferred",
@@ -340,8 +281,6 @@ test("legacy unpinned claim groups refuse under an active profile with no writab
     assert.equal(outcome.reason, "scope_profile_no_writable_layer");
     assert.deepEqual(outcome.denied, [{ reason: "scope_profile_no_writable_layer", turns: 1 }]);
 
-    // The refusal happens at the policy gate, before any model call — a
-    // flattened plan=null WOULD have called the model and persisted.
     assert.equal(model.prompts.length, 0, "the denied scope must never reach the model");
     assert.equal(
       await hasFactFile(memoryDir, "legacy unpinned profile probe"),
@@ -349,7 +288,6 @@ test("legacy unpinned claim groups refuse under an active profile with no writab
       "a refused scope writes no fact anywhere"
     );
 
-    // Canonical data untouched: the turn stays claimed and pending.
     const claim = await runner.claims.load("alice:legacy");
     assert.equal(claim?.entry.turns.length ?? 0, 1, "the denied turn stays in the claim");
     assert.equal(claim?.entry.turns[0]?.content, "legacy unpinned profile probe");
@@ -367,10 +305,6 @@ test("an unpinned legacy drain writes under the ACTIVE profile namespace, never 
   try {
     const config: PluginConfig = parseConfig({
       ...NAMESPACED_FIXTURE,
-      // The principal resolves to the "default" namespace (prefix mode), and
-      // BOTH the default and the shared namespace are writable for it — so
-      // the write DESTINATION depends on which plan the drain forwards, not
-      // on who is allowed to write.
       sharedNamespace: "shared",
       namespacePolicies: [
         { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
@@ -380,15 +314,11 @@ test("an unpinned legacy drain writes under the ACTIVE profile namespace, never 
       memoryDir,
       debug: true,
       openaiApiKey: "sk-test",
-      // The controlled boundary serves the extraction — no network fallback.
       openaiBaseUrl: model.url,
       qmdEnabled: false,
       workspaceDir: path.join(memoryDir, "workspace"),
       extractionMinChars: 0,
       extractionMinUserTurns: 1,
-      // House scope-profile shape (orchestrator-flush profile fixture): an
-      // ACTIVE profile whose serverShared layer IS writable for the
-      // principal, so the CURRENT profile decides where the fact lands.
       scopeProfiles: {
         "sharedProfile": {
           readOrder: ["serverShared"],
@@ -417,9 +347,6 @@ test("an unpinned legacy drain writes under the ACTIVE profile namespace, never 
 
     const factPath = await findFactPath(memoryDir, "profile namespace probe");
     assert.ok(factPath, "the drained fact was persisted");
-    // The ACTIVE profile's write namespace owns the fact. Flattening the
-    // unpinned legacy group to plan=null bypasses the profile gate and
-    // persists the same fact in the principal's DEFAULT namespace instead.
     const plan = resolveScopeProfilePlan({ config, principal: "default", codingContext: null, codingOverlay: null });
     assert.equal(plan?.writeNamespace, "shared", "the active profile writes to the shared namespace");
     assert.ok(
@@ -450,8 +377,6 @@ test("a malformed extraction result keeps the canonical claim turns above the fa
       workspaceDir: path.join(memoryDir, "workspace"),
       extractionMinChars: 0,
       extractionMinUserTurns: 1,
-      // Drive the malformed attempts ABOVE the drop threshold: the no-drop
-      // claim drain must never drop or side-file the content regardless.
       extractionChunkDropAfterFailures: 1,
     });
     orchestrator = await initializedOrchestrator(config);
@@ -466,10 +391,6 @@ test("a malformed extraction result keeps the canonical claim turns above the fa
     await orchestrator.buffer.save();
     assert.equal(await runner.claim("invalid-result-sess", "drain-invalid"), true);
 
-    // The actual run boundary receives null and malformed collection results
-    // from the extractor — both real failure shapes the shared callee must
-    // retain (never clear). The engine field is orchestrator-private; the
-    // stub goes through this named test seam.
     const extractorResults: unknown[] = [
       null,
       { facts: "not-an-array", entities: [], questions: [], profileUpdates: [] },
@@ -481,8 +402,6 @@ test("a malformed extraction result keeps the canonical claim turns above the fa
     }
     const extractionSeam = asTestSeam<DrainSeam>(orchestrator);
     extractionSeam.extraction = {
-      // SAFETY: the queue re-drives malformed/null extractor output through
-      // the boundary; the stub result is cast to the named verdict shape.
       extract: async () => extractorResults.shift() as ExtractionRunResult | null,
     };
     // Claim drains extract on their own engine; stub it with the same results.
@@ -500,7 +419,6 @@ test("a malformed extraction result keeps the canonical claim turns above the fa
         `attempt ${attempt}: content intact`
       );
     }
-    // No-drop: no recovery side file may move the content aside.
     await assert.rejects(() => readdir(path.join(memoryDir, "state", "dropped")), { code: "ENOENT" });
     assert.equal(await hasFactFile(memoryDir, "malformed model output probe"), false);
   } finally {
@@ -548,12 +466,7 @@ test("a live task queued while its session becomes claimed settles as claimed, n
     await orchestrator.buffer.addTurn("race-sess", probe);
     await orchestrator.buffer.save();
 
-    // Occupy the queue's only slot, then enqueue the LIVE task behind it: the
-    // enqueue-time claim gate passes (the session is unclaimed) and the task
-    // waits. While it waits, the scheduler's claim decision completes.
     let releaseBarrier: () => void = () => undefined;
-    // A KEYED task occupies the concurrency-1 slot: raw tasks bypass the slot,
-    // which would let the live task start before the claim decision.
     void orchestrator.extractionQueueCoordinator.enqueue(
       async () => {
         await new Promise<void>((done) => {
@@ -564,9 +477,6 @@ test("a live task queued while its session becomes claimed settles as claimed, n
     );
 
     const settled = Promise.withResolvers<{ reason?: string }>();
-    // Test seam: enqueueing a LIVE buffered extraction directly is the only
-    // way to interleave it with the claim decision; the coordinator method is
-    // orchestrator-private.
     const queueSeam = asTestSeam<{
       queueBufferedExtraction: (
         turns: unknown[],
@@ -615,9 +525,6 @@ test("a planless accepted claim group pins null: it stays unprofiled under the C
   const model = await startModelBoundary();
   let orchestrator: Orchestrator | undefined;
   try {
-    // Active profile with NO writable layer (house "denied" shape): if the
-    // drain failed to pin null for this planless ACCEPTED capture, the
-    // current profile would refuse the write and the capture would strand.
     const config: PluginConfig = parseConfig({
       ...NAMESPACED_FIXTURE,
       memoryDir,
@@ -640,8 +547,6 @@ test("a planless accepted claim group pins null: it stays unprofiled under the C
     orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
 
-    // NO writeNamespaceOverride: the null pin (not an explicit-namespace
-    // override) is what keeps this capture outside the current profile gate.
     await orchestrator.buffer.addTurn("planless-sess", {
       role: "user",
       content: "planless accepted capture probe",
@@ -698,9 +603,6 @@ test("a pinned accepted claim group forwards its captured plan; flattening it to
     orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
 
-    // The capture pinned a plan captured under an OLDER policy: the CURRENT
-    // resolution differs, so forwarding the plan (never flattening it to
-    // null) is what lets the identity re-check refuse the scope.
     const resolved = resolveScopeProfilePlan({ config, principal: "alice", codingContext: null, codingOverlay: null });
     assert.ok(resolved, "the active profile resolves a plan");
     const stalePlan = { ...resolved, writeNamespace: "stale-captured-ns" };
@@ -769,7 +671,6 @@ test("explicit capture mode denies ordinary backlog turns and still drains accep
     });
     await orchestrator.buffer.save();
 
-    // Ordinary conversation backlog: denied, retained, never extracted.
     assert.equal(await runner.claim("ordinary-sess", "drain-explicit"), true);
     const ordinary = await runner.drainSession("ordinary-sess", { ownerId: "drain-explicit" });
     assert.equal(ordinary.status, "deferred", "explicit mode keeps ordinary turns pending");
@@ -777,13 +678,11 @@ test("explicit capture mode denies ordinary backlog turns and still drains accep
     const ordinaryClaim = await runner.claims.load("ordinary-sess");
     assert.equal(ordinaryClaim?.entry.turns[0]?.content, "ordinary explicit-mode probe");
 
-    // A deliberately accepted capture still drains under explicit mode.
     assert.equal(await runner.claim("accepted-sess", "drain-explicit"), true);
     const accepted = await runner.drainSession("accepted-sess", { ownerId: "drain-explicit" });
     assert.equal(accepted.status, "drained", "accepted captures drain under explicit mode");
     assert.ok(await hasFactFile(memoryDir, "accepted explicit-mode probe"), "the accepted capture persisted");
 
-    // The ordinary scope never reached the model.
     assert.equal(
       model.prompts.some((p) => p.includes("ordinary explicit-mode probe")),
       false,
@@ -815,9 +714,6 @@ test("a mixed accepted+ordinary group splits: the accepted capture drains, the o
     orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
 
-    // IDENTICAL scope pins (same namespace + principal), differing ONLY in
-    // acceptedCapture: the scope group key must not merge them — otherwise
-    // the accepted capture's group drags the ordinary turn through the gate.
     await orchestrator.buffer.addTurn("mixed-sess", {
       role: "user",
       content: "accepted mixed probe",
@@ -842,10 +738,8 @@ test("a mixed accepted+ordinary group splits: the accepted capture drains, the o
     assert.equal(outcome.status, "deferred", "the ordinary turn keeps the session pending");
     assert.deepEqual(outcome.denied, [{ reason: "capture_mode_explicit", turns: 1 }]);
 
-    // The accepted capture drained and persisted.
     assert.ok(await hasFactFile(memoryDir, "accepted mixed probe"), "the accepted capture persisted");
 
-    // The ordinary turn's canonical copy stays in the claim, untouched.
     const claim = await runner.claims.load("mixed-sess");
     assert.deepEqual(
       claim?.entry.turns.map((turn) => turn.content),
@@ -853,7 +747,6 @@ test("a mixed accepted+ordinary group splits: the accepted capture drains, the o
       "exactly the ordinary turn stays claimed"
     );
 
-    // The ordinary content never reached the model.
     assert.equal(
       model.prompts.some((p) => p.includes("ordinary mixed probe")),
       false,
@@ -904,8 +797,6 @@ test("scan reports claimed, unclaimed, and orphaned tombstone sessions", async (
     assert.equal(claimedEntry?.claimed, true, "a claimed session reports claimed");
     assert.equal(claimedEntry?.turns, 1);
 
-    // Draining the claimed session leaves an ack tombstone: still listed so
-    // an operator sees the drained claim exists (the live copy is gone).
     await runner.drainSession("scan-claimed", { ownerId: "scan-owner" });
     const after = await runner.scan();
     assert.ok(
@@ -936,12 +827,10 @@ test("drainSession skips a key with no claim, a busy lease, and an emptied claim
     const runner = new BufferDrainRunner(orchestrator);
     const claims = runner.claims;
 
-    // Not claimed: nothing to drain.
     const notClaimed = await runner.drainSession("ghost-sess", { ownerId: "drain-skips" });
     assert.equal(notClaimed.status, "skipped");
     assert.equal(notClaimed.reason, "not_claimed");
 
-    // Busy: another drainer holds the lease.
     await orchestrator.buffer.addTurn("busy-sess", {
       role: "user",
       content: "busy body",
@@ -955,8 +844,6 @@ test("drainSession skips a key with no claim, a busy lease, and an emptied claim
     assert.equal(busy.reason, "claimed_by_another_drain");
     assert.equal(busy.turnsRemaining, 1);
 
-    // Emptied claim: the ack verdict is honored (drained). The emptied entry
-    // is written by the CURRENT lease holder (first-owner).
     const claimsEntry = await claims.load("busy-sess");
     await claims.writeEntry(
       "busy-sess",
@@ -997,8 +884,6 @@ test("an aborted drain waits for the in-flight persist before releasing the leas
     orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
 
-    // The persist runs until the abort lands: the abort settles the task
-    // (abort listener) while the persist is still in flight.
     let persistStarted: () => void = () => undefined;
     let persistCompleted = false;
     const sequence: string[] = [];
@@ -1021,8 +906,6 @@ test("an aborted drain waits for the in-flight persist before releasing the leas
       return { persistedIds: ["persisted-1"], memoryPathById: new Map(), deferredCount: 0, pendingReviewIds: [] };
     };
 
-    // Releasing the lease while the gated persist is still in flight is
-    // exactly the lease-loss window under review.
     const claimsStore = runner.claims;
     const realRelease = claimsStore.releaseLease.bind(claimsStore);
     claimsStore.releaseLease = async (leaseKey: string, ownerId: string) => {
@@ -1048,9 +931,6 @@ test("an aborted drain waits for the in-flight persist before releasing the leas
     controller.abort(new Error("shutdown"));
     const outcome = await drain;
 
-    // The lease-loss window: releasing the lease while the gated persist is
-    // still in flight (release-early) lets the closure's post-persist claim
-    // write fail its ownership check, stranding already-persisted turns.
     assert.ok(
       !sequence.includes("release-early"),
       `the lease must not be released while the queued closure is still persisting (sequence: ${JSON.stringify(sequence)})`

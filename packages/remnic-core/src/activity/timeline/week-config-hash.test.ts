@@ -134,11 +134,7 @@ test("the caller's category array is not mutated", () => {
   assert.deepStrictEqual(input, before);
 });
 
-// Review: a non-blank check let a typo acquire a durable snapshot identity,
-// so correcting the typo later forked the stored history.
 test("an invalid IANA timezone is refused before hashing", () => {
-  // "utc" is deliberately absent: IANA zone names are case-insensitive, so
-  // the shared validator accepts it and it is not a typo.
   for (const timezone of ["Not/AZone", "America/Nowhere", "Chicago"]) {
     assert.throws(
       () =>
@@ -185,8 +181,6 @@ test("weekStartsOn must be a known weekday", () => {
   }
 });
 
-// Review round 2: equivalent zone identifiers must not fork one snapshot
-// history. Canonicalization happens before hashing.
 test("equivalent timezone identifiers hash identically", () => {
   const base = { weekStartsOn: "monday", categories: [{ id: "c", name: "Code" }] };
   assert.equal(

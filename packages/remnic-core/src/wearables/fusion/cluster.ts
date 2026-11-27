@@ -17,7 +17,6 @@
 
 import type { FusionConversationInput } from "./types.js";
 
-/** Default max gap (ms) between two conversations to merge into one cluster. */
 export const DEFAULT_PROXIMITY_GAP_MS = 5 * 60_000;
 
 interface Interval {
@@ -87,17 +86,11 @@ function effectiveInterval(conversation: FusionConversationInput): Interval {
   const endRaw =
     conversation.endIso !== undefined ? Date.parse(conversation.endIso) : NaN;
   // No conversation-level end ("--:--"): derive the window from the latest
-  // SEGMENT extent via the shared primitive, so every end/interval derivation
-  // in the pipeline uses ONE coherent implementation. Falling back only to
-  // `start` would produce a zero/negative-length window that drops or
-  // mis-clusters the conversation (issue #1810).
   const end = Number.isFinite(endRaw)
     ? (endRaw as number)
     : (maxSegmentExtent(conversation.segments)?.ms ?? start);
   // Clamp universally so the window is always non-negative. An explicit
   // conversation end that precedes the start (malformed/cross-day input)
-  // would otherwise yield a negative-length window that shrinks the merge
-  // horizon and can split a within-gap cluster.
   return { start, end: Math.max(end, start) };
 }
 
@@ -153,7 +146,6 @@ export function clusterConversations(
     }
   }
 
-  // Deterministic processing + output ordering: (start, source, id).
   finite.sort((a, b) => {
     if (a.interval.start !== b.interval.start) {
       return a.interval.start - b.interval.start;
@@ -164,15 +156,12 @@ export function clusterConversations(
   const n = finite.length;
 
   // Union-find so that same-source pairs are never directly joined by time
-  // proximity alone; they may share a cluster only through a cross-source
-  // bridge (transitive closure over different-source proximity edges).
   const parent = new Array<number>(n);
   for (let i = 0; i < n; i++) parent[i] = i;
 
   const find = (x: number): number => {
     let root = x;
     while (parent[root] !== root) root = parent[root];
-    // Path compression.
     let cur = x;
     while (parent[cur] !== root) {
       const next = parent[cur]!;
@@ -190,12 +179,10 @@ export function clusterConversations(
 
   // Link every cross-source pair within the proximity gap. `finite` is
   // sorted by start, so once j's start exceeds i's end + gap, every later
-  // j is also out of reach — break early.
   for (let i = 0; i < n; i++) {
     const endGap = finite[i]!.interval.end + proximityGapMs;
     for (let j = i + 1; j < n; j++) {
       if (finite[j]!.interval.start > endGap) break;
-      // Only DIFFERENT sources may be directly joined by proximity.
       if (finite[i]!.conv.source === finite[j]!.conv.source) continue;
       union(i, j);
     }
@@ -203,8 +190,6 @@ export function clusterConversations(
 
   // Group conversations by union-find root. Because `finite` is sorted and
   // we iterate in index order, each group's conversations stay in (start,
-  // source, id) order, and groups are discovered in chronological order
-  // (the first root seen belongs to the earliest-starting conversation).
   const clusters: FusionConversationInput[][] = [];
   const rootToCluster = new Map<number, number>();
   for (let i = 0; i < n; i++) {
@@ -219,8 +204,6 @@ export function clusterConversations(
   }
 
   // Conversations with no parseable start can't be ordered in time, so
-  // each becomes its own cluster, appended after the time-ordered ones.
-  // Sort for determinism (source, id).
   noStart.sort(compareConversation);
   for (const conv of noStart) {
     clusters.push([conv]);

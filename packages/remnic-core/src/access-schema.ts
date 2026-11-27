@@ -1,6 +1,3 @@
-// Request/response schema validation for the Remnic HTTP API.
-// Uses zod for runtime validation — returns structured 400 errors with
-// field-level detail so consumers get clear feedback on malformed requests.
 
 import { z } from "zod";
 
@@ -19,9 +16,6 @@ import {
   OFFLINE_SYNC_MAX_MTIME_MS,
 } from "./offline-sync.js";
 
-// ---------------------------------------------------------------------------
-// Error formatting
-// ---------------------------------------------------------------------------
 
 export interface SchemaValidationError {
   error: string;
@@ -41,7 +35,6 @@ export function formatZodError(error: z.ZodError): SchemaValidationError {
 }
 
 // ---------------------------------------------------------------------------
-// Shared fields
 // ---------------------------------------------------------------------------
 
 const namespaceSchema = z.string().trim().max(256).optional();
@@ -72,7 +65,6 @@ const timeZoneSchema = z
   }, "must be a valid IANA timezone");
 
 // ---------------------------------------------------------------------------
-// Recall
 // ---------------------------------------------------------------------------
 
 /**
@@ -222,7 +214,6 @@ export const setCodingContextRequestSchema = z
   });
 
 // ---------------------------------------------------------------------------
-// Observe
 // ---------------------------------------------------------------------------
 
 const messageSchema = z.object({
@@ -285,7 +276,6 @@ export const observeRequestSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Deep recall (issue #2332)
 // ---------------------------------------------------------------------------
 
 export const deepRecallRequestSchema = z.object({
@@ -297,12 +287,10 @@ export const deepRecallRequestSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Memory store / suggestion submit
 // ---------------------------------------------------------------------------
 
 const writeContentSchema = z.string().min(1, "content is required").max(50000);
 // ---------------------------------------------------------------------------
-// Category wire contract (issue #2829): truthful input/output modeling.
 // ---------------------------------------------------------------------------
 
 /** Canonical input spellings — exactly the `MemoryCategory` union. */
@@ -426,10 +414,6 @@ const memoryStoreRequestShape = z.object({
   entityRef: entityRefSchema,
   ttl: ttlSchema,
   sourceReason: sourceReasonSchema,
-  // Git/project context for project-scoped writes (#1434). When no explicit
-  // `namespace` is given, these route the write to the same project namespace
-  // recall/observe resolve from `cwd`/`projectTag` (issue #569, rule 42). Also
-  // lets MCP clients that auto-inject `cwd` (e.g. Pi MCPorter) call write tools.
   cwd: cwdSchema,
   projectTag: projectTagSchema,
 });
@@ -450,8 +434,6 @@ export type MemoryStoreParsedRequest = Omit<z.infer<typeof memoryStoreRequestSha
 export const memoryStoreRequestSchema = memoryStoreRequestShape.transform(
   (request): MemoryStoreParsedRequest => {
     if (request.category === undefined || !isMemoryCategoryAlias(request.category)) {
-      // Spread so the narrowed canonical category, not the wide wire union,
-      // becomes the output type.
       return { ...request, category: request.category };
     }
     return {
@@ -465,7 +447,6 @@ export const memoryStoreRequestSchema = memoryStoreRequestShape.transform(
 export const suggestionSubmitRequestSchema = memoryStoreRequestSchema;
 
 // ---------------------------------------------------------------------------
-// Review disposition
 // ---------------------------------------------------------------------------
 
 export const reviewDispositionRequestSchema = z.object({
@@ -478,7 +459,6 @@ export const reviewDispositionRequestSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Trust-zone promote
 // ---------------------------------------------------------------------------
 
 export const trustZonePromoteRequestSchema = z.object({
@@ -494,7 +474,6 @@ export const trustZonePromoteRequestSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Trust-zone demo-seed
 // ---------------------------------------------------------------------------
 
 export const trustZoneDemoSeedRequestSchema = z.object({
@@ -505,7 +484,6 @@ export const trustZoneDemoSeedRequestSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// LCM search
 // ---------------------------------------------------------------------------
 
 export const lcmSearchRequestSchema = z.object({
@@ -564,7 +542,6 @@ export const lcmCompactionRecordRequestSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Day summary
 // ---------------------------------------------------------------------------
 
 export const daySummaryRequestSchema = z.object({
@@ -576,7 +553,6 @@ export const daySummaryRequestSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Capsule export
 // ---------------------------------------------------------------------------
 
 const capsuleTopLevelSegmentSchema = z
@@ -643,7 +619,6 @@ export const capsuleListRequestSchema = z
   });
 
 // ---------------------------------------------------------------------------
-// Offline sync
 // ---------------------------------------------------------------------------
 
 function isValidOfflineSyncPath(value: string): boolean {
@@ -717,7 +692,6 @@ export const offlineSyncFileContentRequestSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Action confidence
 // ---------------------------------------------------------------------------
 
 // Outer .optional() keeps the inferred property optional: a transform-typed
@@ -765,7 +739,6 @@ export const actionConfidenceRequestSchema = z
   .strict();
 
 // ---------------------------------------------------------------------------
-// Inferred types
 // ---------------------------------------------------------------------------
 
 export type RecallRequest = z.infer<typeof recallRequestSchema>;
@@ -792,7 +765,6 @@ export type OfflineSyncFileContentRequest = z.infer<typeof offlineSyncFileConten
 export type ActionConfidenceRequest = z.infer<typeof actionConfidenceRequestSchema>;
 
 // ---------------------------------------------------------------------------
-// Validation helper
 // ---------------------------------------------------------------------------
 
 export type SchemaName =
@@ -893,10 +865,6 @@ export function validateRequest<T = unknown>(
   try {
     parseResult = schema.safeParse(stripNullsExceptCodingContext(body));
   } catch (error) {
-    // A reserved argument key (__proto__/constructor/prototype, issue #3225
-    // B1) is an ordinary client input fault: return the same documented
-    // failure shape a failed parse returns instead of throwing past the
-    // callers. Anything else keeps propagating.
     if (error instanceof EngramAccessInputError) {
       return {
         success: false,
@@ -910,8 +878,6 @@ export function validateRequest<T = unknown>(
     throw error;
   }
   if (parseResult.success) {
-    // SAFETY: T is the type each caller associates with schemaName, and the
-    // schema registered under schemaName is that type's canonical parser.
     return { success: true, data: parseResult.data as T };
   }
   return { success: false, error: formatZodError(parseResult.error) };
@@ -919,9 +885,6 @@ export function validateRequest<T = unknown>(
 
 function stripNullsExceptCodingContext(data: unknown): unknown {
   if (!data || typeof data !== "object" || Array.isArray(data)) return data;
-  // Object.create(null): a plain {} lets a copied own `__proto__` member
-  // invoke the prototype setter, so an inherited field could reach the wire
-  // schema parse (issue #3225 B1).
   const cleaned = Object.create(null);
   for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
     rejectReservedArgumentKey(key);

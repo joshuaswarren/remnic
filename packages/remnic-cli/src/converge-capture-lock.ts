@@ -13,7 +13,6 @@ export function createConvergeStorageIoOpener(
   return (rootDir: string) => createOfflineStorageIo(rootDir, undefined, undefined, backoff, signal);
 }
 
-// Keep this outside the shared IO adapter: generation removal already holds its lock.
 export async function deleteConvergeFile(
   io: OfflineStorageIo,
   target: OfflineSyncFileTarget,

@@ -68,9 +68,6 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
     args.signal
   );
   const priorPeerEntry = args.cache ? await args.cache.readEntry("peer", ns) : null;
-  // Streamed rows carry the PEER's identity semantics. Client-built rows
-  // (legacy per-file fallback) carry this client's parser and are safe
-  // to reuse as a SHA-keyed warm base, including watermark hits.
   const revisionTrusted =
     args.peerManifestRevision !== undefined &&
     priorPeerEntry?.peerManifestRevision === args.peerManifestRevision;
@@ -84,15 +81,8 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
     reusableEntry &&
     reusableEntry.watermark === watermark &&
     reusableEntry.fileCount === peerData.files.length &&
-    // A peer upgraded to manifest streaming must not keep serving this
-    // client's older parser semantics on an unchanged watermark (#2965):
-    // client-built rows stay a warm base only; the stream runs once and
-    // the checkpoint becomes a streamed entry.
     !(args.manifestStream && clientBuiltPrior)
   ) {
-    // Cache hit: the peer census is byte-identical to the one this manifest
-    // was built from. Overlay fresh mtime/bytes (newest-wins conflict
-    // resolution reads them) and skip the manifest fetch.
     const freshByPath = new Map(peerData.files.map((file) => [file.path, file]));
     peerManifest = {
       format: RECONCILE_MANIFEST_FORMAT,
@@ -125,13 +115,8 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
         parseMemory: parseFrontmatter,
         citationTemplate: args.citationTemplate,
         signal: args.signal,
-        // Older peers need one content request per memory file; prior cache
-        // rows (sha-keyed) skip the ones already fetched.
         cachedFiles: priorPeerFiles ?? args.localManifestFiles,
         readFile: async (file) => {
-          // The manifest builder settles the in-flight batch, then asks for
-          // the next one. A transport failure must not start that next batch,
-          // and a later generic miss must not replace the transport cause.
           if (transportFailure) throw transportFailure;
           let remote: PeerFileContent | null;
           try {
@@ -181,26 +166,12 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
         true
       );
     } catch (error) {
-      // Name the tombstone read (#2954). The transport error stays the cause
-      // so a timeout or operator abort still fails the cycle.
       throw new Error(`failed to read peer tombstone evidence: ${tombstonePath}`, { cause: error });
     }
-    // A transport-level failure here is FATAL on purpose: tombstone evidence
-    // is what stops a plan from pushing a peer-retracted memory back
-    // (resurrection). There is no safe "empty evidence" fallback — the
-    // snapshot response carries no tombstone digest array today.
     if (!remote) {
       throw new Error(`failed to read peer tombstone evidence: ${tombstonePath}`);
     }
     if (remote.sha256.toLowerCase() !== state.sha256.toLowerCase()) {
-      // A LIVE peer appends tombstones while the plan runs, so the file can
-      // legitimately differ from the snapshot listing that scheduled this
-      // fetch. Tombstone stores are append-only by design, so the fetch is
-      // consistent with the listing exactly when the listed revision is a
-      // byte-prefix of the fetched content. The comparison is BYTES
-      // throughout: state.bytes is a byte count and hashing the buffer
-      // directly avoids UTF-16 code-unit slicing on non-ASCII logs (review
-      // round 1).
       const listedBytes = typeof state.bytes === "number" ? state.bytes : -1;
       const prefixMatches =
         listedBytes >= 0 &&
@@ -222,8 +193,6 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
   for (const file of peerManifests.files) {
     if (priorByPath.get(file.path) === file.sha256.toLowerCase()) reused += 1;
   }
-  // Progress fires whether or not checkpointing is available (#2963): a
-  // read-only audit mount must not silence per-namespace stderr output.
   args.onProgress?.({
     side: "peer",
     namespace: ns,
@@ -233,15 +202,7 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
     computed: peerManifests.files.length - reused,
   });
   if (args.cache) {
-    // Bind the checkpoint to the census it will be validated against
-    // (#2963): a file changing between the snapshot and the manifest
-    // stream makes the manifest's own census differ from the snapshot
-    // watermark. Caching those rows under the snapshot watermark would
-    // serve the wrong identities on a later identical-watermark hit, so
-    // the mismatch is skipped — the run still uses the newer manifest.
     if (censusWatermark(peerManifests.files) === watermark) {
-      // Checkpoint per completed namespace: a transient failure later in
-      // the run leaves every earlier namespace's manifest work durable.
       await args.cache.writeEntry({
         version: 1,
         scope: args.cache.scope,

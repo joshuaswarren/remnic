@@ -17,9 +17,6 @@ import path from "node:path";
 import { throwIfAborted } from "../abort-error.js";
 import { serializeMutations } from "../utils/serialize-mutations.js";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export interface PassiveCorrectionNotification {
   planId: string;
@@ -31,7 +28,6 @@ export interface PassiveCorrectionNotification {
 }
 
 // ---------------------------------------------------------------------------
-// Path
 // ---------------------------------------------------------------------------
 
 function notificationsPath(storageDir: string): string {
@@ -39,7 +35,6 @@ function notificationsPath(storageDir: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Enqueue
 // ---------------------------------------------------------------------------
 
 /**
@@ -53,7 +48,6 @@ export async function enqueuePassiveCorrectionNotification(
 ): Promise<void> {
   const filePath = notificationsPath(storageDir);
   await serializeMutations(`passive-notification:${filePath}`, async () => {
-    // Read existing content (if any) so we accumulate rather than overwrite.
     let existing = "";
     try {
       existing = await readFile(filePath, "utf-8");
@@ -73,7 +67,6 @@ export async function enqueuePassiveCorrectionNotification(
 }
 
 // ---------------------------------------------------------------------------
-// Drain (read + clear — exactly once)
 // ---------------------------------------------------------------------------
 
 /**
@@ -98,7 +91,6 @@ export async function drainPassiveCorrectionNotifications(
       throw err;
     }
 
-    // Cancellation after the read must keep the queue: the caller never receives these.
     throwIfAborted(signal, "briefing aborted");
     const notifications: PassiveCorrectionNotification[] = [];
     for (const line of raw.split("\n")) {
@@ -107,12 +99,10 @@ export async function drainPassiveCorrectionNotifications(
       try {
         notifications.push(JSON.parse(trimmed) as PassiveCorrectionNotification);
       } catch {
-        // Skip malformed lines (rule 34 — best-effort, never crash a briefing).
         continue;
       }
     }
 
-    // Clear the file atomically (delete is atomic enough for this use case —
     // the worst case is a duplicate notification, never a lost one, because
     // the read already captured the content).
     try {

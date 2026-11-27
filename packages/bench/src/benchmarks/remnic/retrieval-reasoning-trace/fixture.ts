@@ -1,20 +1,3 @@
-/**
- * Synthetic fixture for the reasoning-trace retrieval benchmark
- * (issue #564 PR 4).
- *
- * Each case simulates a recall scenario:
- * - A seeded candidate pool of 15 past memories, two of which are stored
- *   reasoning_trace chains (under reasoning-traces/) and the rest are
- *   ordinary facts/decisions/entities.
- * - A new query that may or may not match the semantics of a trace.
- * - An expected winner id after boost for positive cases, plus an
- *   expected verdict for the heuristic.
- *
- * Cases are split by expected behavior so the scorer can measure:
- * - recall@1 gain on positive problem-solving queries,
- * - false-positive rate on ordinary lookups (where the boost must not
- *   shift results).
- */
 
 export interface ReasoningTraceBenchCandidate {
   docid: string;
@@ -36,9 +19,7 @@ export interface ReasoningTraceBenchCase {
    * (false-positive guard cases).
    */
   expectsTraceTopAfterBoost: boolean;
-  /** Expected top docid when the boost is off (baseline). */
   expectedTopWithoutBoost: string;
-  /** Expected top docid when the boost is on for positive cases. */
   expectedTopWithBoost?: string;
   /**
    * Whether the query should be classified as problem-solving by the
@@ -73,21 +54,9 @@ function fact(
   };
 }
 
-/**
- * Shared candidate pool — 15 memories, 2 are reasoning traces. Each case
- * reuses this pool (cloned) with a relevant query so retrieval quality
- * comparisons share a consistent baseline.
- */
 function seedPool(
   expectedTrace: "trace-latency" | "trace-oauth-loop" = "trace-latency",
 ): ReasoningTraceBenchCandidate[] {
-  // Scores mirror a realistic QMD hybrid-rank distribution where reasoning
-  // traces have non-trivial topical relevance (same keywords as the query)
-  // but sit just under the top fact until the boost fires. A default boost
-  // of 0.15 must be enough to promote them — that's exactly what we want
-  // to measure. Listed in descending-score order so the "baseline" (boost
-  // disabled) passes through the helper unchanged and rank 1 reflects the
-  // fact-pg-15 top expected by every case below.
   const firstTrace = expectedTrace === "trace-latency"
     ? trace("trace-latency", 0.72, "How I debugged the staging latency spike")
     : trace("trace-oauth-loop", 0.72, "How I untangled the OAuth redirect loop");
@@ -114,8 +83,6 @@ function seedPool(
 }
 
 export const REASONING_TRACE_BENCH_FIXTURE: ReasoningTraceBenchCase[] = [
-  // Positive cases: query looks like a problem-solving ask, and one of the
-  // two reasoning traces in the pool is the most relevant memory.
   {
     id: "pos-latency-howto",
     query: "How do I debug a latency spike in staging?",
@@ -161,8 +128,6 @@ export const REASONING_TRACE_BENCH_FIXTURE: ReasoningTraceBenchCase[] = [
     expectedTopWithBoost: "trace-latency",
     expectedProblemSolving: true,
   },
-  // Negative / guard cases: query is an ordinary lookup. The boost must be
-  // a no-op — top result stays whatever the baseline produced.
   {
     id: "neg-postgres-version",
     query: "what postgres version does remnic use",

@@ -1,16 +1,3 @@
-/**
- * causal-consolidation.ts — CMC Phase 2: LLM-Assisted Causal Consolidation
- *
- * Uses an LLM to analyze causal trajectory patterns across sessions.
- * The LLM receives the causal chain graph as context — connected trajectories
- * from different sessions — and identifies recurring behavioral patterns,
- * preference signals, and actionable rules.
- *
- * This is the core CMC innovation: the LLM gets cross-session causal context
- * that no other memory system provides. It can see that a user investigated
- * a bug in session 1, attempted a fix in session 2, and succeeded in session 3 —
- * and synthesize a rule or preference from that chain.
- */
 
 import { createHash } from "node:crypto";
 import { resolveCausalTrajectoryStoreDir, type CausalTrajectoryRecord } from "./causal-trajectory.js";
@@ -25,7 +12,6 @@ import { runPostConsolidationMaterialize } from "./connectors/codex-materialize-
 import type { MaterializeResult, RolloutSummaryInput } from "./connectors/codex-materialize.js";
 import { buildExtensionsBlockForConsolidation } from "./semantic-consolidation.js";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface CausalPatternCandidate {
   id: string;
@@ -71,7 +57,6 @@ interface ConsolidationLlmClient {
   ): Promise<{ content: string } | null>;
 }
 
-// ─── Trajectory Reading ──────────────────────────────────────────────────────
 
 async function readAllTrajectories(
   memoryDir: string,
@@ -97,18 +82,12 @@ async function readAllTrajectories(
   return results;
 }
 
-// ─── Context Formatting ──────────────────────────────────────────────────────
 
-/**
- * Format trajectories and their causal connections as a readable context
- * for the LLM. Groups by session and shows chain connections.
- */
 function formatCausalContext(
   trajectories: CausalTrajectoryRecord[],
   chainIndex: CausalChainIndex,
   maxChars: number = 8000,
 ): string {
-  // Group trajectories by session
   const bySession = new Map<string, CausalTrajectoryRecord[]>();
   for (const t of trajectories) {
     const list = bySession.get(t.sessionKey) ?? [];
@@ -120,7 +99,6 @@ function formatCausalContext(
   lines.push(`## Causal Trajectories (${trajectories.length} across ${bySession.size} sessions)`);
   lines.push("");
 
-  // Format each session's trajectories
   for (const [sessionKey, sessionTrajs] of bySession) {
     lines.push(`### Session: ${sessionKey}`);
     for (const t of sessionTrajs.slice(0, 5)) {
@@ -134,7 +112,6 @@ function formatCausalContext(
     lines.push("");
   }
 
-  // Format causal chain connections
   const edgeCount = Object.keys(chainIndex.edges).length;
   if (edgeCount > 0) {
     lines.push(`## Cross-Session Causal Chains (${edgeCount} connections)`);
@@ -159,7 +136,6 @@ function formatCausalContext(
   return result.length > maxChars ? result.slice(0, maxChars) + "\n[truncated]" : result;
 }
 
-// ─── LLM Consolidation ──────────────────────────────────────────────────────
 
 const CONSOLIDATION_PROMPT = `You are analyzing a user's causal trajectory history across multiple sessions. Trajectories record what the user tried to do (goal), what they did (action), and what happened (outcome).
 
@@ -203,7 +179,6 @@ async function consolidateWithLlm(
   }
 
   try {
-    // Extract JSON from response (may have markdown code fences)
     let jsonStr = response.content.trim();
     const fenceMatch = jsonStr.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
     if (fenceMatch) jsonStr = fenceMatch[1];
@@ -225,7 +200,6 @@ async function consolidateWithLlm(
   }
 }
 
-// ─── Candidate Generation ────────────────────────────────────────────────────
 
 function stablePatternId(content: string): string {
   const digest = createHash("sha256")
@@ -357,12 +331,7 @@ function passesConsolidationGates(
   return true;
 }
 
-// ─── Public API ──────────────────────────────────────────────────────────────
 
-/**
- * Run LLM-assisted consolidation: read trajectories, format causal context,
- * ask LLM to identify patterns and preferences.
- */
 export async function deriveCausalPromotionCandidates(options: {
   memoryDir: string;
   causalTrajectoryStoreDir?: string;
@@ -381,10 +350,8 @@ export async function deriveCausalPromotionCandidates(options: {
     const chainsDir = resolveChainsDir(options.memoryDir, options.causalTrajectoryStoreDir);
     const chainIndex = await readChainIndex(chainsDir);
 
-    // Format the causal context for the LLM
     let context = formatCausalContext(trajectories, chainIndex);
 
-    // Append memory extensions block if available (#382)
     if (options.pluginConfig) {
       const extBlock = await buildExtensionsBlockForConsolidation(options.pluginConfig);
       if (extBlock.length > 0) {
@@ -392,7 +359,6 @@ export async function deriveCausalPromotionCandidates(options: {
       }
     }
 
-    // If no LLM available, fall back to empty (no deterministic fallback)
     const llm = options.llmClient ?? new FallbackLlmClient(
       options.gatewayConfig,
       options.pluginConfig
@@ -407,7 +373,6 @@ export async function deriveCausalPromotionCandidates(options: {
       return [];
     }
 
-    // Call LLM for pattern analysis
     const result = await consolidateWithLlm(context, llm, llmOptions);
     const candidates = llmResultToCandidates(result);
 
@@ -419,10 +384,6 @@ export async function deriveCausalPromotionCandidates(options: {
   }
 }
 
-/**
- * Get LLM-synthesized preferences from causal trajectory analysis.
- * Returns formatted preference statements for recall injection.
- */
 export async function synthesizeCausalPreferencesViaLlm(options: {
   memoryDir: string;
   causalTrajectoryStoreDir?: string;
@@ -485,7 +446,5 @@ export async function materializeAfterCausalConsolidation(options: {
   rolloutSummaries?: RolloutSummaryInput[];
   now?: Date;
 }): Promise<MaterializeResult | null> {
-  // Delegates to the shared post-consolidation helper — see
-  // runPostConsolidationMaterialize in codex-materialize-runner.ts.
   return runPostConsolidationMaterialize("[cmc]", options);
 }

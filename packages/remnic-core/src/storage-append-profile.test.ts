@@ -14,15 +14,10 @@ async function makeStorage(): Promise<{ storage: StorageManager; cleanup: () => 
 test("concurrent appendToProfile bullets both survive the shared profile read-modify-write", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
-    // Hold the FIRST write open while the second append runs a full RMW. Under
-    // a shared unlocked RMW both reads see the same (missing) profile and the
-    // second write silently drops the first task's bullet.
     const realWrite = storage.writeProfile.bind(storage);
     const firstWriteEntered = Promise.withResolvers<void>();
     const firstWriteGate = Promise.withResolvers<void>();
     let writes = 0;
-    // SAFETY: the test drives only readProfile/writeProfile on the real manager;
-    // instance overrides keep the RMW interception local to this test.
     storage.writeProfile = async (content: string) => {
       writes += 1;
       if (writes === 1) {
@@ -52,7 +47,6 @@ test("appendToProfile fails closed when a cross-process peer holds profile.md.lo
   try {
     const holderEntered = Promise.withResolvers<void>();
     const holderRelease = Promise.withResolvers<void>();
-    // Foreign holder (simulated external drain process) owns the lock file.
     const holder = withHeldFileLock(
       path.join(storage["baseDir"], "profile.md.lock"),
       { staleMs: 60_000 },
@@ -64,7 +58,6 @@ test("appendToProfile fails closed when a cross-process peer holds profile.md.lo
     );
     await holderEntered.promise;
 
-    // The peer must NOT fall back to an unlocked RMW: fail closed, file untouched.
     await assert.rejects(
       peer.appendToProfile(["lost bullet"]),
       /profile\.md\.lock not acquired/,
@@ -75,7 +68,6 @@ test("appendToProfile fails closed when a cross-process peer holds profile.md.lo
     holderRelease.resolve();
     await holder;
 
-    // Once the peer releases, the append goes through normally.
     await peer.appendToProfile(["late bullet"]);
     const after = await storage.readProfile();
     assert.match(after, /late bullet/, "append after contention window must succeed");
@@ -90,7 +82,6 @@ test("commitConsolidatedProfile commits unchanged baseline and conflicts on a st
     await storage.appendToProfile(["trait one", "trait two"]);
     const baseline = await storage.readProfile();
 
-    // Unchanged profile → commit takes the consolidated rewrite.
     const committed = await storage.commitConsolidatedProfile(
       baseline,
       "# Behavioral Profile\n\n- consolidated summary\n",
@@ -98,7 +89,6 @@ test("commitConsolidatedProfile commits unchanged baseline and conflicts on a st
     assert.equal(committed, "committed");
     assert.match(await storage.readProfile(), /consolidated summary/);
 
-    // Stale baseline (profile moved on since the LLM saw it) → conflict, file untouched.
     await storage.appendToProfile(["fresh concurrent trait"]);
     const current = await storage.readProfile();
     const conflict = await storage.commitConsolidatedProfile(

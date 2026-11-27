@@ -59,10 +59,6 @@ export interface TimelineClassification {
   confidence: number;
 }
 
-/**
- * Classify one observation. Throws if a rule targets a category missing from
- * the registry (configuration error must fail loudly, not fall back silently).
- */
 export function classifyTimelineObservation(
   observation: Pick<TimelineObservation, "app" | "windowTitle" | "browserUrl">,
   categories: readonly TimelineCategory[],
@@ -88,7 +84,6 @@ export function classifyTimelineObservation(
   return { categoryId: TIMELINE_RESERVED_UNKNOWN, confidence: UNKNOWN_CONFIDENCE };
 }
 
-/** Verify the rule's target exists in the registry before returning it. */
 function checkedRule(
   rule: ClassificationRule,
   confidence: number,

@@ -1,15 +1,3 @@
-/**
- * Tests for coding context auto-resolution wiring (issue #569).
- *
- * Validates that:
- *   - `cwd` in recall/observe triggers git-context resolution and attaches
- *     a CodingContext to the session
- *   - `projectTag` creates a tag-based CodingContext
- *   - explicit `codingContext` takes precedence over `cwd` and `projectTag`
- *   - the MCP `set_coding_context` tool accepts `projectTag` as an
- *     alternative to full `codingContext`
- *   - zod schemas accept `cwd` and `projectTag` fields
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -19,9 +7,6 @@ import { EngramAccessInputError, EngramAccessService } from "../access-service.j
 import type { CodingContext } from "../types.js";
 import { validateRequest, type RecallRequest, type ObserveRequest } from "../access-schema.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Schema validation tests
-// ──────────────────────────────────────────────────────────────────────────
 
 test("recall schema accepts cwd field", () => {
   const result = validateRequest<RecallRequest>("recall", {
@@ -151,7 +136,6 @@ test("observe schema rejects empty cwd", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// MCP set_coding_context with projectTag
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeMcp(): {
@@ -260,7 +244,6 @@ test("set_coding_context projectTag via canonical alias remnic.*", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// MCP recall tool lists cwd and projectTag properties
 // ──────────────────────────────────────────────────────────────────────────
 
 test("engram.recall tool schema includes cwd and projectTag", () => {
@@ -293,7 +276,6 @@ test("engram.set_coding_context tool schema includes projectTag", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// maybeAttachCodingContext via service integration
 // ──────────────────────────────────────────────────────────────────────────
 
 test("maybeAttachCodingContext: projectTag attaches tag-based context", async () => {
@@ -313,7 +295,6 @@ test("maybeAttachCodingContext: projectTag attaches tag-based context", async ()
   const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
   (service as unknown as { orchestrator: typeof stubOrchestrator }).orchestrator = stubOrchestrator;
 
-  // Call the private method directly via cast
   const maybeAttach = (service as unknown as {
     maybeAttachCodingContext(
       sessionKey: string | undefined,
@@ -440,7 +421,6 @@ test("maybeAttachCodingContext: skips when neither cwd nor projectTag provided",
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// P1: Non-string cwd/projectTag must be rejected in MCP (CLAUDE.md #51)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("MCP recall rejects non-string cwd (e.g. number)", async () => {

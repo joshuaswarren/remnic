@@ -1,21 +1,10 @@
-/** Fields on {@link BufferState} used by observe-buffer idempotency (#3368). */
 export interface BufferAdmissionIdempotencyState {
   admissionIdempotency?: Record<string, number>;
   admissionIdempotencyOrder?: string[];
 }
 
-/**
- * FIFO bound on recorded observe-buffer admission keys per session buffer.
- * 4096 retains the most recent keys per session — roughly two
- * hours at typical capture load. A replay of more than 4096 keys for one
- * session still evicts its oldest keys, so a complete 5000-entry outbox
- * replay for a single hot session is not guaranteed; the previous
- * 512-entry ring only covered about fifteen minutes, so any drain outage
- * longer than that made duplicate captures likely once replay caught up.
- */
 export const BUFFER_ADMISSION_IDEMPOTENCY_CAP = 4096;
 
-/** Client observe idempotency keys are namespaced by durable capture scope. */
 export function scopeObserveBufferAdmissionIdempotencyKey(input: {
   sessionKey: string;
   writeNamespace: string;
@@ -30,7 +19,6 @@ export function scopeObserveBufferAdmissionIdempotencyKey(input: {
 export function ensureAdmissionIdempotencyMap(state: BufferAdmissionIdempotencyState): Record<string, number> {
   const existing = state.admissionIdempotency;
   if (existing && Object.getPrototypeOf(existing) === null) return existing;
-  // SAFETY: prototype-free map contract for observe idempotency keys (#3368).
   const map = Object.create(null) as Record<string, number>;
   if (existing) {
     for (const key of Object.keys(existing)) {

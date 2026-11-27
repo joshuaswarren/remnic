@@ -1,10 +1,3 @@
-/**
- * Deterministic smoke tests for the Mem0 MemCorrect adapter (issue #1727).
- *
- * No network. A fake fetch captures every request and returns canned responses
- * so the full request/response cycle (URL, headers, body, response parsing)
- * is exercised hermetically. This is the "keyless smoke" acceptance gate.
- */
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -12,9 +5,6 @@ import { Mem0MemCorrectAdapter } from "./mem0-adapter.js";
 import { MissingCredentialError } from "./shared.js";
 import { FakeFetchBuilder } from "./fake-fetch.js";
 
-// ---------------------------------------------------------------------------
-// Keyless — every method throws MissingCredentialError (skip-with-reason)
-// ---------------------------------------------------------------------------
 
 test("mem0: keyless adapter throws MissingCredentialError on ingest", async () => {
   const adapter = new Mem0MemCorrectAdapter({});
@@ -35,12 +25,10 @@ test("mem0: keyless adapter throws on recall, correct, reset, runMaintenance", a
   await assert.rejects(() => adapter.recall("q", "s1"), MissingCredentialError);
   await assert.rejects(() => adapter.correct("c", "s1"), MissingCredentialError);
   await assert.rejects(() => adapter.reset(), MissingCredentialError);
-  // runMaintenance is a no-op and does not require credentials.
   await adapter.runMaintenance();
 });
 
 // ---------------------------------------------------------------------------
-// OSS mode — full request/response cycle against fake fetch
 // ---------------------------------------------------------------------------
 
 test("mem0 oss: ingestTurn POSTs to /memories with user_id and auth", async () => {
@@ -162,11 +150,9 @@ test("mem0 oss: reset() DELETEs each ingested session's user_id", async () => {
     userIdPrefix: "memcorrect",
     fetch: ff.fetch,
   });
-  // Ingest under two sessions so reset has something to clean.
   await adapter.ingestTurn("s1", "user", "fact one", "2026-07-07T00:00:00Z");
   await adapter.ingestTurn("s2", "user", "fact two", "2026-07-07T00:01:00Z");
   await adapter.reset();
-  // Each session's exact user_id is deleted as a query param — NOT the bare prefix.
   assert.equal(ff.countRequests("DELETE", "/memories"), 2);
   const deletedIds = ff.requests
     .filter((r) => r.method === "DELETE")
@@ -177,7 +163,6 @@ test("mem0 oss: reset() DELETEs each ingested session's user_id", async () => {
   assert.ok(deletedIds.includes("memcorrect:s1"));
   assert.ok(deletedIds.includes("memcorrect:s2"));
   assert.ok(!deletedIds.includes("memcorrect"), "must not delete bare prefix");
-  // After reset, known sessions are cleared.
   assert.equal(ff.requests.filter((r) => r.method === "DELETE").length, 2);
 });
 
@@ -230,7 +215,6 @@ test("mem0 oss: non-2xx throws HttpError with body excerpt", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Hosted mode — Token auth + V3 paths + async event polling
 // ---------------------------------------------------------------------------
 
 test("mem0 hosted: uses Token auth and V3 paths", async () => {
@@ -261,7 +245,6 @@ test("mem0 hosted: uses Token auth and V3 paths", async () => {
       user_id: "memcorrect:s1",
     });
   });
-  // Event was polled.
   assert.ok(ff.countRequests("GET", "/v1/event/evt-1") >= 1);
 });
 
@@ -310,7 +293,6 @@ test("mem0 hosted: async add polls until SUCCEEDED", async () => {
     pollIntervalMs: 1,
   });
   await adapter.ingestTurn("s1", "user", "hello", "2026-07-07T00:00:00Z");
-  // First poll returns PENDING, second returns SUCCEEDED → 2 GETs.
   assert.equal(ff.countRequests("GET", "/v1/event/evt-2"), 2);
 });
 
@@ -351,7 +333,6 @@ test("mem0: mode defaults to hosted without baseUrl, oss with custom baseUrl", (
 });
 
 // ---------------------------------------------------------------------------
-// #1747 review-round-2 hardening: reset failure handling, X-API-Key, ns isolation
 // ---------------------------------------------------------------------------
 
 test("mem0 oss: reset() rethrows real delete failures and retains the session", async () => {
@@ -374,8 +355,6 @@ test("mem0 oss: reset() rethrows real delete failures and retains the session", 
       return true;
     },
   );
-  // The failed session is retained in knownSessions — a second reset retries it
-  // (proving reset did not silently drop the id on a real failure).
   await assert.rejects(() => adapter.reset(), /could not clean/);
   assert.equal(ff.countRequests("DELETE", "/memories"), 2, "failed id retried");
 });
@@ -393,7 +372,6 @@ test("mem0 oss: reset() swallows not-found (404) deletes without throwing", asyn
     fetch: ff.fetch,
   });
   await adapter.ingestTurn("s1", "user", "fact one", "2026-07-07T00:00:00Z");
-  // A not-found delete is a harmless no-op (session already absent).
   await adapter.reset();
   assert.equal(ff.countRequests("DELETE", "/memories"), 1);
 });
@@ -433,7 +411,6 @@ test("mem0: default userIdPrefix is unique per instance (cross-process isolation
   };
   const idA = await buildAndCapture();
   const idB = await buildAndCapture();
-  // Default prefix is namespaced (not the bare "memcorrect" prior processes reused).
   assert.ok(idA.startsWith("memcorrect-"), `namespaced prefix: ${idA}`);
   assert.ok(idB.startsWith("memcorrect-"), `namespaced prefix: ${idB}`);
   assert.notEqual(idA, idB, "two instances get distinct remote namespaces");

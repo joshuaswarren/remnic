@@ -27,7 +27,6 @@ const savedEnv = process.env.REMNIC_LOG_TIMESTAMPS;
 test.afterEach(() => {
   if (savedEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_LOG_TIMESTAMPS");
   else process.env.REMNIC_LOG_TIMESTAMPS = savedEnv;
-  // Reset to a silent backend (module default is NOOP) so this suite never
   // leaks console output or timestamp state into sibling suites in-process.
   initLogger({ info() {}, warn() {}, error() {}, debug() {} }, false, { timestamps: true });
 });

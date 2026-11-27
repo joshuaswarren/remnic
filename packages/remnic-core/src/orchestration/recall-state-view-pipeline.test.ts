@@ -81,7 +81,6 @@ test("state view admits a superseded candidate when its successor is in the set"
     assert.equal(old?.status, "superseded");
     assert.equal(old?.supersededBy, "m-new");
     assert.equal(old?.supersededAt, "2026-08-01");
-    // Successor stays unlabeled by the filter — labeling is the inject seam's job.
     assert.equal(safe.find((r) => r.path === NEW)?.supersededBy, undefined);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -104,7 +103,6 @@ test("default (stateViewActive unset) keeps filtering superseded — zero-diff b
       explicitOff.map((r) => r.path),
       [NEW]
     );
-    // No chain fields leak onto survivors when the view is off.
     assert.equal(baseline[0]?.supersededBy, undefined);
     assert.equal(baseline[0]?.id, undefined);
   } finally {
@@ -153,8 +151,6 @@ test("a successor rejected by the status gate cannot anchor its superseded row (
           supersededAt: "2026-08-01",
         }),
       ],
-      // In memoryByPath (pre-filter) but rejected by the forgotten-status
-      // gate — pre-fix this id anchored m-old and admitted it.
       [NEW, memory(NEW, { id: "m-new", status: "forgotten" })],
       [OTHER, memory(OTHER, { id: "m-other", status: "active" })],
     ]);
@@ -222,10 +218,6 @@ test("#2859 namespace fanout collision: a same-id successor in another namespace
     const coordinator = await makeCoordinator(memoryDir);
     const A_OLD = "facts/a-old.md";
     const B_NEW = "facts/b-new.md";
-    // ns-a: superseded predecessor whose successor id m-1 is NOT in the
-    // candidate set. ns-b: an unrelated active row that reuses id m-1.
-    // Bare-id matching (pre-#2859) admitted the ns-a predecessor on the
-    // ns-b anchor; qualified keys must not.
     const results: QmdSearchResult[] = [
       { ...result(B_NEW, 0.9), namespace: "ns-b" },
       { ...result(A_OLD, 0.7), namespace: "ns-a" },
@@ -251,7 +243,6 @@ test("#2859 namespace fanout collision: a same-id successor in another namespace
       "a foreign-namespace successor must never anchor the superseded row"
     );
 
-    // Positive control: ns-a's own m-1 present → the pair is admitted.
     const A_NEW = "facts/a-new.md";
     const pairResults: QmdSearchResult[] = [
       { ...result(A_NEW, 0.9), namespace: "ns-a" },

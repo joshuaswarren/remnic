@@ -61,7 +61,6 @@ test("identity is deterministic for the same key", () => {
 });
 
 test("a bare token without the agent prefix is treated as arbitrary, not legacy", () => {
-  // "foo:bar:baz" must NOT be misread as channelType="baz".
   const id = parseSessionIdentity("foo:bar:baz");
   assert.equal(id.legacy, false);
   assert.equal(id.channelType, SESSION_CHANNEL_TYPE);
@@ -100,9 +99,7 @@ test("display label strips control characters and separators", () => {
 });
 
 test("legacyParserReadbackDir reconstructs the OLD parser dir for >=3-part keys", () => {
-  // foo:bar:baz → channelType=baz, channelId=default
   assert.equal(legacyParserReadbackDir("foo:bar:baz"), "baz/default");
-  // foo:bar:baz:qux → channelType=baz, channelId=qux
   assert.equal(legacyParserReadbackDir("foo:bar:baz:qux"), "baz/qux");
 });
 

@@ -339,7 +339,6 @@ test("legacy other/default data written by older builds remains readable", async
 });
 
 test("readRange with a session key dedupes a copied-but-not-trimmed partial migration", async () => {
-  // Thread 1 (cursor review on PR #1504): `readRange` scans EVERY transcript
   // file. Round 1 added raw-line dedup to readRecent/readToolUse/summarizer but
   // not to readRange, so a partially-applied migration that copied a row into
   // session/<hash> without trimming the legacy other/default source would yield

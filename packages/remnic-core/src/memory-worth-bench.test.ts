@@ -3,15 +3,9 @@ import assert from "node:assert/strict";
 
 import { runMemoryWorthBench } from "./memory-worth-bench.js";
 
-/**
- * Issue #560 PR 5 — bench verifies the filter wins against a no-filter
- * baseline on synthetic cases. If this test ever fails, do NOT ship the
- * default flip — something changed in the scorer math.
- */
 
 test("memory-worth bench: filter improves precision@5 on every seed case", () => {
   const result = runMemoryWorthBench({ cases: 50, seed: 0xdeadbeef });
-  // Sanity.
   assert.equal(result.cases, 50);
   assert.equal(result.k, 5);
   // The synthetic corpus is designed so the "true positives" only reach the

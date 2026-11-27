@@ -96,14 +96,6 @@ export async function writeMeetingEpisodeMemory(
   if (envelope.salvageNotes.length > 0) {
     log.warn(`meeting episode write salvaged invalid fields: ${envelope.salvageNotes.join("; ")}`);
   }
-  // Two reasons an episode is not a trusted anchor. (1) Only the title is
-  // provider-derived, so the classifier reads the TITLE alone — never our own
-  // deterministic rendering of id, clock, attendees, and sources. (2) An
-  // `audio` detection is a heuristic over speech alone with no corroborating
-  // app span, so fifteen minutes of television with two voices produces an
-  // episode asserting a meeting happened, with the show's speakers listed as
-  // attendees. `app+audio` and `provider` records carry that corroboration and
-  // stay active (#2294).
   const titleIsPersonalClaim =
     record.title !== undefined &&
     record.title.length > 0 &&
@@ -118,7 +110,6 @@ export async function writeMeetingEpisodeMemory(
   return true;
 }
 
-/** Write one deterministic episode per record, idempotently. */
 export async function generateMeetingEpisodes(
   records: readonly MeetingRecord[],
   writer: MeetingMemoryWriter,
@@ -132,11 +123,7 @@ export async function generateMeetingEpisodes(
   return { written, skipped };
 }
 
-// ---------------------------------------------------------------------------
-// Layer 2 — trust-gated LLM summary + facts (decisions, commitments, questions)
-// ---------------------------------------------------------------------------
 
-/** One LLM-extracted meeting claim. */
 export interface MeetingFactCandidate {
   /** Claim text (a decision, commitment, or open question). */
   content: string;
@@ -170,16 +157,12 @@ export interface MeetingSummaryDeps {
 export interface MeetingSummaryResult {
   /** False when summaryMode is `off` (the extractor is never called). */
   llmInvoked: boolean;
-  /** Facts written active. */
   active: number;
-  /** Facts written to the review queue (pending_review). */
   review: number;
-  /** Candidates dropped below the trust bar or judge-rejected. */
   dropped: number;
   /** Candidates/summary skipped because an identical memory already existed
    *  for this meeting (idempotent rebuild). */
   skipped: number;
-  /** True when a non-empty summary memory was written. */
   summaryWritten: boolean;
   /** Facts the #1579 tombstone chokepoint downgraded to pending_review (no
    *  active copy). Counted here, NOT in `active`/`review`, so callers never
@@ -243,17 +226,8 @@ async function writeMeetingFact(
   });
 }
 
-/** Confidence assigned to the synthesized meeting-summary fact. */
 const SUMMARY_FACT_CONFIDENCE = 0.8;
 
-/**
- * Route one meeting claim (candidate or the synthesized summary) to active /
- * review / drop through the SAME trust decision. `review` mode never
- * auto-actives (queue everything survivable); `smart` mode uses the shared
- * band decision. A judge reject drops in both. Used for BOTH the extracted
- * candidates and the summary text so a rejected/low-trust meeting can never
- * push its summary active behind the gate's back.
- */
 function resolveMeetingFactOutcome(
   config: MeetingsConfig,
   trust: number,
@@ -263,11 +237,6 @@ function resolveMeetingFactOutcome(
   if (config.summaryMode === "review") {
     return judgeVerdict === "reject" ? "drop" : "review";
   }
-  // A meeting transcript is the same always-on capture audio a wearable
-  // records, so it carries the same contamination risk — and the extractor
-  // hands decisions and commitments a fixed 0.8 confidence, which clears the
-  // default band on a judge accept alone. A high-impact personal claim tops
-  // out in the review queue here too (#2294).
   return decideSmart(
     trust,
     judgeVerdict,
@@ -312,10 +281,6 @@ export async function generateMeetingSummaryFacts(
   const warnings: string[] = [];
   const result: MeetingSummaryResult = { ...empty, llmInvoked: true, warnings };
 
-  // The durability judge is optional and external — a throw (provider outage,
-  // timeout, malformed response) must DEGRADE this pass, not abort the whole day
-  // build. Fall back to no verdicts so the trust bands still route each candidate
-  // (review mode → review; smart mode → trust-band decision) (#1900 round 2).
   let verdicts: Array<"accept" | "reject" | "defer"> | undefined;
   if (deps.judge) {
     try {
@@ -334,8 +299,6 @@ export async function generateMeetingSummaryFacts(
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i]!;
     const judgeVerdict = verdicts?.[i];
-    // Idempotent rebuild: an identical claim already persisted for THIS meeting
-    // must not be written a second time (facts are not in the fact-hash index).
     if (await deps.writer.hasMemoryFromSource(source, candidate.content)) {
       result.skipped++;
       continue;
@@ -354,9 +317,6 @@ export async function generateMeetingSummaryFacts(
     const status = outcome === "active" ? "active" : "pending_review";
     const write = await writeMeetingFact(record, candidate, status, deps.writer);
     if (write.tombstoneBlocked) {
-      // #1645: the tombstone chokepoint downgraded this fact to pending_review
-      // (no active copy). Count it as blocked, NEVER as the active/review write
-      // we requested, so the day summary never overstates persisted facts.
       result.tombstoneBlocked++;
     } else if (status === "active") {
       result.active++;
@@ -365,9 +325,6 @@ export async function generateMeetingSummaryFacts(
     }
   }
 
-  // The synthesized summary is a meeting claim too: gate it through the SAME
-  // trust decision so a meeting whose candidates were all rejected / below the
-  // bar cannot slip its summary in as an active fact (it was force-active before).
   const summaryText = summary.trim();
   if (summaryText.length > 0) {
     if (await deps.writer.hasMemoryFromSource(source, summaryText)) {
@@ -391,9 +348,6 @@ export async function generateMeetingSummaryFacts(
           outcome === "active" ? "active" : "pending_review",
           deps.writer,
         );
-        // #1645: a tombstone-blocked summary landed pending_review (no active
-        // copy) — record it as blocked, not as a written summary, so the day
-        // aggregate never reports a summary that was actually gated out.
         if (write.tombstoneBlocked) result.tombstoneBlocked++;
         else result.summaryWritten = true;
       }
@@ -526,25 +480,12 @@ export function createMeetingMemoryGenerator(
 ): MeetingMemoryGenerator {
   return {
     async onRecordsBuilt({ built, removedIds, unchangedIds, updatedIds }): Promise<MeetingMemoryOutcome> {
-      // Retract deleted meetings' memories (stale removals).
       for (const removedId of removedIds) {
         await writer.retireMemoriesFromSource(meetingSourceLabel(removedId));
       }
-      // Retract the prior memories of records that changed under a kept id, so the
-      // regeneration below REFRESHES the meeting (never leaves stale episodes/facts
-      // beside the new ones). The updated records are still in `built` and regenerate.
       for (const updatedId of updatedIds) {
         await writer.retireMemoriesFromSource(meetingSourceLabel(updatedId));
       }
-      // Generate changed + new records always. An unchanged record regenerates ONLY
-      // when its deterministic episode memory is ABSENT: a prior build persisted the
-      // record but its generation threw before the memories landed, so the store now
-      // reports the record in unchangedIds (contentHash identical) and a plain skip
-      // would strand the meeting with zero memories forever. "Unchanged" means skip
-      // only when the memories already exist. The episode is the sentinel — it is
-      // always written first (deterministic, no LLM), so an absent episode means the
-      // source is unwritten. Unchanged records whose episode already exists still skip,
-      // so an idempotent rebuild fires zero LLM calls and writes nothing.
       const unchanged = new Set(unchangedIds);
       const toGenerate: MeetingRecord[] = [];
       for (const record of built) {

@@ -263,11 +263,6 @@ test("paired baseline-locomo failure path clears the shared replay cache", () =>
   assert.equal(cleared, 1);
 });
 
-// --- Legacy evals/datasets discovery (#2867) -------------------------------
-//
-// `locomo` is used as the fixture benchmark: its downloaded-marker is a
-// single `locomo10.json` file, so a one-file directory is a complete
-// dataset for discovery purposes.
 
 async function writeLocomoDataset(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
@@ -374,8 +369,6 @@ test("discoverBenchDatasetDir: canonical wins when both locations exist, legacy 
     assert.ok(discovered);
     assert.equal(discovered.source, "canonical");
     assert.equal(discovered.dir, path.join(canonicalRoot, "locomo"));
-    // Canonical winning is not worth a warning; the legacy copy is simply
-    // ignored, untouched.
     assert.deepEqual(captured.lines(), []);
   } finally {
     captured.restore();
@@ -415,15 +408,12 @@ test("discoverBenchDatasetDir uses a legacy dataset read-only with a once-per-pr
     assert.match(warnings[0]!, /~\/\.remnic\/bench\/datasets/);
     assert.match(warnings[0]!, /evals\/datasets\/locomo/);
     assert.match(warnings[0]!, /read-only/);
-    // No host-resolved paths in the hint.
     assert.ok(!warnings[0]!.includes(base));
     assert.ok(!warnings[0]!.includes(os.homedir()));
   } finally {
     captured.restore();
   }
 
-  // No movement, link, or mutation: the legacy tree is byte-identical and
-  // nothing appeared in the canonical root.
   assert.equal(await hashTree(legacyRoot), legacyHashBefore);
   assert.deepEqual(await listDir(canonicalRoot), canonicalEntriesBefore);
 });
@@ -432,7 +422,6 @@ test("discoverBenchDatasetDir returns undefined when neither location has the da
   const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-discovery-"));
   const canonicalRoot = path.join(base, "canonical");
   const legacyRoot = path.join(base, "evals", "datasets");
-  // Canonical dir exists but lacks the marker file; legacy root is absent.
   await mkdir(path.join(canonicalRoot, "locomo"), { recursive: true });
 
   __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();

@@ -111,18 +111,8 @@ export async function appendInteractionLog(
   assertCanonicalIsoTimestamp(e.timestamp, "interaction entry timestamp");
   const file = interactionsPath(memoryDir, peerId);
   const line = formatLogEntry(e) + "\n";
-  // `appendFile` creates the file if it does not exist. Serialize writes
   // per file so concurrent callers' entries land in enqueue order —
   // `fh.writeFile` chunks a large entry across multiple writes, and an
-  // unqueued writer could otherwise interleave between them (#3564).
-  // The chain tail is kept on a .catch(() => {}) so one failed append
-  // does not poison the queue for followers.
-  //
-  // The queue slot is taken SYNCHRONOUSLY, before the directory awaits:
-  // a caller that awaits mkdir first can otherwise reach this block after
-  // a later caller (the dir already exists, so its mkdir returns faster),
-  // and the later entry would be written first. Taking the slot here makes
-  // enqueue order equal call order.
   const prev = appendQueues.get(file) ?? Promise.resolve();
   const write = prev.then(async () => {
     await mkdirPeerDirAtomic(memoryDir, peerId);

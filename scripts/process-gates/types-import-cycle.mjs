@@ -1,16 +1,4 @@
 #!/usr/bin/env node
-/**
- * Pre-push gate: types.ts is imported by every production module via the
- * `PluginConfig` interface and the type-only interfaces it exports. Pulling a
- * runtime module (storage, extraction, orchestration, lifecycle) into types.ts
- * — even via a `type`-only re-export — drags that module's import graph into
- * the DTS worker, which has OOM'd at ~320 MB on branches that mixed a new
- * config interface in.
- *
- * The rule: `types.ts` may import type-only from leaf modules. When its import
- * graph reaches a heavy runtime module, the addition must move into a sibling
- * leaf module re-exported by types.ts (RecognitionTierSettings precedent).
- */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -19,10 +7,6 @@ import { dirname, join } from "node:path";
 const repoRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const TYPES_FILE = "packages/remnic-core/src/types.ts";
 
-// Files whose own import graph fans out into the DTS worker enough to OOM it.
-// The cycle class that bit us: types.ts -> a sibling interface module ->
-// storage.ts (or orchestrator.ts). Reaching the leaf sibling is fine; reaching
-// a HEAVY entry point is what exhausts the heap.
 const HEAVY_MODULES = [
   "packages/remnic-core/src/storage.ts",
   "packages/remnic-core/src/extraction.ts",
@@ -43,7 +27,6 @@ function resolve(fromFile, spec) {
   const base = dirname(fromFile);
   // Drop query/hash suffixes that some bundlers emit.
   const raw = spec.split("?")[0].split("#")[0];
-  // Drop trailing "/index" or extension variants.
   const stripped = raw.replace(/\.js$/, ".ts");
   const candidates = [
     join(base, stripped),

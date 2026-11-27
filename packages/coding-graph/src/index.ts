@@ -1,53 +1,3 @@
-/**
- * @remnic/coding-graph — symbol-extraction engine + SQLite knowledge-graph
- * store for codebase memory.
- *
- * À-la-carte optional companion of @remnic/core (CLAUDE.md rule 57).
- *
- * This package unifies two PR1 surfaces:
- *   - The web-tree-sitter engine scaffold (#1551 step 1): the package and
- *     its build wiring exist; the engine public surface is declared and
- *     the placeholder factory throws a tagged
- *     `CodingGraphError("not_implemented", …)`. The real backend lands in
- *     #1551 PR2.
- *   - The SQLite knowledge-graph store (#1552 PR1): versioned schema + the
- *     write pipeline (upsert/drop file batches, node-id derivation,
- *     dangling-edge accounting). Traversal, search, dead-code, and the
- *     openCypher subset land in #1552 PR2/PR3.
- *
- * Type-source direction:
- *   The contract types (CodingGraphEngine, FileIR, etc.) and the
- *   TIER_1_LANGUAGES / CODING_GRAPH_ENGINE_VERSION constants live in
- *   @remnic/core (packages/remnic-core/src/coding/coding-graph-types.ts,
- *   re-exported from the main index). This package imports them and
- *   implements against them; it does NOT redefine them. That keeps a
- *   single source of truth so updating the engine version in one place
- *   keeps every consumer in lockstep (Cursor Bugbot low-severity on
- *   PR #1588 round 2: "ENGINE_VERSION duplicated not imported").
- *
- *   @remnic/coding-graph declares @remnic/core as both `peerDependencies`
- *   and `devDependencies: "workspace:*"` in its package.json, so the
- *   pnpm workspace link exists and the `import from "@remnic/core"`
- *   below resolves in development.
- *
- *   The store modules (graph-schema, graph-store, row-types) are local to
- *   this package; they import `openBetterSqlite3` from
- *   `@remnic/core/runtime/better-sqlite` so the native-binding lifecycle
- *   is paid for once there (rule 23/38: do not invent a new pattern).
- *
- * IR-type re-export policy:
- *   graph-store.ts imports the core IR contract types (`FileIR`,
- *   `SymbolIR`, etc.) from `@remnic/core/coding/coding-graph-types`
- *   and re-exports them so existing `import { type FileIR } from
- *   "./graph-store.js"` call-sites continue to resolve. The store
- *   does NOT redefine these types — it derives from the core contract
- *   so PR2 callers can pass `ParseResult.ir` directly
- *   (chatgpt-codex-connector P2: 'Derive store FileIR from the core
- *   parser contract'). At the package root, `FileIR`/`SymbolIR`
- *   resolve to the @remnic/core contract types re-exported below;
- *   the store-specific `StoreFileIR` (FileIR + edges extension) and
- *   `EdgeIR` are re-exported from the root via graph-store.
- */
 
 import {
   CODING_GRAPH_ENGINE_VERSION,
@@ -62,7 +12,6 @@ import {
   type SymbolIR,
 } from "@remnic/core";
 
-// ---------------------------------------------------------------------------
 // Engine version — single source of truth lives in @remnic/core as
 // `CODING_GRAPH_ENGINE_VERSION`. We re-export it under the conventional
 // `ENGINE_VERSION` name (the dynamic-import loader in @remnic/core
@@ -70,9 +19,7 @@ import {
 // available so any consumer that wants the local name or the core
 // name gets the same value. Updating the constant in core propagates
 // here automatically.
-// ---------------------------------------------------------------------------
 
-/** Public engine version. Imported from @remnic/core (single source of truth). */
 export const ENGINE_VERSION = CODING_GRAPH_ENGINE_VERSION;
 
 /** Core-alias re-export so callers can use either name. */
@@ -293,10 +240,6 @@ export {
   type CypherValue,
 } from "./cypher/query-parser.js";
 // ---------------------------------------------------------------------------
-// PR (issue #1555): Phase B type resolution — LSP client layer over
-// installed language servers. Minimal JSON-RPC-over-stdio client, server
-// registry, resolution pass, and status surfacing. All behind
-// `codingGraph.lsp.enabled` (default false — rule 30/48).
 // ---------------------------------------------------------------------------
 
 export {
@@ -375,10 +318,6 @@ export type {
 
 
 // ---------------------------------------------------------------------------
-// Semantic layer (issue #1556): symbol embeddings, SIMILAR_TO near-clone
-// edges, and semantic_query. OFF by default (SemanticConfig.enabled = false).
-// The layer builds on @remnic/core's host embedding provider + fallback —
-// no new embedding stack. See ./semantic/index.ts for the full surface.
 // ---------------------------------------------------------------------------
 
 export * from "./semantic/index.js";

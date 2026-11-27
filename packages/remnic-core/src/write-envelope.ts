@@ -1,28 +1,3 @@
-/**
- * Sealed memory-write envelope (issue #1989, umbrella #1988).
- *
- * THE single stamping point for cross-cutting memory-creation fields.
- *
- * Why this exists: PR #1852 needed 27 rework commits because adding one
- * cross-cutting field (`sourceConnector`) required hand-editing every
- * write call site and every idempotency payload, and reviewers discovered
- * missed sites one round at a time. This module removes the fan-out:
- *
- *   1. `composeMemoryEnvelope()` is the only way to mint a
- *      `SealedMemoryEnvelope` — the brand is a non-exported `unique symbol`,
- *      so a hand-built object literal fails `tsc` (`npm run check-types`
- *      is already a required repo-wide gate; the type system IS the fence).
- *   2. `buildWriteIdempotencyPayload()` derives every access-surface
- *      idempotency payload from ONE ordered field registry
- *      (`WRITE_FINGERPRINT_FIELDS`). Adding a fingerprint-relevant field is
- *      a one-line registry change picked up by every surface; forgetting to
- *      classify a new `MemoryWriteInput` field is a compile error (see the
- *      exhaustiveness guards at the bottom of this file).
- *
- * PR1 scope (no call-site changes): the composer, the registry, and the
- * payload builder, fully tested. PR2–PR4 migrate storage entry points and
- * the write call sites onto this module (see #1989 for the slicing).
- */
 
 import { isMemorySubject } from "./memory-subject.js";
 import type { MemoryCategory, MemorySubject } from "./types.js";
@@ -30,17 +5,7 @@ import { normalizeTags } from "./recall-tag-filter.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { assemblePersistedBody } from "./structured-attributes.js";
 
-// ---------------------------------------------------------------------------
-// Input surface
-// ---------------------------------------------------------------------------
 
-/**
- * Every cross-cutting memory-creation field lives HERE and only here.
- *
- * When you add a field you MUST also add it to either
- * `WRITE_FINGERPRINT_FIELDS` or `FINGERPRINT_EXEMPT_FIELDS` — the
- * exhaustiveness guard below makes forgetting a compile error.
- */
 export interface MemoryWriteInput {
   /** Raw memory content. Must be non-empty after trimming. */
   content: string;
@@ -86,7 +51,6 @@ export interface FingerprintScope {
 }
 
 // ---------------------------------------------------------------------------
-// Normalization limits (single source of truth — docs/tags.md contract)
 // ---------------------------------------------------------------------------
 
 export const TAG_LIMITS = Object.freeze({
@@ -133,7 +97,6 @@ export function isMemoryCategory(value: string): value is MemoryCategory {
 }
 
 // ---------------------------------------------------------------------------
-// Sealed envelope
 // ---------------------------------------------------------------------------
 
 declare const sealed: unique symbol;
@@ -147,20 +110,7 @@ declare const sealed: unique symbol;
  */
 export interface SealedMemoryEnvelope {
   readonly [sealed]: true;
-  /**
-   * Caller-supplied content VERBATIM (validated non-empty-after-trim).
-   * `StorageManager.writeMemory` persists content byte-for-byte (callers
-   * that trim, e.g. explicit capture, do so before composing), so the
-   * envelope must not transform it — the earlier compose-time trim/sanitize
-   * broke byte-parity with extraction writes and was removed in PR2.
-   */
   readonly content: string;
-  /**
-   * The exact body persistence will write: attribute-suffix enrichment then
-   * combined sanitization, produced by the SAME `assemblePersistedBody`
-   * helper `writeMemory` uses (issue #1989 PR2; AGENTS.md §13). This is the
-   * form write-idempotency fingerprints hash.
-   */
   readonly persistedBody: string;
   /** Injection patterns matched during body assembly (empty = clean). */
   readonly sanitizeViolations: readonly string[];
@@ -177,14 +127,6 @@ export interface SealedMemoryEnvelope {
    * fingerprints and downstream consumers use; stable across caller casing.
    */
   readonly structuredAttributes: Readonly<Record<string, string>> | undefined;
-  /**
-   * The validated ORIGINAL attribute map, byte-preserved. `writeMemory`
-   * persists frontmatter attributes raw (canonicalizing only the body
-   * suffix via normalizeAttributePairs) — a pre-existing raw/canonical
-   * inconsistency (supersession keys read the raw form). The sealed path
-   * preserves those bytes; canonicalizing the frontmatter at the storage
-   * boundary is a follow-up once the legacy path retires (#1989 PR4).
-   */
   readonly rawStructuredAttributes: Readonly<Record<string, string>> | undefined;
   readonly entityRef: string | undefined;
   readonly confidence: number | undefined;
@@ -203,26 +145,10 @@ function fail(field: string, message: string): never {
   throw new Error(`composeMemoryEnvelope: ${field} ${message}`);
 }
 
-/**
- * Compose-time input hygiene mode (issue #1989 PR2, review round on #2014).
- *
- * - `strict` (default): every invalid field throws — correct for OPERATOR
- *   and API input (explicit capture, memory_store), where a bad value is a
- *   caller bug that must surface.
- * - `salvage`: for MACHINE-GENERATED input (LLM extraction, wearable
- *   ingestion). One malformed fact from an extractor must not abort a whole
- *   persistence batch that legacy `writeMemory` would have accepted.
- *   Invalid tags/attributes/optional fields are DROPPED with a note pushed
- *   to `envelope.salvageNotes` — visible, never silent (repo rule 34);
- *   callers log the notes. Content, category, ctx.source, and validAt stay
- *   FATAL in both modes (legacy writeMemory also throws on bad validAt, and
- *   a write without valid content/category cannot proceed).
- */
 export interface ComposeEnvelopeOptions {
   salvage?: boolean;
 }
 
-/** Internal reporter: throws in strict mode, records a note in salvage. */
 interface Hygiene {
   salvage: boolean;
   notes: string[];
@@ -241,18 +167,6 @@ function makeHygiene(salvage: boolean): Hygiene {
   };
 }
 
-/**
- * Validate and CANONICALIZE `validAt` via the repo's shared flexible ISO
- * parser (`utils/iso-timestamp.ts`) — the same family durable writes use, so
- * the envelope can never accept a value storage would reject or reinterpret
- * (review findings on #1998: no second validation convention; reduced
- * precision like `2026-07-17T09:30Z` is valid; offsets are bounded ±14:00;
- * `Date.parse` alone is not an ISO validator).
- *
- * Canonical form is the epoch round-trip (`Date.toISOString()`), so
- * fingerprints are identical for `...T09:30Z`, `...T09:30:00.000Z`, and the
- * same instant expressed with an offset (§13 hash-consistency).
- */
 function validateIsoTimestamp(field: string, value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) fail(field, "must be a non-empty ISO 8601 timestamp");
@@ -303,9 +217,6 @@ function normalizeStructuredAttributes(
     Array.isArray(raw) ||
     (Object.getPrototypeOf(raw) !== Object.prototype && Object.getPrototypeOf(raw) !== null)
   ) {
-    // Map/Date/class instances have empty Object.entries() and would
-    // silently normalize to "no attributes" (review finding on #1998
-    // round 5) — never a plain pass-through.
     hygiene.flag("structuredAttributes", "must be a plain object of string values (Map, Date, and class instances are rejected) — dropped");
     return undefined;
   }
@@ -318,19 +229,10 @@ function normalizeStructuredAttributes(
     );
     entries = entries.slice(0, STRUCTURED_ATTRIBUTE_LIMITS.maxEntries);
   }
-  // Keys that collide with Object.prototype machinery are REJECTED outright:
-  // `hashAccessIdempotencyPayload`'s stableStringify rebuilds objects with
-  // plain assignment, where a "__proto__" own property silently vanishes —
-  // so such a key can never round-trip through the fingerprint faithfully
-  // (review finding on #1998 round 3). Rejection beats smuggling (§1/§39).
   const FORBIDDEN_ATTRIBUTE_KEYS = ["__proto__", "constructor", "prototype"];
   const out: Record<string, string> = Object.create(null);
   const survivingOriginal: Array<[string, string]> = [];
   for (const [key, value] of entries) {
-    // Canonicalize exactly like storage's normalizeAttributePairs
-    // (storage.ts:1277): keys trim+lowercase, values trim — so the
-    // fingerprint and the persisted searchable form can never diverge
-    // (review finding on #1998; AGENTS.md §13 hash-consistency).
     const cleanKey = key.trim().toLowerCase();
     if (cleanKey.length === 0) {
       hygiene.flag("structuredAttributes", "contain an empty key");
@@ -364,9 +266,6 @@ function normalizeStructuredAttributes(
     survivingOriginal.push([key, value]);
   }
   if (Object.keys(out).length === 0) return undefined;
-  // Copy onto a normal object so downstream JSON/stableStringify behavior is
-  // unchanged; keys are already validated. The RAW map carries only the
-  // SURVIVING original pairs — dropped entries must not reach frontmatter.
   return {
     canonical: Object.freeze({ ...out }),
     raw: Object.freeze(Object.fromEntries(survivingOriginal)),
@@ -391,15 +290,6 @@ function normalizeOptionalString(
   return trimmed;
 }
 
-/**
- * Compose (normalize + validate + seal) a memory-write envelope.
- *
- * Strict mode (default) throws on any invalid input — never silently
- * defaults (AGENTS.md §1/§39). Salvage mode (`{ salvage: true }`, for
- * machine-generated input like LLM extraction) drops invalid OPTIONAL
- * fields with notes on `envelope.salvageNotes` instead of aborting the
- * batch; content/category/source/validAt stay fatal in both modes.
- */
 export function composeMemoryEnvelope(
   input: MemoryWriteInput,
   ctx: WriteContext,
@@ -451,9 +341,6 @@ export function composeMemoryEnvelope(
     }
   }
 
-  // validAt stays FATAL in salvage too: legacy writeMemory throws on an
-  // invalid validAt (normalizeMemoryWriteTimestamp), so salvage-dropping it
-  // would CHANGE behavior rather than preserve it.
   const validAt =
     input.validAt === undefined ? undefined : validateIsoTimestamp("validAt", input.validAt);
 
@@ -463,12 +350,6 @@ export function composeMemoryEnvelope(
   }
 
   const attributes = normalizeStructuredAttributes(input.structuredAttributes, hygiene);
-  // Assemble the EXACT persisted form (attribute suffix + combined sanitize)
-  // with the same helper writeMemory uses — fingerprints hash this form, so
-  // envelope and storage cannot diverge (§13; #1998 round-8 thread resolved
-  // here in PR2 as promised). writeMemory assembles from the RAW map;
-  // normalizeAttributePairs canonicalizes internally, so raw and canonical
-  // maps yield the same suffix — asserted by the parity suite.
   const assembled = assemblePersistedBody(
     input.content,
     attributes ? { ...attributes.raw } : undefined,
@@ -502,24 +383,10 @@ export function composeMemoryEnvelope(
   return envelope;
 }
 
-// The runtime seal registry. The declared `sealed` unique symbol exists only
-// at the type level (compile-time fence); this WeakSet is the runtime fence.
 const SEALED_ENVELOPES = new WeakSet<object>();
 
-/**
- * TOCTOU guard for the structural arm (#2014 round 4): a frozen object may
- * still carry ACCESSOR properties whose getters return different values on
- * each read — valid data during re-composition, forged data when the write
- * path reads the field again. Frozen DATA properties are immutable, so
- * requiring data-only descriptors (on the envelope and its array/map
- * fields) makes every later read provably identical to the validated one.
- */
 function hasOnlyFrozenDataProperties(value: object): boolean {
   if (!Object.isFrozen(value)) return false;
-  // Inherited accessors are as dangerous as own ones (round 5): a frozen
-  // object can inherit a `tags` getter from a custom prototype. Composer
-  // envelopes are plain object literals and plain arrays — require exactly
-  // those prototypes so prototype-supplied getters cannot serve fields.
   const proto = Object.getPrototypeOf(value);
   if (Array.isArray(value)) {
     if (proto !== Array.prototype) return false;
@@ -535,26 +402,6 @@ function hasOnlyFrozenDataProperties(value: object): boolean {
   return true;
 }
 
-/**
- * Runtime check (belt) — the compile-time brand is the real fence.
- *
- * Fast path: WeakSet membership (same module graph). Fallback: RE-COMPOSITION
- * EQUIVALENCE — Node resolves `@remnic/core` through `dist/` for built
- * consumers and `src/` for tsx-loaded tests, and each graph gets its OWN
- * WeakSet, so identity alone would reject genuinely-sealed envelopes that
- * crossed a build boundary. The structural arm requires frozen DATA-only
- * properties (no accessors — TOCTOU guard, round 4), then re-runs the
- * STRICT composer on the candidate's own inputs and demands every envelope
- * field reproduce exactly (#2014 round 2: shape-only validation admitted
- * lookalikes with 51 tags or out-of-range confidence). A value that
- * survives has, by construction, passed every composer invariant, and its
- * fields cannot change between validation and the write that follows.
- *
- * `salvageNotes` is deliberately NOT compared: a legitimately salvage-minted
- * envelope carries notes while the strict re-composition of its (already
- * clean) surviving fields yields none. Notes are advisory provenance, not
- * identity — every load-bearing field is still verified.
- */
 
 export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnvelope {
   if (typeof value !== "object" || value === null) return false;
@@ -613,8 +460,6 @@ export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnv
       { source: v.source, now: () => new Date(v.composedAt as string) },
     );
   } catch {
-    // Strict re-composition rejected an input — the candidate carries a
-    // value the composer would never have minted.
     return false;
   }
   const sameArray = (a: readonly string[], b: readonly string[]): boolean =>
@@ -648,12 +493,6 @@ export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnv
   );
 }
 
-/**
- * The ONE mapping from a sealed envelope (+ extras) to the legacy
- * `writeMemory(category, content, options)` argument shape. Used by
- * `StorageManager.writeSealedMemory` AND by test doubles that stub storage —
- * so mock fidelity (AGENTS.md §21) cannot drift from production.
- */
 export function sealedWriteToLegacyArgs(
   envelope: SealedMemoryEnvelope,
   extras: Record<string, unknown> = {},
@@ -669,15 +508,9 @@ export function sealedWriteToLegacyArgs(
       source: envelope.source,
       expiresAt: envelope.ttl,
       validAt: envelope.validAt,
-      // RAW map for frontmatter byte-parity with the legacy path; the body
-      // suffix canonicalizes identically from either form.
       structuredAttributes: envelope.rawStructuredAttributes
         ? { ...envelope.rawStructuredAttributes }
         : undefined,
-      // Unconditional (round 3): envelope-owned fields must ALWAYS overwrite
-      // extras — a conditional spread let extras.sourceConnector smuggle
-      // unvalidated connector provenance past the sealed envelope when the
-      // envelope had none.
       origin: envelope.origin,
       sourceConnector: envelope.sourceConnector,
       subject: envelope.subject,
@@ -686,15 +519,8 @@ export function sealedWriteToLegacyArgs(
 }
 
 // ---------------------------------------------------------------------------
-// Idempotency field registry
 // ---------------------------------------------------------------------------
 
-/**
- * Ordered registry of envelope fields that participate in write-idempotency
- * fingerprints. Adding a fingerprint-relevant field = one entry here; every
- * surface that builds its payload via `buildWriteIdempotencyPayload()` picks
- * it up automatically.
- */
 export const WRITE_FINGERPRINT_FIELDS = [
   "content",
   "category",
@@ -706,20 +532,9 @@ export const WRITE_FINGERPRINT_FIELDS = [
   "sourceConnector",
 ] as const satisfies readonly (keyof MemoryWriteInput)[];
 
-/**
- * Envelope fields deliberately EXCLUDED from fingerprints. Exempting a field
- * is a visible, reviewable decision — this list exists so the exhaustiveness
- * guard can force every new `MemoryWriteInput` field to be classified.
- */
 export const FINGERPRINT_EXEMPT_FIELDS = [
-  // Confidence is a scoring detail: two extractions of the same fact with
-  // slightly different confidence are the same write for dedup purposes.
   "confidence",
-  // Free-text provenance note; carries no identity.
-  // Origin is provenance metadata, not write identity (#1955).
   "origin",
-  // Subject is derived classification metadata (#2372): two writes identical
-  // except subject are the same memory for dedup purposes.
   "subject",
   "sourceReason",
 ] as const satisfies readonly (keyof MemoryWriteInput)[];
@@ -732,10 +547,6 @@ export const FINGERPRINT_SCOPE_FIELDS = [
   "codingContext",
 ] as const satisfies readonly (keyof FingerprintScope)[];
 
-// --- compile-time exhaustiveness guards ------------------------------------
-// A new MemoryWriteInput field that is in NEITHER list is a compile error;
-// a registry entry that names a non-existent field is a compile error; a
-// field in BOTH lists is a compile error.
 
 type RegistryField = (typeof WRITE_FINGERPRINT_FIELDS)[number];
 type ExemptField = (typeof FINGERPRINT_EXEMPT_FIELDS)[number];
@@ -748,23 +559,8 @@ void assertEveryFieldClassified;
 void assertNoDoubleClassification;
 
 // ---------------------------------------------------------------------------
-// Payload builder
 // ---------------------------------------------------------------------------
 
-/**
- * Build the canonical write-idempotency payload for a sealed envelope.
- *
- * Determinism guarantees (AGENTS.md §26):
- *   - tags are SORTED in the payload (tag order never changes identity);
- *   - structured attributes are serialized key-sorted by the existing
- *     `stableStringify` inside `hashAccessIdempotencyPayload`;
- *   - the payload shape is versioned (`v: 1`) so a future field-semantics
- *     change can migrate stored idempotency state explicitly instead of
- *     silently colliding.
- *
- * Feed the result to `hashAccessIdempotencyPayload()` — this module does
- * not hash so surfaces keep a single hashing implementation.
- */
 export function buildWriteIdempotencyPayload(
   envelope: SealedMemoryEnvelope,
   scope: FingerprintScope,
@@ -792,18 +588,11 @@ export function buildWriteIdempotencyPayload(
       continue;
     }
     if (field === "content") {
-      // Fingerprints hash the PERSISTED form (attribute suffix + combined
-      // sanitize), not the raw input — one instant of stored state, one
-      // fingerprint (§13; issue #1989 PR2).
       fields.content = envelope.persistedBody;
       continue;
     }
     fields[field] = value;
   }
-  // The write source (extraction vs wearable:bee vs observe replay, ...) is
-  // identity: the same content arriving from two different sources must not
-  // dedupe into one write (review finding on #1998). Not a MemoryWriteInput
-  // key, so it rides beside the registry fields explicitly.
   fields.source = envelope.source;
 
   const scopeOut: Record<string, string> = {};
@@ -813,8 +602,6 @@ export function buildWriteIdempotencyPayload(
     if (typeof value !== "string") {
       throw new Error(`buildWriteIdempotencyPayload: scope.${key} must be a string`);
     }
-    // Trimmed: "ns" and "ns " must not mint distinct fingerprints (review
-    // finding on #1998). Empty-after-trim optional scope values are dropped.
     const cleanValue = value.trim();
     if (key === "surface" || cleanValue.length > 0) {
       scopeOut[key] = cleanValue;
@@ -825,25 +612,9 @@ export function buildWriteIdempotencyPayload(
 }
 
 // ---------------------------------------------------------------------------
-// Access-surface request fingerprints (issue #1989 PR3)
 // ---------------------------------------------------------------------------
 //
-// The access surfaces (memory_store / suggestion_submit writes, their peek
-// twins, and observe) key their idempotency dedup on a hash of the RAW
-// request — computed BEFORE validation, and persisted indefinitely in
-// `AccessIdempotencyStore` (last-512 LRU, no time TTL). Those stored hashes
-// are load-bearing state: changing the payload shape would silently break
-// replay/conflict detection for every in-flight key. So these builders
-// REPRODUCE each surface's historical shape byte-for-byte (asserted by the
-// parity suite) instead of adopting the versioned envelope payload above —
-// a versioned migration of stored state is the explicit prerequisite for
-// unifying them (#1989 PR3 scope note).
 //
-// What centralizing buys even under byte-parity: one module now owns every
-// fingerprint shape, and the compile-time assertion below ties the write
-// shape to WRITE_FINGERPRINT_FIELDS — adding a fingerprint-relevant field
-// to MemoryWriteInput fails compilation here until the author decides how
-// the access surfaces represent it.
 
 /** The raw request fields the write surfaces fingerprint (legacy shape). */
 export interface AccessWriteFingerprintParts {
@@ -859,13 +630,6 @@ export interface AccessWriteFingerprintParts {
   sourceConnector?: string;
 }
 
-// Registry coupling: every fingerprint-relevant MemoryWriteInput field must
-// either appear in AccessWriteFingerprintParts or be named in this explicit
-// exemption list. `structuredAttributes` and `validAt` are exempt because
-// the access write requests cannot express them today (ExplicitCaptureInput
-// has no such fields) — the moment they become representable, this type
-// stops compiling and forces a fingerprint decision (+ versioned state
-// migration) instead of a silent dedup gap.
 type AccessSurfaceUnrepresentable = "structuredAttributes" | "validAt";
 type UncoveredAccessFingerprintField = Exclude<
   Extract<RegistryField, keyof MemoryWriteInput>,
@@ -876,14 +640,6 @@ const assertAccessFingerprintCoversRegistry: UncoveredAccessFingerprintField ext
   : never = true;
 void assertAccessFingerprintCoversRegistry;
 
-/**
- * Fingerprint payload for `memory_store` / `suggestion_submit` (write AND
- * peek paths — both MUST call this so peek can never diverge from the
- * write it predicts). Key set and values reproduce the historical inline
- * literals exactly; `hashAccessIdempotencyPayload`'s stableStringify sorts
- * keys and drops `undefined`, so optional absent fields hash identically
- * to the old shape.
- */
 export function buildAccessWriteRequestFingerprint(
   parts: AccessWriteFingerprintParts,
 ): Record<string, unknown> {

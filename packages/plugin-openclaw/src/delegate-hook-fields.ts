@@ -1,10 +1,3 @@
-/**
- * Reading the untyped hook payloads OpenClaw hands the delegate runtime.
- *
- * Every function here is pure: it takes an `event` / `ctx` pair (or a daemon
- * response) and answers one question about it. They live beside the runtime so
- * the runtime file stays about the memory loop itself.
- */
 
 import type {
   RecallContextComposition,
@@ -13,11 +6,6 @@ import type {
 
 import { extractTextContent } from "./transcript-turns.js";
 
-/**
- * The daemon caps request bodies (128 KiB by default), and a host may hand the
- * hook its whole assembled prompt. The current turn is at the END of such a
- * prompt, so the query keeps the tail.
- */
 const MAX_RECALL_QUERY_CHARS = 1_500;
 
 export function sessionKeyFrom(
@@ -60,14 +48,6 @@ type OpenClawRoutingModule = {
 
 let openClawRoutingModulePromise: Promise<OpenClawRoutingModule | undefined> | undefined;
 
-/**
- * The host supplies `openclaw` as a peer dependency and host-free dev/test
- * environments do not install it, so the upstream helper is probed lazily
- * instead of imported statically — a static import would fail plugin load and
- * host-free test runs outright on resolution misses. The public subpath has
- * exported `isSubagentSessionKey` since upstream 2026.3, so every supported
- * host resolves the probe; the mirrored local predicate only covers misses.
- */
 export function openClawRoutingModule(): Promise<OpenClawRoutingModule | undefined> {
   openClawRoutingModulePromise ??= import(
     "openclaw/plugin-sdk/routing"
@@ -99,9 +79,6 @@ export function recallQueryFrom(
   event: Record<string, unknown>,
   cleanUserMessage: (text: string) => string,
 ): string {
-  // The current turn is `event.prompt`; `event.messages` is the transcript
-  // BEFORE it, so its last user entry is only a fallback for a host that ships
-  // no usable prompt (embedded parity: the 5-char floor).
   let prompt = typeof event.prompt === "string" ? cleanUserMessage(event.prompt).trim() : "";
   if (prompt.length < 5 && Array.isArray(event.messages)) {
     const msgs = event.messages as Array<Record<string, unknown>>;
@@ -118,9 +95,6 @@ export function recallQueryFrom(
   return prompt.length > MAX_RECALL_QUERY_CHARS ? prompt.slice(-MAX_RECALL_QUERY_CHARS) : prompt;
 }
 
-/** Embedded parity: the workspace dir can arrive per hook (ctx/event), not
- * just at registration. Prefer the hook-scoped value; fall back to the
- * registration-time cwd. */
 export function cwdFrom(
   event: Record<string, unknown>,
   ctx: Record<string, unknown>,

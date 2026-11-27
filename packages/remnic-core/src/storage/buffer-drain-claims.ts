@@ -1,58 +1,3 @@
-/**
- * Durable drain claims for the extraction buffer (`remnic buffer drain`).
- *
- * A claim is the atomic handover of one session's buffered turns from the
- * live buffer (daemon or CLI process) to a drain worker, so extraction can
- * run out of process without a live buffer owner resurrecting or losing the
- * turns. Files under `<stateDir>/buffer/drain/`:
- *
- *   s-<sha256(key)>.json        claim content: { key, entry, claimedAt }
- *                               — the turns NOT yet extracted. Renamed into
- *                               place from the session file (atomic on one
- *                               filesystem), rewritten atomically as chunks
- *                               drain.
- *   s-<sha256(key)>.lease.json  { ownerId, pid, acquiredAt, heartbeatAt,
- *                               leaseMs } — created with exclusive-create so
- *                               exactly one drainer holds a key.
- *   s-<sha256(key)>.json.inbox.jsonl
- *                               append-only hand-ins from a live buffer owner,
- *                               one `\n`-prefixed JSON record per line:
- *                               { id, key, ...entry }. mergeIntoClaim only
- *                               appends here (O(incoming)); the claim a reader
- *                               sees is the body with every record folded in
- *                               by the identity-aware merge. The drainer's
- *                               progress write (and ack) folds the inbox into
- *                               the body, lists the folded ids in the body's
- *                               `foldedRecords`, and only then deletes the
- *                               inbox, so a kill between the two replays
- *                               nothing. A torn last line is skipped: its
- *                               owner never saw the append succeed.
- *   s-<sha256(key)>.json.count  cached { pending, drained, oldestTurnAt? }
- *                               turn counts of the body (oldestTurnAt added by
- *                               #3442; absent in older sidecars), valid while
- *                               the body's size and mtime match, so listings
- *                               and the hand-over gate never parse a body.
- *
- * Rolling back to a build that predates the inbox: run `foldAllInboxes()` (CLI:
- * `remnic buffer drain --fold-inboxes`) first; that build never reads an inbox.
- *
- * Invariants (see the buffer-drain PR for the full protocol):
- *   - At every instant the claim (body plus unfolded inbox) holds exactly the
- *     turns whose extraction is not durably finished, so a kill at any point
- *     loses nothing and the next run resumes.
- *   - A live buffer owner that must persist a claimed session hands its
- *     in-memory entry INTO the claim (identity-aware, occurrence-preserving
- *     merge) instead of writing a session file — it can never resurrect
- *     turns the drain already finished.
- *   - Claims are idempotent: re-claiming, double-draining, and two
- *     concurrent drainers are all safe (per-key mutation lock + exclusive
- *     lease; the lock also fences lease takeover and progress writes).
- *
- * All content reads/writes go through the storage's secure file I/O
- * (`BufferFileIo`); only lease/existence checks and the count summary touch
- * raw paths, and claim rewrites and inbox appends serialize on a cross-process
- * held file lock.
- */
 
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
@@ -70,7 +15,6 @@ import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import type { BufferEntryState, BufferTurn } from "../types.js";
 
-/** Result of persisting one session's entry. */
 export interface BufferSessionSaveOutcome {
   /** "saved": the session file holds the entry. "handed_over": the entry moved into a drain claim. */
   status: "saved" | "handed_over";
@@ -117,7 +61,6 @@ export interface DrainClaimFile {
   foldedRecords?: string[];
 }
 
-/** One hand-in appended to the claim's inbox by a live buffer owner. */
 interface InboxRecord {
   id: string;
   entry: BufferEntryState;
@@ -151,7 +94,6 @@ export interface DrainClaimListing {
   leaseExpired: boolean;
 }
 
-/** Lock while a claim is read-modify-written; released on settle. */
 const CLAIM_LOCK_STALE_MS = 120_000;
 const CLAIM_LOCK_MAX_WAIT_MS = 120_000;
 
@@ -168,13 +110,6 @@ function turnCounts(turns: readonly BufferTurn[]): Map<string, number> {
   return counts;
 }
 
-/**
- * Append the incoming occurrences the claim does not hold yet. `counts` is the
- * claim's per-identity occurrence count at the START of this merge (it is
- * updated after, not during, so two equal incoming turns can both land) and
- * stays in step across successive merges, so folding N records costs one pass
- * over the claim instead of N.
- */
 function appendNewOccurrences(target: BufferTurn[], counts: Map<string, number>, incoming: readonly BufferTurn[]): void {
   const incomingCounts = new Map<string, number>();
   const added: string[] = [];
@@ -229,14 +164,6 @@ function takeByIdentity(source: readonly BufferTurn[], identity: string, count: 
   return source.filter((turn) => bufferTurnIdentityKey(turn) === identity).slice(0, count);
 }
 
-/**
- * The claim a reader sees: the body with every not-yet-compacted inbox record
- * merged in order. A record whose id the body already lists (`foldedRecords`)
- * was consumed by a compaction whose inbox delete never ran, so it is skipped
- * exactly. The claim's own lists already exclude what was extracted; each
- * tombstone applies only to the incoming copy in the list the turn was
- * extracted from.
- */
 function foldRecords(claim: DrainClaimFile, records: readonly InboxRecord[]): DrainClaimFile {
   const consumed = new Set(claim.foldedRecords);
   const fresh = records.filter((record) => !consumed.has(record.id));
@@ -262,10 +189,6 @@ function foldRecords(claim: DrainClaimFile, records: readonly InboxRecord[]): Dr
   return { ...claim, entry };
 }
 
-/**
- * Is the lease owner still running? Only decidable on the owner's host; a
- * lease from another host counts as alive (its expiry decides).
- */
 function isOwnerAlive(lease: DrainLease): boolean {
   if (lease.host !== hostname()) return true;
   if (!Number.isInteger(lease.pid) || lease.pid <= 0) return true;
@@ -310,9 +233,6 @@ function parseBody(raw: string): DrainClaimFile | null {
   } catch {
     return null;
   }
-  // Two on-disk shapes, one format: a claim born from rename keeps the flat
-  // session-file shape ({key, turns, ...}) until its first rewrite, which
-  // nests under `entry`. Accept both.
   const source = body.entry && Array.isArray(body.entry.turns) ? body.entry : body;
   if (!Array.isArray(source.turns)) return null;
   const entry = emptyEntry();
@@ -358,12 +278,6 @@ const inboxRecordSchema = z.object({
   extractionCount: z.number().optional(),
 });
 
-/**
- * Parse an inbox file: one JSON record per line. A record that does not parse
- * (a torn tail from a kill mid-append) is skipped: its owner never saw the
- * append succeed and keeps the save pending. Records are newline-PREFIXED, so
- * a torn tail can never fuse with the next record.
- */
 function parseInbox(raw: string): InboxRecord[] {
   const records: InboxRecord[] = [];
   for (const line of raw.split("\n")) {
@@ -446,14 +360,10 @@ function leaseBelongsToProcess(lease: DrainLease | null, ownerId: string): boole
 }
 
 
-/** Hand-in log beside a claim body; `.jsonl`, so claim-directory scans (`.json`) never mistake it for a claim. */
 const INBOX_SUFFIX = ".inbox.jsonl";
-/** Cached turn counts beside a claim body (see `ClaimSummary`). */
 const COUNT_SUFFIX = ".count";
-/** Above this, a listing does not parse an inbox while the body still has pending turns (COS-666i). */
 const INBOX_LISTING_PARSE_LIMIT = 1_048_576;
 /** Node cannot build a string longer than this; an inbox this big can never be read. */
-// shortcut: counts bytes, so a multi-byte-heavy inbox just over this is skipped though readable; fold it by hand then.
 const INBOX_UNREADABLE_BYTES = 0x1fffffe8;
 
 /** Claim bodies `listPage` may read per requested entry: bounds one scan's
@@ -505,7 +415,6 @@ export class BufferDrainClaims {
     return `${this.fileFor(key)}.lock`;
   }
 
-  /** Append-only hand-in log next to the body (see the file header). */
   private inboxFor(key: string): string {
     return `${this.fileFor(key)}${INBOX_SUFFIX}`;
   }
@@ -528,12 +437,6 @@ export class BufferDrainClaims {
     }
   }
 
-  /**
-   * Every inbox record, oldest first. Only "no inbox" reads as empty: any
-   * other failure (a locked or undecryptable store) propagates, because a
-   * compaction that mistook an unreadable inbox for an empty one would delete
-   * the handed-in turns.
-   */
   private async readInbox(key: string): Promise<InboxRecord[]> {
     try {
       return parseInbox(await this.io.read(this.inboxFor(key)));
@@ -543,13 +446,6 @@ export class BufferDrainClaims {
     }
   }
 
-  /**
-   * The body with its inbox folded in, plus the ids of every record the inbox
-   * holds (what a compaction must list as consumed). The inbox is read BEFORE
-   * the body: a compaction landing between the two reads leaves records the
-   * newer body already lists, which the fold skips by id, whereas the reverse
-   * order could pair an old body with a deleted inbox and lose their turns.
-   */
   private async readFolded(key: string): Promise<{ claim: DrainClaimFile; consumed: string[] } | null> {
     const records = await this.readInbox(key);
     const body = await this.readClaimBody(key);
@@ -557,17 +453,10 @@ export class BufferDrainClaims {
     return { claim: foldRecords(body, records), consumed: records.map((record) => record.id) };
   }
 
-  /** The claim content for `key` (body plus inbox), or null when it is not claimed. */
   async load(key: string): Promise<DrainClaimFile | null> {
     return (await this.readFolded(key))?.claim ?? null;
   }
 
-  /**
-   * Rewrite the body from a folded claim and consume the inbox it folded.
-   * Order is the crash contract: body first (it lists `consumed` so a replay
-   * skips them), then the summary, then the inbox delete. Callers hold the
-   * claim lock, so no append can land between the read and the delete.
-   */
   private async writeClaimBody(key: string, claim: DrainClaimFile, consumed: readonly string[] = []): Promise<void> {
     await mkdir(this.dir, { recursive: true });
     const bodyPath = this.fileFor(key);
@@ -577,12 +466,6 @@ export class BufferDrainClaims {
     await unlink(this.inboxFor(key)).catch(() => {});
   }
 
-  /**
-   * Best-effort: a missing or stale summary only costs one body parse.
-   * `identity` MUST come from a stat taken before `claim` was read (or while
-   * the lock holds the body still), never after, or the counts could be
-   * tagged with a newer body's identity.
-   */
   private async writeSummary(bodyPath: string, claim: DrainClaimFile, identity: { size: number; mtimeMs: number }): Promise<ClaimSummary> {
     const summary: ClaimSummary = {
       key: claim.key,
@@ -600,12 +483,6 @@ export class BufferDrainClaims {
     return summary;
   }
 
-  /**
-   * Turn counts of the BODY at `bodyPath` without parsing it: the summary file
-   * is trusted only while the body's size and mtime still match the ones it
-   * was written against; otherwise the body is parsed once and the summary
-   * refreshed. Null when the claim body is absent or unreadable.
-   */
   private async readSummary(bodyPath: string): Promise<ClaimSummary | null> {
     let identity;
     try {
@@ -642,23 +519,10 @@ export class BufferDrainClaims {
     await this.io.write(this.leaseFileFor(key), JSON.stringify(lease));
   }
 
-  /**
-   * Atomically move a session's persisted file into a claim. The rename is
-   * the handover: after it settles the turns exist ONLY as a claim, so no
-   * crash window can lose them or leave them in both places. Callers that
-   * lose the race (`already_claimed`) simply skip the key.
-   *
-   * The whole handover runs under the claim's mutation lock, so a claim
-   * create can never land on top of an existing claim (POSIX rename would
-   * silently replace it) and the lease write cannot race an adopter.
-   */
   async claimFromSessionFile(key: string, lease: DrainLease): Promise<ClaimFromSessionOutcome> {
     await mkdir(this.dir, { recursive: true });
     const sessionPath = path.join(this.stateDir, "buffer", bufferSessionFileName(key));
     if (existsSync(sessionPath)) {
-      // Advisory pre-read: an empty live session belongs to its owner, not
-      // the drain. A turn landing between this read and the rename is fine —
-      // the rename moves whatever is there and the claim drains it.
       try {
         const seeded = parseBody(await this.io.read(sessionPath));
         if (seeded && seeded.entry.turns.length === 0 && (seeded.entry.retainedTurns?.length ?? 0) === 0) {
@@ -674,18 +538,11 @@ export class BufferDrainClaims {
       { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS },
       async (acquired) => {
         if (!acquired) return "already_claimed";
-        // Under the lock the claim check is authoritative: an existing claim
-        // keeps its content and its lease; the session file stays with its
-        // owner (their next save merges into the claim).
         if (this.isClaimed(key)) return "already_claimed";
-        // No claim exists, so an inbox here is an orphan from a crash between
-        // a release's deletes: the new claim must not replay it.
         await unlink(this.inboxFor(key)).catch(() => {});
         try {
           await rename(sessionPath, this.fileFor(key));
         } catch (err) {
-          // The session file is gone: either it never existed, or another
-          // drainer claimed it first.
           if (!existsSync(sessionPath)) {
             if (this.isClaimed(key)) return "already_claimed";
             return "empty";
@@ -694,8 +551,6 @@ export class BufferDrainClaims {
         }
         const claim = await this.readClaimBody(key);
         if (!claim || pendingTurns(claim.entry) === 0) {
-          // Empty content: nothing to drain. Delete the moved file so the
-          // empty entry keeps living with its owner, not as a stale claim.
           await unlink(this.fileFor(key)).catch(() => {});
           return "empty";
         }
@@ -706,13 +561,6 @@ export class BufferDrainClaims {
     );
   }
 
-  /**
-   * Take over a claim whose lease is missing, expired, or whose owner died.
-   * The whole judgement runs under the claim's mutation lock and re-reads
-   * the lease inside it, so exactly one concurrent adopter wins: the loser
-   * re-reads the winner's fresh lease and reports "busy" instead of
-   * unlinking it. A lease whose owner died is taken over in the same call.
-   */
   async adopt(key: string, lease: DrainLease): Promise<AdoptOutcome> {
     if (!this.isClaimed(key)) return "busy";
     return await withHeldFileLock(
@@ -722,24 +570,18 @@ export class BufferDrainClaims {
         if (!acquired) return "busy";
         const existing = await this.readLease(key);
         if (existing?.ownerId === lease.ownerId && existing.pid === lease.pid && existing.host === lease.host) {
-          // Reuse the token only from the same process identity.
           await this.writeLease(key, { ...existing, heartbeatAt: new Date().toISOString(), leaseMs: lease.leaseMs });
           return "adopted";
         }
         if (existing && !isLeaseExpired(existing)) {
           if (isOwnerAlive(existing)) return "busy";
-          // The owner died without releasing the claim (killed worker):
-          // take it over now instead of waiting for the lease to expire.
           await unlink(this.leaseFileFor(key)).catch(() => {});
         } else if (existing) {
-          // Expired lease: clear it before the exclusive create. We hold the
-          // lock, so no concurrent adopter can interleave its own unlink/create.
           await unlink(this.leaseFileFor(key)).catch(() => {});
         }
         try {
           await writeFile(this.leaseFileFor(key), JSON.stringify(lease), { flag: "wx" });
         } catch (err) {
-          // The lease file exists: another drainer took it first.
           if (existsSync(this.leaseFileFor(key))) return "busy";
           throw err;
         }
@@ -758,27 +600,12 @@ export class BufferDrainClaims {
     }
   }
 
-  /**
-   * Hand a live owner's in-memory entry to the claim (the path a buffer owner
-   * takes instead of persisting a claimed session): ONE append to the inbox,
-   * O(incoming), never a read or rewrite of the claim body. Readers fold the
-   * inbox over the body with the identity-aware merge and the drainer's next
-   * progress write compacts it. The lock serializes the append against that
-   * compaction, so a record can never land between its read and its delete.
-   */
   async mergeIntoClaim(key: string, incoming: BufferEntryState): Promise<void> {
     await withHeldFileLock(this.lockFileFor(key), { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS }, async (acquired) => {
       if (!acquired) {
-        // Never fall back to a session-file write behind a held claim lock:
-        // that would resurrect claimed turns. Fail so the owner's save stays
-        // pending and retries (SmartBuffer keeps pending state on failure).
         throw new Error(`buffer drain claim for ${key} is busy; retrying the save later`);
       }
-      // The claim vanished (acked between the isClaimed check and now):
-      // nothing to hand over; the drain already owns everything.
       if (!this.isClaimed(key)) return;
-      // Leading newline: a torn tail from a kill mid-append ends at this
-      // record's newline instead of fusing into it.
       const plan = this.handIns.plan(key, await this.handInStamp(key), incoming);
       if (plan === null) return;
       await this.io.append(this.inboxFor(key), `\n${JSON.stringify({ id: randomUUID(), key, ...plan.record })}`);
@@ -786,20 +613,6 @@ export class BufferDrainClaims {
     });
   }
 
-  /** Drainer progress: replace the claim content with what is left to do.
-   *
-   * Fenced: `ownerId` must still match the claim's lease (checked under the
-   * same lock), so a drainer that lost its lease cannot write progress that
-   * would restore turns the new owner already extracted.
-   *
-   * `seen` is the entry the drainer LOADED (its snapshot of the claim). Only
-   * turns that were in that snapshot and are absent from BOTH of the
-   * drainer's lists were actually extracted and move to the tombstones — a
-   * turn the drainer moved into `entry.retainedTurns` is retained for retry,
-   * not extracted. Turns a live owner merged into the claim afterwards stay
-   * pending. Without `seen` the pre-existing behavior is kept (every claim
-   * turn missing from `entry` counts as extracted).
-   */
   async writeEntry(key: string, ownerId: string, entry: BufferEntryState, seen?: BufferEntryState): Promise<void> {
     await withHeldFileLock(this.lockFileFor(key), { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS }, async (acquired) => {
       if (!acquired) throw new Error(`buffer drain claim for ${key} is busy; progress write skipped`);
@@ -831,9 +644,6 @@ export class BufferDrainClaims {
         const activeOutput = activeOutputCounts.get(identity) ?? 0;
         const retainedOutput = retainedOutputCounts.get(identity) ?? 0;
         if (seenActive > 0 && seenRetainedCount > 0 && activeOutput + retainedOutput > 0) {
-          // Equal identities across source lists cannot reveal which original
-          // occurrence survived a cross-list move. Keep both source lists
-          // pending until a later progress write removes every copy.
           matchedActiveCounts.set(identity, seenActive);
           matchedRetainedCounts.set(identity, seenRetainedCount);
           ambiguousIdentities.add(identity);
@@ -854,8 +664,6 @@ export class BufferDrainClaims {
         const crossed = activeMovedToRetained + retainedMovedToActive;
         if (crossed > 0) crossedCounts.set(identity, crossed);
       }
-      // A pending copy that crossed lists stays tombstoned in its ORIGINAL
-      // list too once it is extracted. A copy that crosses back is home again.
       const moved = [...(claim.movedTurns ?? [])];
       for (const [identity, crossed] of crossedCounts) {
         let returned = 0;
@@ -874,8 +682,6 @@ export class BufferDrainClaims {
       for (const turn of extractedRetained) {
         if (removeOneByIdentity(moved, bufferTurnIdentityKey(turn))) drained.push(turn);
       }
-      // Source occurrences of an ambiguous identity are restored BEFORE late
-      // arrivals are appended, so a late equal turn cannot stand in for them.
       const keptTurns = [...entry.turns];
       const keptRetained = [...entryRetained];
       for (const identity of ambiguousIdentities) {
@@ -897,10 +703,6 @@ export class BufferDrainClaims {
     });
   }
 
-  /** Extend the lease. "lost" means another drainer took the claim over.
-   * Serialized on the claim lock so a stale heartbeat can never overwrite a
-   * new owner's lease mid-takeover; a contended lock just skips this tick
-   * (usually the drainer's own progress write holds it). */
   async heartbeat(key: string, ownerId: string, leaseMs: number): Promise<"ok" | "lost"> {
     return await withHeldFileLock(this.lockFileFor(key), { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS }, async (acquired) => {
       if (!acquired) return "ok";
@@ -942,11 +744,8 @@ export class BufferDrainClaims {
           await unlink(this.leaseFileFor(key)).catch(() => {});
           return "acked";
         }
-        // Compact here too: a claim whose inbox only repeats drained turns
-        // would otherwise keep reading as unfinished forever.
         if (folded.consumed.length > 0) await this.writeClaimBody(key, folded.claim, folded.consumed);
         if (pendingTurns(folded.claim.entry) > 0) return "not_empty";
-        // Keep the empty claim as a tombstone until its live owner consumes it.
         await unlink(this.leaseFileFor(key)).catch(() => {});
         return "acked";
       },
@@ -985,13 +784,6 @@ export class BufferDrainClaims {
    */
   async isDrained(key: string): Promise<boolean> {
     if ((await this.readLease(key)) !== null) return false;
-    // This runs on every hand-over save. The cached counts may only answer
-    // FALSE (pending turns, nothing drained): a stale cache in that direction
-    // costs a deferred tombstone. They must never answer TRUE, because the
-    // caller then releases the claim and unlinks whatever is still pending, and
-    // a same-size rewrite inside one mtime tick can leave a stale cache that
-    // says "nothing pending". So a TRUE is verified by one real fold, once per
-    // finished drain.
     const summary = await this.readSummary(this.fileFor(key));
     if (!summary || summary.drained === 0 || summary.pending > 0) return false;
     const claim = await this.load(key);
@@ -1018,13 +810,6 @@ export class BufferDrainClaims {
     }
   }
 
-  /**
-   * One claim's listing from its summary plus its inbox: the body is never
-   * parsed for a count. While an inbox is unfolded the turn count is an UPPER
-   * bound (records can repeat turns the body holds or already drained); the
-   * drain that picks the claim up folds exactly and its ack compacts the
-   * inbox, so an over-count costs one cheap drain run, never a lost turn.
-   */
   private async describeClaim(name: string): Promise<DrainClaimListing | null> {
     const summary = await this.readSummary(path.join(this.dir, name));
     if (!summary) return null;
@@ -1035,7 +820,6 @@ export class BufferDrainClaims {
       if (inboxBytes <= INBOX_LISTING_PARSE_LIMIT) {
         for (const record of await this.readInbox(summary.key)) inboxTurns += pendingTurns(record.entry);
       } else if (summary.pending === 0) {
-        // Unknown but positive: the claim stays a candidate, and the drain counts the inbox exactly.
         inboxTurns = 1;
       }
       // A large inbox beside a pending body adds nothing here: the body already makes the claim a candidate.
@@ -1052,7 +836,6 @@ export class BufferDrainClaims {
     };
   }
 
-  /** Every claim with its lease state (CLI scan + summaries). */
   async list(): Promise<DrainClaimListing[]> {
     const out: DrainClaimListing[] = [];
     for (const name of (await this.claimNames()) ?? []) {
@@ -1062,26 +845,11 @@ export class BufferDrainClaims {
     return out;
   }
 
-  /**
-   * Paged listing for bounded periodic scans: at most `limit` claims with
-   * pending turns, starting AFTER `afterName` (a raw entry name returned as
-   * `nextCursor` by a previous page — file-name order is stable, so a
-   * rotating cursor visits every claim fairly without ever materializing
-   * the whole directory's bodies). Empty tombstones never count toward the
-   * limit; the number of claims examined per call is bounded separately
-   * (`LIST_PAGE_SCAN_FACTOR` per requested entry), and the cursor advances
-   * past every scanned name so a long tombstone run is crossed over several
-   * pages instead of starving the pending claims behind it.
-   */
   async listPage(afterName: string | undefined, limit: number): Promise<{ entries: DrainClaimListing[]; nextCursor?: string }> {
     const names = await this.claimNames();
     if (names === null) return { entries: [] };
     const start = afterName === undefined ? 0 : names.findIndex((name) => name > afterName);
     const out: DrainClaimListing[] = [];
-    // The cursor is the LAST CONSUMED entry name: the next page starts
-    // strictly after it, so the first unconsumed name is never skipped.
-    // Returning the first unconsumed name instead would make every page
-    // boundary permanently skip one claim.
     let cursor: string | undefined;
     const scanBudget = Math.max(limit, 1) * LIST_PAGE_SCAN_FACTOR;
     let scanned = 0;
@@ -1096,13 +864,6 @@ export class BufferDrainClaims {
     return { entries: out, nextCursor: cursor };
   }
 
-  /**
-   * Rollback helper: fold every claim's inbox into its body and delete the
-   * inboxes, so a build that predates the inbox (it never reads one) sees every
-   * handed-in turn. Run it with the daemon stopped, BEFORE downgrading; the
-   * same fold is what compaction does, so it is safe to run on a live store.
-   * Returns how many inboxes were folded.
-   */
   async foldAllInboxes(): Promise<number> {
     let names: string[];
     try {

@@ -1,10 +1,3 @@
-/**
- * Fake fetch helper for deterministic third-party adapter smoke tests.
- *
- * No network is touched. Each test registers canned responses keyed by
- * method+URL substring; the fake records every request so tests can assert
- * on headers, body, and endpoint shape.
- */
 
 import assert from "node:assert/strict";
 import type { FetchLike } from "./shared.js";
@@ -21,7 +14,6 @@ interface RecordedRequest {
   body: unknown;
 }
 
-/** Built fake fetch: the callable transport plus assertion helpers. */
 export interface FakeFetch {
   fetch: FetchLike;
   requests: RecordedRequest[];
@@ -33,10 +25,6 @@ export interface FakeFetch {
   countRequests: (method: string, urlSubstring: string) => number;
 }
 
-/**
- * Minimal Response-like object that satisfies what `httpJson` reads:
- * `.ok`, `.status`, and `.text()`.
- */
 class FakeResponseImpl {
   readonly status: number;
   readonly ok: boolean;
@@ -72,7 +60,6 @@ export class FakeFetchBuilder {
   }> = [];
   readonly requests: RecordedRequest[] = [];
 
-  /** Queue canned responses for requests matching method + URL substring. */
   when(
     method: string,
     urlSubstring: string,
@@ -87,7 +74,6 @@ export class FakeFetchBuilder {
     return this;
   }
 
-  /** Build the fetch function with attached assertion helpers. */
   build(): FakeFetch {
     const matchers = this.matchers;
     const requests = this.requests;
@@ -128,7 +114,6 @@ export class FakeFetchBuilder {
           return new FakeResponseImpl(response);
         }
       }
-      // Default: 404 so unmatched requests are loud in tests.
       return new FakeResponseImpl({ status: 404, body: { error: "no mock" } });
     }) as unknown as FetchLike;
 
@@ -140,7 +125,6 @@ export class FakeFetchBuilder {
     };
   }
 
-  /** Assert the last request matching method+url had a given body field. */
   assertRequest(
     method: string,
     urlSubstring: string,
@@ -153,7 +137,6 @@ export class FakeFetchBuilder {
     check(found);
   }
 
-  /** Count requests matching method+url. */
   countRequests(method: string, urlSubstring: string): number {
     return this.requests.filter(
       (r) => r.method === method.toUpperCase() && r.url.includes(urlSubstring),

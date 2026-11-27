@@ -1,6 +1,3 @@
-/**
- * MemoryArena runner migrated into @remnic/bench for phase 1.
- */
 
 import { randomUUID } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";

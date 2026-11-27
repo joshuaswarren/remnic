@@ -55,20 +55,10 @@ const TOKEN_PREFIXES: Record<string, string> = {
   "chatgpt": "remnic_cg_",
 };
 
-/**
- * Connector ids minted by the OAuth facade (remnic-server oauth.ts), one per
- * linked app so linking one app never rotates another app's token:
- * `chatgpt`, `claude-ai`, and `oauth-app-<origin>` (percent-encoded
- * scheme + redirect host + port) for any other app.
- * Tokens under these ids are pinned to `/mcp` by the access server's path
- * policy.
- */
 export const OAUTH_CONNECTOR_IDS = ["chatgpt", "claude-ai"] as const;
 
-/** Prefix for per-origin OAuth connector ids of apps other than ChatGPT/Claude. */
 export const OAUTH_APP_CONNECTOR_PREFIX = "oauth-app-";
 
-/** True when `connector` is an OAuth-minted connector (pinned to `/mcp`). */
 export function isOAuthConnector(connector: string | undefined): boolean {
   if (connector === undefined) return false;
   return (
@@ -157,7 +147,6 @@ function parseTokenStore(rawText: string, filePath: string): { store: TokenStore
       };
     }
 
-    // Migrate legacy flat-map format: { "connector": "token_value", ... }
     const migrated: TokenEntry[] = [];
     for (const [key, value] of Object.entries(record)) {
       if (typeof value === "string" && value.length > 0) {
@@ -183,8 +172,6 @@ export function loadTokenStore(tokensPath?: string): TokenStore {
     const rawText = fs.readFileSync(p, "utf8");
     const { store, migratedLegacy } = parseTokenStore(rawText, p);
     if (migratedLegacy) {
-      // Auto-migrate legacy flat-map stores in new format. This is best-effort:
-      // a migration write failure must not hide the successfully parsed tokens.
       try {
         saveTokenStore(store, tokensPath);
       } catch {
@@ -230,7 +217,6 @@ export function saveTokenStore(store: TokenStore, tokensPath?: string): void {
     fs.closeSync(fd);
     fd = null;
     fs.renameSync(tmpPath, p);
-    // Tighten permissions on pre-existing files after atomic replacement.
     try { fs.chmodSync(p, 0o600); } catch { /* ignore on platforms without chmod */ }
     fsyncDirectoryBestEffort(dir);
     invalidateTokenCache();
@@ -243,19 +229,9 @@ export function saveTokenStore(store: TokenStore, tokensPath?: string): void {
   }
 }
 
-/**
- * Build a TokenEntry candidate WITHOUT saving it to the store.
- * Callers use this when they need to defer the save until after a
- * dependent write (e.g. Hermes config.yaml) succeeds — see
- * commitTokenEntry() to persist the candidate.
- */
 export function buildTokenEntry(connector: string, capabilities?: TokenCapabilities): TokenEntry {
   const prefix = TOKEN_PREFIXES[connector] ?? oauthTokenPrefix(connector) ?? "remnic_xx_";
   const token = prefix + randomBytes(24).toString("hex");
-  // Every newly-built entry carries an EXPLICIT capabilities record (issue
-  // #1837). When none is requested, record a deliberate unrestricted
-  // `{ version: 1 }` — never an omitted field — so "full access via omission"
-  // is reachable only by pre-feature legacy entries lacking the marker.
   return {
     token,
     connector,
@@ -290,7 +266,6 @@ export function generateToken(
 ): TokenEntry {
   const store = loadTokenStore(tokensPath);
 
-  // Remove existing token for this connector
   store.tokens = store.tokens.filter((t) => t.connector !== connector);
 
   const entry = buildTokenEntry(connector, capabilities);
@@ -318,13 +293,6 @@ export function getAllValidTokens(tokensPath?: string): string[] {
   return loadTokenStore(tokensPath).tokens.map((t) => t.token);
 }
 
-// Cached token-entry snapshot to avoid synchronous disk I/O on every HTTP
-// request. Re-reads tokens.json at most once per TTL interval (default 5s).
-// There is deliberately exactly ONE cache: validation (token strings) and
-// identity (connector ids) are derived from the SAME snapshot, so a token
-// can never validate against a fresher snapshot than the one that resolves
-// its connector. saveTokenStore() invalidates on every mutation, so a
-// freshly minted or revoked token is coherent immediately.
 const TOKEN_CACHE_TTL_MS = 5_000;
 let _cachedEntries: TokenEntry[] = [];
 let _cachedAt = 0;
@@ -336,7 +304,6 @@ function invalidateTokenCache(): void {
   _cachedPath = undefined;
 }
 
-/** Cached token-entry snapshot ({token, connector} pairs). */
 export function getAllValidTokenEntriesCached(tokensPath?: string): readonly TokenEntry[] {
   const now = Date.now();
   if (now - _cachedAt < TOKEN_CACHE_TTL_MS && tokensPath === _cachedPath) return _cachedEntries;

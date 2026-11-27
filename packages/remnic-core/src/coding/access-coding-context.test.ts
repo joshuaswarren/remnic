@@ -12,9 +12,7 @@ import test from "node:test";
 import { EngramAccessService, EngramAccessInputError } from "../access-service.js";
 import type { CodingContext } from "../types.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 // Minimal orchestrator stub — only the surface `setCodingContext` touches.
-// ──────────────────────────────────────────────────────────────────────────
 
 function makeService(): {
   service: EngramAccessService;
@@ -22,7 +20,6 @@ function makeService(): {
 } {
   const calls: Array<{ sessionKey: string; ctx: CodingContext | null }> = [];
   const stubOrchestrator = {
-    // Namespaces off keeps this suite on the permissive validation path; the
     // principal-binding gate is covered in access-service-set-coding-context.test.ts.
     config: { namespacesEnabled: false },
     setCodingContextForSession(sessionKey: string, ctx: CodingContext | null) {
@@ -35,7 +32,6 @@ function makeService(): {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Happy path — full context
 // ──────────────────────────────────────────────────────────────────────────
 
 test("setCodingContext: passes a full valid context through to the orchestrator", () => {
@@ -81,7 +77,6 @@ test("setCodingContext: branch=null (detached HEAD) is accepted", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Validation — CLAUDE.md #51 (reject invalid input, do not silently default)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("setCodingContext: empty sessionKey → throws EngramAccessInputError", () => {

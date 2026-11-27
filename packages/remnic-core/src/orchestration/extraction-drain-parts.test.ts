@@ -50,8 +50,6 @@ interface DrainOptions {
   saveCopies?: { reason: string; contents: string }[];
 }
 
-/** A real buffer on real storage, drained with a stub runExtraction that
- *  clears like the coordinator does for a `clearMatchingTurns` drain. */
 async function withDrain(opts: DrainOptions): Promise<{
   calls: BufferTurn[][];
   buffer: SmartBuffer;
@@ -119,8 +117,6 @@ function allExtractedText(calls: readonly BufferTurn[][]): string {
 }
 
 test("an oversized turn drains as ordered parts and the parent clears once", async () => {
-  // 150 chars at a 60-char part budget -> 3 parts; the 100-char call budget
-  // packs one part per chunk, so every part is a separate extraction call.
   const parent = makeTurn(`${"a".repeat(50)}. ${"b".repeat(50)}. ${"c".repeat(45)}`);
   const { calls, buffer } = await withDrain({ turns: [parent], results: [DONE, DONE, DONE] });
   assert.equal(calls.length, 2, "the parts pack greedily into budget-fitting chunks");
@@ -207,7 +203,6 @@ test("the parent stays buffered until every part drains", async () => {
 });
 
 test("a turn past the part limit clamps, and the parent leaves through a recovery copy", async () => {
-  // 600 chars at a 60-char part budget needs 10 parts; the cap emits 8.
   const parent = makeTurn(Array.from({ length: 10 }, (_v, i) => `${String(i)}${"x".repeat(58)}.`).join(" "));
   const saveCopies: { reason: string; contents: string }[] = [];
   const { calls, buffer } = await withDrain({
@@ -239,8 +234,6 @@ test("a part chunk that keeps failing drops the parent with its full content", a
 });
 
 test("an oversized turn inside a fitting window still splits", async () => {
-  // A 150-char turn under a 12k-style call budget would previously lose its
-  // tail to the per-turn render clamp; the split keeps every byte.
   const parent = makeTurn(`${"a".repeat(50)}. ${"b".repeat(50)}. ${"c".repeat(45)}`);
   const small = makeTurn("short note", { timestamp: "2026-11-17T12:00:01.000Z" });
   const { calls, buffer } = await withDrain({
@@ -255,8 +248,6 @@ test("an oversized turn inside a fitting window still splits", async () => {
 });
 
 test("a window of exact duplicates that is also oversized extracts every copy's content", async () => {
-  // Dedupe cannot fan representatives out into parts, so the oversized window
-  // takes the split path and each buffered identity still clears.
   const content = `${"a".repeat(50)}. ${"b".repeat(50)}. ${"c".repeat(45)}`;
   const first = makeTurn(content);
   const duplicate = makeTurn(content, { timestamp: "2026-11-17T12:00:02.000Z" });

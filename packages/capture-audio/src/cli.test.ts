@@ -397,7 +397,6 @@ test("readiness is established before replay and a slow replay still reaches ok"
   });
 });
 
-/** Spawn a minimal fake daemon that serves /v1/health with a fixed instanceId + its own pid. */
 async function spawnFakeDaemon(instanceId: string): Promise<{ child: ReturnType<typeof spawn>; port: number }> {
   const src =
     'const http=require("node:http");' +

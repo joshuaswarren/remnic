@@ -51,11 +51,6 @@ before(async () => {
   tempHome = await mkdtemp(path.join(os.tmpdir(), "remnic-oauth-test-home-"));
   process.env.HOME = tempHome;
   originalFetch = globalThis.fetch;
-  // The TTY check in cmdOAuth matters for the approve flow: when stdin is
-  // not a TTY, --yes is required; when it IS a TTY, the prompt is shown.
-  // We force non-TTY for every test so the prompt path is never entered
-  // (which would block waiting for input). Tests that need to exercise
-  // the TTY path can flip the property on the fly.
   originalStdinIsTTY = (process.stdin as { isTTY?: boolean }).isTTY;
   (process.stdin as { isTTY?: boolean }).isTTY = false;
   originalFetchIsTTY = (process.stdout as { isTTY?: boolean }).isTTY;
@@ -80,11 +75,7 @@ beforeEach(async () => {
   // (resolveConfigPath() also walks ~/.config/remnic/config.json under
   // HOME; HOME isolation already covers that.)
   tempConfigDir = await mkdtemp(path.join(os.tmpdir(), "remnic-oauth-cfg-"));
-  // Default operator token for the suite. Individual tests can override
-  // by writing a config file with server.authToken.
   process.env.REMNIC_AUTH_TOKEN = "test-operator-token";
-  // Pointer the dispatcher at the empty temp dir so it does not pick up
-  // a stray remnic.config.json the test runner dropped somewhere.
   process.env.REMNIC_CONFIG_PATH = path.join(tempConfigDir, "remnic.config.json");
 });
 
@@ -152,9 +143,6 @@ const SAMPLE_PENDING = {
   ],
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// `oauth pending` — list pending requests
-// ════════════════════════════════════════════════════════════════════════════
 
 test("oauth pending (text) renders the list and sends the bearer token", async () => {
   const { requests } = installFetchMock(({ url, method }) => {
@@ -171,8 +159,6 @@ test("oauth pending (text) renders the list and sends the bearer token", async (
     assert.match(result.stdout, /ref=abc123/);
     assert.match(result.stdout, /client=chatgpt-demo/);
     assert.match(result.stdout, /redirect=https:\/\/chatgpt\.com\/oauth\/callback/);
-    // Scopes + resource must be visible so an operator using `approve --yes`
-    // can vet the request from the listing (Codex review).
     assert.match(result.stdout, /scopes=mcp:read mcp:write/);
     assert.match(result.stdout, /resource=https:\/\/mcp\.example\.com/);
   } finally {
@@ -219,7 +205,6 @@ test("oauth pending --format json falls back to an empty envelope on a null body
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// `oauth approve` — confirm + POST
 // ════════════════════════════════════════════════════════════════════════════
 
 test("oauth approve with --yes prints the request details and POSTs the decision", async () => {
@@ -242,13 +227,11 @@ test("oauth approve with --yes prints the request details and POSTs the decision
   try {
     const result = await runCli(["oauth", "approve", "abc123", "--yes"]);
     assert.equal(result.exitCode, 0, `unexpected stderr: ${result.stderr}`);
-    // Two requests: one GET to look up the ref, one POST to approve.
     assert.equal(requests.length, 2);
     const post = requests[1];
     assert.equal(post.method, "POST");
     assert.match(post.url, /\/oauth\/pending\/abc123\/approve$/);
     assert.equal(post.authorization, "Bearer test-operator-token");
-    // Confirm the operator sees the details + the warning + the outcome.
     assert.match(result.stdout, /ref:         abc123/);
     assert.match(result.stdout, /client:      chatgpt-demo/);
     assert.match(result.stdout, /redirect:    https:\/\/chatgpt\.com\/oauth\/callback/);
@@ -279,9 +262,6 @@ test("oauth approve without --yes in a non-TTY refuses to POST the approval", as
       result.stderr,
       /refusing to send the approval without an explicit --yes flag/,
     );
-    // The lookup GET may run (it does in the current implementation so
-    // the operator can see WHAT they would be approving), but the
-    // decision POST must NEVER happen — the no-TTY gate fires before it.
     const decisions = requests.filter((req) => req.method === "POST");
     assert.equal(
       decisions.length,
@@ -405,8 +385,6 @@ test("oauth pending surfaces a clear 'is remnic-server running?' message on conn
 });
 
 test("oauth approve maps 404 from the daemon to a clear 'unknown or expired ref' message", async () => {
-  // First GET (list) returns a pending entry; the POST to approve
-  // returns 404 (the daemon GCed the entry between the two requests).
   installFetchMock(({ url, method }) => {
     if (method === "GET") return { status: 200, body: SAMPLE_PENDING };
     if (method === "POST") return { status: 404, body: { error: "invalid_request" } };
@@ -429,7 +407,6 @@ test("oauth deny maps 409 with an error_description to a clear message", async (
   try {
     const result = await runCli(["oauth", "deny", "abc123"]);
     assert.notEqual(result.exitCode, 0);
-    // The server's error_description must reach the operator verbatim.
     assert.match(result.stderr, /denied/);
   } finally {
     restoreFetch();
@@ -443,9 +420,6 @@ test("oauth deny maps 409 with an error_description to a clear message", async (
 test("oauth with no operator token configured exits 1 with a clear error", async () => {
   delete process.env.REMNIC_AUTH_TOKEN;
   delete process.env.ENGRAM_AUTH_TOKEN;
-  // No server.authToken in the config file either (REMNIC_CONFIG_PATH
-  // points at a non-existent file). cmdOAuth must reject the call loudly
-  // instead of attempting the request.
   let fetchCalled = false;
   installFetchMock(() => {
     fetchCalled = true;
@@ -466,10 +440,6 @@ test("oauth with no operator token configured exits 1 with a clear error", async
 });
 
 test("oauth uses REMNIC_AUTH_TOKEN over server.authToken (matches daemon env-over-file)", async () => {
-  // beforeEach sets REMNIC_AUTH_TOKEN = "test-operator-token". Even with a
-  // file token present, the daemon accepts the env token, so the CLI must
-  // too — otherwise approve/deny 401s against a daemon that merged env
-  // over file.
   await writeFile(
     process.env.REMNIC_CONFIG_PATH ?? "",
     JSON.stringify({ server: { authToken: "config-token", port: 4318 } }),
@@ -519,8 +489,6 @@ test("oauth uses ENGRAM_AUTH_TOKEN legacy alias only when REMNIC_AUTH_TOKEN is a
 });
 
 test("oauth env token wins over a config still holding the ${REMNIC_AUTH_TOKEN} placeholder", async () => {
-  // A config initialized before the env was exported can hold the literal
-  // placeholder; the real env token must not be shadowed by it.
   await writeFile(
     process.env.REMNIC_CONFIG_PATH ?? "",
     JSON.stringify({ server: { authToken: "${REMNIC_AUTH_TOKEN}", port: 4318 } }),
@@ -554,8 +522,6 @@ test("oauth honours server.host and server.port from the config", async () => {
 });
 
 test("oauth honours REMNIC_HOST/REMNIC_PORT env over server.host/port (matches daemon)", async () => {
-  // The daemon merges REMNIC_HOST/REMNIC_PORT over the file, so the CLI
-  // must target the same endpoint or it hits the wrong port.
   await writeFile(
     process.env.REMNIC_CONFIG_PATH ?? "",
     JSON.stringify({ server: { host: "10.0.0.42", port: 9999, authToken: "tok" } }),
@@ -648,7 +614,6 @@ test("oauth pending rejects unknown options, duplicates, flag-as-value, and stra
     assert.notEqual(duplicate.exitCode, 0);
     assert.match(duplicate.stderr, /Duplicate option "--format"/);
 
-    // A flag in the value slot is a missing value, not a value.
     const flagAsValue = await runCli(["oauth", "pending", "--format", "--yes"]);
     assert.notEqual(flagAsValue.exitCode, 0);
     assert.match(flagAsValue.stderr, /--format requires a value/);

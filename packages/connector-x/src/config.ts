@@ -1,10 +1,3 @@
-/**
- * Strict parser for the `xConnector` config block (issue #2009).
- *
- * Invalid values are rejected, never silently reinterpreted: unknown
- * source kinds, duplicate source ids, priorities naming unknown sources,
- * non-finite numbers, and unrecognized enum values all throw.
- */
 
 import type { XMemoryMode, XSourceKind } from "./types.js";
 

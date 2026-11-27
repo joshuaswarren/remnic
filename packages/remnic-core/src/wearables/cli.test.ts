@@ -213,7 +213,6 @@ test("fuse command requires a date and renders the fuseDay result", async () => 
   assert.equal(await runWearablesCliCommand(service, ["fuse"], io), 1);
   assert.match(err.join(""), /fuse requires a date/);
 
-  // Success path needs its own captured stdout.
   const okIo = makeIo();
   assert.equal(
     await runWearablesCliCommand(service, ["fuse", "2026-06-10"], okIo.io),
@@ -226,9 +225,6 @@ test("fuse command requires a date and renders the fuseDay result", async () => 
 });
 
 test("fuse command prints a distinct skip line when fusion is skipped, not '(unchanged)'", async () => {
-  // written:false has two meanings (issue #1849): a skip (e.g. conflicting
-  // source timezones, which also clears any existing fused artifact) must
-  // NOT be mislabeled as an idempotent "(unchanged)" no-op.
   const { io, out } = makeIo();
   const service = stubService({
     fuseDay: async () => ({
@@ -288,7 +284,6 @@ test("fused command lists conversations and surfaces disagreements (--json)", as
   assert.equal(parsed.conversations.length, 1);
   assert.equal(parsed.conversations[0].disagreements.length, 1);
 
-  // Plain-text path surfaces the disagreement count.
   const text = makeIo();
   assert.equal(await runWearablesCliCommand(service, ["fused", "2026-06-10"], text.io), 0);
   assert.match(text.out.join(""), /disagreement \[asr-text\]/);

@@ -8,18 +8,9 @@ import { parseConfig } from "./config.js";
 import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { Orchestrator } from "./orchestrator.js";
 
-/**
- * Issue #3518: the corpus-wide QMD update must not sit in the awaited ready
- * path. `deferredReady` settles after the probe, collection ensure and model
- * warm-up; the update runs afterward under the server retry loop, which sees
- * `deferredSyncSucceeded === false` and calls `startupSearchSync`. The
- * readiness-level entry point (`startupSearchReadySync`) repeats only the
- * probe + collection ensure so warm-up attempts never block on a reindex.
- */
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-// SAFETY: tests stub private orchestrator deps through the self-deps seam, as the neighbouring init tests do.
 const asDeps = (orchestrator: Orchestrator) => orchestrator as any;
 
 function readyPathConfig(memoryDir: string) {
@@ -197,9 +188,6 @@ test("startupSearchReadySync joins an in-flight full sync's backend phase and re
         return true;
       },
       debugStatus: () => "synthetic-qmd",
-      // The real backend flips isAvailable() inside probe(), before ensure
-      // finishes (qmd.ts recordProbeSuccess) — the window the warm-up gate
-      // used to trust.
       isAvailable: () => probeCalls.length > 0,
       search: async () => [],
       update: async () => {},
@@ -282,10 +270,6 @@ test("an unknown collection state keeps the readiness and full syncs unready (wA
       lastUpdateFailedAtMs: null,
     };
     deps.namespaceSearchRouter.clearCache = () => undefined;
-    // The collection check could not determine the state (timeout, cancelled
-    // auto-create, recheck failure): retrieval stays fail-open, but the
-    // startup syncs must not claim readiness off an unverified ensure. A
-    // zero-result healthy warm-up on top must not open the gate as warmed.
     deps.namespaceSearchRouter.ensureNamespaceCollection = async () => "unknown";
     deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updateCalls.push(1);
@@ -325,8 +309,6 @@ test("an explicitly skipped collection ensure still counts as ready (wAQ third r
       lastUpdateFailedAtMs: null,
     };
     deps.namespaceSearchRouter.clearCache = () => undefined;
-    // Remote or daemon-only modes intentionally run no local collection check;
-    // "skipped" is a supported explicit answer, unlike "unknown".
     deps.namespaceSearchRouter.ensureNamespaceCollection = async () => "skipped";
 
     assert.equal(
@@ -374,8 +356,6 @@ test("a caller after an epoch transition runs its own backend ensure instead of 
     for (let i = 0; i < 200 && gateFirstEnsure; i += 1) await sleep(5);
     assert.equal(probeCalls.length, 1, "epoch A's readiness run reached its ensure");
 
-    // A same-instance lifecycle restart retires epoch A and opens epoch B
-    // while A's shared ensure is still in flight.
     deps.orchestratorInitCoordinator.beginStartupEpoch();
 
     const second = orchestrator.startupSearchReadySync(signal);
@@ -427,9 +407,6 @@ test("a caller abort does not cancel the shared backend ensure for joined caller
       return "present";
     };
 
-    // The first caller aborts mid-ensure — the readiness gate's per-attempt
-    // timeout. The shared backend run is epoch-owned, so the abort must not
-    // kill it for the full-sync caller that joined it.
     const firstController = new AbortController();
     const first = orchestrator.startupSearchReadySync(firstController.signal);
     for (let i = 0; i < 200 && !firstEnsureSeen; i += 1) await sleep(5);
@@ -485,8 +462,6 @@ test("an aborted caller settles instead of waiting on the shared run", async () 
     const second = orchestrator.startupSearchReadySync(new AbortController().signal);
     firstController.abort();
 
-    // The aborted caller must not stay parked on the shared run: it settles
-    // now while the joiner's live participation keeps the run alive.
     assert.equal(
       await Promise.race([first, sleep(2_000).then(() => "hung" as const)]),
       false,

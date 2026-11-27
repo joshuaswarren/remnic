@@ -85,7 +85,6 @@ function harness(options?: {
       record: async (event) => {
         if (options?.recordThrows) throw new Error("recorder down");
         if (event.phase === "choice") {
-          // Gate proof: the choice record must precede any dispatch.
           assert.ok(!dispatched, "choice event recorded after dispatch");
         }
         events.push(event);

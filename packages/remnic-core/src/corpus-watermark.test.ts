@@ -2,18 +2,6 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-/**
- * Corpus watermark primitive (issue #2149) + pre-merge hardening (issue #2156).
- *
- * The digest is a per-partition, TIER-AWARE census fingerprint, so two daemons
- * that agree on per-day HOT and COLD file counts share a digest and a differing
- * digest is a cheap divergence signal. These tests pin that property, the census
- * determinism (AGENTS.md pattern 26), the "newest write is scoped to the newest
- * HOT partition" contract, and the #2156 findings across review rounds: the
- * cold-tier census (D), the shared config-driven namespace resolver (C), the
- * caller-capability filter (B), the stale-while-revalidate cache (A), the
- * per-namespace degrade, the migration-race retry, and fail-distinct scans.
- */
 import test from "node:test";
 import { parseConfig } from "./config.js";
 import {
@@ -44,13 +32,11 @@ async function writeMemory(memoryDir: string, rel: string): Promise<string> {
   return full;
 }
 
-/** Hot-tier scan only (the recall corpus). */
 async function scanHot(memoryDir: string): Promise<{ paths: string[]; baseDir: string }> {
   const storage = new StorageManager(memoryDir);
   return { paths: await storage.collectActiveMemoryPaths(), baseDir: storage.dir };
 }
 
-/** Both tiers combined, exactly as the watermark builder feeds computeCorpusWatermark. */
 async function scanBothTiers(memoryDir: string): Promise<{ paths: string[]; baseDir: string }> {
   const storage = new StorageManager(memoryDir);
   const [hot, cold] = await Promise.all([
@@ -79,7 +65,6 @@ function sampleWatermark(namespace = "global"): CorpusWatermark {
   };
 }
 
-/** A valid (parseConfig-normalized) service config rooted at `memoryDir`. */
 function serviceConfig(memoryDir: string, overrides: Record<string, unknown> = {}): PluginConfig {
   return parseConfig({
     openaiApiKey: "sk-test",
@@ -98,7 +83,6 @@ function serviceConfig(memoryDir: string, overrides: Record<string, unknown> = {
   });
 }
 
-// ── digest determinism (pattern 26) ──────────────────────────────────────────
 
 test("digestPartitionCensus is insertion-order independent (Map and Record agree)", () => {
   const forward = new Map<string, number>([
@@ -135,7 +119,6 @@ test("digestPartitionCensus changes when a bucket is added or removed", () => {
   assert.notEqual(digestPartitionCensus(base), digestPartitionCensus(new Map<string, number>()));
 });
 
-// ── census bucketing (tier-aware) ────────────────────────────────────────────
 
 test("buildPartitionCensus buckets by <tier>:<category>/<day>; non-day paths land in the explicit unpartitioned bucket", () => {
   const baseDir = path.join(os.tmpdir(), "mem-fixture");
@@ -150,11 +133,9 @@ test("buildPartitionCensus buckets by <tier>:<category>/<day>; non-day paths lan
   assert.equal(census.get("hot:facts/2026-01-01"), 2);
   assert.equal(census.get("hot:procedures/2026-01-02"), 1);
   assert.equal(census.get(`hot:${UNPARTITIONED_BUCKET}`), 1);
-  // The cold-tier file is bucketed separately, never folded into the hot count.
   assert.equal(census.get("cold:facts/2026-01-01"), 1);
 });
 
-// ── watermark computation ────────────────────────────────────────────────────
 
 test("computeCorpusWatermark: an empty corpus yields a stable digest, null timestamps, and does not throw", async () => {
   const empty = await computeCorpusWatermark({ namespace: "global", paths: [], baseDir: "/mem" });
@@ -214,7 +195,6 @@ test("computeCorpusWatermark: newestWriteAt reflects the newest mtime IN the new
   try {
     const olderPartitionFile = await writeMemory(memoryDir, "facts/2026-03-08/old.md");
     const newestPartitionFile = await writeMemory(memoryDir, "facts/2026-03-10/new.md");
-    // Deliberately make the OLDER partition's file the newest on disk.
     const newestPartitionMtime = new Date("2026-03-10T00:00:00.000Z");
     const olderPartitionButNewerOnDisk = new Date("2030-01-01T00:00:00.000Z");
     await utimes(newestPartitionFile, newestPartitionMtime, newestPartitionMtime);
@@ -231,7 +211,6 @@ test("computeCorpusWatermark: newestWriteAt reflects the newest mtime IN the new
 });
 
 test("computeCorpusWatermark: computedAt is stamped and reflects the invocation, not passed as a stale literal", async () => {
-  // Finding round-4: computedAt is captured AFTER the (possibly slow) stat loop.
   const before = Date.now();
   const memoryDir = await makeMemoryDir();
   try {
@@ -241,7 +220,6 @@ test("computeCorpusWatermark: computedAt is stamped and reflects the invocation,
     const stampedMs = Date.parse(watermark.computedAt);
     assert.ok(Number.isFinite(stampedMs), "computedAt is a valid ISO timestamp");
     assert.ok(stampedMs >= before, "computedAt is not stamped before the scan began");
-    // An explicit `now` still wins (deterministic callers).
     const fixed = await computeCorpusWatermark({ namespace: "global", paths, baseDir, now: new Date("2026-01-01T00:00:00.000Z") });
     assert.equal(fixed.computedAt, "2026-01-01T00:00:00.000Z");
   } finally {
@@ -274,7 +252,6 @@ test("two corpora with identical layouts share a digest; adding one file diverge
   }
 });
 
-// ── finding D: cold-tier census ──────────────────────────────────────────────
 
 test("finding D: moving a memory from hot to cold changes the digest while the count is unchanged", async () => {
   const memoryDir = await makeMemoryDir();
@@ -283,7 +260,6 @@ test("finding D: moving a memory from hot to cold changes the digest while the c
     const hotScan = await scanBothTiers(memoryDir);
     const hotWatermark = await computeCorpusWatermark({ namespace: "global", ...hotScan });
 
-    // Demote: same memory, same day-partition, now under cold/.
     await rm(hotFile);
     await writeMemory(memoryDir, "cold/facts/2026-03-08/a.md");
     const coldScan = await scanBothTiers(memoryDir);
@@ -308,7 +284,6 @@ test("finding D: a replica missing a cold file diverges from one that has it", a
     for (const dir of [dirA, dirB]) {
       await writeMemory(dir, "facts/2026-03-08/hot.md");
     }
-    // Only replica A holds the cold memory; the hot tiers are identical.
     await writeMemory(dirA, "cold/facts/2026-03-08/cold.md");
 
     const scanA = await scanBothTiers(dirA);
@@ -330,7 +305,6 @@ test("finding D: cold files count in the census but never advance the newest-wri
   try {
     const hotFile = await writeMemory(memoryDir, "facts/2026-03-08/hot.md");
     const coldFile = await writeMemory(memoryDir, "cold/facts/2030-01-01/cold.md");
-    // Make the COLD file the newest on disk AND in a later-dated partition.
     const hotMtime = new Date("2026-03-08T00:00:00.000Z");
     const coldMtime = new Date("2030-01-01T00:00:00.000Z");
     await utimes(hotFile, hotMtime, hotMtime);
@@ -363,15 +337,12 @@ test("StorageManager.collectColdMemoryPaths finds cold files and leaves the hot 
   }
 });
 
-// ── finding C / round-4: one shared, config-driven namespace resolver ─────────
 
 test("resolveCorpusNamespaceRoots: config-driven enumeration is deterministic and covers on-disk tenants", async () => {
   const memoryDir = await makeMemoryDir();
   try {
     await writeMemory(memoryDir, "namespaces/team-a/facts/2026-03-08/x.md");
     const config = serviceConfig(memoryDir, { namespacesEnabled: true, defaultNamespace: "global" });
-    // Both /health and the doctor call this ONE helper with just `{ config }`, so
-    // identical output here is what guarantees the two surfaces cannot drift.
     const a = (await resolveCorpusNamespaceRoots({ config })).map((r) => r.namespace).sort();
     const b = (await resolveCorpusNamespaceRoots({ config })).map((r) => r.namespace).sort();
     assert.deepEqual(a, b, "the shared resolver is deterministic for a given config");
@@ -402,8 +373,6 @@ test("computeServiceCorpusWatermarks: namespaces disabled -> single default-name
 test("finding C: with the catalog opted out, config-driven enumeration still covers every tenant", async () => {
   const memoryDir = await makeMemoryDir();
   try {
-    // A tenant present on disk; there is NO persisted catalog (opted out). The
-    // pre-fix health path returned ONLY the default namespace here.
     await writeMemory(memoryDir, "namespaces/team-a/facts/2026-03-08/x.md");
     const config = serviceConfig(memoryDir, { namespacesEnabled: true, defaultNamespace: "global" });
     const host = {
@@ -418,7 +387,6 @@ test("finding C: with the catalog opted out, config-driven enumeration still cov
   }
 });
 
-// ── finding B: caller-capability filter ──────────────────────────────────────
 
 test("finding B: a namespace-restricted token sees only the namespaces it may access", async () => {
   const memoryDir = await makeMemoryDir();
@@ -459,7 +427,6 @@ test("finding B: an unrestricted/operator token keeps the full fleet view", asyn
   }
 });
 
-// ── per-namespace degrade + fail-distinct scans ──────────────────────────────
 
 test("computeServiceCorpusWatermarks: one failing namespace is omitted, not the whole payload (per-namespace degrade)", async () => {
   const memoryDir = await makeMemoryDir();
@@ -485,12 +452,8 @@ test("computeServiceCorpusWatermarks: one failing namespace is omitted, not the 
 test("finding round-4/5: an unreadable corpus root is omitted, not published as false-empty; ENOENT stays empty", async () => {
   const root = await makeMemoryDir();
   try {
-    // A regular FILE used as a namespace base dir: the strict scan hits ENOTDIR
-    // walking its category children — a backend read failure it must propagate,
-    // portably (no permission bits, so it holds even for the superuser).
     const brokenBase = path.join(root, "broken-base");
     await writeFile(brokenBase, "not a directory", "utf-8");
-    // A never-created base dir is ENOENT => a genuine empty corpus.
     const missingBase = path.join(root, "never-created");
 
     const watermarks = await computeCorpusWatermarks(
@@ -526,7 +489,6 @@ test("finding round-5: an unreadable NESTED category dir propagates (partial cen
       if (enforced) {
         assert.deepEqual(watermarks, [], "an unreadable category dir omits the namespace, not a partial count");
       } else {
-        // perms bypassed (superuser): the scan succeeds and counts the readable hot file.
         assert.equal(watermarks.length, 1);
         assert.equal(watermarks[0]?.memoryFileCount, 1);
       }
@@ -538,7 +500,6 @@ test("finding round-5: an unreadable NESTED category dir propagates (partial cen
   }
 });
 
-// ── migration-race retry ─────────────────────────────────────────────────────
 
 test("computeNamespaceWatermark: retries when a corpus-mutation sentinel changes mid-scan (tier-migration race)", async () => {
   const memoryDir = await makeMemoryDir();
@@ -610,7 +571,6 @@ test("computeNamespaceWatermark: throws (namespace omitted) when the sentinel ne
   }
 });
 
-// ── finding A: stale-while-revalidate TTL + single-flight cache ───────────────
 
 test("finding A: the cache computes once for back-to-back calls and recomputes after the TTL expires", async () => {
   let now = 1_000;
@@ -693,9 +653,6 @@ test("finding A: with a cache, /health probes never re-run the corpus scan withi
     const host = { config, getStorage: (_namespace: string) => storage };
     const cache = new CorpusWatermarkCache();
 
-    // Two stale-while-revalidate layers warm in turn (never blocking a probe):
-    // 1st probe resolves nothing (enumeration in flight); 2nd sees the roots and
-    // kicks off the corpus scan; 3rd serves the fully-warm watermark.
     assert.deepEqual(await computeServiceCorpusWatermarks(host, { cache }), [], "probe 1 never blocks (enumeration async)");
     await cache.whenIdle();
     assert.deepEqual(await computeServiceCorpusWatermarks(host, { cache }), [], "probe 2 never blocks (corpus scan async)");
@@ -708,7 +665,6 @@ test("finding A: with a cache, /health probes never re-run the corpus scan withi
   }
 });
 
-// ── finding round-6: calendar validation + freshness-stat propagation ─────────
 
 test("finding round-6: an impossible date-shaped dir is bucketed unpartitioned, not as a dated partition", () => {
   const baseDir = path.join(os.tmpdir(), "mem-fixture");
@@ -821,8 +777,6 @@ test("finding round-9: background refresh scans are bounded to maxConcurrentRefr
 test("finding round-10: a token scoped to a non-representative alias still sees the shared-root corpus", async () => {
   const memoryDir = await makeMemoryDir();
   try {
-    // namespaces disabled: default (global) and shared collapse onto memoryDir,
-    // so `global` wins dedupe. A token scoped to `shared` must still see it.
     const config = serviceConfig(memoryDir, {
       namespacesEnabled: false,
       defaultNamespace: "global",
@@ -846,8 +800,6 @@ test("finding round-10: a non-directory category root fails a strict census (nam
   const memoryDir = await makeMemoryDir();
   try {
     await writeMemory(memoryDir, "facts/2026-03-08/a.md");
-    // A category dir replaced by a regular file is a layout corruption; the
-    // strict census must omit the namespace rather than publish facts/ alone.
     await writeFile(path.join(memoryDir, "procedures"), "not a directory", "utf-8");
     const watermarks = await computeCorpusWatermarks(["global"], () => new StorageManager(memoryDir));
     assert.deepEqual(watermarks, [], "a non-directory category root omits the namespace, not a partial count");
@@ -857,9 +809,6 @@ test("finding round-10: a non-directory category root fails a strict census (nam
 });
 
 test("round 6 (coderabbit): a failed namespace enumeration is an INCOMPLETE census, not an empty corpus", async () => {
-  // computeServiceCorpusCensus wraps resolveCorpusNamespaceRoots: when enumeration
-  // throws, the census must report complete:false (so a peer is never certified
-  // converged against it) rather than an empty set that reads as an empty deployment.
   const throwingConfig = new Proxy({} as PluginConfig, {
     get() {
       throw new Error("namespace enumeration unavailable");

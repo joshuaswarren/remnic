@@ -1,20 +1,3 @@
-/**
- * Graph-edge decay maintenance subject for the scenario-matrix harness.
- *
- * Every canonical row drives the REAL decay pass (`runGraphEdgeDecayMaintenance`)
- * over a temp memory dir seeded through the production `appendEdge` path, with
- * one fresh edge (inside the grace window) and one stale edge (long past it):
- *
- * - flush-transition rows (compaction / before_reset / session_end) exercise
- *   the DRY-RUN contract: telemetry is computed, but the graph JSONL stays
- *   byte-identical and no status file is written.
- * - the dedupe/replay row re-runs the pass at the same instant and asserts the
- *   documented idempotency (second pass decays nothing, rewrites nothing).
- * - the restart/reload row re-reads persisted state via a fresh
- *   `readGraphEdgeDecayStatus` call over the same disk.
- * - remaining rows assert the real write path: stale confidence drops to the
- *   floor on disk, fresh confidence is untouched, telemetry is persisted.
- */
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -30,7 +13,6 @@ import {
 } from "../../maintenance/graph-edge-decay.js";
 import { type LifecycleSubject, runLifecycleMatrix } from "../lifecycle-matrix.js";
 
-/** Fixed "now" so every row is deterministic. */
 const NOW = "2026-06-01T00:00:00.000Z";
 const FRESH_LABEL = "decay-subject-fresh";
 const STALE_LABEL = "decay-subject-stale";

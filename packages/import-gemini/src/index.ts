@@ -1,6 +1,3 @@
-// ---------------------------------------------------------------------------
-// @remnic/import-gemini — public surface (issue #568 slice 4)
-// ---------------------------------------------------------------------------
 
 export { adapter, geminiAdapter } from "./adapter.js";
 export {

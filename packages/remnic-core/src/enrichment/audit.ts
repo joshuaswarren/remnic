@@ -10,9 +10,6 @@ import { mkdir, readFile, appendFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export interface EnrichmentAuditEntry {
   timestamp: string;
@@ -25,7 +22,6 @@ export interface EnrichmentAuditEntry {
 }
 
 // ---------------------------------------------------------------------------
-// File helpers
 // ---------------------------------------------------------------------------
 
 const AUDIT_FILENAME = "enrichment-audit.jsonl";
@@ -35,7 +31,6 @@ function auditFilePath(auditDir: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Public API
 // ---------------------------------------------------------------------------
 
 /**

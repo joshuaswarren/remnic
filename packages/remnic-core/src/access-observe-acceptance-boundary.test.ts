@@ -158,7 +158,6 @@ test("#3251 every trigger-queued extraction is tracked: a rejected one surfaces 
     // soon as it is reached (with the last-write-wins bug the slot would be
     // SECOND's and the flush would resolve cleanly instead).
     const rejection = assert.rejects(flush, /first queued extraction failed/);
-    // Let the flush park on the tracked work before settling the pending one.
     const parked = Promise.withResolvers<void>();
     setImmediate(parked.resolve);
     await parked.promise;

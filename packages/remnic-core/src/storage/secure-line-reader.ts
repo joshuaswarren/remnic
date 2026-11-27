@@ -6,35 +6,13 @@ import { isEncryptedFile, MAGIC_HEADER_SIZE } from "../secure-store/secure-fs.js
 import type { ContextTransformTelemetryRecord } from "../active-context-transform.js";
 import type { MemoryActionEvent, MemoryLifecycleEvent } from "../types.js";
 
-/**
- * Whole-file decrypt ceiling for encrypted state files. V8's max string length
- * is ~512MB; a decrypted body that approaches it throws an opaque
- * `Invalid string length` on every read (the 691MB lifecycle-ledger incident).
- * We refuse at a size comfortably under the cap and point the operator at the
- * compaction remedy instead of letting the runtime crash. Plaintext streaming
- * is unaffected at any size.
- */
 export const STATE_FILE_MAX_DECRYPT_BYTES = 400 * 1024 * 1024;
 
-/**
- * Stream plaintext files by line while preserving authenticated whole-file
- * reads for encrypted files. `maxDecryptBytes` bounds the whole-file decrypt:
- * when set, an encrypted file at/over it is refused before decryption with an
- * actionable error. The ceiling is OPT-IN so it applies ONLY to callers with a
- * compaction-backed remedy (the lifecycle ledger). Callers with no bounded
- * maintenance path — e.g. the memory-actions ledger — omit it and keep the
- * prior unbounded read (issue #1910).
- */
 export async function* readMaybeEncryptedLines(
   filePath: string,
   readEncryptedFile: () => Promise<string>,
   maxDecryptBytes?: number,
 ): AsyncGenerator<string> {
-  // Reject a symlink/FIFO/device BEFORE opening, matching the maintenance ledger
-  // probe (probeEncryptedRegularFileHeader, #2033): opening a FIFO blocks until a
-  // writer appears and a symlink would redirect the read outside our tree. An
-  // ENOENT from the missing regular file propagates so callers keep their
-  // absent-file → [] behavior (they catch ENOENT), exactly as a missing open did.
   const entryStat = await lstat(filePath);
   if (!entryStat.isFile()) {
     throw new Error(
@@ -91,9 +69,6 @@ export async function readMemoryActionEventRowsFromLines(
     if (!line) continue;
     try {
       const parsed = JSON.parse(line) as Partial<MemoryActionEvent> & { recordKind?: unknown };
-      // Ledger discriminated union (#2347): any row carrying a `recordKind`
-      // belongs to another record family (e.g. context_transform) and must
-      // be ignored here — the legacy parser stays strict for its own kind.
       if (parsed.recordKind !== undefined) continue;
       const outcome = parsed.outcome === "applied" || parsed.outcome === "skipped" || parsed.outcome === "failed"
         ? parsed.outcome
@@ -165,16 +140,6 @@ export async function readContextTransformRecordRowsFromLines(
   return writeIndex === 0 ? out : [...out.slice(writeIndex), ...out.slice(0, writeIndex)];
 }
 
-/**
- * Validate that a parsed row carries every required lifecycle-event field.
- * Shared by the tail reader and the per-memory reader so both apply the EXACT
- * same fail-open guard as `readAllLifecycleEventsFromLedger` (`eventType` is any
- * string). Governance reads via `readMemoryLifecycleEvents(MAX_SAFE_INTEGER)`
- * must be byte-for-byte identical to `readAllMemoryLifecycleEvents`, so this
- * MUST NOT restrict `eventType` to a handled allow-list — an unknown type is
- * still admitted here and sorted deterministically by `lifecycleEventSortRank`
- * (issue #1910).
- */
 function isValidLifecycleEventRow(
   parsed: Partial<MemoryLifecycleEvent>,
 ): parsed is MemoryLifecycleEvent {

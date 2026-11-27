@@ -1,9 +1,3 @@
-/**
- * Recall concurrency config parsing (issue #1906), extracted from config.ts to
- * keep that grandfathered file within its structural-ratchet ceiling (#1520/#1995).
- * The parsed fields still live on {@link PluginConfig}; this only relocates the
- * coercion/validation logic.
- */
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 import type { PluginConfig } from "./types.js";
 

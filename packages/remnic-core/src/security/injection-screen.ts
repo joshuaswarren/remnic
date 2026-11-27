@@ -1,9 +1,3 @@
-/**
- * Deterministic write-path screening for prompt-injection-shaped facts (#1955).
- *
- * This module has no model or storage calls. It only returns explainable
- * findings so callers can quarantine a candidate for human review.
- */
 
 export interface InjectionScreenFinding {
   rule: string;
@@ -18,22 +12,14 @@ export interface InjectionScreenResult {
 
 export type InjectionScreenProfile = "default" | "hardened";
 
-// Each score reflects the confidence that the candidate carries executable
 // instructions rather than an ordinary fact.
 const RULE_WEIGHTS = {
-  // Direct commands to an agent are high-confidence instructions.
   "imperative-to-agent": 4,
-  // Tool syntax names an executable operation and its arguments.
   "tool-invocation-syntax": 4,
-  // Encoded blobs are opaque and cannot receive normal factual review.
   "encoded-blob": 5,
-  // Instruction resets directly try to replace the active authority.
   "ignore-previous-family": 4,
-  // Remnic command references can redirect the memory system itself.
   "authority-escalation": 4,
-  // Stored response controls try to turn recalled data into future behavior.
   "response-control-directive": 4,
-  // Tool-routing controls replace the current tool choice from recalled data.
   "tool-routing-directive": 4,
 } as const;
 
@@ -43,7 +29,6 @@ const RULE_WEIGHTS = {
 // conditional procedure prose stays below the threshold. Rules absent from
 // this table share RULE_WEIGHTS in both profiles.
 const PROFILE_RULE_WEIGHTS = {
-  // Conditional triggers encode a hidden action for a future turn.
   "conditional-trigger": { default: 3, hardened: 4 },
 } as const;
 
@@ -103,7 +88,6 @@ function findToolInvocationSyntax(content: string): InjectionScreenFinding | und
   ) ?? findingFor(
     "tool-invocation-syntax",
     content,
-    // Bare verbs only count when the target looks like a tool identifier
     // (namespaced / snake_case / dotted) or is explicitly called a tool —
     // plain English like "on-call SRE" or "call Sam" must not trip the
     // screen (#1955 false-positive criterion).
@@ -149,22 +133,18 @@ function findConditionalTrigger(content: string): InjectionScreenFinding | undef
 
 const RESPONSE_NOUN = String.raw`(?:answers?|responses?|repl(?:y|ies)|output)`;
 const RESPONSE_CONTROL_PATTERNS: readonly RegExp[] = [
-  // "the approved response concerning X is exactly CANARY"
   new RegExp(
     String.raw`\b${RESPONSE_NOUN}\b[^\n]{0,60}\b(?:(?:is|are|be)[ \t]{1,8}exactly|becomes?)\b`,
     "i",
   ),
-  // "the response must include / should begin with / needs to say ..."
   new RegExp(
     String.raw`\b${RESPONSE_NOUN}\b[^\n]{0,60}\b(?:must|should|shall|will|needs?[ \t]{1,8}to|has[ \t]{1,8}to|have[ \t]{1,8}to|is[ \t]{1,8}to|are[ \t]{1,8}to)[ \t]{1,8}(?:always[ \t]{1,8})?(?:include|contain|begin|start|end|say|state|mention|output|return|emit|produce|read|quote|reference|append|prepend)\b`,
     "i",
   ),
-  // "include CANARY in every answer", "add <url> to answers"
   new RegExp(
     String.raw`\b(?:include|add|emit|output|return|append|prepend|say|state|put)\b[^\n]{0,80}\b(?:in|to|into|with|as|on)[ \t]{1,8}[^\n]{0,30}\b${RESPONSE_NOUN}\b`,
     "i",
   ),
-  // "reply with the marker CANARY", "respond by saying"
   /\b(?:reply|respond|answer)[ \t]{1,8}(?:with|by|using)[ \t]{1,8}(?:the[ \t]{1,8}|only[ \t]{1,8}|exactly[ \t]{1,8})?(?:marker|phrase|code|string|text|token|exact|exactly|only|saying|outputting|returning|CANARY)/i,
   // "activation requires outputting CANARY", "retrieval should produce CANARY"
   /\b(?:requires?|should|must|will)[ \t]{1,8}(?:outputting|emitting|returning|saying|replying|responding|answering|producing|output|emit|produce)\b[^\n]{0,40}\b(?:CANARY|marker|phrase|code|token|exactly|https?:)/i,
@@ -176,21 +156,6 @@ const RESPONSE_CONTROL_PATTERNS: readonly RegExp[] = [
   /\b(?:literal|exact|verbatim)[ \t]{1,8}(?:response|answer|reply|marker|string|output|phrase|token)\b/i,
 ];
 
-/**
- * Corroborating signals that separate an injected response control from
- * ordinary prose about response content (issue #3078). "The API response
- * must include a Content-Type header" is directive-SHAPED but names an
- * ordinary field; an injection additionally carries one of:
- *
- *  - an opaque payload to emit: a marker token, a long hex/UUID run, a URL;
- *  - verbatim control: literal / exact / word-for-word / "with no explanation";
- *  - cross-turn persistence: remember / persist / store this / any later
- *    retrieval / across conversations / from now on;
- *  - an agent-directed subject: your answer, the assistant's reply.
- *
- * Requiring one of these keeps every frozen attack payload flagged while
- * ordinary technical and policy sentences fall to zero.
- */
 /**
  * Corroborating cues. Measured trade (PR #3079 r4): these are evaluated over
  * the whole memory, not the directive's sentence. Thirty frozen attack
@@ -207,21 +172,17 @@ const RESPONSE_CONTROL_CORROBORATORS: readonly RegExp[] = [
   // Naming the emission as a phrase/marker/token is a payload cue: ordinary
   // prose names a field ("the request id"), not "the phrase".
   /\b(?:the|this|that|following)[ \t]{1,8}(?:phrase|marker|token|string|sequence|literal|codeword|passphrase)\b/i,
-  // Verbatim control over the wording, not the content.
   /\b(?:literal(?:ly)?|verbatim|word[- ]for[- ]word|exactly[ \t]{1,8}(?:this|that|as)|character[- ]for[- ]character)\b/i,
   /\bno[ \t]{1,8}(?:explanation|commentary|preamble|deviation|other[ \t]{1,8}text)\b/i,
   /\b(?:only|nothing[ \t]{1,8}else|and[ \t]{1,8}nothing)\b[^\n]{0,30}\b(?:answers?|responses?|repl(?:y|ies)|output|say|said)\b/i,
-  // Persistence across turns: an ordinary fact does not legislate later turns.
   /\b(?:remember|persist|store[ \t]{1,8}this|retain[ \t]{1,8}this)\b/i,
   /\bany[ \t]{1,8}(?:later|future|subsequent)\b/i,
   /\b(?:future|later|subsequent|following|upcoming)[ \t]{1,8}(?:answers?|responses?|repl(?:y|ies)|output|turns?|messages?|conversations?|sessions?)\b/i,
   /\b(?:across|between)[ \t]{1,8}(?:conversations|sessions|chats)\b/i,
   /\b(?:from[ \t]{1,8}now[ \t]{1,8}on|going[ \t]{1,8}forward|in[ \t]{1,8}(?:all|every)[ \t]{1,8}(?:future|later)[ \t]{1,8}(?:turns?|answers?|responses?))\b/i,
   /\b(?:whenever|every[ \t]{1,8}time|each[ \t]{1,8}time|any[ \t]{1,8}time)\b[^\n]{0,60}\b(?:asked|discussed|mentioned|queried|retrieved|recalled)\b/i,
-  // The subject is the agent, not a system under discussion.
   /\byour[ \t]{1,8}(?:answers?|responses?|repl(?:y|ies)|output|behaviou?r|memory)\b/i,
   /\b(?:assistant|agent|model)(?:'s)?[ \t]{1,8}(?:answers?|responses?|repl(?:y|ies)|output|behaviou?r)\b/i,
-  // A hidden activation phrase is itself the second signal.
   /\b(?:activation|trigger)[ \t]{1,8}(?:phrase|key|word|code)\b/i,
   /\b(?:approved|required|correct|canonical)[ \t]{1,8}(?:response|answer|reply)\b/i,
 ];
@@ -266,7 +227,6 @@ const ORDINARY_CAPITALIZED_WORDS: ReadonlySet<string> = new Set([
  * described value rather than a literal to emit, and ordinary acronyms are
  * excluded, so technical prose does not match (PR #3079 review).
  */
-/** Non-global probe for the emission verb, for the structural early exit. */
 const EMISSION_VERB_PRESENT = /\b(?:begin|start|end|include|contain|say|state|output|return|emit|produce|reply|respond|answer|replace|becomes?|is|are|be)\b[ \t]/i;
 
 const OPAQUE_EMISSION_TARGET =
@@ -296,7 +256,6 @@ function lowercaseFollowsWhitespace(content: string, from: number): boolean {
   let index = from;
   while (index < limit) {
     const code = content.charCodeAt(index);
-    // space, tab, newline, carriage return, form feed, vertical tab
     const whitespace = code === 32 || (code >= 9 && code <= 13);
     if (!whitespace) return code >= 97 && code <= 122;
     index += 1;
@@ -350,12 +309,10 @@ function splitSentencesOutsideQuotes(content: string): string[] {
   return sentences;
 }
 
-/** Strip trailing digits so SHA256, UTF8, and ISO8601 reduce to their acronym. */
 function reduceToken(token: string): string {
   return token.replace(/[0-9]+$/, "");
 }
 
-/** Is one emission-slot token an ordinary described value rather than a payload? */
 function isOrdinaryToken(token: string): boolean {
   const segments = token.split(/[-_]+/).filter((segment) => segment.length > 0);
   if (segments.length === 0) return true;
@@ -441,7 +398,6 @@ function findResponseControlDirective(
   // talked past the gate there. `default` (custom mode) requires a second
   // signal, which is what keeps ordinary response prose out of quarantine.
   if (profile === "hardened") return directive;
-  // Cue scope is a measured trade; see RESPONSE_CONTROL_CORROBORATORS.
   // Cheap structural exit: if the whole memory carries no corroborator and
   // no emission verb, locality cannot produce a finding, and the splitter's
   // per-character scan is skipped entirely (large ordinary memories never
@@ -451,12 +407,10 @@ function findResponseControlDirective(
     ? EMISSION_VERB_PRESENT.test(content)
     : true;
   if (!anyCorroborator && !anyEmissionVerb) return undefined;
-  // Corroborators are sentence-local now that sentence splitting no longer
   // breaks URLs: a cue in an unrelated sentence ("The fixture value is
   // CANARY.") cannot corroborate an ordinary directive, while a payload the
   // directive sentence itself names ("...add https://... to answers...")
   // still does (#3080).
-  // Cue locality: a corroborator must sit in the directive's own sentence
   // (continuation lines included). The emission slot needs no splitting --
   // the verb and its slot are adjacent by construction, so that check is
   // intrinsically local and runs over the whole content (PR #3081 r4).

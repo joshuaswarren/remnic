@@ -55,16 +55,10 @@ export async function planLocalNamespaceCensus(args: LocalCensusArgs): Promise<L
   const priorEntry = args.cache ? await args.cache.readEntry("local", ns) : null;
   const priorFiles = priorEntry?.files;
   const capturedAtMs = Date.now();
-  // Streamed census with fast-base resume: unchanged files (mtime+bytes
-  // within the offline-sync tolerance, ctime not newer than the cached
-  // capture) reuse their cached sha256 instead of rehashing.
   const snapshot = await buildOfflineSyncSnapshotFromBase({
     root: rootDir,
     sourceId: "local",
     includeContent: false,
-    // Peer snapshot, manifest-stream, and apply all pin
-    // includeTranscripts=false. Including transcripts here would mark
-    // identical transcripts as local-only, then apply would reject them.
     includeTranscripts: false,
     // Rows missing stat metadata cannot ride the fast-base path
     // (normalizeFileState requires them); they simply re-hash.
@@ -128,8 +122,6 @@ export async function planLocalNamespaceCensus(args: LocalCensusArgs): Promise<L
   for (const file of files) {
     if (priorByPath.get(file.path) === file.sha256.toLowerCase()) reused += 1;
   }
-  // Progress fires whether or not checkpointing is available (#2963): a
-  // read-only audit mount must not silence per-namespace stderr output.
   args.onProgress?.({
     side: "local",
     namespace: ns,
@@ -139,8 +131,6 @@ export async function planLocalNamespaceCensus(args: LocalCensusArgs): Promise<L
     computed: files.length - reused,
   });
   if (args.cache) {
-    // Checkpoint the namespace only after it fully completed, so an
-    // aborted or crashed run leaves a valid (if partial) plan cache.
     await args.cache.writeEntry({
       version: 1,
       scope: args.cache.scope,

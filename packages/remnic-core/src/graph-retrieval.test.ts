@@ -78,7 +78,6 @@ test("queryGraph ranks a tiny two-node graph with the seeded node higher", () =>
 
   const result = queryGraph(graph, ["m1"], { topK: 10 });
   assert.ok(result.rankedNodes.length > 0);
-  // m1 should rank highest (seeded + receives no inbound edges).
   assert.equal(result.rankedNodes[0]?.id, "m1");
 });
 
@@ -134,9 +133,6 @@ test("isEdgeType rejects unknown values", () => {
   assert.equal(isEdgeType({ type: "references" }), false);
 });
 
-// ---------------------------------------------------------------------------
-// Edge extraction (PR 2)
-// ---------------------------------------------------------------------------
 
 test("extractGraphEdges returns empty result for empty input", () => {
   const { nodes, edges } = extractGraphEdges([]);
@@ -314,24 +310,17 @@ test("extractGraphEdges returns a realistic 8-memory fixture end-to-end", () => 
   ];
   const { nodes, edges } = extractGraphEdges(memories);
 
-  // 8 memory nodes + 3 distinct entities + 2 distinct agents = 13 nodes.
   assert.equal(nodes.size, 13);
   const memoryNodes = [...nodes.values()].filter((n) => n.type === "memory");
   assert.equal(memoryNodes.length, 8);
   const entityNodes = [...nodes.values()].filter((n) => n.type === "entity");
   assert.equal(entityNodes.length, 5);
 
-  // Count edges by type for clarity.
   const counts: Record<string, number> = {};
   for (const e of edges) counts[e.type] = (counts[e.type] ?? 0) + 1;
-  // m4 → m3 supersedes
   assert.equal(counts["supersedes"], 1);
-  // m3 lineage → m1, m2 (2); m4 derived_from m3:1 → m3 (1); m6 lineage → m4 (1);
-  // m7 derived_from m6:2 → m6 (1). Total: 5 derived-from edges.
   assert.equal(counts["derived-from"], 5);
-  // m1→Jane, m2→Jane, m3→Jane, m3→Acme, m5→Acme, m6→Bob = 6 mentions.
   assert.equal(counts["mentions"], 6);
-  // m2 → agent:extractor; m5 → agent:judge = 2 authored-by.
   assert.equal(counts["authored-by"], 2);
 });
 
@@ -357,7 +346,6 @@ test("extractGraphEdges rejects type mismatch: supersedes points at entity, not 
   ];
   const { edges } = extractGraphEdges(memories);
   assert.equal(edges.filter((e) => e.type === "supersedes").length, 0);
-  // The mention edge must still fire.
   assert.equal(edges.filter((e) => e.type === "mentions").length, 1);
 });
 
@@ -379,17 +367,14 @@ test("extractGraphEdges is order-independent with includeDanglingEdges=true (Cod
   const fwd = extractGraphEdges(forward, { includeDanglingEdges: true });
   const rev = extractGraphEdges(reverse, { includeDanglingEdges: true });
 
-  // Same number of edges of each type in both orderings.
   const count = (edges: typeof fwd.edges) =>
     edges.reduce<Record<string, number>>((acc, e) => {
       acc[e.type] = (acc[e.type] ?? 0) + 1;
       return acc;
     }, {});
   assert.deepEqual(count(fwd.edges), count(rev.edges));
-  // In both orderings the supersedes edge is rejected (entity claimed).
   assert.equal(fwd.edges.filter((e) => e.type === "supersedes").length, 0);
   assert.equal(rev.edges.filter((e) => e.type === "supersedes").length, 0);
-  // And the entity / mention pair survives.
   assert.equal(fwd.nodes.get("shared")?.type, "entity");
   assert.equal(rev.nodes.get("shared")?.type, "entity");
 });
@@ -407,7 +392,6 @@ test("extractGraphEdges type-mismatch guard applies even with includeDanglingEdg
   const { nodes, edges } = extractGraphEdges(memories, { includeDanglingEdges: true });
   assert.equal(edges.filter((e) => e.type === "supersedes").length, 0);
   assert.equal(edges.filter((e) => e.type === "derived-from").length, 0);
-  // The shared id remains an entity node, not promoted to memory.
   assert.equal(nodes.get("shared-id")?.type, "entity");
 });
 
@@ -470,13 +454,8 @@ test("extractGraphEdges skips memories with no id", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Personalized PageRank (PR 3)
 // ---------------------------------------------------------------------------
 
-/**
- * Helper — build a `RemnicGraph` from parallel node / edge arrays. Keeps
- * the PPR tests readable without repeating Map construction.
- */
 function buildGraph(
   nodeIds: readonly string[],
   edges: readonly [from: string, to: string, weight?: number][],
@@ -531,7 +510,6 @@ test("PPR converges on a small ring graph", () => {
 });
 
 test("PPR ranks the seed node highest on a star graph", () => {
-  // Star: center node connected to 4 leaves, leaves have no outbound edges.
   const graph = buildGraph(
     ["center", "l1", "l2", "l3", "l4"],
     [
@@ -546,7 +524,6 @@ test("PPR ranks the seed node highest on a star graph", () => {
 });
 
 test("PPR biases ranking toward seed in asymmetric graph", () => {
-  // A ↔ B ↔ C chain; seed at A should rank A highest.
   const graph = buildGraph(
     ["a", "b", "c"],
     [
@@ -581,12 +558,10 @@ test("PPR respects seedWeights object form", () => {
   });
   const scoreA = result.rankedNodes.find((n) => n.id === "a")?.score ?? 0;
   const scoreB = result.rankedNodes.find((n) => n.id === "b")?.score ?? 0;
-  // With 90% seed mass on A, A should outrank B on this chain.
   assert.ok(scoreA > scoreB, `expected a (${scoreA}) > b (${scoreB})`);
 });
 
 test("PPR respects seedWeights Map form (weights are applied)", () => {
-  // Disconnected two-node graph → seedWeights directly drive the ranking.
   const graph = buildGraph(["a", "b"], []);
   const weights = new Map<string, number>([
     ["a", 3],
@@ -596,14 +571,12 @@ test("PPR respects seedWeights Map form (weights are applied)", () => {
   assert.equal(result.rankedNodes[0]?.id, "a");
   const scoreA = result.rankedNodes.find((n) => n.id === "a")?.score ?? 0;
   const scoreB = result.rankedNodes.find((n) => n.id === "b")?.score ?? 0;
-  // 3:1 weights → roughly 0.75 vs 0.25.
   assert.ok(scoreA > scoreB * 2, `expected a (${scoreA}) >> b (${scoreB})`);
 });
 
 test("PPR falls back to uniform distribution when no seeds match", () => {
   const graph = buildGraph(["a", "b", "c"], [["a", "b"]]);
   const result = queryGraph(graph, ["missing"]);
-  // Without bias, probability mass should still sum to ~1.
   let total = 0;
   for (const r of result.rankedNodes) total += r.score;
   assert.ok(Math.abs(total - 1) < 1e-3);
@@ -692,8 +665,6 @@ test("PPR redistributes dangling mass through the seed vector", () => {
 });
 
 test("PPR edge weights bias the ranking", () => {
-  // a → b (weight 0.1), a → c (weight 0.9). With seed on a, c should rank
-  // above b among non-seed nodes.
   const graph = buildGraph(
     ["a", "b", "c"],
     [
@@ -709,7 +680,6 @@ test("PPR edge weights bias the ranking", () => {
 
 test("PPR clamps damping out of range", () => {
   const graph = buildGraph(["a", "b"], [["a", "b"]]);
-  // Damping >= 1 should be clamped (no infinite loop or NaN).
   const result = queryGraph(graph, ["a"], { damping: 1.5, iterations: 30 });
   assert.ok(result.rankedNodes.length > 0);
   for (const r of result.rankedNodes) {
@@ -721,7 +691,6 @@ test("PPR clamps damping out of range", () => {
 test("PPR treats iterations=0 as no-iter (returns seed as rank)", () => {
   const graph = buildGraph(["a", "b", "c"], [["a", "b"], ["b", "c"]]);
   const result = queryGraph(graph, ["a"], { iterations: 0 });
-  // With 0 iterations, rank equals seed: mass concentrated on "a".
   assert.equal(result.iterations, 0);
   assert.equal(result.rankedNodes[0]?.id, "a");
   assert.equal(Math.round((result.rankedNodes[0]?.score ?? 0) * 100) / 100, 1);
@@ -745,7 +714,6 @@ test("PPR ignores negative and non-finite seed weights", () => {
   });
   const scoreA = result.rankedNodes.find((n) => n.id === "a")?.score ?? 0;
   const scoreB = result.rankedNodes.find((n) => n.id === "b")?.score ?? 0;
-  // Negative weight on b should be dropped → seed concentrated on a.
   assert.ok(scoreA > scoreB);
 });
 
@@ -762,7 +730,6 @@ test("PPR converges to a stable fixed point (two iterations close to each other)
   );
   const r100 = queryGraph(graph, ["a"], { iterations: 100, tolerance: 0 });
   const r101 = queryGraph(graph, ["a"], { iterations: 101, tolerance: 0 });
-  // With tolerance=0, both should run the full iteration cap. Their rank
   // vectors should be within a tight epsilon.
   for (const { id, score } of r100.rankedNodes) {
     const match = r101.rankedNodes.find((n) => n.id === id);

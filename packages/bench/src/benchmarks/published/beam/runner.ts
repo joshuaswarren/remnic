@@ -1,6 +1,3 @@
-/**
- * BEAM runner migrated into @remnic/bench for phase 2.
- */
 
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";

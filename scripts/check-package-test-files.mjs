@@ -1,11 +1,4 @@
 #!/usr/bin/env node
-/**
- * Fail when a package.json `test` / `test:*` script names a .ts file
- * that does not exist. Deleting a test and leaving it in the script
- * made CI look like a missing-module failure instead of a script bug.
- *
- * REMNIC_TEST_FILES_ROOT is a test seam (absolute fake repo root).
- */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";

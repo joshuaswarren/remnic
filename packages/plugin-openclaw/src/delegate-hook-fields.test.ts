@@ -45,9 +45,6 @@ test("isSubagentSessionKeyDetected agrees with the mirrored grammar in any envir
     "default",
     "",
   ];
-  // Deterministic in both host-installed and host-free environments: the
-  // detector must answer exactly the mirrored grammar whichever helper is
-  // active, and when the host SDK resolves, it must agree with the mirror.
   for (const key of fixtures) {
     assert.equal(await isSubagentSessionKeyDetected(key), isSubagentSessionKey(key));
   }

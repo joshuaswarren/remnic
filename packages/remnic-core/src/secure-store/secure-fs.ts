@@ -63,9 +63,6 @@ import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { readStoreFileBufferTolerant as readStoreFileBuffer } from "./entity-file-read.js";
 
-// ---------------------------------------------------------------------------
-// Error classes
-// ---------------------------------------------------------------------------
 
 /**
  * Thrown when a read is attempted but the keyring entry for this
@@ -92,35 +89,20 @@ export class SecureStoreDecryptError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Magic header
 // ---------------------------------------------------------------------------
 
-/** Magic bytes: the ASCII string "REMNIC-ENC" (10 bytes). */
 export const MAGIC_BYTES = Buffer.from("REMNIC-ENC", "ascii");
 
-/** Current on-disk version byte. */
 export const FILE_FORMAT_VERSION = 0x01;
 
 /** Reserved flags byte — must be 0x00. */
 export const FILE_FORMAT_FLAGS = 0x00;
 
-/** Total size of the magic header prefix (magic + version + flags). */
 export const MAGIC_HEADER_SIZE = MAGIC_BYTES.length + 2; // 12 bytes
 
-/**
- * Exact, deterministic bytes `writeMaybeEncryptedFile` adds to an encrypted
- * file beyond its plaintext body: the magic header prefix plus the fixed
- * envelope header (version + salt + IV + auth tag). AES-256-GCM ciphertext
- * matches the plaintext length and the state-file write path applies no
- * compression, so an encrypted state file is exactly `plaintext +
- * SECURE_STORE_ENVELOPE_OVERHEAD_BYTES` on disk. Compaction reserves this so an
- * encrypted ledger lands strictly below the reader's whole-file decrypt cap
- * (issue #2033).
- */
 export const SECURE_STORE_ENVELOPE_OVERHEAD_BYTES = MAGIC_HEADER_SIZE + ENVELOPE_HEADER_SIZE;
 
 // ---------------------------------------------------------------------------
-// Detection
 // ---------------------------------------------------------------------------
 
 /**
@@ -183,7 +165,6 @@ export async function probeEncryptedRegularFileHeader(probePath: string): Promis
 }
 
 // ---------------------------------------------------------------------------
-// Encrypt / decrypt file body
 // ---------------------------------------------------------------------------
 
 /**
@@ -249,7 +230,6 @@ function buildHeaderAad(salt: Uint8Array): Buffer {
 }
 
 // ---------------------------------------------------------------------------
-// Path → AAD helper
 // ---------------------------------------------------------------------------
 
 /**
@@ -269,7 +249,6 @@ export function filePathAad(filePath: string, memoryDir?: string): Buffer {
 }
 
 // ---------------------------------------------------------------------------
-// High-level read / write helpers
 // ---------------------------------------------------------------------------
 
 /**
@@ -294,10 +273,8 @@ export async function readMaybeEncryptedFileBuffer(
 ): Promise<Buffer> {
   const buf = memoryDir ? await readStoreFileBuffer(filePath, memoryDir) : await readFile(filePath);
   if (!isEncryptedFile(buf)) {
-    // Plain file — legacy or unencrypted store.
     return buf;
   }
-  // Encrypted — key required.
   if (key === null) {
     throw new SecureStoreLockedError(
       `secure-store is locked — cannot read encrypted file at ${filePath}. Run \`remnic secure-store unlock\` to decrypt.`
@@ -372,7 +349,6 @@ export async function writeMaybeEncryptedFile(
       await writeFile(tempPath, data, { mode });
       await rename(tempPath, filePath);
     } catch (err) {
-      // Best-effort cleanup of the temp file.
       try {
         await unlink(tempPath);
       } catch {
@@ -515,24 +491,17 @@ export async function* readMaybeEncryptedFileFromChunks(
 }
 
 // ---------------------------------------------------------------------------
-// Migration
 // ---------------------------------------------------------------------------
 
 export interface MigrateResult {
-  /** Number of files successfully encrypted. */
   encrypted: number;
-  /** Number of files already encrypted (skipped). */
   skipped: number;
-  /** Files that failed to encrypt (path → error message). */
   errors: Array<{ filePath: string; error: string }>;
 }
 
 export interface DecryptResult {
-  /** Number of files successfully decrypted back to plaintext. */
   decrypted: number;
-  /** Number of files already plaintext (skipped). */
   skipped: number;
-  /** Files that failed to decrypt (path → error message). */
   errors: Array<{ filePath: string; error: string }>;
 }
 
@@ -572,7 +541,6 @@ export async function migrateMemoryDirToEncrypted(
         result.skipped++;
         continue;
       }
-      // Call optional pre-encryption hook (e.g. page-version snapshot).
       if (onBeforeEncrypt) {
         try {
           await onBeforeEncrypt(filePath);
@@ -584,14 +552,12 @@ export async function migrateMemoryDirToEncrypted(
       const aad = filePathAad(filePath, dir);
       const encrypted = encryptFileBody(content, key, aad);
 
-      // Atomic write: temp → rename (gotcha #54).
       const tempPath = uniqueAtomicTempPath(filePath, "enc-tmp");
       try {
         await writeFile(tempPath, encrypted, { mode: 0o600 });
         await rename(tempPath, filePath);
         result.encrypted++;
       } catch (writeErr) {
-        // Clean up temp file, leave original intact.
         try {
           const { unlink } = await import("node:fs/promises");
           await unlink(tempPath);
@@ -673,8 +639,6 @@ function decryptFileBodyForPath(
   memoryDir?: string,
   aadFilePath?: string
 ): Buffer {
-  // A canonical-AAD stage read (offline-sync generation transaction) binds
-  // the FINAL published path, not the physical staging path.
   const aad = aadFilePath !== undefined ? filePathAad(aadFilePath, memoryDir) : filePathAad(filePath, memoryDir);
   try {
     return decryptFileBody(buf, key, aad);
@@ -860,22 +824,7 @@ function normalizeStorageRelativePath(rel: string): string {
   return normalized;
 }
 
-// Every recall MEMORY category directory (facts/ + the CATEGORY_DIR_MAP memory
-// dirs) must be encryptable at rest — #1546 routes decision/preference/moment/...
-// memories into their own dirs, so hardcoding only facts/corrections/procedures/
-// reasoning-traces would silently write those categories in plaintext on
-// encrypted stores. RECALL_FALLBACK_DIRS is the single source of truth for that
-// set; the extra non-category markdown roots (artifacts/archive/entities/
-// identity) are appended.
 //
-// questions/ is deliberately EXCLUDED (RECALL_FALLBACK_DIRS omits the non-memory
-// queue dirs): the question queue is written/resolved through plain readFile/
-// writeFile (StorageManager.writeQuestion/resolveQuestion), NOT the secure-file
-// helpers. Encrypting questions/ here would make migration seal those files,
-// after which resolveQuestion() would read ciphertext as UTF-8, fail to update
-// the frontmatter, and overwrite/corrupt the file while returning success
-// (codex #1563 review). Keeping questions/ plaintext preserves the queue's
-// existing behavior; #1546 does not change question encryption.
 const ENCRYPTABLE_MARKDOWN_STORAGE_ROOTS = new Set<string>([
   ...RECALL_FALLBACK_DIRS,
   "artifacts",
@@ -902,17 +851,9 @@ const ENCRYPTABLE_STATE_SIDECARS = new Set([
 ]);
 
 function isEncryptableStateSidecar(normalized: string): boolean {
-  // state/dropped/ holds copies of extraction-buffer turns dropped after
-  // repeated extraction failures — same content sensitivity as buffer.json.
   return ENCRYPTABLE_STATE_SIDECARS.has(normalized) || normalized.startsWith("state/dropped/");
 }
 
-/**
- * Per-session buffer state files (`state/buffer/<session>.json`) hold the same
- * buffered turns the legacy `state/buffer.json` held, so they are encryptable
- * state sidecars too — otherwise enabling the secure store would leave the
- * daemon's buffered turns in plaintext on disk.
- */
 function isEncryptableBufferSessionFile(normalized: string): boolean {
   return normalized.startsWith("state/buffer/") && normalized.endsWith(".json");
 }

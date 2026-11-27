@@ -70,7 +70,6 @@ export function capTmtSummaryInputs(inputs: string[], level: TmtLevel): string[]
   return [fallback.length > itemChars ? `${fallback.slice(0, itemChars - 1)}…` : fallback];
 }
 
-// ── Path helpers ────────────────────────────────────────────────────────────
 
 export function tmtDir(baseDir: string): string {
   return path.join(baseDir, TMT_DIR);
@@ -92,7 +91,6 @@ export function personaNodePath(baseDir: string): string {
   return path.join(tmtDir(baseDir), "persona.md");
 }
 
-// ── Frontmatter helpers ─────────────────────────────────────────────────────
 
 export function serialiseTmtNode(fm: TmtNodeFrontmatter, summary: string): string {
   const yaml = [
@@ -134,7 +132,6 @@ function parseTmtInstant(iso: string): { date: string; hour: string; dateValue: 
   };
 }
 
-// Returns ISO week key: YYYY-WW
 export function isoWeekKey(date: Date): string {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   const dayNum = d.getUTCDay() || 7;
@@ -144,7 +141,6 @@ export function isoWeekKey(date: Date): string {
   return `${d.getUTCFullYear()}-${String(weekNo).padStart(2, "0")}`;
 }
 
-// ── TmtBuilder ──────────────────────────────────────────────────────────────
 
 export type SummarizeFn = (memories: string[], level: TmtLevel) => Promise<string>;
 
@@ -177,7 +173,6 @@ export class TmtBuilder {
   }
 
   private async buildHourNodes(memories: MemoryEntry[], summarize: SummarizeFn): Promise<void> {
-    // Group by date+hour
     const byHour = new Map<string, MemoryEntry[]>();
     for (const m of memories) {
       const instant = parseTmtInstant(m.created);
@@ -193,7 +188,6 @@ export class TmtBuilder {
       const [date, hour] = key.split("::");
       const nodePath = hourNodePath(this.baseDir, date, hour);
 
-      // Rebuild if missing or if more memories arrived for this hour
       let shouldBuild = !fs.existsSync(nodePath);
       if (!shouldBuild) {
         try {
@@ -228,7 +222,6 @@ export class TmtBuilder {
   }
 
   private async buildDayNodes(memories: MemoryEntry[], summarize: SummarizeFn): Promise<void> {
-    // Group by date
     const byDate = new Map<string, MemoryEntry[]>();
     for (const m of memories) {
       const instant = parseTmtInstant(m.created);
@@ -240,7 +233,6 @@ export class TmtBuilder {
 
     for (const [date, entries] of byDate) {
       const nodePath = dayNodePath(this.baseDir, date);
-      // Rebuild day node if it doesn't exist or if memory count changed
       let shouldBuild = !fs.existsSync(nodePath);
       if (!shouldBuild) {
         try {
@@ -253,7 +245,6 @@ export class TmtBuilder {
       }
       if (!shouldBuild) continue;
 
-      // Per-hour: use hour node summary if available, raw content otherwise
       const inputs: string[] = [];
       const hourToEntries = new Map<string, MemoryEntry[]>();
       for (const e of entries) {
@@ -303,7 +294,6 @@ export class TmtBuilder {
    * Fail-open: errors per week are caught and skipped.
    */
   private async buildWeekNodes(memories: MemoryEntry[], summarize: SummarizeFn): Promise<void> {
-    // Determine which ISO weeks appear in this memory batch
     const weekToEntries = new Map<string, MemoryEntry[]>();
     for (const m of memories) {
       const instant = parseTmtInstant(m.created);
@@ -316,7 +306,6 @@ export class TmtBuilder {
     for (const [week, entries] of weekToEntries) {
       const nodePath = weekNodePath(this.baseDir, week);
 
-      // Rebuild if missing or if memory count grew
       let shouldBuild = !fs.existsSync(nodePath);
       if (!shouldBuild) {
         try {
@@ -330,7 +319,6 @@ export class TmtBuilder {
       if (!shouldBuild) continue;
 
       try {
-        // Collect day-node summaries for days that fall in this week
         const dir = tmtDir(this.baseDir);
         let allDirs: string[] = [];
         try { allDirs = await readdir(dir); } catch { continue; }
@@ -350,7 +338,6 @@ export class TmtBuilder {
           }
         }
 
-        // Fall back to raw memory content if no day summaries available
         const inputs = daySummaries.length > 0 ? daySummaries : entries.map((e) => e.content);
         const summary = await summarize(capTmtSummaryInputs(inputs, "week"), "week");
         const sortedCreated = entries.map((e) => e.created).sort();
@@ -415,7 +402,6 @@ export class TmtBuilder {
 
       const nodePath = personaNodePath(this.baseDir);
 
-      // Skip rebuild if persona node already reflects current week data
       let shouldBuild = !fs.existsSync(nodePath);
       if (!shouldBuild) {
         try {
@@ -456,7 +442,6 @@ export class TmtBuilder {
       const dir = tmtDir(this.baseDir);
       if (!fs.existsSync(dir)) return null;
 
-      // Try today's day node first
       const today = new Date().toISOString().slice(0, 10);
       const todayDay = dayNodePath(this.baseDir, today);
       if (fs.existsSync(todayDay)) {
@@ -465,7 +450,6 @@ export class TmtBuilder {
         if (summary) return { level: "day", summary };
       }
 
-      // Find most recent date directory
       let entries: string[] = [];
       try { entries = await readdir(dir); } catch { return null; }
       const dateDirs = entries.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)).sort().reverse();

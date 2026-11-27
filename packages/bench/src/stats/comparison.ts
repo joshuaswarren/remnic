@@ -55,7 +55,6 @@ function verdictFromMetricDeltas(
   let hasRegression = false;
 
   for (const [metricName, metric] of Object.entries(metricDeltas)) {
-    // For lower-is-better metrics, a positive percent change is a regression.
     const directedChange = lowerIsBetter.has(metricName)
       ? -metric.percentChange
       : metric.percentChange;

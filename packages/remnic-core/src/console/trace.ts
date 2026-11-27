@@ -37,9 +37,7 @@ import { sleepAbortable } from "../utils/sleep.js";
 import { renderFrame } from "./tui.js";
 import type { ConsoleStateSnapshot } from "./state.js";
 
-/** ANSI: clear screen + move cursor to home (top-left). Same constant the TUI uses. */
 const ANSI_CLEAR_HOME = "\x1b[2J\x1b[H";
-/** ANSI: hide / show the cursor during replay. */
 const ANSI_HIDE_CURSOR = "\x1b[?25l";
 const ANSI_SHOW_CURSOR = "\x1b[?25h";
 
@@ -50,14 +48,8 @@ const ANSI_SHOW_CURSOR = "\x1b[?25h";
  */
 const DEFAULT_REPLAY_DELAY_MS = 2000;
 
-/**
- * Maximum allowed delay between replay frames. A pathological trace
- * with hour-long gaps would otherwise stall replay indefinitely; cap
- * at one minute so a tester running `--trace` always sees progress.
- */
 const MAX_REPLAY_DELAY_MS = 60_000;
 
-/** Minimum delay between replay frames (ms) — prevents starving the loop. */
 const MIN_REPLAY_DELAY_MS = 0;
 
 export interface TraceRecorder {
@@ -78,7 +70,6 @@ export interface TraceRecorder {
    * of leaving the handle open until the orphaned writeChain resolves.
    */
   close: (signal?: AbortSignal) => Promise<void>;
-  /** Returns the most recent error (or null) without throwing. */
   getLastError: () => string | null;
 }
 
@@ -112,10 +103,6 @@ export async function openTraceRecorder(
   const handle = await fs.open(filePath, "a");
   let closed = false;
   let lastError: string | null = null;
-  // Codex P0 (Common Gotcha #40): a serialized promise chain without
-  // `.catch()` recovery permanently poisons the chain after the first
-  // I/O error. Use `queueWrite` — it surfaces the error to the caller
-  // AND restores the chain to a resolved state for the next caller.
   let writeChain: Promise<void> = Promise.resolve();
   const queueWrite = (line: string): Promise<void> => {
     const next = writeChain.then(async () => {
@@ -125,8 +112,6 @@ export async function openTraceRecorder(
       } catch (err) {
         const msg = describeError(err);
         lastError = msg;
-        // Re-throw so the caller's awaiter sees the failure, but
-        // recover the chain below so the next append can still run.
         throw err;
       }
     });
@@ -145,8 +130,6 @@ export async function openTraceRecorder(
       try {
         line = JSON.stringify(snapshot) + "\n";
       } catch (err) {
-        // A non-serializable snapshot is a bug, not a runtime
-        // condition we should crash on. Record + skip.
         lastError = `serialize failed: ${describeError(err)}`;
         return;
       }
@@ -158,20 +141,6 @@ export async function openTraceRecorder(
     },
     close: async (signal?: AbortSignal) => {
       if (closed) return;
-      // Codex P1: do NOT set `closed = true` before draining. Each
-      // queued write begins with `if (closed) return;`, so flipping the
-      // flag first would silently drop frames that callers already
-      // queued via `append()`. Drain the existing chain first so every
-      // already-queued write executes against the still-open handle,
-      // THEN flip `closed` to reject any further appends, THEN close
-      // the file handle. This honors the documented "drain pending
-      // writes" contract of `close()`.
-      //
-      // Codex P1 (PR #732 round 5): when `flushWithTimeout` races the
-      // drain against a deadline and the timeout wins, it fires the
-      // `signal` passed here. We race the writeChain drain against that
-      // signal so the file handle is closed promptly instead of being
-      // held open until the orphaned writeChain eventually resolves.
       try {
         if (signal) {
           await Promise.race([
@@ -239,7 +208,6 @@ export interface ReplayTraceOptions {
 }
 
 export interface ReplayTraceResult {
-  /** Total frames rendered. */
   framesRendered: number;
   /** Frames skipped because they could not be parsed. */
   framesSkipped: number;
@@ -259,12 +227,6 @@ export async function replayTrace(
 ): Promise<ReplayTraceResult> {
   const output: Writable = options.output ?? process.stdout;
   const speed = normalizeSpeed(options.speed);
-  // Codex P2 (PR #732 follow-up): the default sleeper now uses
-  // `sleepAbortable` which REJECTS with `AbortError` on signal abort
-  // (rather than resolving silently). The replay loop catches the
-  // AbortError and exits cleanly. Custom `sleep` implementations are
-  // responsible for their own abort wiring; if they reject with an
-  // AbortError-shaped error the loop will treat it as a clean exit.
   const sleep =
     options.sleep ?? ((ms: number) => sleepAbortable(ms, options.signal));
   const manageCursor = options.manageCursor ?? true;
@@ -296,29 +258,18 @@ export async function replayTrace(
         continue;
       }
 
-      // Compute the inter-frame delay from the captured timestamps.
-      // The first frame paints immediately; subsequent frames wait
-      // `(this.capturedAt - prev.capturedAt) / speed`.
       const capturedMs = Date.parse(snapshot.capturedAt);
       let waitMs = 0;
       if (prevCapturedMs !== null && Number.isFinite(capturedMs)) {
         const rawDelta = capturedMs - prevCapturedMs;
         waitMs = computeReplayDelay(rawDelta, speed);
       } else if (prevCapturedMs !== null) {
-        // No usable timestamp on this frame — fall back to the
-        // default refresh interval (also speed-adjusted).
         waitMs = computeReplayDelay(DEFAULT_REPLAY_DELAY_MS, speed);
       }
       if (waitMs > 0) {
         try {
           await sleep(waitMs);
         } catch (err) {
-          // Codex P2 (PR #732 follow-up): `sleepAbortable` rejects
-          // with AbortError when SIGINT fires mid-sleep. Treat any
-          // AbortError-shaped rejection as a clean early exit so
-          // Ctrl-C does not have to wait for the current `setTimeout`
-          // to elapse. Re-throw any other error so genuine bugs
-          // surface.
           if (isAbortError(err) || options.signal?.aborted) break;
           throw err;
         }
@@ -333,8 +284,6 @@ export async function replayTrace(
           now: () => nowFn(snapshot, framesRendered),
         });
       } catch (err) {
-        // Mirror the live loop's renderer-failure recovery: emit a
-        // minimal error frame and keep replaying.
         frame = `remnic console replay: render failed: ${describeError(err)}\n`;
       }
       safeWrite(output, ANSI_CLEAR_HOME);
@@ -502,11 +451,8 @@ export function isAbortError(err: unknown): boolean {
 }
 
 export interface FlushWithTimeoutResult {
-  /** True if the flush completed before the deadline. */
   flushed: boolean;
-  /** True if the deadline won. */
   timedOut: boolean;
-  /** Error from the flush, if any. */
   error: unknown;
 }
 
@@ -540,29 +486,16 @@ export async function flushWithTimeout(
   const TIMEOUT_SENTINEL = Symbol("flush-timeout");
   let error: unknown = null;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  // Codex P1 (PR #732 round 5): give the flush an AbortSignal so the
-  // underlying close() can stop holding resources when the timeout
-  // wins. Previously the close kept running silently after the race
-  // resolved — the AbortController lets callers wire cancellation into
-  // their I/O path (e.g., by aborting a stream or write chain) instead
-  // of merely abandoning the orphaned promise.
   const ac = new AbortController();
   const flushPromise = flush(ac.signal).then(
     () => undefined,
     (err) => {
       error = err;
-      // Resolve so the race winner is "flush" — the caller inspects
-      // `result.error` to decide what to do.
       return undefined;
     },
   );
   const timeoutPromise = new Promise<symbol>((resolve) => {
     timeoutHandle = setTimeout(() => resolve(TIMEOUT_SENTINEL), timeoutMs);
-    // Codex P1 (PR #732): unref the fallback timer so it does not
-    // hold the event loop open on its own. Belt-and-suspenders with
-    // the `clearTimeout` in the `finally` below: even if a future
-    // refactor accidentally drops the clear, an unref'd timer will
-    // not prevent process exit once the flush has resolved.
     if (typeof timeoutHandle.unref === "function") {
       timeoutHandle.unref();
     }
@@ -573,18 +506,11 @@ export async function flushWithTimeout(
       timeoutPromise,
     ]);
     if (winner === TIMEOUT_SENTINEL) {
-      // Fire the abort signal so the flush's underlying I/O can
-      // release its resources rather than staying open indefinitely.
       ac.abort();
       return { flushed: false, timedOut: true, error: null };
     }
     return { flushed: true, timedOut: false, error };
   } finally {
-    // Codex P1 (PR #732): clear the fallback timer when the flush
-    // wins the race. Without this, Node keeps the ref'd timeout
-    // handle alive for the full `timeoutMs` and delays process exit
-    // by that interval on EVERY normal shutdown — turning a
-    // safety-net into a consistent user-visible hang.
     if (timeoutHandle !== null) {
       clearTimeout(timeoutHandle);
     }

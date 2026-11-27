@@ -1,16 +1,3 @@
-/**
- * Tests for the disclosure-telemetry surface added to Recall X-ray in
- * issue #677 PR 3/4.  Covers:
- *
- *   - `estimateRecallTokens()` heuristic edge cases.
- *   - Per-result `disclosure` + `estimatedTokens` round-trip through
- *     `cloneResult` / `buildXraySnapshot`.
- *   - `summarizeDisclosureTokens()` aggregation across all four buckets.
- *   - Markdown renderer emits the per-disclosure summary table only
- *     when at least one result carries a disclosure level.
- *
- * No real recall data is exercised here; fixtures are synthetic.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -41,17 +28,12 @@ test("estimateRecallTokens: empty / null / undefined returns 0", () => {
 });
 
 test("estimateRecallTokens: ~4 chars/token heuristic, ceiling rounded", () => {
-  // 8 chars → 2 tokens
   assert.equal(estimateRecallTokens("abcdefgh"), 2);
-  // 9 chars → 3 tokens (ceil 9/4)
   assert.equal(estimateRecallTokens("abcdefghi"), 3);
-  // 1 char → 1 token (rounding up from 0.25)
   assert.equal(estimateRecallTokens("x"), 1);
 });
 
 test("estimateRecallTokens: rejects non-string input gracefully", () => {
-  // TypeScript blocks this at the type system but we still want
-  // runtime safety for surfaces that pass through unknown payloads.
   assert.equal(estimateRecallTokens(42 as unknown as string), 0);
   assert.equal(estimateRecallTokens({} as unknown as string), 0);
 });
@@ -93,13 +75,10 @@ test("buildXraySnapshot drops invalid disclosure + tokens silently (poison guard
       }),
     ],
   });
-  // Invalid disclosure dropped; tokens still preserved (>= 0).
   assert.equal(snap.results[0]?.disclosure, undefined);
   assert.equal(snap.results[0]?.estimatedTokens, 100);
-  // Negative tokens dropped; disclosure preserved.
   assert.equal(snap.results[1]?.disclosure, "chunk");
   assert.equal(snap.results[1]?.estimatedTokens, undefined);
-  // NaN tokens dropped.
   assert.equal(snap.results[2]?.estimatedTokens, undefined);
 });
 

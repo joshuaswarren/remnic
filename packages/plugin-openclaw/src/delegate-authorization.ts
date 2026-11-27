@@ -1,12 +1,3 @@
-/**
- * Daemon authorization probing for the delegate runtime.
- *
- * `GET /engram/v1/authorization` is the daemon's own namespace-aware answer to
- * "may this token do X here?". It backs both the registration preflight and
- * the per-operation check that stops a substituted default namespace from
- * 403-ing on its first use. Split from delegate-runtime.ts so that file stays
- * under its size cap.
- */
 
 import { log } from "@remnic/core/logger";
 

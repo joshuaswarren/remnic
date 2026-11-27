@@ -135,9 +135,6 @@ test("inputs are not mutated", () => {
   assert.deepEqual(availableItemIds, availableSnapshot);
 });
 
-// Review: two claims sharing a claimId AND a reason still differ by their
-// unknownIds, so a comparator returning 0 there let input order decide the
-// output — the contract says the result is deterministic.
 test("duplicate claim ids with different unknown ids sort deterministically", () => {
   const available = ["item-ok"];
   const claims = [

@@ -11,7 +11,6 @@ import {
   renderXrayText,
 } from "./recall-xray-renderer.js";
 
-// ─── fixtures ─────────────────────────────────────────────────────────────
 
 function minimalSnapshot(): RecallXraySnapshot {
   return {
@@ -91,7 +90,6 @@ function fullSnapshot(): RecallXraySnapshot {
   };
 }
 
-// ─── parseXrayFormat ─────────────────────────────────────────────────────
 
 test("parseXrayFormat defaults undefined/null to text", () => {
   assert.equal(parseXrayFormat(undefined), "text");
@@ -124,7 +122,6 @@ test("parseXrayFormat rejects non-string values", () => {
   );
 });
 
-// ─── renderXrayJson ──────────────────────────────────────────────────────
 
 test("renderXrayJson returns stable envelope for null snapshot", () => {
   const out = renderXrayJson(null);
@@ -147,7 +144,6 @@ test("renderXrayJson emits snapshotFound=true and preserves snapshot fields", ()
   assert.equal(parsed.tierExplain.tier, "direct-answer");
 });
 
-// ─── renderXrayText golden ───────────────────────────────────────────────
 
 test("renderXrayText matches golden output for a full snapshot", () => {
   const out = renderXrayText(fullSnapshot());
@@ -262,7 +258,6 @@ test("renderXrayText returns a placeholder for a null snapshot", () => {
   assert.equal(out, "=== Recall X-ray ===\nNo X-ray snapshot captured.");
 });
 
-// ─── renderXrayMarkdown golden ───────────────────────────────────────────
 
 test("renderXrayMarkdown matches golden output for a full snapshot", () => {
   const out = renderXrayMarkdown(fullSnapshot());
@@ -354,7 +349,6 @@ test("renderXrayMarkdown returns a placeholder for a null snapshot", () => {
   assert.equal(out, "# Recall X-ray\n\n_No X-ray snapshot captured._");
 });
 
-// ─── renderXray dispatcher ───────────────────────────────────────────────
 
 test("renderXray dispatches to the format-specific renderer", () => {
   const snap = fullSnapshot();
@@ -363,7 +357,6 @@ test("renderXray dispatches to the format-specific renderer", () => {
   assert.equal(renderXray(snap, "markdown"), renderXrayMarkdown(snap));
 });
 
-// ─── escaping and edge cases ─────────────────────────────────────────────
 
 test("renderXrayMarkdown escapes pipes in filter names and reasons to keep the table valid", () => {
   const snap: RecallXraySnapshot = {
@@ -488,8 +481,6 @@ test("renderXray formats non-finite capturedAt as (unknown)", () => {
 });
 
 test("renderXray falls back to (unknown) for out-of-range finite capturedAt", () => {
-  // `new Date(1e20).toISOString()` throws RangeError.  The renderer
-  // must not crash on corrupted or custom-clock snapshots.
   const snap: RecallXraySnapshot = {
     ...minimalSnapshot(),
     capturedAt: 1e20,
@@ -498,17 +489,13 @@ test("renderXray falls back to (unknown) for out-of-range finite capturedAt", ()
   assert.ok(text.includes("captured-at: (unknown)"));
   const md = renderXrayMarkdown(snap);
   assert.ok(md.includes("| Captured at | (unknown) |"));
-  // Sanity: the JSON renderer is untouched — it serializes the raw
-  // number because JSON consumers want the value as captured.
   const json = JSON.parse(renderXrayJson(snap));
   assert.equal(json.capturedAt, 1e20);
 });
 
-// ─── Issue #681 PR 3/3 — per-edge confidence rendering ────────────────────
 
 test("renderXrayText surfaces per-edge confidences when present", () => {
   const snap = fullSnapshot();
-  // Replace first result with one that carries graphEdgeConfidences.
   const augmented: RecallXraySnapshot = {
     ...snap,
     results: [
@@ -553,12 +540,10 @@ test("renderXrayMarkdown surfaces per-edge confidences when present", () => {
 });
 
 test("renderXrayText omits per-edge confidence line when graphEdgeConfidences absent", () => {
-  // Legacy snapshots without confidences must not introduce an empty row.
   const out = renderXrayText(fullSnapshot());
   assert.ok(!out.includes("edge-confidences:"));
 });
 
-// ─── Issue #1952 — state-view text rendering ──────────────────────────────
 
 test("renderXrayText renders the state-view line exactly once per result", () => {
   const snap: RecallXraySnapshot = {
@@ -586,11 +571,6 @@ test("renderXrayText renders the state-view line exactly once per result", () =>
 });
 
 test("renderXrayText tier-explain block matches shared helper output", async () => {
-  // CLAUDE.md rule 22: the tier-explain text block must be a single
-  // source of truth shared between recall-explain-renderer and
-  // recall-xray-renderer.  Assert the output lines match the shared
-  // helper byte-for-byte so a future edit to either surface can't drift
-  // without a test failure.
   const { renderTierExplainTextLines } = await import(
     "./recall-explain-renderer.js"
   );
@@ -604,7 +584,6 @@ test("renderXrayText tier-explain block matches shared helper output", async () 
     );
   }
 
-  // Also exercise the null-tierExplain branch.
   const nullSnap: RecallXraySnapshot = {
     ...minimalSnapshot(),
     tierExplain: null,

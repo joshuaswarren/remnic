@@ -1,11 +1,3 @@
-/**
- * Pluggable X sources (issue #2009): official X MCP (paid, budget-
- * capped), a local corpus directory (zero credits), and a cookie-CLI
- * such as `bird` (zero credits). All three emit the same normalized
- * XPostRecord currency and degrade with a `skipped` reason instead of
- * throwing, except auth/config breakage which surfaces to the sync
- * report's `error` field.
- */
 
 import { execFile } from "node:child_process";
 import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
@@ -48,7 +40,6 @@ export interface XSourceDeps {
   execImpl?: XExecFn;
 }
 
-/** Budget enforcement for paid (MCP) sources. */
 export class XBudgetTracker implements XBudgetRuntime {
   pagesUsed = 0;
   reads = 0;
@@ -81,7 +72,6 @@ export class XBudgetTracker implements XBudgetRuntime {
   }
 }
 
-/** Zero-credit sources never consume budget. */
 export const unlimitedBudget: XBudgetRuntime = {
   pagesUsed: 0,
   maxPages: Number.POSITIVE_INFINITY,
@@ -89,7 +79,6 @@ export const unlimitedBudget: XBudgetRuntime = {
   noteRead: () => {},
 };
 
-/** Builds the source adapter for a parsed source config entry. */
 export function createXSource(
   config: XMcpSourceConfig | XCorpusSourceConfig | XCliSourceConfig,
   deps: XSourceDeps = {}
@@ -99,7 +88,6 @@ export function createXSource(
   return createCliSource(config, deps);
 }
 
-// ── MCP source ──────────────────────────────────────────────────────────────
 
 function createMcpSource(config: XMcpSourceConfig, deps: XSourceDeps): XSource {
   const credentials = resolveMcpClientCredentials(config, deps.env ?? process.env);
@@ -179,8 +167,6 @@ function createMcpSource(config: XMcpSourceConfig, deps: XSourceDeps): XSource {
           records.push(...pageRecords);
           nextToken = nextPageToken(payload);
           if (nextToken === undefined || pageRecords.length === 0) return;
-          // Stop-on-known: a page of entirely known posts means everything
-          // deeper is older state we already ingested.
           if (pageRecords.every((record) => ctx.knownIds.has(record.postId))) return;
         }
       };
@@ -231,7 +217,6 @@ function nextPageToken(payload: unknown): string | undefined {
   return undefined;
 }
 
-// ── Corpus directory source ─────────────────────────────────────────────────
 
 function createCorpusSource(config: XCorpusSourceConfig): XSource {
   return {
@@ -259,7 +244,6 @@ function createCorpusSource(config: XCorpusSourceConfig): XSource {
         try {
           const info = await lstat(filePath);
           if (info.isSymbolicLink()) {
-            // Containment: a symlink may not point outside the corpus root.
             const target = await realpath(filePath);
             if (!(target === rootReal || target.startsWith(`${rootReal}${path.sep}`))) {
               skippedFiles += 1;
@@ -297,7 +281,6 @@ function asEntryList(parsed: unknown): unknown[] {
   return [parsed];
 }
 
-// ── CLI source ──────────────────────────────────────────────────────────────
 
 function createCliSource(config: XCliSourceConfig, deps: XSourceDeps): XSource {
   const exec = deps.execImpl ?? defaultExec;

@@ -34,7 +34,6 @@ function settings(overrides: Partial<WearableSourceSettings> = {}): WearableSour
 }
 
 test("importing the module registers the connector exactly once", () => {
-  // The import at the top of this file already registered it.
   assert.ok(getWearableConnector("limitless"));
   assert.equal(ensureLimitlessConnectorRegistered(), false);
   assert.equal(wearableConnectorRegistration.id, "limitless");

@@ -1,26 +1,3 @@
-/**
- * Operator console TUI for issue #688 (PR 2/3).
- *
- * Renders a five-panel one-screen layout that periodically polls
- * `gatherConsoleState` and repaints the terminal. Deliberately uses
- * the minimal-deps "clear + repaint" approach (no curses / blessed /
- * ink) — we just emit ANSI control sequences directly to the output
- * stream. This keeps the surface portable and dependency-free.
- *
- * PR 1/3 (#721) shipped `gatherConsoleState` plus the CLI's
- * `--state-only` flag (one-shot JSON snapshot). PR 2/3 wires the
- * interactive surface. Trace replay (`--trace <session-id>`) is
- * deferred to PR 3/3.
- *
- * Design contract:
- *   - Read-only: never mutates orchestrator state.
- *   - Resilient: a thrown error in one refresh cycle must NOT crash
- *     the loop. Errors are surfaced inside the rendered frame.
- *   - Cleanly stoppable: `runConsoleTui` returns a `stop()` that
- *     clears the interval, restores the cursor, and resolves the
- *     pending exit promise. SIGINT triggers the same cleanup.
- *   - No external deps: only ANSI control sequences.
- */
 
 import type { Writable } from "node:stream";
 
@@ -30,13 +7,10 @@ import {
   type ConsoleStateSnapshot,
 } from "./state.js";
 
-/** ANSI: clear screen + move cursor to home (top-left). */
 const ANSI_CLEAR_HOME = "\x1b[2J\x1b[H";
-/** ANSI: hide / show the cursor (we hide during the loop, restore on exit). */
 const ANSI_HIDE_CURSOR = "\x1b[?25l";
 const ANSI_SHOW_CURSOR = "\x1b[?25h";
 
-/** Total inner width of the rendered frame (between the box borders). */
 const FRAME_INNER_WIDTH = 70;
 
 /** Default refresh interval in milliseconds. Chosen to match the spec. */
@@ -70,24 +44,7 @@ export interface RunConsoleTuiOptions {
 }
 
 export interface RunConsoleTuiHandle {
-  /**
-   * Stop the refresh loop and restore the cursor. Returns immediately;
-   * callers should `await handle.done` to wait for any in-flight tick
-   * (and its trace append) to finish. Codex P2 (#732 round 4): without
-   * the in-flight await on the `done` path, a Ctrl-C that fires while
-   * a tick is past its `stopped` check could still call
-   * `traceRecorder.append` AFTER the CLI begins closing the recorder.
-   */
   stop: () => void;
-  /**
-   * Resolves once `stop()` has been invoked, the interval is cleared,
-   * AND any in-flight tick (including its fire-and-forget trace
-   * append) has resolved. Callers that close a trace recorder after
-   * the TUI exits MUST await this promise before initiating close,
-   * otherwise the close path can race a still-running `append` call
-   * and surface phantom "post-close" appends to the recorder. Codex
-   * P2 (#732 round 4).
-   */
   done: Promise<void>;
   /**
    * Number of trace frames that were dropped due to backpressure (i.e.
@@ -121,34 +78,7 @@ export function runConsoleTui(
 
   let stopped = false;
   let inFlight = false;
-  // Codex P2 (PR #732 round 4): track the in-flight tick promise so
-  // `stop()` can await it before resolving `done`. Without this, a
-  // Ctrl-C that fires while a tick is past its `if (stopped) return`
-  // check can still execute `traceRecorder.append(snapshot)` AFTER
-  // `done` resolves and the CLI shutdown path begins closing the
-  // recorder. By awaiting the tick body, we ensure
-  // `recorder.append()` has at least been called (synchronously
-  // enqueueing the line onto the recorder's internal writeChain)
-  // before `done` resolves; the recorder's `close()` then drains
-  // that writeChain. Without the await, `close()` can begin draining
-  // while the tick is still about to call `append()`, producing a
-  // post-close append.
-  //
-  // We deliberately do NOT also await the resulting fire-and-forget
-  // trace promise. The append is fire-and-forget on purpose
-  // (backpressure: see comment further below); a wedged disk that
-  // stalls the append must not also stall shutdown. The recorder's
-  // own `close()` path (combined with `flushWithTimeout` in the CLI)
-  // is the right place to bound the disk-drain wait.
   let inFlightTickPromise: Promise<void> | null = null;
-  // Codex P2 (PR #732): backpressure for trace recording. If the
-  // previous fire-and-forget `append()` has not resolved yet, we drop
-  // the current frame instead of enqueuing it onto the recorder's
-  // internal writeChain. Without this guard, a wedged filesystem
-  // would let memory grow unboundedly — every tick adds a JSON line
-  // to a serialized chain that never drains. Dropping is preferable
-  // to OOM; the operator can inspect `getLastError()` to learn that
-  // tracing fell behind.
   let traceWritePending = false;
   let traceFramesDropped = 0;
   let resolveDone!: () => void;
@@ -156,19 +86,11 @@ export function runConsoleTui(
     resolveDone = resolve;
   });
 
-  // Hide the cursor while the loop runs so the repaint doesn't flicker.
   safeWrite(output, ANSI_HIDE_CURSOR);
 
   const tick = async () => {
     if (stopped || inFlight) return;
     inFlight = true;
-    // Cursor Low: wrap the entire body in try/finally so a thrown
-    // `renderFrame` (or any other unexpected sync failure after the
-    // gatherConsoleState try/catch) still releases the `inFlight`
-    // latch. Without this guard, a single render-time exception
-    // permanently freezes the loop because every subsequent tick
-    // hits `if (inFlight) return`. Honors the file's design contract
-    // ("a thrown error in one refresh cycle must NOT crash the loop").
     try {
       let snapshot: ConsoleStateSnapshot | null = null;
       let renderError: string | null = null;
@@ -182,28 +104,10 @@ export function runConsoleTui(
       try {
         frame = renderFrame({ snapshot, renderError, now });
       } catch (err) {
-        // If the renderer itself throws (e.g. an invalid clock
-        // injection produced `NaN`), fall back to a minimal error
-        // frame instead of letting the exception escape and reject
-        // the void-floated promise (which would also be unhandled).
         frame = `remnic console: render failed: ${describeError(err)}\n`;
       }
       safeWrite(output, ANSI_CLEAR_HOME);
       safeWrite(output, frame);
-      // Codex P2: do NOT await trace writes inside the render tick.
-      // Awaiting holds `inFlight = true` for the duration of the disk
-      // write; on a slow / network-backed filesystem that stretches
-      // the visual refresh interval and skips ticks. Fire-and-forget
-      // preserves the paint cadence; errors are captured via
-      // `getLastError()`.
-      //
-      // Codex P2 (PR #732 follow-up): apply backpressure. If the
-      // previous append is still pending (writeChain not yet
-      // drained), drop this frame instead of queuing another line.
-      // Without this gate, a wedged FS lets the chain grow
-      // unboundedly — one JSON line per tick — until the process
-      // OOMs. Dropping is preferable; the operator can inspect
-      // `getLastError()` to see tracing fell behind.
       if (snapshot && options.traceRecorder && !traceWritePending) {
         traceWritePending = true;
         void options.traceRecorder
@@ -222,19 +126,6 @@ export function runConsoleTui(
     }
   };
 
-  // Kick off an immediate first paint, then schedule the interval.
-  // Codex P1: do NOT call `handle.unref()`. The CLI path keeps the
-  // process alive by `await`-ing `handle.done`, but a pending promise
-  // alone is not enough to keep Node.js running — the interval timer
-  // is the only ref'd handle that holds the event loop open between
-  // ticks. Unref'ing it caused `remnic console` to render once and
-  // exit immediately. Tests that don't want the process held open
-  // can call `handle.stop()` directly when they're done.
-  // Codex P2 (PR #732 round 4): wrap each tick launch so we hold a
-  // reference to the in-flight tick promise. `stop()` awaits this
-  // promise before resolving `done`, ensuring no late
-  // `traceRecorder.append` call races the CLI shutdown path that
-  // closes the recorder once `done` resolves.
   const launchTick = (): void => {
     const p = runTickSafely(tick);
     inFlightTickPromise = p;
@@ -266,22 +157,7 @@ export function runConsoleTui(
       }
     }
     safeWrite(output, ANSI_SHOW_CURSOR);
-    // Codex P2 (PR #732 round 4): wait for any in-flight tick before
-    // resolving `done`. Without this, a Ctrl-C that fires while a
-    // tick is past its `if (stopped) return` check can still execute
-    // `traceRecorder.append(snapshot)` AFTER `done` resolves and the
-    // CLI shutdown path begins closing the recorder, producing a
-    // phantom post-close append. By awaiting the tick body, we
-    // ensure `recorder.append()` has at least been *called*
-    // (synchronously enqueueing the line onto the recorder's
-    // writeChain) before `done` resolves; the recorder's `close()`
-    // then drains that writeChain.
     //
-    // We do NOT also await the fire-and-forget trace append promise
-    // itself. A wedged disk that stalls the append must not also
-    // stall shutdown — the recorder's `close()` path (bounded by
-    // `flushWithTimeout` in the CLI) is the right place to bound
-    // the disk-drain wait.
     void (async () => {
       try {
         const pendingTick = inFlightTickPromise;
@@ -323,10 +199,8 @@ export function renderFrame(input: RenderFrameInput): string {
 }
 
 function renderHeader(ts: string): string {
-  // ╔═ remnic console ════════════════════════════════ <ts> ═╗
   const title = " remnic console ";
   const trailing = ` ${ts} `;
-  // 2 corner chars + title + ts + filler. Filler at minimum 1 char.
   const fillerLen = Math.max(
     1,
     FRAME_INNER_WIDTH - title.length - trailing.length,
@@ -345,8 +219,6 @@ function renderPanels(input: RenderFrameInput): string[] {
 
   if (input.renderError !== null) {
     lines.push(panelLine("Error", `refresh failed: ${input.renderError}`));
-    // Even on error we still print the section headers so the layout
-    // stays stable for the operator and tests can locate them.
     lines.push(panelLine("Buffer", "(unavailable)"));
     lines.push(panelLine("Extraction", "(unavailable)"));
     lines.push(panelLine("Dedup", "(unavailable)"));
@@ -355,7 +227,6 @@ function renderPanels(input: RenderFrameInput): string[] {
     return lines;
   }
 
-  // Buffer panel.
   if (snap) {
     lines.push(
       panelLine(
@@ -364,7 +235,6 @@ function renderPanels(input: RenderFrameInput): string[] {
       ),
     );
 
-    // Extraction panel.
     const verdicts = snap.extractionQueue.recentVerdicts;
     const accepts = verdicts.filter((v) => v.kind === "accept").length;
     const rejects = verdicts.filter((v) => v.kind === "reject").length;
@@ -375,21 +245,15 @@ function renderPanels(input: RenderFrameInput): string[] {
       ),
     );
 
-    // Dedup panel.
     const dedupSummary = formatDedupSummary(snap.dedupRecent, input.now);
     lines.push(panelLine("Dedup", dedupSummary));
 
-    // Maintenance panel.
     const maintSummary = formatMaintenanceTail(snap.maintenanceLedgerTail);
     lines.push(panelLine("Maintenance", maintSummary));
 
-    // QMD panel.
     lines.push(panelLine("QMD", formatQmdSummary(snap)));
   }
 
-  // Surface aggregator-level read errors (e.g. ledger I/O failures)
-  // without crashing the loop. These are not fatal — the snapshot is
-  // still partially usable.
   if (snap && snap.errors.length > 0) {
     const head = snap.errors[0];
     lines.push(panelLine("Errors", head ?? ""));
@@ -417,7 +281,6 @@ function formatMaintenanceTail(
   if (events.length === 0) return "no events";
   const last = events[events.length - 1];
   if (!last) return "no events";
-  // Show count + most-recent event line.
   return `n=${events.length}  last: ${last.category} ${truncate(last.summary, 40)}`;
 }
 
@@ -432,14 +295,8 @@ function formatQmdSummary(snap: ConsoleStateSnapshot): string {
 }
 
 function panelLine(label: string, value: string): string {
-  // Layout: ║<space><label padded to LABEL_WIDTH><value padded to fill><space>║
-  // Cursor Medium: the closing ║ must be preceded by a trailing space
-  // so the rendered line width matches the header/footer borders.
-  // Without it, every panel line was 71 chars while the borders were
-  // 72, misaligning the right-hand box edge.
   const LABEL_WIDTH = 13;
   const labelCol = padRight(label, LABEL_WIDTH);
-  // Two spaces (leading + trailing) inside the box, consuming 2 cols.
   const remaining = FRAME_INNER_WIDTH - LABEL_WIDTH - 2;
   const valueCol = padRight(truncate(value, remaining), remaining);
   return `║ ${labelCol}${valueCol} ║`;
@@ -464,13 +321,6 @@ function ageMsFromIso(iso: string, now: () => number): number | null {
   return delta < 0 ? 0 : delta;
 }
 
-/**
- * Run an async tick function and swallow any rejection so the floated
- * `void runTickSafely(tick)` call never produces an unhandled-rejection
- * crash (which Node ≥15 escalates to a process exit). The tick body
- * itself already wraps everything in try/finally, but this is the
- * outermost belt-and-suspenders guard.
- */
 async function runTickSafely(tick: () => Promise<void>): Promise<void> {
   try {
     await tick();

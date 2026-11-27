@@ -47,7 +47,6 @@ test("100 near-identical scroll states collapse to a handful of stored rows", ()
   const cache = new DedupCache(10, 60);
   let stored = 0;
   for (let i = 0; i < 100; i++) {
-    // A static reader window: the same visible text on every frame (pure scroll
     // captures the same content), one second apart. Only the TTL should refresh.
     const h = simhash("a long document whose visible text does not change while the user scrolls slowly");
     if (cache.shouldStore("Reader", "Doc", h, sec(i))) stored += 1;

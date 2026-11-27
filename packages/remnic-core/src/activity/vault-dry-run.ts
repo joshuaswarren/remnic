@@ -33,10 +33,6 @@ export function planVaultDryRun(inputs: readonly VaultDryRunInput[]): VaultPubli
     if (typeof input.path !== "string" || input.path.trim() === "") {
       throw new RangeError(`vault dry-run input requires a non-blank path (got ${JSON.stringify(input.path)})`);
     }
-    // Validate the exact values before classification: a non-string or
-    // undefined text field is malformed input, and letting it reach the
-    // comparison would silently report a prediction for data the contract
-    // does not permit (two undefined fields would read as "unchanged").
     for (const field of ["currentText", "nextText"] as const) {
       const value = input[field];
       if (value !== null && typeof value !== "string") {
@@ -59,16 +55,10 @@ export function planVaultDryRun(inputs: readonly VaultDryRunInput[]): VaultPubli
         `vault dry-run skipReason is only valid when nextText is null (path ${JSON.stringify(input.path)})`,
       );
     }
-    // A missing note is NOT a create: the real publisher (vault-publish.ts
-    // publishVaultRegion) refuses to create missing files and returns
-    // missing_file, so the dry run must predict that skip rather than promise
-    // an update the real run will not perform.
     if (input.currentText === null) {
       results.push({ path: input.path, outcome: "skipped", reason: "missing_file" });
       continue;
     }
-    // Byte-exact compare: a publish that rewrites only trailing whitespace is
-    // still a write.
     const outcome: VaultPublishOutcome = input.currentText === input.nextText ? "unchanged" : "updated";
     results.push({ path: input.path, outcome });
   }

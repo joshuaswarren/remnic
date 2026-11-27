@@ -46,8 +46,6 @@ export type { TriggerDecision, AddTurnOutcome, RetainedTurnCleanupOptions } from
 export type { BufferSurpriseProbe } from "./buffer-types.js";
 import type { BufferSurpriseProbe, SurpriseTelemetryQueueEntry } from "./buffer-types.js";
 
-// Raised from 200 in #3303: live captures were being dropped at busy hours
-// while the single extraction worker drained a backlog.
 const FALLBACK_MAX_BUFFER_SESSIONS = 1000;
 export { BUFFER_ADMISSION_IDEMPOTENCY_CAP } from "./buffer-admission-idempotency.js";
 
@@ -131,9 +129,6 @@ export class SmartBuffer {
 
   /** Distinct sessions admitted before backpressure; configurable (#3303, raised from 200). */
   private get maxSessionEntries(): number {
-    // parseConfig defaults, validates, and floors bufferMaxSessions at the I/O
-    // boundary; FALLBACK_MAX_BUFFER_SESSIONS covers direct constructions with
-    // configs from before the knob existed.
     return this.config.bufferMaxSessions ?? FALLBACK_MAX_BUFFER_SESSIONS;
   }
 
@@ -150,8 +145,6 @@ export class SmartBuffer {
     const entries = this.state.entries as NonNullable<BufferState["entries"]>;
     if (Object.hasOwn(entries, key)) {
       const stored = entries[key];
-      // Guard against corrupted state/buffer.json — if the stored entry
-      // is not a valid object shape, discard it and recreate.
       if (stored && typeof stored === "object" && Array.isArray(stored.turns)) {
         return stored;
       }
@@ -178,7 +171,6 @@ export class SmartBuffer {
     };
   }
 
-  /** Evict oldest entries past this.maxSessionEntries and queue their session files for deletion. */
   private pruneEntries(retainKeys: string[], maxCount = this.maxSessionEntries): void {
     const entries = this.state.entries;
     if (!entries) return;
@@ -254,8 +246,6 @@ export class SmartBuffer {
   ): Promise<import("./buffer-persistence.js").BufferPersistOutcome> {
     const outcome = await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined, reconcile, { allowDeferral: opts?.allowDeferral === true });
     const { handedOver, drainedTurns } = outcome;
-    // A drain tombstone: the turns the drain extracted leave this copy too,
-    // so a stale owner never extracts (or persists) them a second time.
     for (const [key, drained] of drainedTurns) {
       const entry = this.peekEntry(key);
       if (!entry) continue;
@@ -267,10 +257,6 @@ export class SmartBuffer {
       if (key === "default") this.state.turns = entry.turns;
     }
     if (handedOver.length === 0) return outcome;
-    // A drain claim now owns these sessions' turns (durable in the claim
-    // file): drop the in-memory entries so this process cannot resurrect
-    // them. A later observe for the same key starts a fresh entry whose
-    // turns flow into the claim at the next handover.
     const entries = this.state.entries;
     if (!entries) return outcome;
     for (const key of handedOver) {
@@ -314,14 +300,6 @@ export class SmartBuffer {
     this.pendingSave = true;
     if (this.firstPendingAtMs === null) this.firstPendingAtMs = now;
     if (now - this.firstPendingAtMs >= ms * BUFFER_SAVE_MAX_DEFER_MULTIPLIER) {
-      // Staleness cap hit: run the persist pass inline rather than re-arming
-      // the debounce. Session-level deferral (#3389) may still rate-limit a
-      // large rewrite; when it does, armDeferredRetry keeps the save pending
-      // and retries at the session's eligibility time, so the pass's tail
-      // cannot sit in memory waiting for a turn that may never come (3481
-      // review). Drop the armed timer and only mark clean on success — a
-      // failure keeps the save pending + re-arms so shutdown/the next timer
-      // retries (issue #1909 review round 2), never diverging memory from disk.
       clearTimeout(this.saveTimer ?? undefined);
       this.saveTimer = null;
       try {
@@ -342,7 +320,6 @@ export class SmartBuffer {
       }
       return;
     }
-    // True trailing edge: drop any armed timer and re-arm from now.
     clearTimeout(this.saveTimer ?? undefined);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
@@ -368,7 +345,6 @@ export class SmartBuffer {
     this.saveTimer.unref?.();
   }
 
-  /** Cancel any armed debounced save without persisting. */
   private cancelScheduledSave(): void {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
@@ -441,17 +417,8 @@ export class SmartBuffer {
     if (!this.pendingSave && !this.persistence.hasPending()) return;
     try {
       await this.enqueueMutation(async () => {
-        // Re-check under the serializer: a concurrent flush may have already
-        // persisted this pending save. Skip the redundant write (no phantom
-        // writes). resetToEmpty-only deletions also land here without a
-        // pending-save flag.
         if (!this.pendingSave && !this.persistence.hasPending()) return;
         const outcome = await this.saveUnlocked(undefined, { allowDeferral: opts?.allowDeferral === true });
-        // Clear the pending flag INSIDE the same serialized mutation as the
-        // write (issue #1909 review): an addTurn interleaving between the
-        // write and the clear would lose its re-armed timer. Deferred
-        // sessions keep the flag — still dirty — and armDeferredRetry
-        // schedules their write at eligibility.
         if (outcome.deferredRetryDelayMs !== undefined) {
           this.armDeferredRetry(outcome.deferredRetryDelayMs);
         } else {
@@ -460,11 +427,6 @@ export class SmartBuffer {
         }
       });
     } catch (err) {
-      // The write failed: memory and disk diverge (issue #1909 review round 2).
-      // Keep the save PENDING (do NOT clear pendingSave/firstPendingAtMs) so a
-      // graceful shutdown flush and the re-armed timer both retry it — clearing
-      // the flag here would drop the buffered turns permanently. Re-arm a
-      // background retry even when debounce is off (3481 review round 3).
       log.warn(`buffer.flushPendingSave: save failed, keeping it pending for retry: ${describeError(err)}`);
       const ms = Math.min(
         this.config.bufferSaveDebounceMs || BUFFER_SAVE_RETRY_DELAY_MS,
@@ -473,14 +435,10 @@ export class SmartBuffer {
       if (!this.saveTimer) {
         this.saveTimer = setTimeout(() => {
           this.saveTimer = null;
-          // A steady-state retry must not escalate into a barrier write of a
-          // rate-limited session (3481 review).
           void this.flushPendingSave({ allowDeferral: opts?.allowDeferral === true });
         }, ms);
         this.saveTimer.unref?.();
       }
-      // Surprise-extraction boundary needs the durability guarantee — surface
-      // the failure so the caller does not proceed with a non-durable flush.
       if (opts?.throwOnFailure) throw err;
       return; // fail-open for timer/shutdown callers
     }
@@ -490,7 +448,6 @@ export class SmartBuffer {
     return (await this.addTurnWithOutcome(bufferKey, turn)).decision;
   }
 
-  /** Admit atomically; refuse at capacity rather than evict accepted work. */
   async addTurnBounded(bufferKey: string, turn: BufferTurn): Promise<AddTurnOutcome | null> {
     const mutation = await this.enqueueMutation(async () => {
       await this.loadUnlocked();
@@ -555,7 +512,6 @@ export class SmartBuffer {
     return addTurnsBoundedWithAdmissionKey(this.addTurnsBoundedHost(), batches, admissionKey.trim(), onRefused);
   }
 
-  /** Free one slot only when an empty entry can be reclaimed. */
   private makeRoomForEntryUnlocked(): void {
     const entries = this.state.entries ?? {};
     const target = Math.max(0, this.maxSessionEntries - 1);
@@ -582,7 +538,6 @@ export class SmartBuffer {
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
   }
 
-  /** Run probes outside the mutation lock to avoid reentrancy deadlocks. */
   private async completeAddTurnOutcome(
     bufferKey: string,
     turn: BufferTurn,
@@ -591,19 +546,10 @@ export class SmartBuffer {
     let decision = mutation.decision;
     let extractionTurns: BufferTurn[] | undefined;
 
-    // Surprise-gated flush (issue #563). Additive only: if the probe is
-    // disabled, unavailable, or the score is below threshold, the decision
-    // from the existing trigger logic stands. The probe only ever *promotes*
-    // `keep_buffering` → `extract_now`; it never suppresses an existing
-    // flush. This preserves the invariant that enabling surprise cannot
-    // *reduce* extraction frequency.
     if (
       decision === "keep_buffering" &&
       resolvePresentationCapabilities(this.config).bufferSurpriseTrigger &&
       this.surpriseProbe !== null &&
-      // Matching the existing "smart" branch: surprise is a lower-tier
-      // novelty signal that should not second-guess a high-signal hit
-      // (which already flushes) or fight `every_n` / `time_based` modes.
       this.config.triggerMode === "smart" &&
       mutation.signalLevel !== "high"
     ) {
@@ -624,15 +570,6 @@ export class SmartBuffer {
             decision = "extract_now";
             triggered = true;
             extractionTurns = currentTurns;
-            // Issue #1909 (review): the record mutation for a `keep_buffering`
-            // turn only SCHEDULED a debounced save. Surprise now promotes it to
-            // extract_now AFTER that mutation, so force the buffer durable before
-            // the caller runs extraction — otherwise state/buffer.json lags the
-            // extracted turns by up to the debounce window on a crash. Safe to
-            // await here: we are outside the record mutation (deadlock-free).
-            // throwOnFailure (round 7 finding 5): match the built-in extract
-            // triggers — a failed durability write must NOT silently proceed to
-            // extract_now on a non-durable turn.
             await this.flushPendingSave({ throwOnFailure: true });
           } else {
             log.debug(
@@ -640,21 +577,6 @@ export class SmartBuffer {
             );
           }
         }
-        // Emit telemetry on every scored turn — both triggering and
-        // non-triggering — so operators can fit the threshold to real
-        // traffic distributions. Fire-and-forget: `addTurn` does NOT
-        // await the ledger append, so slow/contended filesystems cannot
-        // add JSONL-append latency to every `processTurn`. But we DO
-        // serialize writes through a promise chain so concurrent
-        // appends settle in wall-clock order — the report path assumes
-        // chronological tail rows and reads the most recent as the
-        // "current" threshold.
-        //
-        // Project only the fields we need into the queue entry rather
-        // than capturing the full `BufferTurn` — under slow filesystem
-        // latency the chain can back up, and we must not retain the
-        // (potentially large) `turn.content` string for every pending
-        // append.
         this.queueSurpriseTelemetryWrite({
           bufferKey,
           turnRole: turn.role,
@@ -663,13 +585,7 @@ export class SmartBuffer {
           surpriseScore: surprise,
           triggered,
           turnCountInWindow: mutation.turnCountInWindow,
-          // Stamp at decision time so backpressure on the write chain
-          // does not shift the event's apparent moment away from when
-          // the turn was actually scored.
           timestamp: new Date().toISOString(),
-          // Snapshot the threshold used to compute `triggered` so a
-          // concurrent config mutation cannot retroactively change
-          // what the ledger row claims the decision was against.
           threshold: this.config.bufferSurpriseThreshold,
         });
       }
@@ -691,8 +607,6 @@ export class SmartBuffer {
     await this.loadUnlocked();
     const entry = this.entryFor(bufferKey);
     const signal = scanSignals(turn.content, this.config.highSignalPatterns);
-    // #3444: observe BEFORE the push so a lazily rebuilt digest memo cannot
-    // see the current turn (it must only flag turns already in the entry).
     this.ingress.noteAppendedTurn(entry, turn);
     entry.turns.push(turn);
     const decision = evaluateTriggerDecision(this.config, entry, signal.level);
@@ -708,22 +622,8 @@ export class SmartBuffer {
     this.persistence.markDirty(bufferKey);
     this.pruneEntries([bufferKey]);
     if (decision === "keep_buffering" && this.config.bufferSaveDebounceMs > 0) {
-      // Steady-state buffering: coalesce the whole-state serialize onto a
-      // trailing-edge timer (issue #1909) instead of rewriting per turn.
       await this.scheduleSave();
     } else {
-      // Persist immediately within this mutation (awaited) when either:
-      //  - the turn triggered extraction (the buffer must be durable), or
-      //  - debounce is disabled (bufferSaveDebounceMs <= 0), which reproduces
-      //    the legacy save-every-turn behavior byte-for-byte.
-      // Round 8 thread 4: the write is attempted BEFORE the pending state is
-      // cleared, and a failed write leaves it pending (+ a re-armed timer) for
-      // shutdown/timer retry instead of dropping the in-memory turns.
-      // #3389: a keep_buffering turn has no extraction barrier, so this pass
-      // may defer rewriting a large session file that was just persisted —
-      // the rewrite cadence for huge sessions collapses from per-turn to
-      // once per BUFFER_SESSION_DEFER_INTERVAL_MS. A triggering turn is a
-      // durability barrier and passes allowDeferral: false.
       await this.saveNowRetainingPendingOnFailure("recordTurn", { allowDeferral: decision === "keep_buffering" });
     }
     return {
@@ -797,10 +697,6 @@ export class SmartBuffer {
     }
     const event: BufferSurpriseEvent = {
       event: "BUFFER_SURPRISE",
-      // Use the decision-time stamp captured when the event was
-      // queued, NOT `Date.now()` here — backpressure on the write
-      // chain could otherwise shift timestamps into the future relative
-      // to when the turn was scored.
       timestamp: params.timestamp,
       bufferKey: params.bufferKey,
       sessionKey: params.sessionKey,
@@ -816,9 +712,6 @@ export class SmartBuffer {
     try {
       await storage.appendBufferSurpriseEvents([event]);
     } catch (err) {
-      // Same guard as `computeSurpriseSafe`: non-Error rejections must
-      // not crash the telemetry helper, which would defeat the whole
-      // point of isolating the ledger write from the hot path.
       log.debug(
         `buffer[${params.bufferKey}]: surprise telemetry write failed, continuing: ${describeError(err)}`,
       );
@@ -839,13 +732,6 @@ export class SmartBuffer {
   ): Promise<number | null> {
     if (!this.surpriseProbe) return null;
     try {
-      // Hard timeout around the probe so a hung embedder cannot stall
-      // `addTurn()` before `save()`. A slow probe would otherwise
-      // prevent the just-appended turn from ever being persisted. The
-      // timeout is a soft bound — we race it against the probe, take
-      // whichever settles first, and treat the timeout as
-      // "probe unavailable, fall through" rather than an error that
-      // surfaces to the caller.
       const score = await probeWithTimeout(
         this.surpriseProbe.scoreTurn(bufferKey, turn, priorTurns),
         this.config.bufferSurpriseProbeTimeoutMs,
@@ -857,17 +743,10 @@ export class SmartBuffer {
         );
         return null;
       }
-      // Defensive clamp: formula lives in buffer-surprise.ts, but we never
-      // want a misbehaving probe to inject an out-of-range value into the
-      // threshold comparison.
       if (score < 0) return 0;
       if (score > 1) return 1;
       return score;
     } catch (err) {
-      // `err` may be any thrown value — `throw null` and
-      // `Promise.reject("x")` are both legal. Accessing `.message` on a
-      // non-Error would itself throw and defeat the failure-isolation
-      // contract, so describe the value safely.
       log.debug(
         `buffer[${bufferKey}]: surprise probe failed, falling back to existing triggers: ${describeError(err)}`,
       );
@@ -879,9 +758,6 @@ export class SmartBuffer {
     const entry = this.peekEntry(bufferKey);
     if (!entry) return [];
     const retained = entry.retainedTurns ?? [];
-    // Retained turns (from a previous defer verdict, issue #562 PR 2) are
-    // prepended so the chronological order — oldest context first — is
-    // preserved for the next extraction pass.
     return [...retained, ...entry.turns];
   }
 
@@ -1048,13 +924,6 @@ export class SmartBuffer {
     options?: { allowNonPrefix?: boolean },
   ): Promise<void> {
     await this.enqueueMutation(async () => {
-      // Drop any armed debounce TIMER so it cannot fire mid-mutation and race
-      // our post-clear write, but KEEP the pending-save state (issue #1909
-      // review round 13): the post-clear save below can fail, and clearing the
-      // pending flag here would strand buffered turns — including turns from
-      // OTHER sessions that only ever entered the debounced pending state — with
-      // nothing left to retry them. saveNowRetainingPendingOnFailure clears the
-      // pending state only after a durable write, or re-arms it on failure.
       if (this.saveTimer) {
         clearTimeout(this.saveTimer);
         this.saveTimer = null;

@@ -22,7 +22,6 @@ import path from "node:path";
 import { resolveQmdCapabilities } from "../capabilities.js";
 import { type CompoundingEngine, defaultTierMigrationCycleBudget } from "../compounding/engine.js";
 // StorageManager type comes from the package barrel (type-only) so this
-// module does not add a direct storage.ts import (#1533 ratchet).
 import type { StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import type {
@@ -36,48 +35,29 @@ import { type MemoryTier, decideTierTransition } from "../tier-routing.js";
 import type { MemoryFile, PluginConfig } from "../types.js";
 import { type UtilityRuntimeValues, applyUtilityPromotionRuntimePolicy } from "../utility-runtime.js";
 
-/** Dependencies injected by the orchestrator. All stable references or live
- *  accessors (the orchestrator reassigns `qmd` to NoopSearchBackend and
- *  `utilityRuntimeValues` after async init, so those arrive as getters). */
 export interface TierMigrationCoordinatorDeps {
   config: PluginConfig;
-  /** Live accessor — the orchestrator reassigns this.qmd to NoopSearchBackend
-   *  after construction when the collection is missing. */
   getQmd: () => SearchBackend;
   tierMigrationStatus: TierMigrationStatusStore;
-  /** Live accessor — loaded asynchronously during init, null before that. */
   getUtilityRuntimeValues: () => UtilityRuntimeValues | null;
-  /** Live accessor — undefined when compounding is disabled. */
   getCompounding: () => CompoundingEngine | undefined;
-  /** Constructs the cold-tier StorageManager for a given parent memory dir.
-   *  Injected so this module owns no direct storage.ts import (#1533). */
   createColdStorage: (parentDir: string) => StorageManager;
 }
 
-/**
- * Coordinates a single tier-migration cycle. Owns the in-flight guard and
- * last-run timestamp that previously lived as private orchestrator fields.
- */
 export class TierMigrationCoordinator {
   private inFlight = false;
   private lastRunAtMs = 0;
 
   constructor(private readonly deps: TierMigrationCoordinatorDeps) {}
 
-  /** Whether a migration cycle is currently executing (diagnostics). */
   isInFlight(): boolean {
     return this.inFlight;
   }
 
-  /** Latest status snapshot (delegates to the status store). */
   getStatus(): TierMigrationStatusSnapshot {
     return this.deps.tierMigrationStatus.get();
   }
 
-  /**
-   * Run one tier-migration cycle. Behavior-preserving move of the
-   * orchestrator's former `runTierMigrationCycle`.
-   */
   async runCycle(
     storage: StorageManager,
     trigger: "extraction" | "maintenance" | "manual",

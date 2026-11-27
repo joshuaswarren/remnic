@@ -39,11 +39,9 @@ describe("extractStyleMarkers", () => {
   });
 
   it("calculates average sentence length", () => {
-    // 3 words per sentence, 2 sentences
     const samples = ["Hello my friend. Goodbye for now."];
     const markers = extractStyleMarkers(samples);
 
-    // "Hello my friend" = 3, "Goodbye for now" = 3, avg = 3
     assert.ok(
       markers.avgSentenceLength >= 2 && markers.avgSentenceLength <= 4,
       `expected avg ~3, got ${markers.avgSentenceLength}`,
@@ -84,7 +82,6 @@ describe("extractStyleMarkers", () => {
     ];
     const markers = extractStyleMarkers(samples);
 
-    // "I really" should appear as a common phrase
     assert.ok(
       markers.commonPhrases.some((p) => p.toLowerCase().includes("i really")),
       `expected "i really" in common phrases, got: ${JSON.stringify(markers.commonPhrases)}`,
@@ -106,7 +103,6 @@ describe("extractStyleMarkers", () => {
       "The author thoroughly reviewed the code.",
     ];
     const markers = extractStyleMarkers(samples);
-    // "those", "method", "author", "thoroughly" should not trigger casual markers
     assert.equal(markers.formality, "mixed");
   });
 
@@ -120,7 +116,6 @@ describe("extractStyleMarkers", () => {
   });
 
   it("punctuation-strip regex does not ReDoS on pathological input", () => {
-    // 1000 forward slashes should complete well under 100ms
     const pathological = "/".repeat(1000);
     const samples = [pathological, pathological, pathological];
     const start = Date.now();
@@ -134,7 +129,6 @@ describe("extractStyleMarkers", () => {
   });
 
   it("still detects standalone casual markers with word boundaries", () => {
-    // "tho" and "bro" as standalone words should still count
     const samples = [
       "i know tho, it's kind of a thing bro",
       "yeah tho that's what i was saying",

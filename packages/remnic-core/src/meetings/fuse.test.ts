@@ -81,16 +81,12 @@ test("fusion prefers the higher-trust source in overlap regions and records corr
     { sourceTrust: { desktop: 0.9, pendant: 0.6 } },
   );
 
-  // Same utterance recorded by two sources → ONE fused segment (no dup).
   const helloSegments = fused.transcript.filter((s) => s.text === "hello everyone");
   assert.equal(helloSegments.length, 1);
-  // Higher-trust source won the overlapping region.
   assert.equal(helloSegments[0]?.provenance.source, "desktop");
   assert.equal(helloSegments[0]?.provenance.reason, "higher-trust");
-  // The out-voted source is recorded as corroboration.
   assert.deepEqual(fused.corroboratedBy, ["pendant"]);
   assert.deepEqual(fused.sources, ["desktop", "pendant"]);
-  // Jane merged + wearer utterance = two segments total; wearer is not an attendee.
   assert.equal(fused.transcript.length, 2);
   assert.deepEqual(fused.attendees, ["Jane"]);
 });
@@ -137,7 +133,6 @@ test("context excerpts respect maxContextChars", () => {
     },
     config({ maxContextChars: 8 }),
   );
-  // 4-char excerpts, cap 8 → exactly two fit.
   assert.deepEqual(fused.contextExcerpts, ["aaaa", "bbbb"]);
 });
 
@@ -205,8 +200,6 @@ test("a lone trailing other-app snapshot is not inflated to the meeting end", ()
           seg("Jane", false, "agenda", "2026-03-10T14:06:00.000Z"),
         ]),
       ],
-      // A single Notes snapshot 1 min before the window end. With no later
-      // snapshot, the trailing run must NOT count dwell up to the meeting end.
       activity: [snap({ capturedAtUtc: "2026-03-10T14:29:00.000Z", app: "Notes", windowTitle: "scratch" })],
     },
     config(),
@@ -223,10 +216,8 @@ test("fusion reads ActivitySnapshot fields — capturedAtUtc, browserUrl runs, w
       activity: [
         snap({ capturedAtUtc: "2026-03-10T14:05:00.000Z", app: "Chrome", browserUrl: "https://github.com/org/repo/pull/1" }),
         snap({ capturedAtUtc: "2026-03-10T14:06:00.000Z", app: "Chrome", browserUrl: "https://github.com/org/repo/pull/1" }),
-        // Different URL on the same app → a separate dwell run.
         snap({ capturedAtUtc: "2026-03-10T14:06:30.000Z", app: "Chrome", browserUrl: "https://example.com/doc" }),
         snap({ capturedAtUtc: "2026-03-10T14:07:00.000Z", app: "Chrome", browserUrl: "https://example.com/doc" }),
-        // Empty browserUrl falls back to the window title for key and label.
         snap({ capturedAtUtc: "2026-03-10T14:07:30.000Z", app: "Chrome", windowTitle: "Spec v2" }),
         snap({ capturedAtUtc: "2026-03-10T14:08:00.000Z", app: "Chrome", windowTitle: "Spec v2" }),
       ],
@@ -242,8 +233,6 @@ test("fusion reads ActivitySnapshot fields — capturedAtUtc, browserUrl runs, w
       "Chrome: Spec v2",
     ],
   );
-  // Run dwell ends at the next different-key snapshot (90s, 60s) or, for the
-  // trailing run, at its own last snapshot (30s).
   assert.deepEqual(fused.screenContext.map((e) => e.dwellSeconds), [90, 60, 30]);
 });
 

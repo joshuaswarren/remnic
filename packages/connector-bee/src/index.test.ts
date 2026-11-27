@@ -32,7 +32,6 @@ function settings(overrides: Partial<WearableSourceSettings> = {}): WearableSour
   };
 }
 
-/** Route-based global-fetch stub for connector-level tests. */
 function stubFetch(routes: Record<string, unknown>): {
   restore: () => void;
   calls: string[];
@@ -165,12 +164,10 @@ test("the proxy path never attaches an environment token", async () => {
     });
   }) as typeof fetch;
   try {
-    // Default base URL (the local proxy): token must be omitted.
     const proxyConnector = createBeeConnector({ settings: settings({ apiKey: undefined }), timezone: "UTC" });
     await proxyConnector.fetchConversations({ date: "2026-06-10", timezone: "UTC" });
     assert.equal(headersSeen[0].Authorization, undefined);
 
-    // Direct base URL: the env token applies.
     const directConnector = createBeeConnector({
       settings: settings({ apiKey: undefined, baseUrl: "https://bee.example.test" }),
       timezone: "UTC",

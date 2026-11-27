@@ -1,9 +1,3 @@
-/**
- * Tests for the say-once (extraction -> recall round-trip) benchmark.
- *
- * All tests use replay mode (deterministic, no LLM calls).
- * All fixture data is synthetic and obviously invented (public-repo policy).
- */
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -15,7 +9,6 @@ import type { Message } from "../../../adapters/types.js";
 import { runSayOnceBenchmark, sayOnceDefinition } from "./runner.js";
 import { SAY_ONCE_CASES, SAY_ONCE_SMOKE_FIXTURE, type VaguenessTier } from "./fixture.js";
 
-// ─── Replay mode is deterministic ─────────────────────────────────────────
 
 test("say-once: replay mode produces identical scorecards across two runs", async () => {
   const options = {
@@ -35,7 +28,6 @@ test("say-once: replay mode produces identical scorecards across two runs", asyn
   }
 });
 
-// ─── Store safety ─────────────────────────────────────────────────────────
 
 test("say-once: no writes outside the temp directory", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-say-once-safety-"));
@@ -52,8 +44,6 @@ test("say-once: no writes outside the temp directory", async () => {
   await runSayOnceBenchmark(options);
 
   const after = new Set(readdirSync(tmpDir));
-  // Only the temp memory dir should have been created inside tmpDir.
-  // The test dir itself should only contain the bench-created subdir.
   for (const entry of after) {
     if (!before.has(entry)) {
       assert.ok(entry.startsWith("remnic-bench-say-once-"), `unexpected file outside temp dir: ${entry}`);
@@ -62,7 +52,6 @@ test("say-once: no writes outside the temp directory", async () => {
   await rm(tmpDir, { recursive: true, force: true });
 });
 
-// ─── Corrupt/missing fixture errors ───────────────────────────────────────
 
 test("say-once: empty fixture produces zero tasks", async () => {
   const options = {
@@ -77,7 +66,6 @@ test("say-once: empty fixture produces zero tasks", async () => {
   assert.equal(result.results.tasks.length, 0);
 });
 
-// ─── Per-tier rates from known fixture ────────────────────────────────────
 
 test("say-once: per-tier rates are computed correctly from synthetic fixture", async () => {
   const options = {
@@ -89,13 +77,11 @@ test("say-once: per-tier rates are computed correctly from synthetic fixture", a
   };
   const result = await runSayOnceBenchmark(options);
 
-  // Replay mode writes the preference directly, so recall should be 1.0
   for (const task of result.results.tasks) {
     assert.equal(task.scores.recall, 1, `task ${task.taskId} should have perfect recall in replay mode`);
   }
 });
 
-// ─── Exit code semantics ─────────────────────────────────────────────────
 
 test("say-once: exit code 0 for a valid run (even with low scores)", async () => {
   const options = {
@@ -105,12 +91,10 @@ test("say-once: exit code 0 for a valid run (even with low scores)", async () =>
     system: buildRecordingAdapter().system,
     onTaskComplete: () => {},
   };
-  // This should not throw — scores are data, not pass/fail.
   const result = await runSayOnceBenchmark(options);
   assert.ok(result.results.tasks.length > 0, "should have produced tasks");
 });
 
-// ─── Fixture verification ────────────────────────────────────────────────
 
 test("say-once: fixture has all three vagueness tiers", () => {
   const tiers = new Set(SAY_ONCE_CASES.map((c) => c.tier));
@@ -130,7 +114,6 @@ test("say-once: every case has at least one probe", () => {
   }
 });
 
-// ─── Registry check ───────────────────────────────────────────────────────
 
 test("say-once: benchmark definition is valid", () => {
   assert.equal(sayOnceDefinition.id, "say-once");
@@ -138,13 +121,7 @@ test("say-once: benchmark definition is valid", () => {
   assert.equal(sayOnceDefinition.status, "ready");
   assert.equal(sayOnceDefinition.runnerAvailable, true);
 });
-// ─── Adapter-driven recall path (#3042 P1 finding) ──────────────────────────
 
-/**
- * Minimal adapter that records every store/recall call and answers recall
- * using the stored messages, so the runner can be tested without booting
- * the real retrieval pipeline.
- */
 function buildRecordingAdapter() {
   const stored = new Map<string, Message[]>();
   const storeCalls: { sessionId: string; messages: Message[] }[] = [];
@@ -162,7 +139,6 @@ function buildRecordingAdapter() {
       async recall(sessionId: string, query: string): Promise<string> {
         recallCalls.push({ sessionId, query });
         const msgs = stored.get(sessionId) ?? [];
-        // Trivial recall: surface every stored message as context.
         return msgs.map((m) => `${m.role}: ${m.content}`).join("\n");
       },
       async search(): Promise<never[]> { return []; },
@@ -185,11 +161,8 @@ test("say-once: routes every store+recall through the adapter, never the filesys
     onTaskComplete: () => {},
   };
   const result = await runSayOnceBenchmark(options);
-  // At least one store + one recall per case.
   assert.ok(rec.storeCalls.length >= result.results.tasks.length, "each case stores once");
   assert.ok(rec.recallCalls.length >= result.results.tasks.length, "each case recalls at least once");
-  // Replay against this trivial adapter surfaces the seed message text,
-  // so all fixtures should report 1.0 recall.
   for (const task of result.results.tasks) {
     assert.equal(task.scores.recall, 1, `task ${task.taskId} should recall the preference`);
   }

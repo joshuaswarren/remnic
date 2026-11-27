@@ -108,8 +108,6 @@ test("fake-server matrix: request_timeout — definition never responds", async 
 
 test("fake-server matrix: protocol_error — malformed frame from server", async () => {
   const result = await connectFake("protocol_error", 2_000);
-  // The protocol error happens during handshake — the server sends
-  // garbage after receiving initialize.
   assert.equal(result.ok, false);
   if (!result.ok) {
     assert.equal(result.degradation.code, "protocol_error");

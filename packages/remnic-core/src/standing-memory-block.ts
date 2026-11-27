@@ -1,34 +1,3 @@
-/**
- * Prefix-cache-stable standing memory block (issue #2971, foundation slice).
- *
- * A standing block is a compact, byte-stable index over pinned/high-value
- * memories that a host injects as the FIRST part of the system prompt, so
- * the LLM prefix cache survives across turns. Measured motivation
- * (distill-kura, local OpenAI-compatible server): an identical 4k-token
- * prefix reprices at 0.14 s vs 0.68 s cold, and one changed word at the
- * front costs the whole cache. So the block contains no clock, no date,
- * and no counter — and the builder REFUSES, at build time, any block that
- * carries one instead of discovering slow turns weeks later.
- *
- * Determinism rules (byte-identical between rebuilds):
- *  - line order is band rank, then id codepoint order — never wall clock,
- *    never insertion order, never locale collation;
- *  - `nowMs` classifies bands but never renders into the text;
- *  - the trimmed-tail marker is a constant string (no count of dropped
- *    lines, which would itself be a counter).
- *
- * Host contract for the full feature (later wiring slices):
- *  - rebuild only when the underlying store changes (store version), not
- *    per turn and not on a timer — band edges must not drift mid-session;
- *  - inject the standing block BEFORE per-turn dynamic recall and any
- *    ticking content (persona with a clock), see docs/config-reference.md;
- *  - selection of which memories qualify (pinned/high-value) happens
- *    before this builder — it only layers and renders what it is given;
- *  - on build failure (volatility, budget) skip injection and log — the
- *    dynamic recall surface must not go blank.
- *
- * Pure: no I/O, inputs never mutated, the returned ledger is a fresh Map.
- */
 import { coerceBooleanLike, coerceNumber } from "./connectors/coerce.js";
 
 export const DEFAULT_RECALL_STANDING_BLOCK = false;
@@ -47,7 +16,6 @@ export type StandingBand = "pinned" | "fresh" | "compressed";
 export interface StandingMemoryEntry {
   /** Stable document id. Total order within a band is id codepoint order. */
   id: string;
-  /** The one-line description to stand in the index. */
   description: string;
   /** Pinned entries render in full, first band, never trimmed away. */
   pinned?: boolean;
@@ -284,8 +252,6 @@ export function buildStandingMemoryBlock(input: StandingMemoryBlockInput): Stand
     layered.push({ id: entry.id, band, line: `- ${hook}` });
   }
 
-  // Band rank, then id codepoint order. Never localeCompare: collation is
-  // ICU-dependent and this text must be byte-identical across rebuilds.
   layered.sort(
     (a, b) =>
       BAND_RANK[a.band] - BAND_RANK[b.band] || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
@@ -301,8 +267,6 @@ export function buildStandingMemoryBlock(input: StandingMemoryBlockInput): Stand
   const pinnedCount = layered.filter((item) => item.band === "pinned").length;
   let keep = layered.length;
   let rendered = render(keep, false);
-  // Mechanical trim: drop from the tail. The sort puts compressed lines
-  // last, so oldest-band hooks go first and pinned lines are never reached.
   while (rendered.text.length > maxChars && keep > pinnedCount) {
     keep -= 1;
     rendered = render(keep, true);

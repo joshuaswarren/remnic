@@ -14,7 +14,6 @@ import {
 
 const dir = mkdtempSync(path.join(tmpdir(), "csr-helper-"));
 
-/** Write an executable node script acting as a fake capture helper. */
 function fakeHelper(name: string, body: string): string {
   const file = path.join(dir, name);
   writeFileSync(file, `#!/usr/bin/env node\n${body}\n`, "utf8");
@@ -44,7 +43,6 @@ test("an explicit env override resolves without touching the package", async () 
 });
 
 test("a missing helper package degrades honestly with an install hint (never MODULE_NOT_FOUND)", async () => {
-  // No override → the computed platform package does not exist on this host.
   const res = await resolveHelperBinaryPath({});
   assert.equal(res.binaryPath, null);
   assert.ok(res.hint, "an unavailable helper must carry a hint");
@@ -152,7 +150,6 @@ test("helperPackageName is one package for Linux, whatever the arch", () => {
   assert.equal(helperPackageName("linux", "arm64"), "@remnic/capture-native-linux");
 });
 
-/** A helper that logs its argv. `windowOnly` is its answer to --window-only and `title` its answer to --title: "ok" or an exit status. */
 function loggingHelper(name: string, windowOnly: "ok" | number, title: "ok" | number = "ok", ocrTitle: string | null = "shell") {
   const log = path.join(dir, `${name}.log`);
   const file = fakeHelper(

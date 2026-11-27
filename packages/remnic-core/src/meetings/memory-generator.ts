@@ -47,27 +47,17 @@ export interface MeetingMemoryWriter {
   retireMemoriesFromSource(source: string): Promise<number>;
 }
 
-/** Result of generating episode memories for a day's meetings. */
 export interface MeetingEpisodeGenResult {
-  /** Episodes newly written. */
   written: number;
-  /** Episodes skipped because an identical one already existed. */
   skipped: number;
 }
 
-/** Day-level aggregate of the trust-gated summary/fact layer across records. */
 export interface MeetingsDayFactGenResult {
-  /** True when the LLM extractor ran for at least one record. */
   llmInvoked: boolean;
-  /** Facts written active. */
   active: number;
-  /** Facts queued for review (pending_review). */
   review: number;
-  /** Candidates/summaries dropped below the trust bar or judge-rejected. */
   dropped: number;
-  /** Candidates/summaries skipped because an identical memory already existed. */
   skipped: number;
-  /** Count of records whose summary memory was written. */
   summariesWritten: number;
   /** Facts the #1579 tombstone chokepoint downgraded to pending_review (no
    *  active copy). Surfaced distinctly from `active`/`review` so callers never
@@ -83,13 +73,9 @@ export interface MeetingsDayFactGenResult {
  * rule so the builder never reaches into the memory layer to decide it.
  */
 export interface MeetingMemoryOutcome {
-  /** Episode-memory counts, present only when records were built. */
   episodes?: MeetingEpisodeGenResult;
-  /** Trust-gated summary/fact counts, present only when summary deps ran. */
   facts?: MeetingsDayFactGenResult;
-  /** True when newly written memories require an isolated reindex. */
   reindexNeeded: boolean;
-  /** Non-fatal warnings raised while generating memories. */
   warnings: readonly string[];
 }
 

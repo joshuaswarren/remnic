@@ -102,7 +102,6 @@ describe("transformChatGPTExport", () => {
   });
 
   it("respects maxConversationSummaryChars truncation", () => {
-    // Build a synthetic parsed shape with a long user turn.
     const longTurn = "x".repeat(5000);
     const parsed = parseChatGPTExport({
       conversations: [
@@ -170,8 +169,6 @@ describe("transformChatGPTExport", () => {
     assert.equal(memories[2].sourceTimestamp, "2025-01-25T00:00:00.000Z");
   });
 
-  // Cursor review on PR #595 — when the title alone is longer than maxChars,
-  // the previous truncation logic produced content that exceeded the cap.
   it("truncation never exceeds maxConversationSummaryChars even with a long title", () => {
     const longTitle = "T".repeat(500);
     const parsed = parseChatGPTExport({

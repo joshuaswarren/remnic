@@ -1,6 +1,3 @@
-/**
- * Small BEAM smoke fixture for quick-mode benchmark validation.
- */
 
 export interface BeamChatTurn {
   content: string;

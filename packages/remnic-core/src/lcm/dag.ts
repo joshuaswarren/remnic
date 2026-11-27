@@ -17,7 +17,6 @@ export interface SummaryNode {
 export class LcmDag {
   constructor(private readonly db: Database.Database) {}
 
-  /** Insert a new summary node. */
   insertNode(node: Omit<SummaryNode, "created_at">): void {
     const now = new Date().toISOString();
     this.db
@@ -38,7 +37,6 @@ export class LcmDag {
         now,
       );
 
-    // Keep FTS in sync
     const rowid = this.db
       .prepare("SELECT rowid FROM lcm_summary_nodes WHERE id = ?")
       .get(node.id) as { rowid: number } | undefined;
@@ -49,7 +47,6 @@ export class LcmDag {
     }
   }
 
-  /** Get leaf nodes (depth=0) for a session without a parent yet, ordered by msg_start. */
   getOrphanNodesAtDepth(sessionId: string, depth: number): SummaryNode[] {
     return this.db
       .prepare(
@@ -58,7 +55,6 @@ export class LcmDag {
       .all(sessionId, depth) as SummaryNode[];
   }
 
-  /** Get all nodes at a given depth for a session. */
   getNodesAtDepth(sessionId: string, depth: number): SummaryNode[] {
     return this.db
       .prepare(
@@ -67,14 +63,12 @@ export class LcmDag {
       .all(sessionId, depth) as SummaryNode[];
   }
 
-  /** Get child nodes of a parent. */
   getChildren(parentId: string): SummaryNode[] {
     return this.db
       .prepare("SELECT * FROM lcm_summary_nodes WHERE parent_id = ? ORDER BY msg_start")
       .all(parentId) as SummaryNode[];
   }
 
-  /** Get the deepest summary nodes covering a session (highest depth, broadest coverage). */
   getDeepestNodes(sessionId: string): SummaryNode[] {
     const maxDepth = this.db
       .prepare("SELECT MAX(depth) as max_depth FROM lcm_summary_nodes WHERE session_id = ?")
@@ -85,7 +79,6 @@ export class LcmDag {
     return this.getNodesAtDepth(sessionId, maxDepth.max_depth);
   }
 
-  /** Get the maximum depth for a session. */
   getMaxDepth(sessionId: string): number {
     const row = this.db
       .prepare("SELECT MAX(depth) as max_depth FROM lcm_summary_nodes WHERE session_id = ?")
@@ -93,7 +86,6 @@ export class LcmDag {
     return row?.max_depth ?? -1;
   }
 
-  /** Get summary nodes that best cover a turn range, preferring higher depth. */
   getCoveringNodes(sessionId: string, fromTurn: number, toTurn: number): SummaryNode[] {
     return this.db
       .prepare(`
@@ -106,7 +98,6 @@ export class LcmDag {
       .all(sessionId, toTurn, fromTurn) as SummaryNode[];
   }
 
-  /** Get all nodes for a session, ordered by depth then range. */
   getAllNodes(sessionId: string): SummaryNode[] {
     return this.db
       .prepare(
@@ -115,7 +106,6 @@ export class LcmDag {
       .all(sessionId) as SummaryNode[];
   }
 
-  /** Get total node count for a session. */
   getNodeCount(sessionId: string): number {
     const row = this.db
       .prepare("SELECT COUNT(*) as cnt FROM lcm_summary_nodes WHERE session_id = ?")
@@ -123,7 +113,6 @@ export class LcmDag {
     return row.cnt;
   }
 
-  /** Delete all summary and compaction state for one session. */
   deleteSession(sessionId: string): number {
     const txn = this.db.transaction(() => {
       this.db
@@ -142,7 +131,6 @@ export class LcmDag {
     return txn();
   }
 
-  /** Delete all summary and compaction state. */
   deleteAll(): number {
     const txn = this.db.transaction(() => {
       this.db.prepare("DELETE FROM lcm_summaries_fts").run();
@@ -153,7 +141,6 @@ export class LcmDag {
     return txn();
   }
 
-  /** Set parent_id for a list of child node IDs. */
   setParent(childIds: string[], parentId: string): void {
     const stmt = this.db.prepare(
       "UPDATE lcm_summary_nodes SET parent_id = ? WHERE id = ?",
@@ -166,7 +153,6 @@ export class LcmDag {
     txn();
   }
 
-  /** Record a compaction event. */
   recordCompaction(
     sessionId: string,
     msgBefore: number,
@@ -181,7 +167,6 @@ export class LcmDag {
       .run(sessionId, new Date().toISOString(), msgBefore, tokensBefore, tokensAfter);
   }
 
-  /** Prune summary nodes for old sessions. */
   pruneOldNodes(retentionDays: number): number {
     const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
 

@@ -1,11 +1,3 @@
-/**
- * Staged-memory synthetic fixture (issue #2346).
- *
- * Derives `staged-memory-synthetic` cases from a verified drift-gen corpus
- * (issue #1954): references rows by stable ID, never copies or regenerates
- * them, and never creates a second fact store. Byte-identical for the same
- * inputs (fixed sentinel timestamp, sorted rows, seeded distractor pick).
- */
 
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -58,12 +50,6 @@ export interface StagedMemoryFixture {
   cases: StagedMemoryCaseV1[];
 }
 
-/**
- * Fixed deterministic distractor templates (issue #2346: no LLM distractor
- * generator). Synthetic entities only; clause shapes mirror the drift
- * attribute templates so distractors compete for retrieval rank without
- * carrying any target entity, value, or answer token.
- */
 const DISTRACTOR_TEMPLATES: readonly { templateId: string; text: string }[] = Object.freeze([
   { templateId: "dist-employer-1", text: "Marlow Petrov works at Quill Optical." },
   { templateId: "dist-employer-2", text: "Indira Calloway works at Ferroline Logistics." },
@@ -127,14 +113,7 @@ async function readJsonlFile(filePath: string): Promise<unknown[]> {
   return lines.map((line) => JSON.parse(line) as unknown);
 }
 
-/**
- * Load and hash-verify the drift source corpus. A tampered or unverified
- * dataset fails preflight here — the staged fixture never builds on top of
- * unverified rows.
- */
 async function loadVerifiedDriftCorpus(driftDir: string, seed: number): Promise<LoadedDriftCorpus> {
-  // Error messages carry the basename only: the resolved drift directory can
-  // be an operator home path and this is a public repo.
   const label = path.basename(driftDir);
   const manifestPath = path.join(driftDir, "dataset.manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown> & {
@@ -197,7 +176,6 @@ async function loadVerifiedDriftCorpus(driftDir: string, seed: number): Promise<
   };
 }
 
-/** Total string order: equality returns 0 so equal keys stay stable. */
 function compareStrings(left: string, right: string): number {
   if (left === right) return 0;
   return left < right ? -1 : 1;
@@ -274,8 +252,6 @@ export async function buildStagedMemoryFixture(options: StagedMemoryFixtureOptio
     }
     const active = activeFactsAtEpoch(userFacts, exposureEpoch);
     const salientFactIds = active.map((fact) => fact.id);
-    // Gold rows cover the whole exposure window: current facts plus facts
-    // superseded inside it (transitions need both sides).
     const goldFacts = userFacts
       .filter((fact) => fact.introducedEpoch <= exposureEpoch)
       .map((fact) => ({
@@ -293,8 +269,6 @@ export async function buildStagedMemoryFixture(options: StagedMemoryFixtureOptio
       )
       .map((fact) => {
         const successor = userFacts.find((candidate) => candidate.id === fact.supersededBy);
-        // A supersession pointer without a live successor is a broken link:
-        // reject it instead of silently dropping the transition.
         if (!successor || !isCurrentAtEpoch(successor, exposureEpoch)) {
           throw new Error(`fact ${fact.id} supersession link is broken at epoch ${exposureEpoch}`);
         }
@@ -628,11 +602,6 @@ export async function validateStagedMemoryFixture(fixtureDir: string): Promise<S
       errors.push(`case ${fixtureCase.caseId} task question leaks its answer`);
     }
     const answerTokens = contentWords(fixtureCase.task.expectedAnswer);
-    // Target tokens: subject, value, and statement words of the task's
-    // required AND forbidden (superseded) facts — the entities, attributes,
-    // and values a distractor must not carry. Unrelated gold statements that
-    // merely share a clause verb ("gotten into", "lives in") are not target
-    // overlap; the deterministic templates intentionally reuse clause shapes.
     const goldByFactId = new Map(fixtureCase.exposure.goldFacts.map((row) => [row.factId, row]));
     const targetTokens = new Set<string>();
     for (const factId of [...fixtureCase.task.requiredFactIds, ...fixtureCase.task.forbiddenFactIds]) {
@@ -768,6 +737,4 @@ export async function runStagedMemoryCliCommand(
   };
 }
 
-// formatFactStatement is re-exported for the runner's oracle arm, which must
-// render gold evidence exactly as drift-gen rendered it into sessions.
 export { formatFactStatement };

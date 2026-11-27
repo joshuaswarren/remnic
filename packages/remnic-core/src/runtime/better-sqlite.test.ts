@@ -37,11 +37,9 @@ test("isLikelyBetterSqlite3NativeBindingError walks the cause chain of a sanitiz
   );
   assert.equal(isLikelyBetterSqlite3NativeBindingError(wrapper), true);
 
-  // Deeply nested wrapper (wrapper.cause.cause = ABI error) is still found.
   const deepWrapper = new Error("outer sanitized layer", { cause: wrapper });
   assert.equal(isLikelyBetterSqlite3NativeBindingError(deepWrapper), true);
 
-  // A wrapper whose cause is NOT a native-binding failure stays negative.
   const benignWrapper = new Error("better-sqlite3 is unavailable.", {
     cause: new Error("SQLITE_BUSY: database is locked"),
   });
@@ -110,6 +108,5 @@ test("probeBetterSqlite3Driver succeeds (ok=true) under the verified process and
   assert.equal(probe.ok, true);
   assert.equal(probe.detail, "");
   assert.equal(probe.nativeBindingMismatch, false);
-  // A second probe reuses the warmed cache (no re-load); still ok.
   assert.equal(probeBetterSqlite3Driver().ok, true);
 });

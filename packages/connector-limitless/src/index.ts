@@ -52,10 +52,6 @@ export function resolveLimitlessApiKey(
 export function createLimitlessConnector(
   options: WearableConnectorFactoryOptions,
 ): WearableSourceConnector {
-  // Key resolution happens lazily at call time (not factory time) so
-  // `wearables status` works without credentials and env changes take
-  // effect without a restart; the client constructor throws the
-  // actionable missing-key message.
   let client: LimitlessClient | null = null;
   const getClient = (): LimitlessClient => {
     if (!client) {

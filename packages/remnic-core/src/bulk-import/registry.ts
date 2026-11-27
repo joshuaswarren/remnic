@@ -1,6 +1,3 @@
-// ---------------------------------------------------------------------------
-// Bulk-import source adapter registry
-// ---------------------------------------------------------------------------
 
 import type { BulkImportSourceAdapter } from "./types.js";
 
@@ -33,21 +30,11 @@ export function registerBulkImportSource(
       `bulk-import source adapter '${key}' is already registered`,
     );
   }
-  // Store adapter with trimmed name so `adapter.name` stays consistent with
-  // the registry key returned by `listBulkImportSources()`.
   const normalized: BulkImportSourceAdapter =
     adapter.name === key ? adapter : { ...adapter, name: key };
   adapters.set(key, normalized);
 }
 
-/**
- * Retrieve a registered adapter by name.
- *
- * Names are trimmed on write (see `registerBulkImportSource`), so we
- * also trim on read to avoid the asymmetric-lookup footgun where a
- * whitespace-padded lookup would never find a registered adapter.
- * Non-string or empty-after-trim inputs return undefined.
- */
 export function getBulkImportSource(
   name: string,
 ): BulkImportSourceAdapter | undefined {
@@ -57,9 +44,6 @@ export function getBulkImportSource(
   return adapters.get(key);
 }
 
-/**
- * List all registered adapter names.
- */
 export function listBulkImportSources(): string[] {
   return [...adapters.keys()];
 }

@@ -1,6 +1,3 @@
-/**
- * Minimal LLM provider contract for the bench engine.
- */
 
 import type { BenchReasoningEffort, BuiltInProvider } from "../types.js";
 

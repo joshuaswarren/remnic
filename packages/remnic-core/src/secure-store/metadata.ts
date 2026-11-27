@@ -157,15 +157,8 @@ export function buildMetadata(options: BuildMetadataOptions): SecureStoreMetadat
   return meta;
 }
 
-/**
- * Serialize metadata to a stable JSON string with sorted top-level
- * keys. Stable ordering matters because hash-based integrity checks
- * may eventually consume the serialized form.
- */
 export function serializeMetadata(meta: SecureStoreMetadata): string {
-  // Validate before serializing so we never write a malformed file.
   validateMetadata(meta);
-  // JSON.stringify preserves insertion order; we construct the object
   // explicitly to lock the field order.
   const ordered: Record<string, unknown> = {
     format: meta.format,
@@ -268,7 +261,6 @@ function parseKdf(value: unknown): SecureStoreMetadataKdf {
   if (typeof k.salt !== "string") {
     throw new Error("metadata.kdf.salt must be a hex string");
   }
-  // Decode to validate length and hex shape; we don't need the bytes here.
   hexToBytes(k.salt, KDF_SALT_LENGTH);
   if (typeof k.params !== "object" || k.params === null || Array.isArray(k.params)) {
     throw new Error("metadata.kdf.params must be an object");
@@ -293,7 +285,6 @@ function parseKdf(value: unknown): SecureStoreMetadataKdf {
       salt: k.salt,
     };
   }
-  // argon2id
   const required2: (keyof Argon2idParams)[] = [
     "memoryKiB",
     "iterations",
@@ -317,7 +308,6 @@ function parseKdf(value: unknown): SecureStoreMetadataKdf {
   };
 }
 
-/** Validate a metadata object's invariants. Throws on the first problem. */
 export function validateMetadata(meta: SecureStoreMetadata): void {
   if (meta.format !== METADATA_FORMAT) {
     throw new Error(`metadata.format must be ${METADATA_FORMAT}`);
@@ -328,11 +318,9 @@ export function validateMetadata(meta: SecureStoreMetadata): void {
   if (typeof meta.createdAt !== "string" || meta.createdAt.length === 0) {
     throw new Error("metadata.createdAt must be a non-empty ISO-8601 string");
   }
-  // Salt round-trip check.
   hexToBytes(meta.kdf.salt, KDF_SALT_LENGTH);
   if (meta.kdf.algorithm === "scrypt") {
     const { N, r, p, keyLength, maxmem } = meta.kdf.params;
-    // Cursor Low + codex P2: bitwise `(N & (N - 1))` truncates to
     // 32-bit signed in JS, so for N >= 2**31 the check silently
     // wraps and accepts non-powers-of-two like `5 * 2**30`. Use
     // Math.log2 plus an upper bound at 2**30 so out-of-range
@@ -352,7 +340,6 @@ export function validateMetadata(meta: SecureStoreMetadata): void {
     if (!Number.isInteger(p) || p < 1) {
       throw new Error("metadata.kdf.params.p must be a positive integer");
     }
-    // Codex P2: cipher.ts hard-requires a 32-byte AES-256 key
     // (`assertAesKey`). Accepting `keyLength: 16` here would parse
     // and validate cleanly but later fail at encrypt/decrypt time
     // — a latent runtime break. Reject anything other than 32 at
@@ -374,7 +361,6 @@ export function validateMetadata(meta: SecureStoreMetadata): void {
     if (!Number.isInteger(parallelism) || parallelism < 1 || parallelism > 255) {
       throw new Error("metadata.kdf.params.parallelism must be an integer in [1, 255]");
     }
-    // Codex P2: cipher.ts hard-requires a 32-byte AES-256 key
     // (`assertAesKey`). Accepting `keyLength: 16` here would parse
     // and validate cleanly but later fail at encrypt/decrypt time
     // — a latent runtime break. Reject anything other than 32 at
@@ -385,10 +371,6 @@ export function validateMetadata(meta: SecureStoreMetadata): void {
   }
 }
 
-/**
- * Decode the salt field of a metadata object back into bytes.
- * Convenience helper so callers don't reach into the hex codec.
- */
 export function decodeMetadataSalt(meta: SecureStoreMetadata): Buffer {
   return hexToBytes(meta.kdf.salt, KDF_SALT_LENGTH);
 }

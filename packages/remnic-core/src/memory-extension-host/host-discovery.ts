@@ -13,7 +13,6 @@ import type { LoggerBackend } from "../logger.js";
 import type { PluginConfig } from "../types.js";
 import type { DiscoveredExtension, ExtensionSchema } from "./types.js";
 
-/** Total token budget for all discovered extension instructions combined. */
 export const REMNIC_EXTENSIONS_TOTAL_TOKEN_LIMIT = 5_000;
 
 /** Per-extension instructions read cap, using the same 4 chars/token budget heuristic. */
@@ -23,10 +22,8 @@ export const REMNIC_EXTENSION_INSTRUCTIONS_BYTE_LIMIT =
 /** Optional schemas are metadata only; refuse unusually large schema files. */
 export const REMNIC_EXTENSION_SCHEMA_BYTE_LIMIT = 64 * 1024;
 
-/** Maximum number of example files collected per extension. */
 const MAX_EXAMPLES_PER_EXTENSION = 10;
 
-/** Slug validation: lowercase letters, digits, hyphens, 1-64 chars. */
 const VALID_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 const VALID_MEMORY_TYPES = new Set(["fact", "preference", "procedure", "reference"]);
@@ -45,12 +42,6 @@ export async function discoverMemoryExtensions(
   root: string,
   log: Pick<LoggerBackend, "warn" | "debug">,
 ): Promise<DiscoveredExtension[]> {
-  // If root doesn't exist, return empty silently (not even a warning).
-  // Use lstat() for root — a symlinked extensions root could redirect
-  // discovery to an untrusted directory tree (#428 P2).  When the root
-  // IS a symlink, resolve it and verify it still lives under the parent
-  // memory directory so that an attacker-controlled symlink can't point
-  // discovery at /etc or another user's home.
   let rootStat;
   try {
     rootStat = await lstat(root);
@@ -58,21 +49,16 @@ export async function discoverMemoryExtensions(
     return [];
   }
   if (rootStat.isSymbolicLink()) {
-    // Resolve and verify the real path is inside the expected parent.
     let resolved: string;
     try {
       resolved = await realpath(root);
     } catch {
       return [];
     }
-    // Normalize the parent path through realpath so that:
-    // 1. Relative roots (e.g. "memory_extensions") become absolute (#431 Finding 1)
-    // 2. Intermediate symlinks (e.g. macOS /var -> /private/var) are resolved (#431 Finding 2)
     let expectedParent: string;
     try {
       expectedParent = await realpath(path.resolve(path.dirname(root)));
     } catch {
-      // Parent directory doesn't exist or is inaccessible — reject.
       return [];
     }
     if (!resolved.startsWith(expectedParent + path.sep) && resolved !== expectedParent) {
@@ -81,7 +67,6 @@ export async function discoverMemoryExtensions(
       );
       return [];
     }
-    // Re-check the resolved path is a directory.
     try {
       rootStat = await lstat(resolved);
     } catch {
@@ -104,8 +89,6 @@ export async function discoverMemoryExtensions(
   for (const entry of entries) {
     const entryPath = path.join(root, entry);
 
-    // Must be a real directory (not a symlink) — lstat() blocks symlink
-    // traversal that could escape the extensions root (#382 P2).
     let entryStat;
     try {
       entryStat = await lstat(entryPath);
@@ -120,7 +103,6 @@ export async function discoverMemoryExtensions(
     }
     if (!entryStat.isDirectory()) continue;
 
-    // Validate slug
     if (!VALID_SLUG_RE.test(entry)) {
       log.warn?.(
         `[memory-extensions] skipping "${entry}": invalid slug (must be lowercase alphanumeric + hyphens, 1-64 chars)`,
@@ -128,7 +110,6 @@ export async function discoverMemoryExtensions(
       continue;
     }
 
-    // Require instructions.md — reject symlinked files (#428 P1)
     const instructionsPath = path.join(entryPath, "instructions.md");
     if (await isSymlink(instructionsPath)) {
       log.warn?.(
@@ -150,7 +131,6 @@ export async function discoverMemoryExtensions(
       continue;
     }
 
-    // Read optional schema.json — reject symlinked files (#428 P1)
     let schema: ExtensionSchema | undefined;
     const schemaPath = path.join(entryPath, "schema.json");
     if (await isSymlink(schemaPath)) {
@@ -172,7 +152,6 @@ export async function discoverMemoryExtensions(
           );
         }
       } catch (err) {
-        // File doesn't exist → fine, no warning needed
         if (isFileNotFoundError(err)) {
           // schema remains undefined
         } else if (err instanceof FileTooLargeError) {
@@ -187,8 +166,6 @@ export async function discoverMemoryExtensions(
       }
     }
 
-    // Collect examples/*.md (cap at MAX_EXAMPLES_PER_EXTENSION)
-    // NEVER read from scripts/ directory
     const examplesPaths: string[] = [];
     const examplesDir = path.join(entryPath, "examples");
     try {
@@ -235,7 +212,6 @@ export async function discoverMemoryExtensions(
     });
   }
 
-  // Sort by name for deterministic ordering
   extensions.sort((a, b) => {
     if (a.name < b.name) return -1;
     if (a.name > b.name) return 1;
@@ -328,6 +304,5 @@ export function resolveExtensionsRoot(config: PluginConfig): string {
     return config.memoryExtensionsRoot;
   }
   // Default: memoryDir is typically ~/.openclaw/workspace/memory/local
-  // Go up to the parent that owns the memory tree and append memory_extensions
   return path.join(path.dirname(config.memoryDir), "memory_extensions");
 }

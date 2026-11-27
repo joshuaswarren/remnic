@@ -2,9 +2,6 @@ import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// After #2483 the hook contract lives in remnic-hook-core.cjs.
-// Source-grep tests that still only read the thin wrappers fail in CI
-// (2511 root shard). This check fails if those tests omit the core file.
 
 export const HOOK_CORE_REL = path.join(
   "packages",

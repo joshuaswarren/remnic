@@ -1,11 +1,3 @@
-/**
- * Extraction failure-classification tests (extraction hot-loop hardening).
- *
- * The retry/backoff + circuit-breaker layer keys off `ExtractionFailureClass`.
- * These tests lock the mapping from synthetic provider errors (429/500/401/
- * no-models/parse-empty) to the coarse class, reusing the shared
- * `isTransientHttpError` classifier rather than a bespoke copy.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -26,7 +18,6 @@ test("classifyExtractionThrownError: 429/5xx → provider_retryable", () => {
 
 test("classifyExtractionThrownError: bare network error / unknown → provider_retryable (fail-open toward retry)", () => {
   assert.equal(classifyExtractionThrownError(new Error("socket hang up")), "provider_retryable");
-  // A terminal non-auth 4xx still defaults to retryable (capped by the attempt budget).
   assert.equal(classifyExtractionThrownError({ status: 400 }), "provider_retryable");
   assert.equal(classifyExtractionThrownError(null), "provider_retryable");
   assert.equal(classifyExtractionThrownError("not an object"), "provider_retryable");

@@ -87,7 +87,6 @@ test("files present on only one side, an invalid results field, and a one-sided 
   assert.deepEqual(rows.map((r) => Boolean(r.missing)), [true, true, false]);
   assert.equal(rows[2]?.oneSidedEmpty, true);
   assert.match(formatComparison(rows), /missing=2 empty_side=1/);
-  // an empty before dir with captures only in after must not look clean
   const emptyBefore = mkdtempSync(join(tmpdir(), "qmd-cmp-b3-"));
   assert.equal(compareDirectories(emptyBefore, after).every((r) => r.missing), true);
 });

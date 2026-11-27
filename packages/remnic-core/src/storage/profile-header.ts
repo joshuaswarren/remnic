@@ -888,12 +888,6 @@ export function renderProfileWithLastUpdated(content: string, updatedAt: string)
   return renderProfileLines(lines);
 }
 
-/**
- * OKF v0.1 profile frontmatter (issue #1946). `profile.md` gains a leading
- * frontmatter block so the memory directory is a conformant OKF knowledge
- * bundle; every reader strips it so the bytes injected into prompts are
- * unchanged. Line-scan based (no regex) per the regex-safety rule.
- */
 
 /** Prepend the OKF block when enabled and not already present. No-op otherwise. */
 export function withOkfProfileFrontmatter(content: string, timestamp: string, enabled: boolean): string {

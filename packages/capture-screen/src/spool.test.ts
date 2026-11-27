@@ -58,11 +58,9 @@ test("insert is idempotent by content hash", () => {
 
 test("content hash is NUL/control-char safe (no field-boundary collision)", () => {
   const spool = open();
-  // Same concatenation, different field split — must NOT collide.
   const a = spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-20T10:00:00.000Z", app: "ab", windowTitle: "c" }), GAP);
   const b = spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-20T10:00:00.000Z", app: "a", windowTitle: "bc" }), GAP);
   assert.notEqual(a.id, b.id);
-  // A literal NUL in text must not alias a different split either.
   const c = spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-20T10:00:01.000Z", text: "x\u0000y" }), GAP);
   const d = spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-20T10:00:01.000Z", text: "x\u0000z" }), GAP);
   assert.notEqual(c.id, d.id);
@@ -106,12 +104,10 @@ test("retention janitor drops rows older than N days", () => {
 
 test("querySnapshots pages by a stable keyset within a half-open local day", () => {
   const spool = open();
-  // Three at distinct times plus a tie at the second instant.
   spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-20T09:00:00.000Z", text: "a" }), GAP);
   spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-20T10:00:00.000Z", text: "b" }), GAP);
   spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-20T10:00:00.000Z", windowTitle: "tie.ts", text: "b2" }), GAP);
   spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-20T11:00:00.000Z", text: "c" }), GAP);
-  // A snapshot exactly at the next-day boundary must be excluded (half-open).
   spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-21T00:00:00.000Z", text: "next" }), GAP);
 
   const p1 = spool.querySnapshots({ date: "2026-07-20", timezone: "UTC", limit: 2 });

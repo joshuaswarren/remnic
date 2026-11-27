@@ -27,11 +27,6 @@ import { applyTemporalSupersession, normalizeSupersessionKey } from "../temporal
 import type { DependencyPropagationDeliveryPort } from "./dependency-propagation-delivery.js";
 import { persistUnderFactDedupWindow, type FactDedupWindowOutcome } from "./fact-dedup-window.js";
 
-/**
- * The promotion fields the windowed write and its suppression-path bounds
- * backfill read. Structurally satisfied by both promotion closures' options
- * objects in extraction-persist.ts (profile-target and shared).
- */
 export interface PromotionDedupWriteFields {
   category: string;
   sourceMemoryId: string;
@@ -50,11 +45,8 @@ export interface PromotionDedupWriteFields {
 }
 
 export interface PromotionDedupWriteArgs {
-  /** Promotion DESTINATION storage — the commit window is keyed on its dir. */
   destination: StorageManager;
-  /** Composed sealed envelope for the promoted copy. */
   envelope: SealedMemoryEnvelope;
-  /** The promotion closure's options (read structurally). */
   promotion: PromotionDedupWriteFields;
   /** Fact hash-key content (attrs-suffixed); pre-citation raw for others. */
   dedupContent: string;
@@ -102,15 +94,6 @@ type ExtractionPersistDeps = {
   ) => Promise<void>;
 };
 
-/**
- * Locate the active same-destination fact a raced promotion would duplicate:
- * same connector/content predicate the promotion gates confirm with
- * (`readActiveMemoriesBothTiers` + citation-aware stored normalization vs the
- * normalized dedup key). The optional entity key mirrors the shared
- * supersession branch's same-entity guard (PR #402 Uybg) so cross-entity
- * same-content facts stay distinct. Returns undefined on scan error — an
- * unverifiable state never suppresses (fail-open).
- */
 async function findPromotionRaceDuplicate(args: {
   storage: StorageManager;
   dedupContent: string;
@@ -175,10 +158,6 @@ export async function confirmPromotionRaceDuplicate(args: {
   return (await findPromotionRaceDuplicate(args)) !== undefined;
 }
 
-/**
- * Presence-iff-set extras, byte-equivalent to the conditional spreads the
- * persist closure previously inlined at both promotion call sites.
- */
 function buildPromotionWriteOptions(args: PromotionDedupWriteArgs): SealedWriteExtras {
   const { promotion } = args;
   const writeOptions: SealedWriteExtras = {
@@ -192,7 +171,6 @@ function buildPromotionWriteOptions(args: PromotionDedupWriteArgs): SealedWriteE
     contentHashSource: promotion.category === "fact" ? args.dedupContent : args.rawContent,
   };
   if (promotion.invalidAt) writeOptions.invalidAt = promotion.invalidAt;
-  // #1578 — forward bi-temporal bounds + ingestion provenance.
   if (promotion.observedAt) writeOptions.observedAt = promotion.observedAt;
   if (promotion.eventTimeSource) writeOptions.eventTimeSource = promotion.eventTimeSource;
   if (promotion.sources && promotion.sources.length > 0) writeOptions.sources = promotion.sources;
@@ -255,7 +233,6 @@ export async function writePromotionUnderFactDedupWindow(
         args.dedupContent,
         {
           invalidAt: promotion.invalidAt,
-          // #1707 thread 2 — carry the corrected start bound.
           validFrom: promotion.validAt,
           observedAt: promotion.observedAt,
           eventTimeSource: promotion.eventTimeSource,

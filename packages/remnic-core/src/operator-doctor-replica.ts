@@ -1,27 +1,3 @@
-/**
- * Replica-divergence doctor check (issue #2149).
- *
- * Kept deliberately LIGHT: it takes the ALREADY-computed local corpus watermark
- * set (the same array the `corpus_watermark` check produces) instead of importing
- * the corpus census helpers or `PluginConfig`. That keeps this new tsup DTS entry
- * from pulling the heavy `PluginConfig` type graph into its `.d.ts` — two sibling
- * PRs OOMed the default-heap DTS worker exactly that way (the issue #1562 heap
- * cliff). `runOperatorDoctor` computes the local watermarks once for the corpus
- * check and hands them here via `corpusWatermarksFromCheck`, so there is also no
- * second corpus scan.
- *
- * Status: `ok` when disabled, peerless, or every peer converged; `warn` when any
- * peer diverged beyond threshold, could not be polled (unreachable/unknown), or
- * the local corpus census was incomplete — a scan that cannot ask a peer, or
- * cannot fully read its OWN corpus, must never read as agreement (AGENTS.md §22).
- * The summary carries concrete deltas so an operator sees numbers, not a verdict.
- * Peer tokens are never resolved into, logged from, or printed by this check; a
- * peer is identified only by its redacted host:port. The CLI forwards the host
- * SecretRef resolver (when one is configured) so a SecretRef peer token
- * authenticates here too; without a resolver such a token degrades to a per-peer
- * `token_error` (never a throw). The always-on `/health` surface remains the
- * primary reporting path. Reconciliation is issue #2150.
- */
 
 import type { CorpusWatermark } from "./corpus-watermark.js";
 import type { OperatorDoctorCheck } from "./operator-doctor-types.js";
@@ -59,9 +35,6 @@ export async function summarizeReplicaDivergence(
   localWatermarks: readonly CorpusWatermark[],
   options: SummarizeReplicaDivergenceOptions = {},
 ): Promise<OperatorDoctorCheck> {
-  // A host adapter or hand-built PluginConfig can omit the block entirely;
-  // normalize through the same read-boundary resolver /health uses so doctor
-  // degrades to disabled instead of aborting the whole run (round 5, codex P2).
   const replicaConfig = resolveReplicaPeersConfig(rawConfig);
   if (!replicaConfig.enabled) {
     return {
@@ -87,12 +60,6 @@ export async function summarizeReplicaDivergence(
     resolveSecretRef: options.resolveSecretRef,
     fetchImpl: options.fetchImpl,
   });
-  // Apply the SAME census gate /health uses (round 6): otherwise the doctor
-  // renders `peer: converged` lines and converged `details` while /health
-  // downgrades those same peers to `unknown`/`local_census_incomplete`, so a
-  // machine reading doctor JSON sees agreement /health denies. Gating here
-  // turns every would-be-converged peer into `unknown` when the local census
-  // was incomplete, so both surfaces derive peer state from one function.
   const gated = gateReportByCensus(report, options.localCensusComplete !== false);
   const diverged = gated.peers.filter((peer) => peer.state === "diverged");
   const unreachable = gated.peers.filter((peer) => peer.state === "unreachable" || peer.state === "unknown");

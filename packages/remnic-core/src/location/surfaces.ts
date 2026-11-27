@@ -1,10 +1,3 @@
-/**
- * Location surface runners (issues #2047, #2046) — ONE implementation shared
- * by the CLI (`remnic location ...`), the MCP tools, the HTTP routes, and the
- * scheduler, so no surface can fork validation or disabled/empty/failure
- * semantics (same rule as the wearables runner). Parsing here is strict:
- * unknown flags reject with the valid list, invalid values reject loudly.
- */
 
 import { EngramAccessInputError } from "../access-errors.js";
 import {
@@ -84,9 +77,6 @@ export async function runLocationDay(memoryDir: string, rawDate: unknown): Promi
   };
 }
 
-// ---------------------------------------------------------------------------
-// Shared validation (CLI, MCP, HTTP all reject identically)
-// ---------------------------------------------------------------------------
 
 function requireLocationDate(raw: unknown, label: string): string {
   if (typeof raw !== "string" || !isValidLocationDate(raw)) {
@@ -177,7 +167,6 @@ export async function runLocationBackfill(
 }
 
 // ---------------------------------------------------------------------------
-// CLI command (shared by every CLI host)
 // ---------------------------------------------------------------------------
 
 export interface LocationCliIo {

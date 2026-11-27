@@ -1,10 +1,3 @@
-/**
- * Human-readable report.md generator for bounded-memory-contracts (issue #1708).
- *
- * The report states what each condition achieved, where typed retrieval wins
- * and loses, and — critically — what claims are NOT yet supported (the issue's
- * "do not hide failures" + "safe claims" acceptance criteria).
- */
 
 import { BOUNDED_MEMORY_CONDITION_LABELS } from "./types.js";
 import type {

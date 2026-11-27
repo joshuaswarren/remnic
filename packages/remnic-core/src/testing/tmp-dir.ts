@@ -17,14 +17,12 @@ import { join } from "node:path";
  */
 const pendingCleanup = new Set<string>();
 
-// Registered at module load — importing this module from a test file installs
 // one file-scoped after-all hook that removes every managed temp dir. Doing it
 // here (not lazily inside a test) guarantees the hook binds to the file root
 // rather than whichever test happened to allocate the first dir.
 after(async () => {
   const dirs = [...pendingCleanup];
   pendingCleanup.clear();
-  // Surface cleanup failures (do not swallow): a dir that cannot be removed is
   // a real signal. `force: true` already ignores a missing dir, so a rejection
   // here means an actual teardown problem and should fail the file loudly.
   await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));

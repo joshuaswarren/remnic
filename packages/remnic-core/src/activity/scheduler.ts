@@ -97,7 +97,6 @@ export class ActivitySyncScheduler {
       options.setTimer ??
       ((fn, ms) => {
         const timer = setInterval(fn, ms);
-        // Never keep the host process alive solely for the sync cadence.
         timer.unref?.();
         return timer;
       });
@@ -136,8 +135,6 @@ export class ActivitySyncScheduler {
   }
 
   private tick(): void {
-    // Latched-stop and overlap guards: a callback that fires after stop(), or
-    // while a prior slow sync is still running, must not invoke.
     if (this.stopped || this.inFlight) return;
     this.inFlight = true;
     this.inFlightPromise = this.invoke(this.abortController.signal)

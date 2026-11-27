@@ -41,8 +41,6 @@ test("refreshNamespacesAfterConvergence runs one strict QMD batch and rebuilds e
       ["team", teamStorage],
       ["shared", sharedStorage],
     ]);
-    // SAFETY: fresh prototype instance under test; every internals field is
-    // provided here before refreshNamespacesAfterConvergence runs.
     const internals: ConvergenceRefreshInternals = {
       config: { defaultNamespace: "default", qmdEnabled: true },
       namespaceSearchRouter: {

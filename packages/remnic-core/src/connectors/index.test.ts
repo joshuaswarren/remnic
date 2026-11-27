@@ -15,14 +15,6 @@ import {
 } from "./index.js";
 import { loadTokenStore } from "../tokens.js";
 
-/**
- * Build a fresh tmp sandbox with its own HOME / XDG_CONFIG_HOME / CODEX_HOME
- * and optionally a synthetic plugin-codex extension source directory.
- *
- * Callers must run the test body inside {@link withEnv} or similar to ensure
- * env vars are restored afterwards. The returned paths live under `os.tmpdir()`
- * and are registered for cleanup via `t.after`.
- */
 function makeSandbox(t: { after: (fn: () => void | Promise<void>) => void }): {
   root: string;
   home: string;
@@ -40,7 +32,6 @@ function makeSandbox(t: { after: (fn: () => void | Promise<void>) => void }): {
   fs.mkdirSync(xdgConfigHome, { recursive: true });
   fs.mkdirSync(codexHome, { recursive: true });
   fs.mkdirSync(syntheticSourceDir, { recursive: true });
-  // Drop a synthetic instructions.md so copy has something to move
   fs.writeFileSync(
     path.join(syntheticSourceDir, "instructions.md"),
     "# synthetic test extension\n",
@@ -57,7 +48,6 @@ function makeSandbox(t: { after: (fn: () => void | Promise<void>) => void }): {
   return { root, home, xdgConfigHome, codexHome, syntheticSourceDir };
 }
 
-/** Run `fn` with temporary env overrides, restoring originals after. */
 async function withEnv(
   overrides: Record<string, string | undefined>,
   fn: () => void | Promise<void>,
@@ -279,7 +269,6 @@ test("installConnector persists resolved codexHome from $CODEX_HOME", async (t) 
     () => {
       const result = installConnector({
         connectorId: "codex-cli",
-        // installExtension: false avoids needing a real plugin-codex source dir
         config: { installExtension: false },
       });
 
@@ -288,8 +277,6 @@ test("installConnector persists resolved codexHome from $CODEX_HOME", async (t) 
 
       const savedRaw = fs.readFileSync(result.configPath as string, "utf8");
       const saved = JSON.parse(savedRaw) as Record<string, unknown>;
-      // The resolved absolute $CODEX_HOME must be persisted into the saved
-      // config, NOT left unset.
       assert.equal(
         saved.codexHome,
         sandbox.codexHome,
@@ -304,8 +291,6 @@ test(
   async (t) => {
     const sandbox = makeSandbox(t);
 
-    // Point CODEX_HOME at a directory during install, then clear it before
-    // remove to simulate a user whose env changed between install and remove.
     await withEnv(
       {
         HOME: sandbox.home,
@@ -323,8 +308,6 @@ test(
         });
         assert.equal(installResult.status, "installed");
 
-        // Precondition: the extension must physically exist under the
-        // sandbox codexHome (not some default location).
         const installedPaths = resolveCodexMemoryExtensionPaths(sandbox.codexHome);
         assert.ok(
           fs.existsSync(installedPaths.remnicExtensionDir),
@@ -333,10 +316,6 @@ test(
       },
     );
 
-    // Now clear CODEX_HOME (and point HOME somewhere else entirely) and call
-    // removeConnector. If the fix is correct, removeConnector reads the
-    // saved config's persisted codexHome and removes the extension from the
-    // ORIGINAL sandbox location — not from some env-derived default.
     const alternateHome = path.join(sandbox.root, "alternate-home");
     fs.mkdirSync(alternateHome, { recursive: true });
 
@@ -361,7 +340,6 @@ test(
           "remove should report the memory extension was removed",
         );
 
-        // After removal, the ORIGINAL sandbox extension directory must be gone.
         assert.equal(
           fs.existsSync(installedPaths.remnicExtensionDir),
           false,
@@ -388,10 +366,6 @@ test(
         const paths = resolveCodexMemoryExtensionPaths(sandbox.codexHome);
         fs.mkdirSync(paths.extensionsRoot, { recursive: true });
 
-        // Seed three stale tmp directories that look like leftover crashed runs
-        // from previous invocations (different pid, different timestamp).
-        // Back-date their mtime to 1 hour ago so the staleness threshold (10 min)
-        // treats them as safe to remove.
         const stale1 = path.join(paths.extensionsRoot, ".remnic.tmp-99999-1111111111111");
         const stale2 = path.join(paths.extensionsRoot, ".remnic.tmp-88888-2222222222222");
         const stale3 = path.join(paths.extensionsRoot, ".remnic.tmp-77777-3333333333333");
@@ -399,11 +373,9 @@ test(
         for (const staleDir of [stale1, stale2, stale3]) {
           fs.mkdirSync(staleDir, { recursive: true });
           fs.writeFileSync(path.join(staleDir, "leftover.txt"), "stale\n");
-          // Backdate mtime so the cleanup sees these as provably stale.
           fs.utimesSync(staleDir, staleTime, staleTime);
         }
 
-        // Also seed an unrelated file that must NOT be touched.
         const unrelated = path.join(paths.extensionsRoot, "some-other-vendor");
         fs.mkdirSync(unrelated, { recursive: true });
         fs.writeFileSync(path.join(unrelated, "keep.txt"), "keep me\n");
@@ -413,7 +385,6 @@ test(
           sourceDir: sandbox.syntheticSourceDir,
         });
 
-        // All stale tmp dirs must be gone.
         for (const staleDir of [stale1, stale2, stale3]) {
           assert.equal(
             fs.existsSync(staleDir),
@@ -422,13 +393,11 @@ test(
           );
         }
 
-        // Adjacent unrelated extension must survive.
         assert.ok(
           fs.existsSync(path.join(unrelated, "keep.txt")),
           "adjacent unrelated extension must NOT be touched",
         );
 
-        // New install must still have landed properly.
         assert.ok(fs.existsSync(result.remnicExtensionDir));
         assert.ok(fs.existsSync(result.instructionsPath));
       },
@@ -436,7 +405,6 @@ test(
   },
 );
 
-// ── Finding 1: coerceInstallExtension unit tests ─────────────────────────────
 
 test("coerceInstallExtension — boolean passthrough", () => {
   assert.equal(coerceInstallExtension(true), true);
@@ -462,7 +430,6 @@ test("coerceInstallExtension — unknown values return undefined", () => {
   assert.equal(coerceInstallExtension(2), undefined);
 });
 
-// ── Finding 1: installExtension="false" (string) is coerced, extension NOT installed
 
 test('installConnector codex-cli with installExtension="false" string skips extension', async (t) => {
   const sandbox = makeSandbox(t);
@@ -483,7 +450,6 @@ test('installConnector codex-cli with installExtension="false" string skips exte
       assert.equal(result.status, "installed");
       assert.ok(result.message.includes("skipped"), `message should mention skipped, got: ${result.message}`);
 
-      // Extension directory must NOT have been created
       const paths = resolveCodexMemoryExtensionPaths(sandbox.codexHome);
       assert.equal(
         fs.existsSync(paths.remnicExtensionDir),
@@ -491,14 +457,12 @@ test('installConnector codex-cli with installExtension="false" string skips exte
         "extension dir must not exist when installExtension=false (string)",
       );
 
-      // Saved config must have a boolean false, not the string "false"
       const saved = JSON.parse(fs.readFileSync(result.configPath as string, "utf8")) as Record<string, unknown>;
       assert.equal(saved.installExtension, false, "saved installExtension must be boolean false");
     },
   );
 });
 
-// ── Finding 1: installExtension="true" (string) is coerced and extension installed
 
 test('installConnector codex-cli with installExtension="true" string installs extension', async (t) => {
   const sandbox = makeSandbox(t);
@@ -521,21 +485,18 @@ test('installConnector codex-cli with installExtension="true" string installs ex
 
       assert.equal(result.status, "installed");
 
-      // Extension directory MUST have been created
       const paths = resolveCodexMemoryExtensionPaths(sandbox.codexHome);
       assert.ok(
         fs.existsSync(paths.remnicExtensionDir),
         "extension dir must exist when installExtension=true (string)",
       );
 
-      // Saved config must have a boolean true
       const saved = JSON.parse(fs.readFileSync(result.configPath as string, "utf8")) as Record<string, unknown>;
       assert.equal(saved.installExtension, true, "saved installExtension must be boolean true");
     },
   );
 });
 
-// ── Finding 1: installExtension=true (boolean) still works
 
 test("installConnector codex-cli with installExtension=true (boolean) installs extension", async (t) => {
   const sandbox = makeSandbox(t);
@@ -563,13 +524,10 @@ test("installConnector codex-cli with installExtension=true (boolean) installs e
   );
 });
 
-// ── Finding 2: global-install path resolution via fake node_modules tree
 
 test("locatePluginCodexExtensionSource finds extension via synthetic node_modules tree", async (t) => {
   const sandbox = makeSandbox(t);
 
-  // Build a fake node_modules/@remnic/plugin-codex tree under sandbox.root so
-  // require.resolve can find its package.json.
   const fakePluginRoot = path.join(
     sandbox.root,
     "fake-node-modules",
@@ -582,9 +540,6 @@ test("locatePluginCodexExtensionSource finds extension via synthetic node_module
   fs.writeFileSync(path.join(fakePluginRoot, "package.json"), JSON.stringify({ name: "@remnic/plugin-codex", version: "0.0.1", main: "index.js" }));
   fs.writeFileSync(path.join(fakeExtDir, "instructions.md"), "# fake extension\n");
 
-  // Use the extension via direct sourceDir override (simulates the resolved path).
-  // The real package-lookup path is tested implicitly by the install path in other
-  // tests; here we verify that a path found via node_modules produces a valid install.
   const result = installCodexMemoryExtension({
     codexHome: sandbox.codexHome,
     sourceDir: fakeExtDir,
@@ -595,7 +550,6 @@ test("locatePluginCodexExtensionSource finds extension via synthetic node_module
   assert.equal(result.filesCopied, 1);
 });
 
-// ── Finding 4: remove with installExtension=false skips extension deletion
 
 test("removeConnector skips extension deletion when installExtension=false", async (t) => {
   const sandbox = makeSandbox(t);
@@ -608,14 +562,12 @@ test("removeConnector skips extension deletion when installExtension=false", asy
       CODEX_HOME: sandbox.codexHome,
     },
     () => {
-      // Install without extension
       const installResult = installConnector({
         connectorId: "codex-cli",
         config: { installExtension: false },
       });
       assert.equal(installResult.status, "installed");
 
-      // Manually create an extension dir to prove it is NOT removed
       const paths = resolveCodexMemoryExtensionPaths(sandbox.codexHome);
       fs.mkdirSync(paths.remnicExtensionDir, { recursive: true });
       fs.writeFileSync(path.join(paths.remnicExtensionDir, "instructions.md"), "user managed\n");
@@ -626,7 +578,6 @@ test("removeConnector skips extension deletion when installExtension=false", asy
         `message should mention skipped, got: ${removeResult.message}`,
       );
 
-      // Extension must still exist — we must not have touched it
       assert.ok(
         fs.existsSync(paths.remnicExtensionDir),
         "extension dir must survive when installExtension=false",
@@ -635,7 +586,6 @@ test("removeConnector skips extension deletion when installExtension=false", asy
   );
 });
 
-// ── Finding 5: if extension removal throws, config file must still exist
 
 test("removeConnector preserves config file when extension removal throws", async (t) => {
   const sandbox = makeSandbox(t);
@@ -648,7 +598,6 @@ test("removeConnector preserves config file when extension removal throws", asyn
       CODEX_HOME: sandbox.codexHome,
     },
     () => {
-      // Install WITH extension
       const installResult = installConnector({
         connectorId: "codex-cli",
         config: {
@@ -661,21 +610,9 @@ test("removeConnector preserves config file when extension removal throws", asyn
       const configPath = installResult.configPath as string;
       assert.ok(fs.existsSync(configPath), "config must exist after install");
 
-      // Corrupt the extension dir by replacing it with an unremovable file
-      // (simulate EPERM by making rmSync throw). We mock at the fs level by
-      // replacing remnicExtensionDir with a regular file named as the dir.
       const paths = resolveCodexMemoryExtensionPaths(sandbox.codexHome);
       fs.rmSync(paths.remnicExtensionDir, { recursive: true, force: true });
-      // Replace dir with a regular file to cause rename confusion; rmSync with
-      // a non-directory may still succeed on most platforms. Instead, we patch
-      // removeCodexMemoryExtension indirectly by making the extensionsRoot
-      // itself a file — but that's too destructive. Instead just verify
-      // ordering: if removeCodexMemoryExtension succeeds, config is deleted
-      // afterwards (already covered by other tests). Here we focus on the
-      // scenario where the extension dir is gone (removed = false) so the path
-      // through the happy case is exercised and the config IS deleted.
       const removeResult = removeConnector("codex-cli");
-      // In the happy path (extension already gone), config is deleted after.
       assert.ok(
         removeResult.message.includes("Removed"),
         `message should indicate Removed, got: ${removeResult.message}`,
@@ -689,7 +626,6 @@ test("removeConnector preserves config file when extension removal throws", asyn
   );
 });
 
-// ── Finding 3: CODEX_HOME env persisted even without explicit codexHome config
 
 test("installConnector persists resolved $CODEX_HOME even without explicit codexHome config key", async (t) => {
   const sandbox = makeSandbox(t);
@@ -704,7 +640,6 @@ test("installConnector persists resolved $CODEX_HOME even without explicit codex
     () => {
       const result = installConnector({
         connectorId: "codex-cli",
-        // Note: NO codexHome in config — must be picked up from $CODEX_HOME
         config: { installExtension: false },
       });
 
@@ -719,7 +654,6 @@ test("installConnector persists resolved $CODEX_HOME even without explicit codex
     },
   );
 
-  // Now clear CODEX_HOME and verify remove still targets the persisted path
   await withEnv(
     {
       HOME: sandbox.home,
@@ -728,7 +662,6 @@ test("installConnector persists resolved $CODEX_HOME even without explicit codex
       CODEX_HOME: undefined, // cleared
     },
     () => {
-      // Just confirm removeConnector doesn't throw and uses the persisted path
       const removeResult = removeConnector("codex-cli");
       assert.ok(
         removeResult.message.includes("Removed"),
@@ -738,7 +671,6 @@ test("installConnector persists resolved $CODEX_HOME even without explicit codex
   );
 });
 
-// ── PR #394 Findings 1 & 2: malformed codex-cli.json must return status:"skipped" with reason:"config-parse-failed"
 
 test("removeConnector returns status:skipped reason:config-parse-failed when codex-cli.json is malformed", async (t) => {
   const sandbox = makeSandbox(t);
@@ -751,7 +683,6 @@ test("removeConnector returns status:skipped reason:config-parse-failed when cod
       CODEX_HOME: sandbox.codexHome,
     },
     () => {
-      // Install normally first so the config file exists.
       const installResult = installConnector({
         connectorId: "codex-cli",
         config: { installExtension: false },
@@ -761,12 +692,10 @@ test("removeConnector returns status:skipped reason:config-parse-failed when cod
       const configPath = installResult.configPath as string;
       assert.ok(fs.existsSync(configPath), "precondition: config file must exist after install");
 
-      // Corrupt the config file with invalid JSON to simulate a malformed state.
       fs.writeFileSync(configPath, "{ this is not valid JSON !!!");
 
       const removeResult = removeConnector("codex-cli");
 
-      // Must signal skip, not silent success.
       assert.equal(
         removeResult.status,
         "skipped",
@@ -778,7 +707,6 @@ test("removeConnector returns status:skipped reason:config-parse-failed when cod
         "removeConnector must return reason:'config-parse-failed' when config cannot be parsed",
       );
 
-      // The config file must remain untouched so the operator can inspect and retry.
       assert.ok(
         fs.existsSync(configPath),
         "malformed config file must be left in place for operator inspection",
@@ -787,7 +715,6 @@ test("removeConnector returns status:skipped reason:config-parse-failed when cod
   );
 });
 
-// ── PR #394 Finding 1: recovery branch must NOT remove extension when config is missing
 
 test("removeConnector with missing config does not remove a self-managed extension", async (t) => {
   const sandbox = makeSandbox(t);
@@ -800,8 +727,6 @@ test("removeConnector with missing config does not remove a self-managed extensi
       CODEX_HOME: sandbox.codexHome,
     },
     () => {
-      // Simulate a user who self-manages the extension directory — it exists but
-      // there is no remnic connector config (deleted/corrupted or never existed).
       const paths = resolveCodexMemoryExtensionPaths(sandbox.codexHome);
       fs.mkdirSync(paths.remnicExtensionDir, { recursive: true });
       fs.writeFileSync(
@@ -809,17 +734,13 @@ test("removeConnector with missing config does not remove a self-managed extensi
         "# user-managed extension\n",
       );
 
-      // Make sure the config file does NOT exist.
-      // getConnectorsDir() uses XDG_CONFIG_HOME → engram/.engram-connectors/connectors
       const connectorsDir = path.join(sandbox.xdgConfigHome, "engram", ".engram-connectors", "connectors");
       const configPath = path.join(connectorsDir, "codex-cli.json");
       assert.equal(fs.existsSync(configPath), false, "precondition: config must be absent");
 
-      // removeConnector in recovery mode.
       const removeResult = removeConnector("codex-cli");
       assert.equal(removeResult.message, "Not installed", `expected 'Not installed', got: ${removeResult.message}`);
 
-      // The self-managed extension must still be present.
       assert.ok(
         fs.existsSync(paths.remnicExtensionDir),
         "self-managed extension must NOT be removed when config file is missing",
@@ -828,7 +749,6 @@ test("removeConnector with missing config does not remove a self-managed extensi
   );
 });
 
-// ── PR #394 Finding 2: atomic replace restores backup when renameSync to final destination fails
 
 test("installCodexMemoryExtension restores backup when final rename fails", async (t) => {
   const sandbox = makeSandbox(t);
@@ -841,38 +761,26 @@ test("installCodexMemoryExtension restores backup when final rename fails", asyn
       CODEX_HOME: sandbox.codexHome,
     },
     () => {
-      // Do a real first install so an existing extension is in place.
       const first = installCodexMemoryExtension({
         codexHome: sandbox.codexHome,
         sourceDir: sandbox.syntheticSourceDir,
       });
       assert.ok(fs.existsSync(first.remnicExtensionDir), "first install must succeed");
 
-      // Record original contents to verify restoration later.
       const originalContent = fs.readFileSync(
         path.join(first.remnicExtensionDir, "instructions.md"),
         "utf8",
       );
 
-      // Prepare a second source dir with different content.
       const secondSource = path.join(sandbox.root, "second-extension-source");
       fs.mkdirSync(secondSource, { recursive: true });
       fs.writeFileSync(path.join(secondSource, "instructions.md"), "# second version\n");
 
-      // Simulate renameSync failing on the *final* rename (tmp → destination) by
-      // replacing the destination with a regular file whose name matches remnicExtensionDir.
-      // Strategy: make the extensionsRoot read-only so renameSync into it fails,
-      // but only for the final rename. We achieve this by making the target path
-      // a regular file — renameSync will fail with ENOTDIR/EEXIST on most platforms.
-      // We remove it first so the backup rename can proceed, then put it back.
-      //
-      // Simpler: mock fs.renameSync to fail only on the second call (the final rename).
       const originalRenameSync = fs.renameSync.bind(fs);
       let renameCallCount = 0;
       const mockRename = t.mock.method(fs, "renameSync", (...args: Parameters<typeof fs.renameSync>) => {
         renameCallCount++;
         if (renameCallCount === 2) {
-          // This is the final rename (tmp → remnicExtensionDir) — simulate failure.
           throw new Error("EACCES: permission denied (simulated)");
         }
         return originalRenameSync(...args);
@@ -888,10 +796,8 @@ test("installCodexMemoryExtension restores backup when final rename fails", asyn
         "install must throw when final rename fails",
       );
 
-      // Restore the mock so cleanup works correctly.
       mockRename.mock.restore();
 
-      // The original extension must have been restored from backup.
       assert.ok(
         fs.existsSync(first.remnicExtensionDir),
         "old extension must be restored after failed rename",
@@ -902,8 +808,6 @@ test("installCodexMemoryExtension restores backup when final rename fails", asyn
       );
       assert.equal(restoredContent, originalContent, "restored extension must match original content");
 
-      // No .bak-* directories should remain (they get cleaned up on success; on failure the
-      // backup is renamed back — so it becomes remnicExtensionDir again and no .bak remains).
       const extRoot = path.dirname(first.remnicExtensionDir);
       const entries = fs.readdirSync(extRoot);
       const bakEntries = entries.filter((e) => e.includes(".bak-"));
@@ -912,7 +816,6 @@ test("installCodexMemoryExtension restores backup when final rename fails", asyn
   );
 });
 
-// ── PR #394 Bug 1: extension install failure must surface status:"error" (not "installed")
 
 test("installConnector surfaces status:error when memory extension install throws", async (t) => {
   const sandbox = makeSandbox(t);
@@ -925,7 +828,6 @@ test("installConnector surfaces status:error when memory extension install throw
       CODEX_HOME: sandbox.codexHome,
     },
     () => {
-      // Pass a non-existent sourceDir so installCodexMemoryExtension will throw.
       const result = installConnector({
         connectorId: "codex-cli",
         config: {
@@ -943,7 +845,6 @@ test("installConnector surfaces status:error when memory extension install throw
         result.message.toLowerCase().includes("failed") || result.message.toLowerCase().includes("error"),
         `message should mention failure, got: ${result.message}`,
       );
-      // configPath must NOT be set — the config file should not have been written
       assert.equal(
         result.configPath,
         undefined,
@@ -953,7 +854,6 @@ test("installConnector surfaces status:error when memory extension install throw
   );
 });
 
-// ── PR #394 Finding 2: happy-path atomic replace regression test
 
 test("installCodexMemoryExtension atomic replace happy path — no backup directory left behind", async (t) => {
   const sandbox = makeSandbox(t);
@@ -966,33 +866,26 @@ test("installCodexMemoryExtension atomic replace happy path — no backup direct
       CODEX_HOME: sandbox.codexHome,
     },
     () => {
-      // First install.
       installCodexMemoryExtension({
         codexHome: sandbox.codexHome,
         sourceDir: sandbox.syntheticSourceDir,
       });
 
-      // Prepare a second source dir.
       const secondSource = path.join(sandbox.root, "second-ext-source");
       fs.mkdirSync(secondSource, { recursive: true });
       fs.writeFileSync(path.join(secondSource, "instructions.md"), "# v2 extension\n");
 
-      // Second install (replace).
       const second = installCodexMemoryExtension({
         codexHome: sandbox.codexHome,
         sourceDir: secondSource,
       });
 
-      // New extension must be in place with updated content.
       assert.ok(fs.existsSync(second.remnicExtensionDir), "extension dir must exist after replace");
       const content = fs.readFileSync(path.join(second.remnicExtensionDir, "instructions.md"), "utf8");
       assert.equal(content, "# v2 extension\n", "extension content must reflect second install");
 
-      // The backup is kept alive until commit() is called. Call it now to simulate
-      // the successful completion of the caller (e.g. config write).
       second.commit();
 
-      // No .bak-* directories must be left behind after commit().
       const extRoot = path.dirname(second.remnicExtensionDir);
       const entries = fs.readdirSync(extRoot);
       const bakEntries = entries.filter((e) => e.includes(".bak-"));
@@ -1001,7 +894,6 @@ test("installCodexMemoryExtension atomic replace happy path — no backup direct
   );
 });
 
-// ── PR #394 Finding 1: corrupt config must not trigger extension removal ──────
 
 test("removeConnector with corrupt codex-cli.json does NOT remove extension", async (t) => {
   const sandbox = makeSandbox(t);
@@ -1014,13 +906,11 @@ test("removeConnector with corrupt codex-cli.json does NOT remove extension", as
       CODEX_HOME: sandbox.codexHome,
     },
     () => {
-      // Write a syntactically invalid JSON file as the connector config.
       const connectorsDir = path.join(sandbox.xdgConfigHome, "engram", ".engram-connectors", "connectors");
       fs.mkdirSync(connectorsDir, { recursive: true });
       const configPath = path.join(connectorsDir, "codex-cli.json");
       fs.writeFileSync(configPath, "{ this is not valid json !!! }");
 
-      // Place a self-managed extension directory that must survive.
       const paths = resolveCodexMemoryExtensionPaths(sandbox.codexHome);
       fs.mkdirSync(paths.remnicExtensionDir, { recursive: true });
       fs.writeFileSync(
@@ -1030,10 +920,6 @@ test("removeConnector with corrupt codex-cli.json does NOT remove extension", as
 
       const removeResult = removeConnector("codex-cli");
 
-      // The malformed config must cause removeConnector to abort via the
-      // structured skip API (mirrors tests/codex-memory-extension-install.test.ts).
-      // We rely on the structured fields rather than substring-matching the
-      // human-readable message, which is not a stable contract.
       assert.equal(
         removeResult.status,
         "skipped",
@@ -1045,14 +931,11 @@ test("removeConnector with corrupt codex-cli.json does NOT remove extension", as
         `expected reason "config-parse-failed", got: ${removeResult.reason}`,
       );
 
-      // The self-managed extension must NOT have been deleted.
       assert.ok(
         fs.existsSync(paths.remnicExtensionDir),
         "extension must survive when config parsing fails",
       );
 
-      // The malformed config file must also be preserved so the operator can
-      // inspect it and retry the removal once the config is fixed.
       assert.ok(
         fs.existsSync(configPath),
         "malformed config file must NOT be deleted — operator needs it for inspection/retry",
@@ -1061,7 +944,6 @@ test("removeConnector with corrupt codex-cli.json does NOT remove extension", as
   );
 });
 
-// ── PR #394 Finding 2: fresh temp dirs must NOT be cleaned by pre-install sweep
 
 test("installCodexMemoryExtension does NOT remove fresh .remnic.tmp-* dirs (concurrent install guard)", async (t) => {
   const sandbox = makeSandbox(t);
@@ -1077,20 +959,15 @@ test("installCodexMemoryExtension does NOT remove fresh .remnic.tmp-* dirs (conc
       const paths = resolveCodexMemoryExtensionPaths(sandbox.codexHome);
       fs.mkdirSync(paths.extensionsRoot, { recursive: true });
 
-      // Create a fresh tmp dir with current mtime (simulates a concurrent install
-      // that is still in progress — its mtime is "now").
       const freshTmp = path.join(paths.extensionsRoot, `.remnic.tmp-12345-${Date.now()}`);
       fs.mkdirSync(freshTmp, { recursive: true });
       fs.writeFileSync(path.join(freshTmp, "in-progress.txt"), "in-progress\n");
-      // Leave mtime at "now" (default) — this is fresh and must not be removed.
 
-      // Run install; the fresh tmp dir is younger than the 10-minute threshold.
       installCodexMemoryExtension({
         codexHome: sandbox.codexHome,
         sourceDir: sandbox.syntheticSourceDir,
       });
 
-      // The fresh dir must still exist — the sweep must have left it alone.
       assert.ok(
         fs.existsSync(freshTmp),
         "fresh .remnic.tmp-* dir must NOT be deleted by the pre-install cleanup sweep",
@@ -1099,7 +976,6 @@ test("installCodexMemoryExtension does NOT remove fresh .remnic.tmp-* dirs (conc
   );
 });
 
-// ── PR #394 Finding 3: legacy config (no installExtension key) skips removal ──
 
 test("removeConnector with legacy config (no installExtension key) skips extension removal", async (t) => {
   const sandbox = makeSandbox(t);
@@ -1112,8 +988,6 @@ test("removeConnector with legacy config (no installExtension key) skips extensi
       CODEX_HOME: sandbox.codexHome,
     },
     () => {
-      // Write a legacy config that lacks both installExtension and codexHome —
-      // simulating a config created before the provenance fields were added.
       const connectorsDir = path.join(sandbox.xdgConfigHome, "engram", ".engram-connectors", "connectors");
       fs.mkdirSync(connectorsDir, { recursive: true });
       const configPath = path.join(connectorsDir, "codex-cli.json");
@@ -1122,7 +996,6 @@ test("removeConnector with legacy config (no installExtension key) skips extensi
         JSON.stringify({ connectorId: "codex-cli", installedAt: "2024-01-01T00:00:00Z" }, null, 2),
       );
 
-      // Create an extension that Remnic did NOT own (user-managed).
       const paths = resolveCodexMemoryExtensionPaths(sandbox.codexHome);
       fs.mkdirSync(paths.remnicExtensionDir, { recursive: true });
       fs.writeFileSync(
@@ -1141,7 +1014,6 @@ test("removeConnector with legacy config (no installExtension key) skips extensi
         `message should indicate removal was skipped due to missing provenance, got: ${removeResult.message}`,
       );
 
-      // Extension must survive — no provenance = no removal.
       assert.ok(
         fs.existsSync(paths.remnicExtensionDir),
         "user-managed extension must survive when saved config has no install provenance",
@@ -1150,12 +1022,6 @@ test("removeConnector with legacy config (no installExtension key) skips extensi
   );
 });
 
-// ── PR #394 Finding 4: parseConfig and coerceInstallExtension agree on parity ─
-//
-// Verifies that coerceInstallExtension (now shared via coerce.ts) produces the
-// correct results for all representative inputs.  The same function is called by
-// both config.ts (parseConfig) and connectors/index.ts (installConnector /
-// removeConnector), ensuring the two callers always agree.
 
 test("coerceInstallExtension parity — all representative inputs match expected coercion", () => {
   const testCases: Array<[unknown, boolean | undefined]> = [
@@ -1186,7 +1052,6 @@ test("coerceInstallExtension parity — all representative inputs match expected
   }
 });
 
-// ── PR #394 Finding 5: extensionSourceDir must NOT be persisted to config file ─
 
 test("installConnector does NOT persist extensionSourceDir to saved config", async (t) => {
   const sandbox = makeSandbox(t);
@@ -1221,26 +1086,11 @@ test("installConnector does NOT persist extensionSourceDir to saved config", asy
   );
 });
 
-// ── PR #394 Finding PRRT_kwDORJXyws56UHNp: dist/connectors/codex bundled payload discovery ──
 //
-// Regression test: locatePluginCodexExtensionSource must succeed when running
-// from a dist-only layout (no monorepo, no @remnic/plugin-codex) by probing
-// the tsup output path dist/connectors/codex/ relative to the module directory.
-// This simulates a standalone npm/global install where the only copy of the
-// payload is the one tsup bundled at dist/connectors/codex/.
 
 test(
   "locatePluginCodexExtensionSource finds bundled payload at dist/connectors/codex layout (PRRT_kwDORJXyws56UHNp)",
   async (t) => {
-    // Build a temp directory tree that mirrors the tsup dist output structure:
-    //   <root>/
-    //     dist/
-    //       index.js           ← where import.meta.url would point at runtime
-    //       connectors/
-    //         codex/
-    //           instructions.md
-    //           resources/
-    //             namespace-cheatsheet.md
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-dist-layout-test-"));
     t.after(() => {
       try {
@@ -1260,13 +1110,7 @@ test(
       "# cheatsheet\n",
     );
 
-    // Pass the distDir as the explicit override so the test is deterministic
-    // without needing to mock import.meta.url.  This verifies the directory is
-    // recognised as a valid source when it is a direct descendant of a
-    // dist-layout root.
     //
-    // We also directly exercise the "connectors/codex" sub-path by passing it
-    // as the override — this is the exact path the new Candidate 2 would return.
     const result = locatePluginCodexExtensionSource(distConnectorsCodexDir);
 
     assert.equal(result, distConnectorsCodexDir, "must return the dist/connectors/codex path when passed as override");
@@ -1275,9 +1119,6 @@ test(
       "instructions.md must exist in the resolved path",
     );
 
-    // Also verify that installCodexMemoryExtension succeeds with this source path,
-    // proving end-to-end that the bundled payload at dist/connectors/codex can be
-    // installed into a codex home.
     const codexHome = path.join(root, "codex-home");
     fs.mkdirSync(codexHome, { recursive: true });
     const installResult = installCodexMemoryExtension({
@@ -1297,11 +1138,7 @@ test(
   },
 );
 
-// ── PR #394 PRRT_kwDORJXyws56UJlk: rollback after config-write failure must restore prior extension ──
 //
-// Regression test: if installConnector("codex-cli") fails while writing
-// codex-cli.json after installCodexMemoryExtension() has already succeeded,
-// any pre-existing customised extension must be restored — not deleted.
 
 test(
   "installConnector rollback restores pre-existing extension when config write fails (PRRT_kwDORJXyws56UJlk)",
@@ -1316,8 +1153,6 @@ test(
         CODEX_HOME: sandbox.codexHome,
       },
       () => {
-        // Set up a pre-existing extension with a sentinel file to prove it was
-        // written by the user (not by this install invocation).
         const paths = resolveCodexMemoryExtensionPaths(sandbox.codexHome);
         fs.mkdirSync(paths.remnicExtensionDir, { recursive: true });
         fs.writeFileSync(
@@ -1325,17 +1160,10 @@ test(
           "user-customised extension — must survive a failed install rollback\n",
         );
 
-        // Create the connectors directory so installConnector can reach it, but
-        // make the config file itself unwritable by placing a read-only directory
-        // at the path where the .json file would be written.
         const connectorsDir = path.join(sandbox.xdgConfigHome, "engram", ".engram-connectors", "connectors");
         fs.mkdirSync(connectorsDir, { recursive: true });
         const configPath = path.join(connectorsDir, "codex-cli.json");
 
-        // Monkey-patch the atomic final rename to throw only when publishing the
-        // codex-cli config file. writeSecretFileSync now writes a temp file first,
-        // then renames into place, so this simulates a final commit failure that
-        // happens AFTER installCodexMemoryExtension() has already completed.
         const originalRenameSync = fs.renameSync.bind(fs);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const mock = t.mock.method(fs, "renameSync", (...args: [any, any]) => {
@@ -1355,14 +1183,12 @@ test(
 
         mock.mock.restore();
 
-        // The install must report an error.
         assert.equal(
           result.status,
           "error",
           `expected status "error" when config write fails, got: "${result.status}"`,
         );
 
-        // The pre-existing extension with the sentinel file must still be present.
         assert.ok(
           fs.existsSync(paths.remnicExtensionDir),
           "memories_extensions/remnic must still exist after failed install rollback",
@@ -1372,7 +1198,6 @@ test(
           "custom-marker.txt must survive: pre-existing extension must be restored on rollback, not deleted",
         );
 
-        // The connector config must NOT have been written.
         assert.equal(
           fs.existsSync(configPath),
           false,
@@ -1383,11 +1208,7 @@ test(
   },
 );
 
-// ── Codex CLI token auth regression coverage ────────────────────────────────
 //
-// Codex CLI hook auth depends on a dedicated bearer token entry in tokens.json.
-// Installing codex-cli must therefore mint a token, but still keep that token
-// out of the saved connector config file.
 
 test(
   "installConnector writes a remnic_cx_ token entry for codex-cli and keeps connector config token-free",
@@ -1409,7 +1230,6 @@ test(
 
         assert.equal(result.status, "installed", `expected status "installed", got: "${result.status}"`);
 
-        // tokens.json must contain a codex-cli entry.
         const store = loadTokenStore();
         const codexEntry = store.tokens.find((e) => e.connector === "codex-cli");
         assert.ok(
@@ -1421,7 +1241,6 @@ test(
           `codex-cli token must start with \"remnic_cx_\", got: \"${codexEntry!.token.slice(0, 20)}...\"`,
         );
 
-        // The saved connector.json must not contain a token field.
         assert.ok(result.configPath, "configPath should be set");
         const saved = JSON.parse(fs.readFileSync(result.configPath as string, "utf8")) as Record<string, unknown>;
         assert.equal(
@@ -1451,7 +1270,6 @@ test(
 
         assert.equal(result.status, "installed", `expected status "installed", got: "${result.status}"`);
 
-        // tokens.json must contain NO entry for cursor.
         const store = loadTokenStore();
         const cursorEntry = store.tokens.find((e) => e.connector === "cursor");
         assert.equal(
@@ -1460,7 +1278,6 @@ test(
           "tokens.json must NOT contain an entry for the cursor connector (embedded transport, no token auth)",
         );
 
-        // The saved connector.json must also not contain a token field.
         assert.ok(result.configPath, "configPath should be set");
         const saved = JSON.parse(fs.readFileSync(result.configPath as string, "utf8")) as Record<string, unknown>;
         assert.equal(
@@ -1473,14 +1290,7 @@ test(
   },
 );
 
-// ── Codex PRRT_kwDORJXyws56VJRa (P1): claude-code must write a token entry on install ──
 //
-// Regression test: installing the claude-code connector MUST write a token entry
-// to tokens.json. The session-start.sh, user-prompt-recall.sh, and post-tool-observe.sh
-// hooks in plugin-claude-code read this entry for Bearer auth when calling the
-// recall/observe HTTP endpoints. Without requiresToken: true on the claude-code manifest
-// the round-17 token-gating change caused fresh installs to skip the token write,
-// silently disabling authenticated memory recall for all Claude Code hook users.
 
 test(
   "installConnector writes a remnic_cc_ token entry for claude-code connector (PRRT_kwDORJXyws56VJRa P1 regression)",
@@ -1499,7 +1309,6 @@ test(
 
         assert.equal(result.status, "installed", `expected status "installed", got: "${result.status}"`);
 
-        // tokens.json MUST contain a claude-code entry.
         const store = loadTokenStore();
         const ccEntry = store.tokens.find((e) => e.connector === "claude-code");
         assert.ok(
@@ -1507,16 +1316,11 @@ test(
           "tokens.json must contain a token entry for claude-code after install",
         );
 
-        // The token must carry the recognizable remnic_cc_ prefix so the
-        // session-start.sh / user-prompt-recall.sh / post-tool-observe.sh hooks
-        // can use it as a Bearer credential.
         assert.ok(
           ccEntry!.token.startsWith("remnic_cc_"),
           `claude-code token must start with "remnic_cc_", got: "${ccEntry!.token.slice(0, 20)}..."`,
         );
 
-        // The saved connector.json must NOT contain a token field (security: tokens
-        // live only in the 0o600 tokens.json, never in the connector config).
         assert.ok(result.configPath, "configPath should be set");
         const saved = JSON.parse(fs.readFileSync(result.configPath as string, "utf8")) as Record<string, unknown>;
         assert.equal(
@@ -1622,14 +1426,7 @@ test("installConnector force reinstall lets explicit blank config clear saved Pi
   );
 });
 
-// ── PRRT_kwDORJXyws56VRJ4 (Cursor High): loadRegistry built-in precedence ──
 //
-// Regression test: stale registry.json entries for built-in connectors (written
-// by an older version without requiresToken: true) must NOT shadow the current
-// built-in manifests. loadRegistry() must always return the built-in manifest
-// for any connector ID that appears in BUILTIN_CONNECTORS, regardless of what
-// is persisted in registry.json. User-added custom connectors (unknown IDs)
-// must still be preserved from the persisted file.
 
 test(
   "loadRegistry returns built-in manifest for claude-code even when stale entry lacks requiresToken (PRRT_kwDORJXyws56VRJ4 regression)",
@@ -1643,9 +1440,6 @@ test(
         XDG_CONFIG_HOME: sandbox.xdgConfigHome,
       },
       () => {
-        // Write a stale registry.json that mimics an older version's output:
-        // claude-code, replit, and generic-mcp entries all lack requiresToken.
-        // Also include a custom connector that should be preserved.
         const staleRegistry = {
           connectors: [
             {
@@ -1707,16 +1501,13 @@ test(
           ],
         };
 
-        // Write the stale registry to the expected path under our sandbox HOME.
         const regDir = path.join(sandbox.xdgConfigHome, "engram", ".engram-connectors");
         fs.mkdirSync(regDir, { recursive: true });
         const regPath = path.join(regDir, "registry.json");
         fs.writeFileSync(regPath, JSON.stringify(staleRegistry, null, 2));
 
-        // Load the registry — built-ins must win for known IDs.
         const registry = loadRegistry();
 
-        // claude-code must come from the built-in (has requiresToken: true).
         const ccManifest = registry.connectors.find((c) => c.id === "claude-code");
         assert.ok(ccManifest !== undefined, "claude-code must be present in loaded registry");
         assert.equal(
@@ -1725,7 +1516,6 @@ test(
           "claude-code manifest from loadRegistry must have requiresToken: true (not the stale entry)",
         );
 
-        // replit must also come from the built-in (has requiresToken: true).
         const replitManifest = registry.connectors.find((c) => c.id === "replit");
         assert.ok(replitManifest !== undefined, "replit must be present in loaded registry");
         assert.equal(
@@ -1734,7 +1524,6 @@ test(
           "replit manifest from loadRegistry must have requiresToken: true (not the stale entry)",
         );
 
-        // The custom connector must still be present (it's not a built-in).
         const customManifest = registry.connectors.find((c) => c.id === "my-custom-agent");
         assert.ok(
           customManifest !== undefined,

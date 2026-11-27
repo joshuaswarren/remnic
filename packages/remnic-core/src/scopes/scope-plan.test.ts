@@ -37,7 +37,6 @@ import {
 import type { CodingContext, PluginConfig } from "../types.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Config builders
 // ──────────────────────────────────────────────────────────────────────────
 
 function baseConfig(overrides: Partial<PluginConfig> = {}): PluginConfig {
@@ -79,7 +78,6 @@ function codingContext(projectId: string, branch: string | null = null): CodingC
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Snapshot 1: default namespace, no coding context
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: default namespace, no coding context → [default]", () => {
@@ -98,12 +96,10 @@ test("scope-plan: default namespace, no coding context → [default]", () => {
   assert.deepEqual(plan.lcmReadNamespaces, ["default"]);
   assert.equal(plan.codingOverlay, null);
   assert.equal(plan.scopeProfilePlan, null);
-  // LCM key is the raw sessionKey (default store, no overlay).
   assert.deepEqual([...plan.lcmReadSessionIds], ["sess-1"]);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Snapshot 2: named namespace (explicit, readable override)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: explicit readable namespace override wins", () => {
@@ -132,7 +128,6 @@ test("scope-plan: explicit readable namespace override wins", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Snapshot 3: coding overlay (project scope)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: coding overlay (project scope) substitutes self base", () => {
@@ -150,9 +145,6 @@ test("scope-plan: coding overlay (project scope) substitutes self base", () => {
 
   assert.equal(plan.principal, "alice");
   assert.equal(plan.baseNamespace, codingSelf);
-  // readNamespaces substitutes "alice" → codingSelf, keeps shared.
-  // globalFallback=true adds the root ("") fallback: combineNamespaces("alice",
-  // "") → "alice", so the principal's own namespace appears as a read fallback.
   assert.deepEqual(plan.readNamespaces, [codingSelf, "shared", "alice"]);
   assert.deepEqual(plan.readFallbacks, ["alice"]);
   assert.deepEqual(plan.lcmReadNamespaces, [codingSelf, "alice"]);
@@ -161,7 +153,6 @@ test("scope-plan: coding overlay (project scope) substitutes self base", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Snapshot 4: coding overlay (branch scope) appends project fallback
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: coding overlay (branch scope) appends project + root fallbacks", () => {
@@ -179,19 +170,14 @@ test("scope-plan: coding overlay (branch scope) appends project + root fallbacks
     codingContext: ctx,
   });
 
-  // Verify the key invariants: overlay is non-null, base is combined with self.
   assert.notEqual(plan.codingOverlay, null);
   assert.notEqual(plan.baseNamespace, "alice");
-  // readNamespaces includes the coding self (branch) and fallbacks.
   assert.ok(plan.readNamespaces.length >= 2, "branch scope must include fallbacks");
-  // LCM read includes coding self + fallbacks.
   assert.ok(plan.lcmReadNamespaces.length >= 2, "LCM must include fallback keys");
-  // readFallbacks is non-empty (project + root when globalFallback).
   assert.ok(plan.readFallbacks.length >= 1, "branch scope has at least project fallback");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Snapshot 5: sparse metadata — no session key
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: no session key → principal undefined, default namespace", () => {
@@ -203,15 +189,12 @@ test("scope-plan: no session key → principal undefined, default namespace", ()
 
   assert.equal(plan.principal, undefined);
   assert.equal(plan.baseNamespace, "default");
-  // recallNamespacesForPrincipal(undefined) → [] (no principal).
   assert.deepEqual(plan.readNamespaces, []);
   assert.deepEqual(plan.lcmReadNamespaces, ["default"]);
-  // Sessionless LCM → [undefined] (archive-wide read, no session_id filter).
   assert.deepEqual([...plan.lcmReadSessionIds], [undefined]);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Snapshot 6: legacy agent:* session key
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: legacy agent:* session key resolves principal via heuristic", () => {
@@ -222,17 +205,13 @@ test("scope-plan: legacy agent:* session key resolves principal via heuristic", 
     sessionKey: "agent:bot-1:slack:chan-1",
   });
 
-  // resolvePrincipal heuristic: parts[0] === "agent" → parts[1] = "bot-1".
   assert.equal(plan.principal, "bot-1");
-  // No policy for "bot-1" → defaultNamespaceForPrincipal → "default".
   assert.equal(plan.baseNamespace, "default");
-  // recallNamespacesForPrincipal("bot-1"): self="default" (readable), shared.
   assert.deepEqual(plan.readNamespaces, ["default", "shared"]);
   assert.deepEqual(plan.lcmReadNamespaces, ["default"]);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Snapshot 7: namespacesEnabled false → single-store collapse
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: namespacesEnabled false collapses to default store", () => {
@@ -244,18 +223,15 @@ test("scope-plan: namespacesEnabled false collapses to default store", () => {
     codingContext: codingContext("myproj"),
   });
 
-  // resolvePrincipal returns "default" when namespaces disabled.
   assert.equal(plan.principal, "default");
   assert.equal(plan.baseNamespace, "default");
   assert.deepEqual(plan.readNamespaces, ["default"]);
   assert.equal(plan.codingOverlay, null);
   assert.equal(plan.scopeProfilePlan, null);
-  // Single store → raw sessionKey.
   assert.deepEqual([...plan.lcmReadSessionIds], ["sess-1"]);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Snapshot 8: codingMode.projectScope false → no overlay
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: projectScope false → no overlay even with coding context", () => {
@@ -274,16 +250,13 @@ test("scope-plan: projectScope false → no overlay even with coding context", (
 
   assert.equal(plan.codingOverlay, null);
   assert.equal(plan.baseNamespace, "alice");
-  // No overlay → readable recall set unchanged (self substituted by nothing).
   assert.deepEqual(plan.readNamespaces, ["alice", "shared"]);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Snapshot 9: explicit override not readable → falls through (observe parity)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: unreadable namespace override falls through to coding/legacy", () => {
-  // No policy for "restricted" → canReadNamespace(default, "restricted") → false.
   const config = withSelfPolicy(baseConfig(), "alice");
   const plan = resolveScopePlan({
     config,
@@ -293,16 +266,13 @@ test("scope-plan: unreadable namespace override falls through to coding/legacy",
     codingContext: codingContext("myproj"),
   });
 
-  // Unreadable override → namespaceOverride is undefined in the plan.
   assert.equal(plan.namespaceOverride, undefined);
-  // Falls through to coding overlay (alice has a policy + coding context).
   assert.notEqual(plan.codingOverlay, null);
   assert.notEqual(plan.baseNamespace, "restricted");
   assert.notEqual(plan.baseNamespace, "alice", "base should be the overlaid namespace");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Snapshot 10: defaultRecallNamespaces omits self → overlay LCM collapses
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: self not in defaultRecallNamespaces → LCM collapses to default", () => {
@@ -319,15 +289,11 @@ test("scope-plan: self not in defaultRecallNamespaces → LCM collapses to defau
     codingContext: codingContext("myproj"),
   });
 
-  // Coding overlay IS resolved (coding context + projectScope).
   assert.notEqual(plan.codingOverlay, null);
-  // codingOverlaySelfReadable = false (self "alice" not in readable set).
-  // LCM collapses to default.
   assert.deepEqual(plan.lcmReadNamespaces, ["default"]);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Cross-check: resolveScopePlan is pure (same inputs → same outputs)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: resolver is pure — identical inputs produce identical plans", () => {
@@ -346,8 +312,6 @@ test("scope-plan: resolver is pure — identical inputs produce identical plans"
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Parity invariant: LCM keys derived through lcmSessionKeyForNamespace
-// (rule 22 — never hardcoded `:`-joins)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: LCM session ids match lcmSessionKeyForNamespace encoding", () => {
@@ -359,7 +323,6 @@ test("scope-plan: LCM session ids match lcmSessionKeyForNamespace encoding", () 
     codingContext: codingContext("myproj"),
   });
 
-  // Each LCM read session id must equal lcmSessionKeyForNamespace(ns, sk, default).
   const expected = plan.lcmReadNamespaces.map(
     (ns) => lcmSessionKeyForNamespace(ns, "alice:sess-1", "default") ?? "alice:sess-1",
   );
@@ -367,12 +330,7 @@ test("scope-plan: LCM session ids match lcmSessionKeyForNamespace encoding", () 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Fitness tests: centralized namespace-resolution helpers (#1521 step 3–4)
 //
-// These pin the three pure helpers that replace the ad-hoc resolution scattered
-// across orchestrator.ts and access-service.ts. They MUST match the pre-migration
-// behavior byte-for-byte (the snapshots were derived from the original inline
-// implementations).
 // ──────────────────────────────────────────────────────────────────────────
 
 test("getConfiguredNamespaces: default + shared + policies, trimmed and deduped", () => {
@@ -448,7 +406,6 @@ test("resolveNamespaceFromStorageDir: configured namespace dir → that namespac
 
 test("resolveNamespaceFromStorageDir: tokenized dir → decoded namespace", () => {
   const config = baseConfig({ memoryDir: "/data/memory" });
-  // "alpha" tokenizes to ns-616c706861
   const ns = resolveNamespaceFromStorageDir("/data/memory/namespaces/ns-616c706861", {
     config,
     configuredNamespaces: getConfiguredNamespaces(config),
@@ -530,7 +487,6 @@ test("resolveWritableNamespaceValue: namespaces disabled, default namespace → 
 
 test("resolveNamespacePreflight gates on the allow-list, policy, and the requested write op", () => {
   const config = baseConfig({ namespacesEnabled: false });
-  // Unrestricted token, observe path: default writable, foreign policy-rejected.
   assert.deepEqual(
     resolveNamespacePreflight(undefined, "default", undefined, undefined, config, "observe"),
     { ok: true, namespace: "default" },
@@ -539,7 +495,6 @@ test("resolveNamespacePreflight gates on the allow-list, policy, and the request
     resolveNamespacePreflight(undefined, "team-b", undefined, undefined, config, "observe").ok,
     false,
   );
-  // Namespace-scoped token: in-list writable; out-of-list definitive not_writable.
   const scoped = { namespaces: ["default"] } as unknown as TokenCapabilities;
   assert.deepEqual(
     resolveNamespacePreflight(scoped, "default", undefined, undefined, config, "observe"),
@@ -549,9 +504,6 @@ test("resolveNamespacePreflight gates on the allow-list, policy, and the request
     resolveNamespacePreflight(scoped, "team-b", undefined, undefined, config, "observe"),
     { ok: false, reason: "not_writable", namespace: "team-b" },
   );
-  // Write-op awareness: a memory_store-only token is not_writable for the
-  // observe path but writable for the memory_store path; a token lacking BOTH
-  // (diagnostic-only) is never writable.
   const storeOnly = { ops: ["memory_store"] } as unknown as TokenCapabilities;
   assert.equal(
     resolveNamespacePreflight(storeOnly, "default", undefined, undefined, config, "observe").ok,

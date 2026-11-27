@@ -1,10 +1,3 @@
-/**
- * Issue #2481 — the derived cache layers (episode map, rule memories) share
- * one getVersionedCacheEntry read gate with the hot layer. These pin the
- * per-layer contracts that must keep holding after that dedup: version-keyed
- * round-trip, version-mismatch miss, keyId mismatch miss, and TTL expiry
- * miss on EACH layer. (Hot-layer equivalents live in memory-cache-hot.test.ts.)
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";

@@ -1,13 +1,3 @@
-/**
- * Tests for the structural-context provider PORT (issue #1548 Track A PR 5).
- *
- * Pure module under test — registry, gate predicate, and the config-only
- * doctor status summariser. The subprocess adapter and the review-context
- * wiring have their own test files. No filesystem, no subprocess.
- *
- * Standards: #1520. Rule 34 (degraded ≠ empty) is the load-bearing invariant
- * for every tagged outcome here.
- */
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
@@ -62,9 +52,6 @@ afterEach(() => {
   clearStructuralContextProvidersForTest();
 });
 
-// ──────────────────────────────────────────────────────────────────────────
-// Gate predicate (rule 39 — one predicate, identical on every path)
-// ──────────────────────────────────────────────────────────────────────────
 
 test("structuralProviderActive: false when master gate off (default)", () => {
   assert.equal(structuralProviderActive(configWith({})), false);
@@ -107,7 +94,6 @@ test("structuralProviderActive: missing/null codingKnowledge → false (defensiv
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Registry (rule 11 — instance-scoped via Symbol; mirrors host-embedding)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("registry: register + lookup by scope", () => {
@@ -143,7 +129,6 @@ test("registry: re-registering a scope closes the previous provider", async () =
   registerStructuralContextProvider("svc", first);
   registerStructuralContextProvider("svc", second);
   assert.equal(getStructuralContextProvider("svc"), second);
-  // Allow the microtask queue to drain the close() call.
   await Promise.resolve();
   assert.equal(closed, 1, "previous provider must be closed on overwrite");
 });
@@ -157,7 +142,6 @@ test("registry: unregister is idempotent and only closes its own provider", () =
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// toStructuralContextDegradation — single chokepoint for the backend tag
 // ──────────────────────────────────────────────────────────────────────────
 
 test("toStructuralContextDegradation: carries code + detail with the backend tag", () => {
@@ -180,7 +164,6 @@ test("toStructuralContextDegradation: detail omitted when absent", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Doctor status summariser (pure, config-only)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("describeStructuralProviderStatus: inactive when gate off", () => {
@@ -219,7 +202,6 @@ test("describeStructuralProviderStatus: registered provider id surfaces when sco
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Status line renderer (pure)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("renderStructuralProviderStatusLine: inactive line is deterministic", () => {

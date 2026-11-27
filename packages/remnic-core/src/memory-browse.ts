@@ -99,7 +99,6 @@ const MAX_PATTERN_CHARS = 256;
 
 const BROWSABLE_ROOTS: Record<string, true> = Object.fromEntries(RECALL_FALLBACK_DIRS.map((dir) => [dir, true]));
 
-/** The recall-corpus visibility rule shared by every browse code path. */
 function isBrowsableMemoryPath(relPath: string): boolean {
   if (!relPath.endsWith(".md")) return false;
   const top = relPath.split("/")[0] ?? "";
@@ -279,8 +278,6 @@ export async function runMemoryBrowse(
     node = node?.subdirs.get(segment);
     if (node === undefined) break;
   }
-  // Invisible-by-design stores resolve as not_found, indistinguishable from
-  // a missing path: the index only ever contains browsable corpus paths.
   if (node === undefined) {
     return refusal(request.verb, browsePath, "not_found", `no browsable store path: ${browsePath}`);
   }

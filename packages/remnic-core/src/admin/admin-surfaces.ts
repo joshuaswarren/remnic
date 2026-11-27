@@ -88,7 +88,6 @@ function walkRedact(value: unknown, key: string | undefined): unknown {
     return value.map((entry) => walkRedact(entry, undefined));
   }
   // value is `object` here (Array branch handled above). Object.entries accepts
-  // a plain object; the explicit record type documents the iteration contract.
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
     const out: Record<string, unknown> = {};
@@ -138,17 +137,13 @@ export interface ScopeInspection {
   principal: string | undefined;
   /** Explicit namespace override, when readable. */
   namespaceOverride: string | undefined;
-  /** Effective write namespace. */
   writeNamespace: string;
   /** Read namespaces in the order recall searches them. */
   readNamespaces: string[];
   /** Coding overlay details (branch → project → root fallbacks). */
   codingOverlay: { namespace: string; readFallbacks: readonly string[] } | null;
-  /** Active scope profile id, if any. */
   scopeProfileId: string | null;
-  /** Per-layer explanations. */
   layers: ScopeInspectionLayer[];
-  /** Promotion targets available for this session/principal. */
   promotionTargets: ScopeInspectionPromotionTarget[];
   /** Operator warnings (missing project, disabled scope, auth failures, …). */
   warnings: string[];
@@ -189,7 +184,6 @@ export interface InspectScopeOptions {
  */
 export function inspectScope(options: InspectScopeOptions): ScopeInspection {
   const { config } = options;
-  // Honour the pre-read flag when the caller supplied one (avoids a scattered
   // read here); fall back to the config flag for direct callers (tests/CLI).
   const namespacesEnabled = options.namespacesEnabled ?? resolveNamespaceCapabilities(config).namespaces === true;
 
@@ -252,7 +246,6 @@ export function inspectScope(options: InspectScopeOptions): ScopeInspection {
       }
     }
   } else {
-    // Non-profile scope: synthesize a self layer + optional coding + override.
     layers.push({
       id: "self",
       namespace: plan.baseNamespace,
@@ -448,7 +441,6 @@ export interface AdminNamespaceQmdHealth {
   daemonMode: boolean | null;
 }
 
-/** Maintenance + QMD health for one namespace. */
 export interface AdminNamespaceHealth {
   namespace: string;
   kind?: NamespaceRecord["kind"];
@@ -476,7 +468,6 @@ export interface AdminNamespaceHealth {
 
 /** Output of {@link gatherMaintenanceHealth}. */
 export interface MaintenanceHealthReport {
-  /** Whether the catalog is enabled. */
   enabled: boolean;
   /** Aggregate degraded-mode flag — true when ANY namespace is QMD-degraded. */
   degradedMode: boolean;
@@ -636,9 +627,7 @@ export interface TranscriptAuditReport {
   transcriptsDir: string;
   /** True when any legacy fallback file (e.g. `other/default`) holds mixed sessions. */
   mixedOtherDefault: boolean;
-  /** Distinct sessions the planner would re-home. */
   distinctSessions: number;
-  /** Total JSONL entries that would move. */
   movedEntries: number;
   /** Per-file plans with at least one entry to move. */
   files: TranscriptAuditFile[];
@@ -688,7 +677,6 @@ export async function auditTranscripts(memoryDir: string): Promise<TranscriptAud
 /** Promotion target kind the console can request. */
 export type MemoryPromotionTargetKind = "teamProject" | "serverShared" | "userProject" | "userGlobal" | "explicit";
 
-/** Result of one promotion attempt. */
 export interface MemoryPromotionTargetResult {
   target: MemoryPromotionTargetKind;
   namespace: string;
@@ -702,9 +690,7 @@ export interface MemoryPromotionTargetResult {
 export interface MemoryPromotionResult {
   /** Whether the caller-supplied reason was accepted. */
   ok: boolean;
-  /** Source memory id. */
   sourceMemoryId: string;
-  /** Source namespace the memory was read from. */
   sourceNamespace: string;
   /** Per-target outcomes. Empty when authorization fails up front. */
   targets: MemoryPromotionTargetResult[];
@@ -712,7 +698,6 @@ export interface MemoryPromotionResult {
   audit: MemoryPromotionAudit;
 }
 
-/** Audit trail for a promotion operation. */
 export interface MemoryPromotionAudit {
   at: string;
   actor: string;
@@ -778,9 +763,7 @@ export interface PromoteMemoryOptions {
   readonly sourceMemoryId: string;
   /** Source namespace (resolved through the readable resolver BEFORE this call). */
   readonly sourceNamespace: string;
-  /** Authenticated principal driving the promotion. */
   readonly principal?: string;
-  /** Requested targets. */
   readonly targets: ReadonlyArray<{
     kind: MemoryPromotionTargetKind;
     /** Required when kind === "explicit". Must be writable by the principal. */
@@ -788,7 +771,6 @@ export interface PromoteMemoryOptions {
   }>;
   /** Non-empty operator reason (audit-logged). */
   readonly reason: string;
-  /** Operator identity for the audit trail. */
   readonly actor: string;
   readonly storage: PromotionStorageProvider;
   /** Optional scope-profile plan, used to resolve teamProject/userProject/serverShared targets. */
@@ -812,7 +794,6 @@ export async function promoteMemory(options: PromoteMemoryOptions): Promise<Memo
   }
   const { config, principal, scopeProfilePlan } = options;
 
-  // Resolve each requested target to a concrete namespace + authorization flag.
   const resolvedTargets: MemoryPromotionTargetResult[] = options.targets.map((requested) => {
     if (requested.kind === "explicit") {
       const namespace = requested.namespace?.trim();
@@ -911,7 +892,6 @@ export async function promoteMemory(options: PromoteMemoryOptions): Promise<Memo
       target.promotedMemoryId = promotedId;
       auditTargets.push({ target: target.target, namespace: target.namespace, promoted: true });
     } catch (err) {
-      // Sanitize: never echo raw error messages in the promotion result.
       // The operator sees a generic failure indicator; the full error is
       // logged server-side by the storage provider.
       target.reason = "promotion write failed";

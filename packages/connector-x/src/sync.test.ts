@@ -62,7 +62,6 @@ test("first sync ingests, dedupes on the second, and updates on content change",
   assert.deepEqual(sink.suggestions.map((entry) => entry.record.postId).sort(), ["1", "2"]);
   assert.ok(sink.suggestions.every((entry) => entry.tags.includes("x/bookmark")));
 
-  // Record files materialized with provenance stamped.
   const recordFiles = (await readdir(path.join(stateDir, "records"))).sort();
   assert.deepEqual(recordFiles, ["1.json", "2.json"]);
   const persisted = JSON.parse(await readFile(path.join(stateDir, "records", "1.json"), "utf8")) as {
@@ -71,13 +70,11 @@ test("first sync ingests, dedupes on the second, and updates on content change",
   assert.equal(persisted.provenance.sourceId, "local");
   assert.equal(persisted.provenance.syncRunId, first.runId);
 
-  // Second sync over the same corpus: everything known, nothing new emitted.
   const second = await runXSync(config, { sink });
   assert.equal(second.sources[0].recordsNew, 0);
   assert.equal(second.sources[0].recordsKnown, 2);
   assert.equal(second.suggestionsSubmitted, 0);
 
-  // Same post id, edited content → re-ingested once, firstSeenAt preserved.
   await writeFile(
     path.join(corpus, "a.json"),
     JSON.stringify({ id: "1", text: "first bookmark EDITED", username: "k" })

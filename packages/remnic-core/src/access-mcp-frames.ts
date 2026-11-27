@@ -46,8 +46,6 @@ export class McpFrameReader {
 
   next(): McpFrame | null {
     this.waitingBytes = 0;
-    // A blank line carries no message. Skip it and read the next frame, so a
-    // run of blank lines cannot stall the frames that follow in this buffer.
     for (;;) {
       const frame = this.isHeaderFrame() ? this.nextHeader() : this.nextLine();
       if (frame !== "blank") return frame;
@@ -61,8 +59,6 @@ export class McpFrameReader {
   }
 
   private nextHeader(): McpFrame | null {
-    // Blank lines before a header block carry no message; drop them so they
-    // cannot end up inside the first header line.
     this.buffer = this.release(this.buffer.subarray(this.buffer.findIndex((byte) => byte > 0x20)));
     const headerEnd = this.buffer.indexOf("\r\n\r\n");
     if (headerEnd < 0) {
@@ -111,7 +107,6 @@ export class McpFrameReader {
     return { kind: "body", text, form: "line" };
   }
 
-  /** An empty view would keep the old allocation alive while the connection idles. */
   private release(view: Buffer<ArrayBuffer>): Buffer<ArrayBuffer> {
     return view.length === 0 ? Buffer.alloc(0) : view;
   }

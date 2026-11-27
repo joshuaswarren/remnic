@@ -26,11 +26,6 @@ import {
   type SessionNamespaceBindingStore,
 } from "@remnic/core/session-namespace-bindings";
 
-/**
- * Capability inputs shared by every delegate registration in this file. The
- * daemon-backed capability is exercised on its own in
- * delegate-capability.test.ts; here it only needs to construct.
- */
 const TEST_CAPABILITY: DelegateRuntimeOptions["capability"] = {
   memoryDir: path.join(os.tmpdir(), "remnic-delegate-runtime-memory"),
   workspaceDir: path.join(os.tmpdir(), "remnic-delegate-runtime-workspace"),
@@ -52,7 +47,6 @@ interface RecordedCall {
 interface DaemonStub {
   port: number;
   calls: RecordedCall[];
-  /** Resolves when the NEXT request for `pathname` arrives. */
   nextCall: (pathname: string) => Promise<RecordedCall>;
   close: () => Promise<void>;
 }
@@ -105,11 +99,6 @@ async function startDaemonStub(
     batchFlush?: boolean;
     batchResponse?: boolean;
     capabilityResponses?: Array<{ status: number; body: Record<string, unknown> }>;
-    /**
-     * Answer a request with a real HTTP status. Returning `null` from
-     * `respond` still yields 200, which is acceptance — a test that means
-     * "the daemon refused" must say so with a status (issue #2303).
-     */
     statusFor?: (pathname: string, body: Record<string, unknown>) => number | undefined;
   } = {},
 ): Promise<DaemonStub> {
@@ -140,7 +129,6 @@ async function startDaemonStub(
           ? options.capabilityResponses?.[capabilityResponseIndex++]
           : undefined;
       const responsePromise =
-        // A real daemon always answers health with its namespace posture; the
         // capability refuses to scope a request without it.
         pathname === "/engram/v1/health"
           ? Promise.resolve({
@@ -262,11 +250,6 @@ async function invoke(
   return await list[0](event, ctx);
 }
 
-/**
- * `agent_end` returns before its observe POST settles (the turn capture is
- * detached from the hook), so a test that inspects the daemon's observe
- * calls waits for the expected number to ARRIVE first.
- */
 async function observed(stub: DaemonStub, count = 1): Promise<RecordedCall[]> {
   const observes = () => stub.calls.filter((call) => call.pathname === "/engram/v1/observe");
   while (observes().length < count) await stub.nextCall("/engram/v1/observe");
@@ -399,7 +382,6 @@ test("delegate recall degrades to no injection when the daemon fails", async () 
     throw new Error("unreachable"); // respond() throwing crashes the handler; use 500 instead
   });
   await stub.close();
-  // Point at the now-closed port: connection refused.
   const api = recordingApi();
   registerDelegateRuntime(api, optionsFor(stub.port));
   const result = await invoke(
@@ -920,7 +902,6 @@ test("delegate flushes every namespace observed before a session rebind", async 
 });
 
 test("delegate flushes again when the observe queue outlasts the lifecycle drain", async () => {
-  // Each observe fits its own cap (half the flush budget), but a QUEUE of them
   // does not: the drain gives up mid-queue, so the turns still in flight would
   // buffer behind the flush that already ran. A follow-up flush chained behind
   // the queue is what keeps an ended session's last turns from being stranded.
@@ -934,7 +915,6 @@ test("delegate flushes again when the observe queue outlasts the lifecycle drain
   });
   try {
     const api = recordingApi();
-    // Drain and per-observe cap are both 500ms: each 350ms observe fits its
     // own cap, two of them outlast the drain. Wide margins on purpose — this
     // ordering must not depend on load.
     registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 1_000 }));
@@ -960,7 +940,6 @@ test("delegate flushes again when the observe queue outlasts the lifecycle drain
       1,
       "the lifecycle flush proceeds rather than overrunning the host's deadline",
     );
-    // The follow-up runs once the queue drains, so the late turns are flushed.
     await stub.nextCall(flushPath);
     assert.equal(stub.calls.filter((call) => call.pathname === flushPath).length, 2);
   } finally {
@@ -969,7 +948,6 @@ test("delegate flushes again when the observe queue outlasts the lifecycle drain
 });
 
 test("delegate follow-up drains the ended generation even when newer turns arrive", async () => {
-  // A turn observed under the same key after the lifecycle hook returned must
   // not cancel the deferred flush: the daemon buffers per session, so
   // abandoning it would strand the ended generation's late turns until some
   // later lifecycle event. The follow-up drains the whole queue instead.
@@ -1003,7 +981,6 @@ test("delegate follow-up drains the ended generation even when newer turns arriv
     await observeTurn("second");
     const flushPath = "/engram/v1/lcm/compaction/flush";
     assert.equal(await invoke(api, "before_reset", { sessionKey }), true);
-    // A new turn under the same key BEFORE the old queue settles.
     await observeTurn("post-reset");
     await stub.nextCall(flushPath);
     assert.equal(
@@ -1020,7 +997,6 @@ test("delegate follow-up drains the ended generation even when newer turns arriv
 
 
 test("a second lifecycle event does not stack a duplicate follow-up drain", async () => {
-  // The follow-up releases its ownership marker before its own flush so that
   // flush can chain a successor. A lifecycle event arriving while the
   // successor is queued must NOT schedule a parallel drain: overlapping
   // follow-ups mean duplicate daemon flush/extraction requests for one
@@ -1052,7 +1028,6 @@ test("a second lifecycle event does not stack a duplicate follow-up drain", asyn
     };
     await observeTurn(0);
     await observeTurn(1);
-    // Two lifecycle events, each finding a queue it cannot drain in time.
     assert.equal(await invoke(api, "session_end", { sessionKey }), true);
     for (let turn = 2; turn <= 5; turn += 1) {
       const arrived = stub.nextCall(observePath);
@@ -1068,7 +1043,6 @@ test("a second lifecycle event does not stack a duplicate follow-up drain", asyn
       await sleep(50);
     }
     const flushes = stub.calls.filter((call) => call.pathname === flushPath).length;
-    // Two lifecycle flushes plus at most one deferred chain link per lifecycle
     // event — never a fan-out of overlapping drains.
     assert.ok(flushes >= lifecycleFlushes, `both lifecycle flushes ran (saw ${flushes})`);
     assert.ok(flushes <= lifecycleFlushes + 2, `no stacked follow-up drains (saw ${flushes})`);
@@ -1078,13 +1052,11 @@ test("a second lifecycle event does not stack a duplicate follow-up drain", asyn
 });
 
 test("a stalling batch flush still leaves the per-namespace fallback usable time", async () => {
-  // The batch request is an optimization whose failure path is the singular
   // flushes. A batch that accepts the connection and stalls must not spend the
   // whole lifecycle deadline, or that fallback times out too and the ended
   // session's turns stay buffered.
   const stub = await startDaemonStub(async (pathname, body) => {
     if (pathname === "/engram/v1/lcm/compaction/flush") {
-      // The batch shape carries `namespaces`; the singular one does not.
       if (Array.isArray(body.namespaces)) return new Promise<Record<string, unknown>>(() => {});
       return { flushed: true };
     }
@@ -1123,7 +1095,6 @@ test("a stalling batch flush still leaves the per-namespace fallback usable time
 });
 
 test("a stalling batch-support probe still leaves the fallback flush usable time", async () => {
-  // The `/engram/v1/capabilities` probe is an optimization: one batched flush
   // instead of one per namespace. A cold probe that stalls to its timeout must
   // not spend the whole lifecycle deadline, or the individual fallback flush
   // starts with nothing left and the ended session's turns stay buffered.
@@ -1136,7 +1107,6 @@ test("a stalling batch-support probe still leaves the fallback flush usable time
     const api = recordingApi();
     registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 1_000 }));
     const sessionKey = "stalling-probe-session";
-    // Two remembered namespaces, so the batch probe runs at all.
     for (const namespace of ["team-first", "team-second"]) {
       await invoke(
         api,
@@ -1176,7 +1146,6 @@ test("delegate batches rebound namespace flushes within one hook deadline", asyn
   });
   try {
     const api = recordingApi();
-    // Wide enough that the lifecycle drain (half the flush budget) is not the
     // thing under test here: this case is about batching two rebound
     // namespaces into ONE flush request.
     registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 400 }));
@@ -2072,7 +2041,6 @@ test("delegate passive mode skips memory hooks and capability but keeps the tool
   }));
   assert.equal(api.handlers.size, 0, "passive slot mode must not register hooks");
   assert.deepEqual(capabilities, [], "passive slot mode must not claim the memory slot");
-  // Embedded parity: the explicit tools stay available in passive mode.
   assert.deepEqual(tools.sort(), ["memory_get", "memory_search"]);
   assert.deepEqual(api.services.map((service) => service.id), [
     "openclaw-remnic:support-passport-model",
@@ -2096,13 +2064,11 @@ test("delegate tools registered by a passive entry follow the active sibling on 
         tools.set(tool.name, tool);
       },
     });
-    // The legacy id loads first, passively, with its own (empty) binding store
     // and a tight snippet cap.
     registerDelegateRuntime(
       api,
       optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true, openclawToolSnippetMaxChars: 12 }),
     );
-    // The canonical id then owns the slot; its hooks update ITS bindings and
     // its config is the one that counts.
     const canonicalBindings = createInMemorySessionNamespaceBindingStore();
     await canonicalBindings.remember("tool-session", "team-alpha");
@@ -2111,7 +2077,6 @@ test("delegate tools registered by a passive entry follow the active sibling on 
       optionsFor(stub.port, { namespaceBindings: canonicalBindings, openclawToolSnippetMaxChars: 4_000 }),
     );
     assert.equal(tools.size, 2, "the tools are registered once per api");
-    // memory_get scopes through the ACTIVE entry's bindings, not the passive
     // entry's stale store: the bound scope is accepted and reaches the daemon.
     await tools.get("memory_get")!.execute(
       "tc-1",
@@ -2134,7 +2099,6 @@ test("delegate tools registered by a passive entry follow the active sibling on 
       "the snippet cap is the active owner's, not the passive entry's eager one",
     );
 
-    // An active owner that opts out of the tools makes the sibling-installed
     // tools inert (the host exposes no unregister).
     const optedOutApi = recordingApi();
     const optedOutTools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
@@ -2145,7 +2109,6 @@ test("delegate tools registered by a passive entry follow the active sibling on 
     });
     registerDelegateRuntime(optedOutApi, optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true }));
     registerDelegateRuntime(optedOutApi, optionsFor(stub.port, { openclawToolsEnabled: false }));
-    // The flag is an ADAPTER toggle: `memory_get` goes inert, but a search
     // surface survives it in both bridge modes.
     await assert.rejects(
       optedOutTools.get("memory_get")!.execute("tc-3", { id: "fact-1" }, undefined, { sessionKey: "tool-session" }),
@@ -2153,7 +2116,6 @@ test("delegate tools registered by a passive entry follow the active sibling on 
     );
     assert.ok(optedOutTools.has("memory_search"), "search stays available under the adapter opt-out");
 
-    // The inverse order: the slot owner opts out FIRST. Its record is a
     // tombstone, so an enabled passive sibling loading afterwards cannot
     // install the tools around the opt-out.
     const tombstoneApi = recordingApi();
@@ -2167,7 +2129,6 @@ test("delegate tools registered by a passive entry follow the active sibling on 
       "the adapter opt-out keeps search and is not bypassed into registering memory_get",
     );
 
-    // And a passive entry that opted out yields to an enabled active sibling,
     // which installs the tools it never did.
     const lateApi = recordingApi();
     const lateTools: string[] = [];
@@ -2202,11 +2163,6 @@ const DAEMON_AUTH_ENV_VARS = [
 ] as const;
 type DaemonAuthEnvVar = (typeof DAEMON_AUTH_ENV_VARS)[number];
 
-/**
- * Run `body` against a scratch HOME with the daemon-auth environment set to
- * exactly `env` — every name not listed is unset, so an ambient credential on
- * the developer's machine or the CI runner cannot reach loadDaemonAuth().
- */
 function withDaemonAuthEnv(
   env: Partial<Record<DaemonAuthEnvVar, string>>,
   body: (home: string) => void,
@@ -2295,7 +2251,6 @@ test("loadDaemonAuth ranks both current names above both legacy aliases", () => 
       });
     },
   );
-  // Drop the winner and the next current name takes over — not a legacy alias.
   withDaemonAuthEnv(
     {
       REMNIC_AUTH_TOKEN: "operator-token",
@@ -2330,7 +2285,6 @@ test("loadDaemonAuth still accepts each legacy alias when no current name is set
 });
 
 test("loadDaemonAuth reports the variable it actually used", () => {
-  // `source` drives the operator-facing auth error. Naming the wrong variable
   // sends someone rotating a credential that was never sent.
   for (const name of [
     "OPENCLAW_REMNIC_ACCESS_TOKEN",
@@ -2457,7 +2411,6 @@ test("delegate uses the section builder on hosts that expose it (no hook injecti
 });
 
 test("an OpenClaw 2.0 host (capability, no section builder) gets the hook's own injection (#3057)", async () => {
-  // 2.0 removed registerMemoryPromptSection, and its synchronous capability
   // promptBuilder is read during host prompt assembly — which never runs this
   // hook. A void hook return therefore injected nothing: the hook must return
   // the injection itself, and the capability builder must have no cached lines
@@ -2513,7 +2466,6 @@ test("delegate recall queries with the current user turn, capped so an assembled
         cleanUserMessage: (text: string) => text.replace(/^\[channel\] /, ""),
       }),
     );
-    // A host may hand the hook its whole assembled prompt (system text first,
     // the operator's turn last). The daemon caps request bodies, so the query
     // keeps the END of the prompt, where the current turn is.
     const assembled = `[channel] ${"system preamble ".repeat(500)}what did we decide about the rollout?`;
@@ -2524,7 +2476,6 @@ test("delegate recall queries with the current user turn, capped so an assembled
     assert.equal(query.length, 1_500);
     assert.ok(query.endsWith("what did we decide about the rollout?"), "the tail is kept");
 
-    // The current turn outranks history: `messages` is the transcript BEFORE
     // this turn, so its last user entry is the previous question.
     await invoke(
       api,
@@ -2543,7 +2494,6 @@ test("delegate recall queries with the current user turn, capped so an assembled
 });
 
 test("delegate agent_end returns before the observe POST settles and flush waits for it", async () => {
-  // A daemon that accepts the connection and never answers must not hold the
   // host's agent_end hook for the whole observe timeout. The capture is
   // detached from the hook; a later flush for the same session still waits
   // for it so the turn is buffered before it is flushed.
@@ -2574,7 +2524,6 @@ test("delegate agent_end returns before the observe POST settles and flush waits
     await observeArrived;
     const requestsBeforeFlush = stub.calls.length;
     const flushing = invoke(api, "before_compaction", {}, { sessionKey: "detached" });
-    // Real time, deliberately: the daemon still holds the observe open, and a
     // flush that did NOT wait for it would already have probed health and
     // posted within this window on loopback. No event exists to await for
     // "nothing happened".
@@ -2637,7 +2586,6 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
     });
     const namespaceBindings = createInMemorySessionNamespaceBindingStore();
     registerDelegateRuntime(api, optionsFor(stub.port, { namespaceBindings }));
-    // The legacy plugin id registers on the SAME api; a second `memory_search`
     // there is a host tool-name conflict, not a second tool.
     registerDelegateRuntime(
       api,
@@ -2655,7 +2603,6 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
     assert.ok(search, "memory_search POSTs the daemon's ranked search");
     assert.equal(search.body.query, "rollout");
     assert.equal(search.body.maxResults, 2, "one extra hit decides `truncated`");
-    // The public active-memory shape the embedded tool returns — and no
     // absolute path: the manager's `path` names the operator's filesystem.
     assert.deepEqual(JSON.parse(searched.content[0]!.text), {
       results: [{ id: "fact-1", score: 0.9, text: "we decided to roll out on Monday" }],
@@ -2663,7 +2610,6 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
     });
     assert.doesNotMatch(searched.content[0]!.text, /\/facts\//, "no filesystem path reaches the model");
 
-    // The session binding decides memory_get's scope; the model may only
     // restate it. An unbound session reads the daemon default and cannot
     // name another tenant's namespace to reach a known memory id.
     await assert.rejects(
@@ -2733,7 +2679,6 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
       /sessionKey exceeds/,
     );
 
-    // `filters.namespace` is refused outright: the manager resolves the
     // session scope itself, so a scope validated here could be rebound before
     // the search runs and answer from another namespace.
     await assert.rejects(
@@ -2756,7 +2701,6 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
       "even restating the bound scope is refused: it cannot be honored atomically",
     );
 
-    // A host abort is honored before any daemon work starts.
     await assert.rejects(
       tools.get("memory_search")!.execute("tc-11", { query: "rollout" }, AbortSignal.abort(), { sessionKey: "tool-session" }),
       /memory_search aborted/,
@@ -2785,7 +2729,6 @@ test("delegate tools honor openclawToolsEnabled, the snippet cap, and normalize 
       };
     }
     if (pathname.startsWith("/engram/v1/memories/slow-fact")) {
-      // Answers, but slower than what the shared budget leaves the GET.
       return sleep(100).then(() => ({
         found: true,
         memory: { id: "slow-fact", content: "x", frontmatter: { id: "slow-fact" } },
@@ -2797,7 +2740,6 @@ test("delegate tools honor openclawToolsEnabled, the snippet cap, and normalize 
     return { accepted: true };
   });
   try {
-    // Adapter opt-out: embedded parity — the dedicated `memory_get` adapter
     // goes, the search surface stays.
     const optedOut = recordingApi();
     const optedOutRegistered: string[] = [];
@@ -2815,7 +2757,6 @@ test("delegate tools honor openclawToolsEnabled, the snippet cap, and normalize 
     registerDelegateRuntime(api, optionsFor(stub.port, { openclawToolSnippetMaxChars: 12 }));
     assert.deepEqual([...tools.keys()].sort(), ["memory_get", "memory_search"]);
 
-    // A schema-valid fractional limit floors like embedded mode instead of
     // forwarding a non-integer maxResults the manager rejects.
     const searched = (await tools.get("memory_search")!.execute(
       "tc-1",
@@ -2826,14 +2767,12 @@ test("delegate tools honor openclawToolsEnabled, the snippet cap, and normalize 
     const search = stub.calls.find((call) => call.pathname === "/engram/v1/memories/search");
     assert.ok(search);
     assert.equal(search.body.maxResults, 2, "1.5 floors to 1, plus the truncation probe");
-    // The configured cap (below the daemon's 800) collapses whitespace and
     // truncates the snippet, as embedded `recallForActiveMemory` does.
     assert.deepEqual(JSON.parse(searched.content[0]!.text), {
       results: [{ id: "fact-1", score: 0.9, text: "we decided t" }],
       truncated: true,
     });
 
-    // memory_get: the binding lookup and the daemon GET share one budget, so
     // a slow lookup leaves the GET only what remains rather than a fresh
     // full timeout.
     const slowApi = recordingApi();
@@ -2848,7 +2787,6 @@ test("delegate tools honor openclawToolsEnabled, the snippet cap, and normalize 
     const slowLookup: SessionNamespaceBindingStore = {
       ...bindings,
       namespacesFor: async (sessionKey: string) => {
-        // Spends most of the tool's budget, leaving the GET ~50ms of the 300ms
         // — less than the daemon's 100ms answer, so the shared deadline aborts
         // it. Given a FRESH 300ms it would resolve instead; both sides of the
         // contract are decided by a 50ms margin rather than a 1ms residual.
@@ -3165,7 +3103,6 @@ test("delegate recall never injects into spawned subagent sessions (#3142)", asy
     registerDelegateRuntime(
       api,
       optionsFor(stub.port, {
-        // The guard must be intrinsic to the runtime, not an artifact of the
         // wiring's cron/subagent skip predicate being passed in.
         shouldSkipRecall: () => false,
       }),
@@ -3228,10 +3165,8 @@ test("maybeRegister stays embedded after a daemon-down fallback (no stacking)", 
       flushOnResetEnabled: true,
       capability: TEST_CAPABILITY,
     };
-    // First call: daemon down -> falls back to embedded.
     let first = maybeRegisterDelegateRuntime(api, opts, { checkHealth: () => false });
     assert.equal(first, false, "daemon down falls back to embedded");
-    // Second call on the SAME api: daemon now up, but must NOT switch to delegate
     // (embedded hooks from the fallback are still bound — switching would stack).
     let second = maybeRegisterDelegateRuntime(api, opts, { checkHealth: () => true });
     assert.equal(second, false, "stays embedded to avoid stacking memory paths");
@@ -3530,7 +3465,6 @@ test("delegate runtime reloads a rotated daemon token without re-registering hoo
   let currentToken = "expired-token";
   const receivedAuthorization: Array<string | undefined> = [];
   const server = http.createServer((req, res) => {
-    // The capability's health probe rides the same server; this test is about
     // the RECALL route's token, so record only that one.
     if (String(req.url).startsWith("/engram/v1/recall")) {
       receivedAuthorization.push(req.headers.authorization);
@@ -3659,7 +3593,6 @@ test("delegate daemon auth failures log one sanitized error per route and status
   const paths: string[] = [];
   const server = http.createServer((req, res) => {
     paths.push(req.url ?? "");
-    // Health stays readable: this test is about the MEMORY routes rejecting a
     // token, and the capability needs a namespace posture to scope with.
     if (String(req.url).startsWith("/engram/v1/health")) {
       res.writeHead(200, { "content-type": "application/json" });
@@ -3724,7 +3657,6 @@ test("delegate daemon auth failures log one sanitized error per route and status
       "/engram/v1/observe",
       "/engram/v1/lcm/compaction/flush",
     ]));
-    // This test is about the AUTHORIZATION log; the capability separately
     // reports that the stub daemon serves no confirmable corpus, which is
     // correct and covered in delegate-capability.test.ts.
     const authErrors = errors.filter((message) => message.includes("authorization failed"));
@@ -3936,7 +3868,6 @@ test("delegate authorization preflight probes only the operations enabled by con
 });
 
 test("a short query evicts the previous turn's cached recall", async () => {
-  // On a builder host the hook does not inject; if prompt construction aborted
   // last turn the lines are still cached. A short query must not leave them
   // there for the builder to splice into the NEXT prompt.
   const stub = await startDaemonStub(() => ({ context: "stale daemon context" }));
@@ -3954,9 +3885,7 @@ test("a short query evicts the previous turn's cached recall", async () => {
     const builder = captured.builder;
     if (builder === null) throw new Error("section builder was not registered");
 
-    // Turn 1 populates the cache; prompt construction never consumes it.
     await invoke(api, "before_prompt_build", { prompt: "a real query worth recalling" }, { sessionKey: "s" });
-    // Turn 2 is too short to recall for.
     await invoke(api, "before_prompt_build", { prompt: "hi" }, { sessionKey: "s" });
     assert.equal(
       builder({ sessionKey: "s" }),
@@ -3969,7 +3898,6 @@ test("a short query evicts the previous turn's cached recall", async () => {
 });
 
 test("an invalid health timeout still records the embedded bind it causes", async () => {
-  // The timeout is parsed before mode resolution, so a bad value throws even
   // when the deployment never wanted delegate. Whatever it MEANT, returning
   // false has the caller bind the embedded runtime on this api, and OpenClaw
   // exposes no unregister — so a later delegate registration on the same api
@@ -4005,7 +3933,6 @@ test("an invalid health timeout still records the embedded bind it causes", asyn
     );
     assert.equal(bad, false, "registration declines, embedded continues");
 
-    // The SAME api can still take a delegate registration afterwards.
     process.env.REMNIC_BRIDGE_MODE = "delegate";
     process.env.REMNIC_HOST = "127.0.0.1";
     process.env.REMNIC_PORT = String(stub.port);
@@ -4024,7 +3951,6 @@ test("an invalid health timeout still records the embedded bind it causes", asyn
       "and no delegate hook was bound beside the embedded runtime",
     );
 
-    // A PASSIVE registration binds nothing, so it records nothing.
     const passiveApi = recordingApi();
     assert.equal(
       maybeRegisterDelegateRuntime(
@@ -4061,7 +3987,6 @@ test("an invalid health timeout still records the embedded bind it causes", asyn
 });
 
 test("a sibling service keeps the api's delegate mode when its own probe fails", async () => {
-  // Canonical and legacy plugin IDs register separately on ONE api. If the
   // second service's probe transiently fails, binding its embedded runtime
   // beside the first's delegate hooks would run two memory paths over one
   // corpus - the exact failure this mode prevents.
@@ -4090,7 +4015,6 @@ test("a sibling service keeps the api's delegate mode when its own probe fails",
       capability: TEST_CAPABILITY,
     };
     const api = recordingApi();
-    // First service binds delegate.
     assert.equal(
       maybeRegisterDelegateRuntime(
         api,
@@ -4099,7 +4023,6 @@ test("a sibling service keeps the api's delegate mode when its own probe fails",
       ),
       true,
     );
-    // Second service's own health probe fails.
     assert.equal(
       maybeRegisterDelegateRuntime(
         api,
@@ -4122,7 +4045,6 @@ test("a sibling service keeps the api's delegate mode when its own probe fails",
 });
 
 test("an api that already fell back skips the endpoint walk entirely", async () => {
-  // The result is irrevocably embedded, so running `auto`'s synchronous walk
   // to reach that foregone conclusion lets a stalling endpoint block every
   // reload for the full configured timeout.
   const priorMode = process.env.REMNIC_BRIDGE_MODE;
@@ -4132,7 +4054,6 @@ test("an api that already fell back skips the endpoint walk entirely", async () 
   try {
     process.env.REMNIC_BRIDGE_MODE = "delegate";
     process.env.REMNIC_HOST = "127.0.0.1";
-    // Nothing listens here, so the first attempt records the fallback.
     process.env.REMNIC_PORT = "4870";
     const common = {
       serviceId: "fallback-skip",
@@ -4156,7 +4077,6 @@ test("an api that already fell back skips the endpoint walk entirely", async () 
       false,
       "the first attempt falls back and records it",
     );
-    // A second registration must not consult health again.
     let probed = false;
     assert.equal(
       maybeRegisterDelegateRuntime(api, common, {
@@ -4193,7 +4113,6 @@ parentPort.on("message", () => server.close(() => process.exit(0)));
 `;
 
 test("a rotated UNIT credential reaches delegate routes without a gateway restart", async () => {
-  // End-to-end counterpart to the config-token rotation above: the credential
   // detection authenticated with must not be frozen just because it came from
   // the unit rather than a config file.
   //
@@ -4263,7 +4182,6 @@ test("a rotated UNIT credential reaches delegate routes without a gateway restar
       "auto delegated to the same-corpus daemon the unit names",
     );
 
-    // Hand the port to a server on this thread, which the async routes reach.
     worker.postMessage("close");
     await new Promise<void>((resolve) => worker.once("exit", () => resolve()));
     const recallAuthorization: Array<string | undefined> = [];
@@ -4283,7 +4201,6 @@ test("a rotated UNIT credential reaches delegate routes without a gateway restar
     await listening.promise;
 
     await invoke(api, "before_prompt_build", { prompt: "what did we decide?" }, { sessionKey: "s" });
-    // The administrator rotates the unit's credential and restarts the daemon.
     await writeUnitToken("unit-token-v2");
     await invoke(api, "before_prompt_build", { prompt: "what did we decide?" }, { sessionKey: "s" });
 
@@ -4324,7 +4241,6 @@ async function readPlanOrEmpty(planPath: string): Promise<string> {
 }
 
 test("the host's flush-plan notes reach the daemon and the file is cleared", async () => {
-  // The capability advertises a flush plan, so OpenClaw appends durable notes
   // to the gateway workspace. Embedded mode ingests that file from
   // `src/index.ts`; delegate mode returns before that wiring, so without this
   // the notes the host was told to write are read by nobody.
@@ -4361,7 +4277,6 @@ test("the host's flush-plan notes reach the daemon and the file is cleared", asy
 });
 
 test("a non-string search session key cannot inherit another session's binding", async () => {
-  // The binding store's `encodeURIComponent` coerces `123` to `"123"`, so a
   // numeric key from the untyped host would search the namespace bound to the
   // distinct string-keyed session "123" — another tenant whenever the delegate
   // token can read both.
@@ -4379,7 +4294,6 @@ test("a non-string search session key cannot inherit another session's binding",
     api.registerMemoryCapability = (capability: unknown) => {
       captured = capability as typeof captured;
     };
-    // The FILE store is the one that coerces (`encodeURIComponent`), so it is
     // the one this guard protects. Bind the STRING session "123".
     const bindingsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-coerced-key-"));
     const namespaceBindings = createFileSessionNamespaceBindingStore(
@@ -4406,7 +4320,6 @@ test("a non-string search session key cannot inherit another session's binding",
 });
 
 test("flush-plan notes survive a rejection, a concurrent append, and a symlink", async () => {
-  // Three ways the ingestion could destroy notes the daemon never took.
   const stub = await startDaemonStub(
     (pathname) => (pathname.startsWith("/engram/v1/observe") ? null : { flushed: true }),
     {
@@ -4430,7 +4343,6 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
 
   let accepting: Awaited<ReturnType<typeof startDaemonStub>> | undefined;
   try {
-    // 1. A REFUSED observe (403) must keep the notes. They stay in the
     // snapshot rather than being written back over the file the host appends
     // to; the next claim merges the snapshot ahead of newly claimed notes.
     await writeFile(planPath, "- keep me\n", "utf8");
@@ -4441,7 +4353,6 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
       "rejected notes were kept for the next flush",
     );
 
-    // 2. An append that lands mid-flight must survive the truncation.
     await stub.close();
     let appended = false;
     const acceptedBodies: string[] = [];
@@ -4452,7 +4363,6 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
         );
         if (appended) {
           appended = false;
-          // A real host APPENDS; it never rewrites the file. Rotation has
           // already moved the claimed notes aside, so this creates a fresh
           // plan file holding only the new note (issue #2303).
           await appendFile(planPath, "- appended later\n", "utf8");
@@ -4466,7 +4376,6 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
     };
     await rm(`${planPath}.inflight`, { force: true });
     await writeFile(planPath, "- sent\n", "utf8");
-    // The stub appends while the observe is in flight, so the write provably
     // lands between the ingestion's read and its commit.
     appended = true;
     await ingestFlushPlanNotes(appending);
@@ -4477,7 +4386,6 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
     );
     assert.equal(await readPlanOrEmpty(planPath), "", "and the file drained");
 
-    // 3. A symlinked plan file is refused outright.
     await rm(planPath, { force: true });
     const target = path.join(workspaceDir, "outside.md");
     await writeFile(target, "- someone else's file\n", "utf8");
@@ -4495,7 +4403,6 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
 });
 
 test("oversized flush-plan notes drain in chunks instead of deadlocking", async () => {
-  // Past the daemon's `maxBodyBytes`, a single-message post 413s forever and
   // the keep-on-rejection rule turns that into a permanent deadlock: every
   // later flush resends the same oversized body.
   const bodies: string[] = [];
@@ -4504,7 +4411,6 @@ test("oversized flush-plan notes drain in chunks instead of deadlocking", async 
       const content = String(
         (body.messages as Array<{ content?: string }> | undefined)?.[0]?.content ?? "",
       );
-      // Reject anything a default-configured daemon would.
       if (Buffer.byteLength(content, "utf8") > 131_072) return null;
       bodies.push(content);
     }
@@ -4513,7 +4419,6 @@ test("oversized flush-plan notes drain in chunks instead of deadlocking", async 
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fp-chunk-"));
   const planPath = path.join(workspaceDir, "state", "plugins", "chunk-svc", "flush-plan.md");
   await mkdir(path.dirname(planPath), { recursive: true });
-  // ~300 KiB of notes: three chunks at the 96 KiB bound.
   const line = `- ${"note ".repeat(40)}\n`;
   const notes = line.repeat(Math.ceil((300 * 1024) / line.length));
   await writeFile(planPath, notes, "utf8");
@@ -4544,7 +4449,6 @@ test("oversized flush-plan notes drain in chunks instead of deadlocking", async 
 });
 
 test("a 413 halves the chunk while an auth refusal stops immediately", async () => {
-  // The old contract collapsed every failure to `null`, so an auth refusal
   // ran the halving ladder and a real 413 threw instead of adapting
   // (issue #2303).
   const observeSizes: number[] = [];
@@ -4604,7 +4508,6 @@ test("a 413 halves the chunk while an auth refusal stops immediately", async () 
     );
     assert.equal(await readPlanOrEmpty(planPath), "", "and every note drained");
 
-    // An auth refusal must NOT walk the halving ladder.
     await stub.close();
     firstClosed = true;
     const authAttempts: number[] = [];
@@ -4648,7 +4551,6 @@ test("a 413 halves the chunk while an auth refusal stops immediately", async () 
 });
 
 test("an interrupted ingestion's notes are recovered on the next run", async () => {
-  // Rotation claims the notes by rename. A crash between the rename and the
   // post would strand them without this recovery (issue #2303).
   const delivered: string[] = [];
   const stub = await startDaemonStub((pathname, body) => {
@@ -4663,7 +4565,6 @@ test("an interrupted ingestion's notes are recovered on the next run", async () 
   const planPath = path.join(workspaceDir, "state", "plugins", "recov", "flush-plan.md");
   await mkdir(path.dirname(planPath), { recursive: true });
   try {
-    // Simulate the crash: an inflight snapshot with no plan file.
     await writeFile(`${planPath}.inflight`, "- stranded note\n", "utf8");
     await writeFile(planPath, "- fresh note\n", "utf8");
     await ingestFlushPlanNotes({
@@ -4692,7 +4593,6 @@ test("an interrupted ingestion's notes are recovered on the next run", async () 
 });
 
 test("a stranded rotate target is recovered ahead of newer notes", async () => {
-  // A run that died between its rename and its merge left the notes only in
   // `.rotating`. Recovery that read `.inflight` alone stranded them (#2303).
   const delivered: string[] = [];
   const stub = await startDaemonStub((pathname, body) => {
@@ -4736,7 +4636,6 @@ test("a stranded rotate target is recovered ahead of newer notes", async () => {
 });
 
 test("a note the daemon can never accept is quarantined, not left blocking the queue", async () => {
-  // At the minimum chunk size the chunk is one line. Keeping it stalled every
   // note behind it on every future flush (#2303).
   const delivered: string[] = [];
   const stub = await startDaemonStub(
@@ -4789,7 +4688,6 @@ test("a note the daemon can never accept is quarantined, not left blocking the q
 });
 
 test("a symlinked snapshot sidecar is refused before it is read", async () => {
-  // `flush-plan.md.inflight` pointed at another file would send that file to
   // the daemon and then overwrite it (#2303).
   const stub = await startDaemonStub(() => ({ ok: true }));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fp-link-"));
@@ -4825,7 +4723,6 @@ test("a symlinked snapshot sidecar is refused before it is read", async () => {
 });
 
 test("a daemon limit below the chunk floor splits instead of quarantining good notes", async () => {
-  // With maxBodyBytes under the observe chunk size, a small daemon limit
   // does NOT mean the chunk is one line — it can still be a multi-line batch.
   // The trigger for quarantine is the chunk's shape, not a byte floor (#2303).
   const delivered: string[] = [];
@@ -4899,7 +4796,6 @@ test("delegate recall publishes its hook deadline to the daemon (#3499)", async 
     const recall = stub.calls.find((call) => call.pathname === "/engram/v1/recall");
     assert.ok(recall, "daemon recall route was called");
     const deadlineMs = Number(recall.body.deadlineMs);
-    // promptDeadline = hook start + min(hookTimeoutMs, recallTimeoutMs)
     assert.ok(
       Number.isFinite(deadlineMs) &&
         deadlineMs >= before + 30_000 - 2_000 &&

@@ -30,7 +30,6 @@ function checkpointProvenance(dir: string, answers: readonly CalibrationAnswer[]
   };
 }
 
-/** Stub judge that returns a fixed score per questionId (deterministic). */
 function makeStubJudge(scoreById: Record<string, number>): BenchJudge {
   return {
     async score(
@@ -55,9 +54,6 @@ function makeStubJudge(scoreById: Record<string, number>): BenchJudge {
   };
 }
 
-// `runJudgeCalibration` calls `.score()` (the scalar surface). Build a stub
-// whose `.score()` resolves a per-question verdict by matching the predicted
-// text, which carries the question identity in these fixtures.
 function makeScalarStubJudge(predictedToScore: Record<string, number>): BenchJudge {
   return {
     async score(
@@ -78,7 +74,6 @@ function makeAnswers(count: number): CalibrationAnswer[] {
     answers.push({
       questionId: id,
       question: `question ${id}`,
-      // Predicted text doubles as the lookup key for the scalar stub.
       predicted: id,
       expected: `gold-${id}`,
     });
@@ -250,9 +245,7 @@ test("selectCalibrationSlice: returns all ids when fewer than size", () => {
 test("selectCalibrationSlice: order is by sha256(id), not insertion order", () => {
   const ids = ["a", "b", "c", "d", "e"];
   const slice = selectCalibrationSlice(ids);
-  // Deterministic but NOT insertion order — prove the hash sort moved things.
   assert.notDeepEqual(slice, ids);
-  // And it is a permutation of the input.
   assert.deepEqual([...slice].sort(), [...ids].sort());
 });
 
@@ -274,7 +267,6 @@ test("selectCalibrationSlice: rejects empty / non-string ids", () => {
 
 test("runJudgeCalibration: perfect agreement → kappa = 1, no warning", async () => {
   const answers = makeAnswers(60);
-  // Both judges score 1.0 on every slice answer → all "correct" → kappa = 1.
   const predictedToScore: Record<string, number> = {};
   for (const answer of answers) {
     predictedToScore[answer.predicted] = 1;
@@ -300,7 +292,6 @@ test("runJudgeCalibration: systematic disagreement → warning when kappa < thre
   const answers = makeAnswers(20);
   const localScores: Record<string, number> = {};
   const frontierScores: Record<string, number> = {};
-  // Local says correct on all; frontier says correct on first half, incorrect on second.
   for (let index = 0; index < answers.length; index += 1) {
     const key = answers[index].predicted;
     localScores[key] = 1;
@@ -313,8 +304,6 @@ test("runJudgeCalibration: systematic disagreement → warning when kappa < thre
     answers,
     sliceSize: 20,
   });
-  // 10/20 agree → p_o = 0.5; marginals: local 20 correct, frontier 10 correct/10 incorrect.
-  // p_e = (1 * 0.5) + (0 * 0.5) = 0.5 → kappa = (0.5 - 0.5)/(0.5) = 0.
   assert.ok(Math.abs(result.kappa) < 1e-12);
   assert.equal(result.warning, true); // 0 < 0.7
   assert.equal(result.benchmarkId, "locomo");
@@ -327,9 +316,6 @@ test("runJudgeCalibration: custom binScore and threshold honored", async () => {
   for (const answer of answers) {
     scores[answer.predicted] = 0.9;
   }
-  // Use a binScore that labels everything "strong" — perfect agreement on a
-  // single category → kappa = 1 (degenerate), but threshold 0.95 makes the
-  // single 1.0 still pass (1.0 >= 0.95 → no warning).
   const result = await runJudgeCalibration({
     benchmarkId: "longmemeval",
     localJudge: makeScalarStubJudge(scores),
@@ -460,17 +446,11 @@ test("runJudgeCalibration: non-finite judge scores do not crash calibration", as
     answers,
     sliceSize: 4,
   });
-  // NaN → "incorrect" everywhere (local); 1 → "correct" everywhere (frontier).
-  // Disjoint category sets ⇒ p_e = 0 ⇒ kappa = p_o = 0. The point: a broken
-  // judge producing NaN does not throw; it surfaces as total disagreement.
   assert.equal(result.kappa, 0);
   assert.equal(result.warning, true);
 });
 
 test("runJudgeCalibration: duplicate questionIds are deduped — first answer wins (cursor review)", async () => {
-  // A stored result with duplicate taskIds must not double-count a question.
-  // Build 4 distinct answers, then append duplicates of two of them; the
-  // slice covers all 4 ids, so without dedup sampleSize would be 6.
   const base = makeAnswers(4);
   const answers = [
     ...base,
@@ -561,7 +541,6 @@ test("writeJudgeCalibrationState sanitizes the benchmark id in the filename (no 
       sliceSize: 2,
     });
     const written = await writeJudgeCalibrationState(result, dir);
-    // Filename is the sanitized benchmark id; no directory separators leaked.
     assert.equal(path.basename(written), "locomo.json");
     assert.equal(path.dirname(written), dir);
   } finally {
@@ -588,10 +567,8 @@ test("writeJudgeCalibrationState + loadJudgeCalibrationState round-trip judge id
 
     const loaded = await loadJudgeCalibrationState("locomo", dir);
     assert.notEqual(loaded, undefined);
-    // The artifact subset still round-trips.
     assert.equal(loaded?.kappa, result.kappa);
     assert.equal(loaded?.warning, result.warning);
-    // The judge identities that produced the kappa travel with the state.
     assert.equal(loaded?.localJudgeProvider, "local-llm");
     assert.equal(loaded?.localJudgeModel, "llama3:70b");
     assert.equal(loaded?.frontierJudgeProvider, "openai");
@@ -647,13 +624,11 @@ test("writeJudgeCalibrationState without identities still loads (backwards compa
       answers: makeAnswers(2),
       sliceSize: 2,
     });
-    // No identities argument — mirrors pre-binding state files.
     await writeJudgeCalibrationState(result, dir);
 
     const loaded = await loadJudgeCalibrationState("locomo", dir);
     assert.notEqual(loaded, undefined);
     assert.equal(loaded?.kappa, result.kappa);
-    // Absent identities: the attach path treats this as unbound (attach anyway).
     assert.equal(loaded?.localJudgeModel, undefined);
     assert.equal(loaded?.frontierJudgeModel, undefined);
   } finally {
@@ -664,7 +639,6 @@ test("writeJudgeCalibrationState without identities still loads (backwards compa
 test("loadJudgeCalibrationState drops partial/corrupt identities but keeps the calibration subset", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-partial-id-"));
   try {
-    // Some identity fields present but not all four (unreliable binding).
     await writeFile(
       path.join(dir, "locomo.json"),
       JSON.stringify({
@@ -690,9 +664,6 @@ test("loadJudgeCalibrationState drops partial/corrupt identities but keeps the c
 test("sanitizeCalibrationSegment: distinct benchmark ids produce distinct filenames (cursor review)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-sanitize-"));
   try {
-    // "foo.bar" and "foobar" must NOT collide — the old filter-drop mapped
-    // both to "foobar.json", letting one benchmark overwrite another's kappa.
-    // With the fix, punctuation becomes a separator: "foo-bar" vs "foobar".
     const resultA = await runJudgeCalibration({
       benchmarkId: "foo.bar",
       localJudge: makeScalarStubJudge({}),
@@ -712,7 +683,6 @@ test("sanitizeCalibrationSegment: distinct benchmark ids produce distinct filena
     assert.notEqual(path.basename(pathA), path.basename(pathB));
     assert.equal(path.basename(pathA), "foo-bar.json");
     assert.equal(path.basename(pathB), "foobar.json");
-    // Both load independently — no cross-contamination.
     const loadedA = await loadJudgeCalibrationState("foo.bar", dir);
     const loadedB = await loadJudgeCalibrationState("foobar", dir);
     assert.notEqual(loadedA, undefined);
@@ -726,6 +696,4 @@ test("MIN_CALIBRATION_SOURCE_TASKS is exported and positive", () => {
   assert.ok(MIN_CALIBRATION_SOURCE_TASKS >= 2);
 });
 
-// Suppress the unused-stub warning for the metrics variant (kept for symmetry
-// with the BenchJudge surface; the scalar path is what calibration uses).
 void makeStubJudge;

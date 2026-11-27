@@ -1,8 +1,3 @@
-/**
- * Isolated span-offset validator (issue #2333 leftover).
- *
- * Pure. Extraction wiring waits on the Phase A bench gate.
- */
 
 export type SpanValidateOk = { ok: true };
 export type SpanValidateErr = { ok: false; error: "out_of_range" | "empty" };

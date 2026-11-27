@@ -61,7 +61,6 @@ function parseArgs(argv) {
         args.help = true;
         break;
       default:
-        // ignore unknown tokens — keeps the hook loosely coupled
         break;
     }
   }
@@ -167,8 +166,6 @@ function extractRemnicConfigFromRaw(raw, resolveEntry) {
   if (isPlainRecord(entry)) {
     return isPlainRecord(entry.config) ? entry.config : entry;
   }
-  // Legacy / developer config layout: the top-level object IS the config.
-  // Honour it only when the file is not an OpenClaw-shaped config.
   if (!Object.prototype.hasOwnProperty.call(raw, "plugins")) {
     return raw;
   }
@@ -246,7 +243,6 @@ async function main() {
     );
   }
 
-  // Pass the generic resolver so loadRawConfig uses the same slot → id lookup
   // semantics as the other OpenClaw config-loader sites (#403).
   const rawConfig = loadRawConfig(resolvePluginEntry);
   let config;
@@ -258,7 +254,6 @@ async function main() {
     );
   }
   if (args.memoryDir) {
-    // parseConfig already locked in a memoryDir, but the CLI override wins.
     config.memoryDir = args.memoryDir;
   }
 

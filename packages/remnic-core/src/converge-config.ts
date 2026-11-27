@@ -13,11 +13,7 @@ export const CONVERGE_CONFLICT_POLICIES = [
 
 export const DEFAULT_CONVERGE_CONFLICT_POLICY: ConvergeConflictPolicy = "newest-wins";
 
-/** Default per-request peer HTTP timeout. Boot-scale corpora (100k+ files in one
- *  namespace) can take well over 30s to serve a manifest snapshot. */
 export const DEFAULT_CONVERGE_PEER_REQUEST_TIMEOUT_MS = 30_000;
-/** Ceiling for the configured timeout — a peer that has not answered in an hour
- *  is unreachable, not slow. */
 export const MAX_CONVERGE_PEER_REQUEST_TIMEOUT_MS = 3_600_000;
 /**
  * ONE normalization policy for every override source (config JSON, env, CLI
@@ -31,14 +27,12 @@ export function normalizeConvergePeerRequestTimeoutMs(value: unknown, label: str
   return Math.min(value, MAX_CONVERGE_PEER_REQUEST_TIMEOUT_MS);
 }
 
-/** Env override, evaluated lazily so tests control time. Junk is rejected. */
 export function envConvergePeerRequestTimeoutMs(): number {
   const raw = process.env.REMNIC_CONVERGE_PEER_TIMEOUT_MS;
   if (raw === undefined || raw.trim() === "") return DEFAULT_CONVERGE_PEER_REQUEST_TIMEOUT_MS;
   return normalizeConvergePeerRequestTimeoutMs(Number(raw), "REMNIC_CONVERGE_PEER_TIMEOUT_MS");
 }
 
-/** Config-block value: absent -> default, present -> normalized. */
 function parsePeerRequestTimeoutMs(value: unknown, label: string): number {
   if (value === undefined) return DEFAULT_CONVERGE_PEER_REQUEST_TIMEOUT_MS;
   return normalizeConvergePeerRequestTimeoutMs(value, label);
@@ -49,11 +43,6 @@ function parseOptionalCaptureLockMs(value: unknown, label: string): number | und
   return normalizeCaptureWriteLockWaitMs(value, label);
 }
 
-/**
- * Config values win over env. An omitted knob stays omitted here so the
- * caller can still fall through to the built-in default. Env is read with
- * the REMNIC_ name and the legacy ENGRAM_ name.
- */
 function envCaptureLockMs(name: string): number | undefined {
   const raw = readEnvVar(name);
   if (raw === undefined) return undefined;
@@ -121,8 +110,6 @@ export function parseConvergeConfig(block: unknown): ConvergeConfig {
     );
     const maxDelayMs = parseOptionalCaptureLockMs(captureWriteLockMaxDelayMs, "converge.captureWriteLockMaxDelayMs");
     const deadlineMs = parseOptionalCaptureLockMs(captureWriteLockDeadlineMs, "converge.captureWriteLockDeadlineMs");
-    // Reject an inverted schedule at parse time. Omitted knobs stay omitted
-    // and are filled from defaults only when the acquire runs.
     if (initialDelayMs !== undefined && maxDelayMs !== undefined && initialDelayMs > maxDelayMs) {
       throw new Error(
         `converge.captureWriteLockInitialDelayMs (${initialDelayMs}) must be <= converge.captureWriteLockMaxDelayMs (${maxDelayMs})`

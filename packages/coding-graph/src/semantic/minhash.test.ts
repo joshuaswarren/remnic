@@ -32,9 +32,7 @@ import {
   LSH_ROWS_PER_BAND,
 } from "./config.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 // Rule 38: determinism — same fixture, two runs, identical candidate set
-// ──────────────────────────────────────────────────────────────────────────
 
 const CLONE_A = `function processPayment(amount, currency) {
   const fee = amount * 0.029;
@@ -83,7 +81,6 @@ test("MinHash: true-clone fixtures MUST pair as candidates", () => {
   hasher.add({ nodeId: "n2", qualifiedName: "mod.cloneB", body: CLONE_B });
   hasher.add({ nodeId: "n3", qualifiedName: "mod.hardNeg", body: HARD_NEG });
   const candidates = hasher.findCandidates();
-  // The clone pair must appear in the candidate set.
   const clonePair = candidates.find(
     (c) =>
       (c.aNodeId === "n1" && c.bNodeId === "n2") ||
@@ -104,14 +101,12 @@ test("MinHash: hard-negative fixtures must NOT pair as candidates", () => {
       (c.aNodeId === "n3" && c.bNodeId === "n1"),
   );
   // The hard negative must NOT be a candidate (or if it is, Jaccard must
-  // be low enough that the cosine/SIMILAR_TO gate rejects it).
   if (hardPair) {
     assert.ok(
       hardPair.jaccard < 0.5,
       `hard-negative Jaccard must be low, got ${hardPair.jaccard}`,
     );
   }
-  // Direct Jaccard estimate for clarity.
   const direct = estimateJaccard(CLONE_A, HARD_NEG);
   assert.ok(direct < 0.4, `clone vs hard-negative Jaccard should be < 0.4, got ${direct}`);
 });
@@ -137,7 +132,6 @@ test("cosineSimilarity: identical vectors → 1.0, orthogonal → 0.0", () => {
 
 test("cosineSimilarity: boundary ≥ threshold confirms (decided once)", () => {
   // Two vectors at exactly cosine 0.92 should confirm (≥, not >).
-  // Construct a pair at exactly the default threshold.
   const a = new Float32Array([1, 0]);
   // cos(a, b) = b[0] / |b|. For cos = 0.92: b = [0.92, sqrt(1-0.92^2)].
   const cos = 0.92;
@@ -146,7 +140,6 @@ test("cosineSimilarity: boundary ≥ threshold confirms (decided once)", () => {
   assert.ok(Math.abs(actual - cos) < 1e-6, `cosine should be ~0.92, got ${actual}`);
   // The similarity pipeline uses >= threshold (CONFIRM_OPERATOR), so at
   // exactly threshold it confirms. The similarity.test.ts covers the
-  // full pipeline; here we verify the primitive.
   assert.ok(actual >= 0.92, "at exactly 0.92, >= confirms");
 });
 
@@ -165,7 +158,6 @@ test("cosineSimilarity: zero-norm vector → 0 (no NaN)", () => {
 test("MINHASH_SEEDS: frozen, named, deterministic", () => {
   assert.equal(MINHASH_SEEDS.length, MINHASH_NUM_PERMUTATIONS);
   assert.ok(Object.isFrozen(MINHASH_SEEDS));
-  // Same seed values every run (determinism).
   const first = MINHASH_SEEDS[0]!;
   const tenth = MINHASH_SEEDS[10]!;
   assert.ok(typeof first === "bigint");
@@ -179,7 +171,6 @@ test("LSH banding: bands * rows = permutations", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Tokenizer/shingle unit tests
 // ──────────────────────────────────────────────────────────────────────────
 
 test("tokenizeForShingling: lowercase + split on non-alphanumeric", () => {

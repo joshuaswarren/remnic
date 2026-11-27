@@ -1,22 +1,4 @@
 #!/usr/bin/env node
-/**
- * Lifecycle scenario-matrix coverage gate (issue #1993, umbrella #1988 phase 5).
- *
- * When a PR's EFFECTIVE diff (changed files minus ai-review-ignore artifact
- * paths — reusing scripts/effective-diff.mjs) touches a lifecycle-critical path
- * in scripts/lifecycle-matrix/coverage.json's `lifecycleManifest`, this gate
- * requires that path to be covered by a registered `LifecycleSubject`
- * (package `src/testing/subjects` directories). Grandfathered paths (decision C)
- * warn instead of fail; the grandfather list is a ratchet — it may shrink,
- * never grow. A manifest glob with no coverage mapping and no grandfather entry
- * fails the gate, naming the path and the manifest.
- *
- * The matrix TESTS run in the normal suite; this gate enforces the EXISTENCE of
- * coverage, the suite enforces the behavior.
- *
- * Pure functions below are the tested surface (tests/lifecycle-matrix-coverage.test.mjs);
- * the CLI at the bottom wires them to git + the repo manifest.
- */
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -28,13 +10,6 @@ import { isIgnoredPath, parseIgnoreManifest, splitEffectiveDiff } from "../effec
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(dirname(scriptDir));
 
-/**
- * A manifest glob must be usable by {@link isIgnoredPath}, which matches
- * repo-relative POSIX paths. Patterns that can never match such a path — a
- * leading `/`, negation, backslashes, or surrounding whitespace — are a
- * manifest ERROR, not silently accepted; otherwise a touched lifecycle file
- * slips through uncovered. Mirrors the documented subset in scripts/effective-diff.mjs.
- */
 function validateManifestGlob(glob) {
   if (typeof glob !== "string" || glob.length === 0) {
     throw new Error(`coverage manifest: lifecycleManifest entry must be a non-empty string (got ${JSON.stringify(glob)})`);
@@ -54,34 +29,21 @@ function validateManifestGlob(glob) {
 
 const SUBJECT_IDENT = /[A-Za-z0-9_$]/;
 const SUBJECT_CALL = "runLifecycleMatrix";
-/** Chars after which a `/` begins a regex literal rather than a division. */
 const REGEX_ALLOWED_AFTER = new Set([
   "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "^", "~", "<", ">",
 ]);
-/** Chars after which a following identifier CONTINUES the expression (so a
- *  runLifecycleMatrix there is not a new statement, even across a newline). */
 const STATEMENT_CONTINUATION = new Set([
   "&", "|", "?", ":", "=", ",", "(", "[", "+", "-", "*", "/", "%", "^", "~", "<", ">", "!", ".",
 ]);
-/** Keywords whose `(...)` is a control-flow header — the following statement is
- *  its BODY, not a new statement (so a newline before it is not an ASI boundary). */
 const CONTROL_KEYWORDS = new Set(["if", "for", "while", "switch", "catch"]);
-/** Bare keywords whose following statement is a BODY, not a new statement (no
- *  `(...)` header), so a newline before the call is not an ASI boundary. */
 const BODY_KEYWORDS = new Set(["else", "do", "try", "finally"]);
 
-/**
- * The identifier immediately preceding `source[idx]`, skipping whitespace AND
- * comments (both block and line comments) backward, so a body keyword hidden
- * behind a comment between it and the call is still seen.
- */
 function precedingWord(source, idx) {
   let k = idx - 1;
   for (;;) {
     while (k >= 0 && /\s/.test(source[k])) k -= 1;
     if (k < 1) break;
     if (source[k] === "/" && source[k - 1] === "*") {
-      // skip backward over a block comment (from its close to its open)
       k -= 2;
       while (k >= 1 && !(source[k - 1] === "/" && source[k] === "*")) k -= 1;
       k -= 2;
@@ -92,7 +54,6 @@ function precedingWord(source, idx) {
     lineStart += 1;
     const commentAt = source.slice(lineStart, k + 1).indexOf("//");
     if (commentAt !== -1) {
-      // backward over a line comment `// …` on this line
       k = lineStart + commentAt - 1;
       continue;
     }
@@ -103,11 +64,6 @@ function precedingWord(source, idx) {
   return { word: source.slice(k + 1, end + 1), start: k + 1 };
 }
 
-/**
- * From a `/` that starts a regex literal, return the index just past the closing
- * `/` and any flags. Honors `\` escapes and `[...]` char classes (a `/` inside a
- * class does not close the regex).
- */
 function skipRegexLiteral(source, start) {
   const n = source.length;
   let k = start + 1;
@@ -131,24 +87,6 @@ function skipRegexLiteral(source, start) {
   return k;
 }
 
-/**
- * Discover `runLifecycleMatrix("<name>", ...)` registrations in JS/TS source at
- * the CODE level: a single lexer skips comments, string/template literals, AND
- * regex literals, so none of a commented-out example, a docs string like
- * `const doc = 'runLifecycleMatrix("fake", subject)'`, or a regex literal like
- * `/runLifecycleMatrix("fake", subject)/` is mistaken for a real registration.
- * Only a TOP-LEVEL (brace-depth 0) STANDALONE expression statement counts — the
- * call must start a statement, never be a wrapper that may not run at module
- * load: a call nested in `if (false) { … }`, a braceless `if (false)
- * runLifecycleMatrix(...)`, an env/boolean short-circuit
- * (`cond && runLifecycleMatrix(...)`), an assignment, or an uncalled helper is
- * NOT recorded, because `node:test` may register nothing for it. Only a
- * two-argument call
- * (`runLifecycleMatrix("name", subject)`) counts — ANY third argument is the
- * test-only options seam (rows / register / registerSkipped), inline OR aliased
- * via a variable, which narrows or redirects the canonical MATRIX_ROWS, so a
- * production subject must register every canonical row.
- */
 export function discoverSubjectRegistrations(source) {
   const names = [];
   const n = source.length;
@@ -252,11 +190,6 @@ export function discoverSubjectRegistrations(source) {
       depth === 0 &&
       parenDepth === 0 &&
       bracketDepth === 0 &&
-      // Standalone statement: a hard boundary (start, `;`, `}`), OR an ASI
-      // boundary — a newline after a value-ending token (`)`, `]`, identifier,
-      // string, `z` from a regex) that is NOT an expression-continuation
-      // operator. This accepts adjacent newline-separated registrations while
-      // rejecting same-line wrappers (`if (x) run(...)`, `cond && run(...)`).
       (prevSig === "" ||
         prevSig === ";" ||
         prevSig === "}" ||
@@ -288,12 +221,6 @@ export function discoverSubjectRegistrations(source) {
             j += 1;
           }
           j += 1; // past the closing quote of the subject name
-          // Scan the rest of the call's arguments (inside its `(`, paren depth 1),
-          // skipping strings/comments/regex, and count TOP-LEVEL argument
-          // separators. A production registration is exactly
-          // `runLifecycleMatrix("name", subject)` — two arguments. ANY third
-          // argument is the test-only options seam (inline OR aliased), so such a
-          // call is not a full production registration and must not count.
           let callDepth = 1;
           let braceDepth = 0;
           let bracketDepth = 0;
@@ -371,9 +298,6 @@ export function discoverSubjectRegistrations(source) {
             j += 1;
           }
           if (curSegHasContent) contentSegments += 1;
-          // Two arguments = name + exactly one content segment. A legal trailing
-          // comma leaves an empty final segment (still two args). Zero segments
-          // (no subject) or a second content segment (an options arg) is rejected.
           if (name.length > 0 && contentSegments === 1) names.push(name);
           prevSig = ")";
           i = j;
@@ -390,10 +314,6 @@ export function discoverSubjectRegistrations(source) {
   return names;
 }
 
-/**
- * Parse + validate a coverage manifest object. Throws on structural errors so a
- * malformed manifest fails the gate loudly instead of silently under-checking.
- */
 export function loadCoverageManifest(raw) {
   if (!raw || typeof raw !== "object") {
     throw new Error("coverage manifest must be a JSON object");
@@ -416,9 +336,6 @@ export function loadCoverageManifest(raw) {
   const manifestSet = new Set(lifecycleManifest);
   for (const key of Object.keys(coverage)) {
     if (!manifestSet.has(key)) {
-      // Exact coverage paths are implicit manifest members. This run's
-      // questions-file.ts failed twice for listing coverage without a
-      // duplicate lifecycleManifest row.
       manifestSet.add(key);
     }
   }
@@ -440,13 +357,6 @@ export function classifyGlob(glob, manifest) {
   return "unmapped";
 }
 
-/**
- * Co-located test files (`*.test` / `*.spec` and their .mts/.cts/.tsx/.js
- * variants) are NOT production lifecycle code — they ARE the subjects/coverage.
- * A broad manifest glob such as `orchestration/**` matches them, so without this
- * a pure test-file change would be treated as an unmapped lifecycle path and
- * fail the gate. Test files never require a subject; skip them explicitly.
- */
 export function isLifecycleTestFile(file) {
   return /\.(test|spec)\.[cm]?[jt]sx?$/.test(file);
 }
@@ -492,13 +402,6 @@ export function manifestShrinkage(baseManifest, headManifest) {
   return baseManifest.lifecycleManifest.filter((glob) => !headSet.has(glob));
 }
 
-/**
- * Paths whose manifest removal is EXPLAINED by the diff: a deleted file (status
- * `D`), or a rename/copy SOURCE whose DESTINATION stays in lifecycle coverage
- * (the file still exists at a tracked path). A move-OUT rename (destination not
- * a lifecycle path) does NOT explain the source's removal — dropping its
- * manifest entry would silently lose coverage, so it stays gated by the ratchet.
- */
 export function deletedOrRenamedPaths(records, manifest) {
   const set = new Set();
   const lifecycleGlobs = manifest?.lifecycleManifest ?? [];
@@ -512,12 +415,6 @@ export function deletedOrRenamedPaths(records, manifest) {
   return set;
 }
 
-/**
- * Paths DELETED in the diff (status `D`). A rename SOURCE is excluded (the
- * rename-bypass hardening still evaluates it). A deleted file has no code left
- * to cover, so it must be filtered from the effective diff before the gate —
- * otherwise deleting a file under a broad catch-all would violate as unmapped.
- */
 export function deletedPaths(records) {
   const set = new Set();
   for (const r of records) {
@@ -527,14 +424,6 @@ export function deletedPaths(records) {
   return set;
 }
 
-/**
- * Rename SOURCES to drop from the effective diff. A rename whose DESTINATION is
- * itself a lifecycle-manifest path stays within lifecycle coverage — the
- * destination's own evaluation applies, so the moved-away source must not
- * independently fail the gate. A rename to a NON-lifecycle / ignored path keeps
- * its source (the rename-bypass hardening: moving a lifecycle file out of
- * coverage must still surface the source).
- */
 export function renameSourcesWithinLifecycle(records, manifest) {
   const drop = new Set();
   for (const r of records) {
@@ -547,12 +436,6 @@ export function renameSourcesWithinLifecycle(records, manifest) {
   return drop;
 }
 
-/**
- * Removed manifest globs that are NOT explained by a deletion/rename. An
- * exact-file entry is explained when its path was deleted or renamed away; a
- * glob entry (contains `*`) is never auto-explained, so the shrink-only ratchet
- * still fails a quiet removal that would disable the gate for a live subsystem.
- */
 export function unexplainedRemovals(removed, explained) {
   return removed.filter((glob) => glob.includes("*") || !explained.has(glob));
 }
@@ -606,12 +489,6 @@ export function parseNameStatusZ(text) {
   return records;
 }
 
-/**
- * Flatten changed-file records into individual repo-relative paths. A rename
- * record contributes BOTH its destination and its source: moving a lifecycle
- * path to an ignored or non-lifecycle location still changes lifecycle
- * behavior and must not bypass the gate (rename-bypass hardening).
- */
 export function flattenChangedPaths(entries) {
   const out = [];
   for (const entry of entries) {
@@ -628,9 +505,6 @@ export function flattenChangedPaths(entries) {
   return [...new Set(out)];
 }
 
-// Local-dev fallback (CI always sets REMNIC_LIFECYCLE_CHANGED_FILES_PATH).
-// Git errors are NOT swallowed: a diff that cannot be computed must fail the
-// gate loudly rather than return [] and pass vacuously.
 function readChangedFilesFromGit() {
   const baseRef = process.env.LIFECYCLE_BASE_REF || process.env.GITHUB_BASE_REF;
   const diffArgs = ["-c", "core.quotePath=off", "diff", "--name-status", "-z", "-M"];
@@ -653,12 +527,6 @@ function readChangedFiles() {
   return readChangedFilesFromGit();
 }
 
-/**
- * Load the base (pre-PR) coverage manifest for the shrink-only grandfather
- * ratchet. Path comes from `--base-manifest=` or LIFECYCLE_BASE_MANIFEST_PATH.
- * Returns null when absent/empty (manifest newly introduced → nothing to
- * ratchet against) or unparseable (the base already passed its own gate).
- */
 function readBaseManifest() {
   const baseArg = process.argv.find((a) => a.startsWith("--base-manifest="));
   const basePath = baseArg
@@ -674,15 +542,6 @@ function readBaseManifest() {
   }
 }
 
-/**
- * Load the base-ref ai-review-ignore patterns. Path comes from `--base-ignore=`
- * or LIFECYCLE_BASE_IGNORE_PATH (CI writes `git show <base>:.github/ai-review-ignore`
- * there). Read from the BASE ref, never the head checkout: otherwise a PR could
- * add a lifecycle path (e.g. orchestrator.ts) to `.github/ai-review-ignore` and
- * the gate would drop it from the effective diff before evaluateCoverage,
- * bypassing the required-subject check. Absent/empty base → no patterns (fail
- * safe: ignore nothing rather than trust head-side rules).
- */
 function readBaseIgnorePatterns() {
   const baseArg = process.argv.find((a) => a.startsWith("--base-ignore="));
   const basePath = baseArg
@@ -727,8 +586,6 @@ function main() {
       process.exit(1);
     }
     const removed = manifestShrinkage(baseManifest, manifest);
-    // A catch-all whose directory has no remaining .ts files is not a live
-    // gate. Removing it after the last matching file was deleted is explained.
     const unexplained = unexplainedRemovals(removed, deletedOrRenamedPaths(changed, manifest))
       .filter((glob) => {
         if (!glob.endsWith("/**")) return true;

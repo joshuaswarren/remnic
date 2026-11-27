@@ -29,7 +29,6 @@ function xrayResult(memoryId: string): RecallXrayResult {
   };
 }
 
-// ─── isRecallXrayServedBy ─────────────────────────────────────────────────
 
 test("isRecallXrayServedBy accepts every documented value", () => {
   for (const value of RECALL_XRAY_SERVED_BY_VALUES) {
@@ -45,7 +44,6 @@ test("isRecallXrayServedBy rejects unknown strings and non-strings", () => {
   assert.equal(isRecallXrayServedBy(7), false);
 });
 
-// ─── buildXraySnapshot: minimal call ──────────────────────────────────────
 
 test("buildXraySnapshot fills defaults for empty input", () => {
   const snapshot = buildXraySnapshot({
@@ -96,7 +94,6 @@ test("buildXraySnapshot strips surrounding whitespace from session/namespace/tra
   assert.equal(snapshot.traceId, "trace-xyz");
 });
 
-// ─── buildXraySnapshot: each decomposition field ──────────────────────────
 
 test("buildXraySnapshot preserves every score-decomposition field", () => {
   const result: RecallXrayResult = {
@@ -156,7 +153,6 @@ test("buildXraySnapshot drops non-finite score-decomposition fields", () => {
   assert.equal(emitted.scoreDecomposition.vector, undefined);
   assert.equal(emitted.scoreDecomposition.bm25, undefined);
   assert.equal(emitted.scoreDecomposition.importance, 0.5);
-  // Non-finite `final` collapses to the guaranteed 0 default.
   assert.equal(emitted.scoreDecomposition.final, 0);
 });
 
@@ -183,7 +179,6 @@ test("buildXraySnapshot preserves graphPath, auditEntryId, rejectedBy when prese
   assert.equal(emitted.rejectedBy, "mmr-diversity");
 });
 
-// ─── Issue #681 PR 3/3 — graphEdgeConfidences ─────────────────────────────
 
 test("buildXraySnapshot preserves graphEdgeConfidences when length matches graphPath - 1", () => {
   const result: RecallXrayResult = {
@@ -205,9 +200,6 @@ test("buildXraySnapshot preserves graphEdgeConfidences when length matches graph
 });
 
 test("buildXraySnapshot drops graphEdgeConfidences when length disagrees with graphPath", () => {
-  // Misaligned snapshots are rejected wholesale rather than rendering
-  // partial / shifted confidence pairings — that would invite reviewers
-  // to ask "which edge does index 2 refer to?" and the answer is "none".
   const result: RecallXrayResult = {
     memoryId: "mem-x",
     path: "/p.md",
@@ -227,12 +219,6 @@ test("buildXraySnapshot drops graphEdgeConfidences when length disagrees with gr
 });
 
 test("buildXraySnapshot rejects graphEdgeConfidences with non-finite entries (cursor #735)", () => {
-  // Cursor review thread: filtering NaN/Infinity via `continue` and
-  // then length-checking the cleaned array would silently shift
-  // surviving values to earlier edge indices. We must reject the
-  // entire array on any non-finite member so misalignment is
-  // impossible — even when the cleaned count happens to match
-  // `graphPath.length - 1` by coincidence.
   const result: RecallXrayResult = {
     memoryId: "mem-x",
     path: "/p.md",
@@ -240,9 +226,6 @@ test("buildXraySnapshot rejects graphEdgeConfidences with non-finite entries (cu
     admittedBy: [],
     scoreDecomposition: { final: 0.5 },
     graphPath: ["a", "b", "c"], // 2 edges expected
-    // Input length 2 (matches expected) but contains NaN: a permissive
-    // implementation would render `0.7` as if it were the only edge
-    // (length 1) — losing alignment with the second edge.
     graphEdgeConfidences: [Number.NaN, 0.7],
   };
   const snap = buildXraySnapshot({
@@ -255,12 +238,6 @@ test("buildXraySnapshot rejects graphEdgeConfidences with non-finite entries (cu
 });
 
 test("buildXraySnapshot rejects graphEdgeConfidences with input length mismatch (cursor #735)", () => {
-  // Reproduces the exact misalignment vector cursor flagged: when
-  // input contains a NaN that would be stripped, the post-strip
-  // length might match `graphPath.length - 1` even though the
-  // *original* length did not. Reject on input length, not cleaned
-  // length, so a future "filter & continue" regression cannot creep
-  // back in.
   const result: RecallXrayResult = {
     memoryId: "mem-x",
     path: "/p.md",
@@ -368,7 +345,6 @@ test("buildXraySnapshot normalizes per-result provenance", () => {
   });
 });
 
-// ─── Budget accounting ────────────────────────────────────────────────────
 
 test("buildXraySnapshot clamps negative / non-finite budgets to zero", () => {
   const snapshot = buildXraySnapshot({
@@ -390,7 +366,6 @@ test("buildXraySnapshot floors fractional budget values", () => {
   assert.deepEqual(snapshot.budget, { chars: 10, used: 7 });
 });
 
-// ─── TierExplain round-trip ───────────────────────────────────────────────
 
 test("buildXraySnapshot carries tierExplain verbatim", () => {
   const tierExplain: RecallTierExplain = {
@@ -428,7 +403,6 @@ test("buildXraySnapshot deep-copies tierExplain so caller mutation does not tear
   assert.deepEqual(snapshot.tierExplain?.filteredBy, ["a"]);
 });
 
-// ─── Filter trace ─────────────────────────────────────────────────────────
 
 test("buildXraySnapshot records filters with considered/admitted counts", () => {
   const snapshot = buildXraySnapshot({
@@ -446,7 +420,6 @@ test("buildXraySnapshot records filters with considered/admitted counts", () => 
   ]);
 });
 
-// ─── Defensive copies ─────────────────────────────────────────────────────
 
 test("buildXraySnapshot shallow-copies results so caller mutation does not leak in", () => {
   const result: RecallXrayResult = {
@@ -541,7 +514,6 @@ test("buildXraySnapshot validates applied and headroom candidates like presentat
   );
 });
 
-// ─── RecallXrayBuilder ────────────────────────────────────────────────────
 
 test("RecallXrayBuilder accumulates results and filters then builds a snapshot", () => {
   const builder = new RecallXrayBuilder({
@@ -589,12 +561,8 @@ test("RecallXrayBuilder produces unique snapshotId per build when no generator i
   assert.notEqual(a.snapshotId, b.snapshotId);
 });
 
-// ─── Issue #1577 — cloneResult preserves the trust projection (review Oqg_o) ─
 
 test("RecallXrayBuilder clones the trust projection so the snapshot surfaces it (#1577)", () => {
-  // Review Oqg_o: cloneResult was silently dropping the `trust` field, so a
-  // snapshot built via recordResult() lost trust score/band/quarantine reason
-  // even when the live capture had it. The clone must deep-copy the projection.
   const builder = new RecallXrayBuilder({ query: "q" });
   builder.recordResult({
     memoryId: "mem-admitted",

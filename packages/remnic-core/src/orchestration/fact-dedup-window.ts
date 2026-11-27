@@ -1,8 +1,6 @@
 import path from "node:path";
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 // Import from the real modules, NOT the ../index.js barrel: a barrel edge
-// from orchestration code that explicit-capture.ts imports re-orders module
-// initialization and leaves access-boundary's registry in TDZ (#3354).
 import { ContentHashIndex } from "../storage/content-hash-index.js";
 import type { StorageManager } from "../storage.js";
 import type { MemoryFile } from "../types.js";
@@ -36,12 +34,6 @@ function matchesActiveConnectorDuplicate(memory: MemoryFile, opts: FactDedupMatc
   if (memory.frontmatter.category !== opts.category) return false;
   if ((memory.frontmatter.status ?? "active") !== "active") return false;
   // Thread 5 (QPDE5): for procedures the hash is keyed on the full
-  // body (title + steps via buildProcedurePersistBody), so compare
-  // against contentHashDedupKey — not the canonical title-only form.
-  // Thread 3 (QO42V): facts with structuredAttributes get an appended
-  // [Attributes: ...] suffix in the stored body that the hash key lacks;
-  // strip it before comparing so same-connector enriched facts dedup
-  // correctly.
   if (normalizeStoredHashSource(stripAttributesSuffix(memory.content ?? ""), opts.citationEnabled, opts.citationTemplate) !==
     ContentHashIndex.normalizeContent(opts.contentHashDedupKey)) return false;
   return (memory.frontmatter.sourceConnector?.trim() || undefined) === opts.connector;
@@ -62,7 +54,6 @@ export async function confirmActiveFactDuplicate(
   try {
     // One lookup returns the MISS together with the authority behind it, so a
     // stale MISS is never paired with authority from another moment: any
-    // second read of authority can rebuild the index and bless it (#3312).
     const lookup = await storage.lookupContentHash(opts.contentHashDedupKey);
     if (!lookup.present && lookup.authoritative) return false;
   } catch {
@@ -70,9 +61,6 @@ export async function confirmActiveFactDuplicate(
     // NOT fail-open into a possible duplicate — confirm against the corpus.
   }
   try {
-    // #2016 cold-tier finding: the authoritative content-hash rebuild unions
-    // the HOT and COLD tiers, so a cold-only active copy must still confirm
-    // the duplicate and suppress the redundant hot write.
     const [hotMems, coldMems] = await Promise.all([
       storage.readAllMemories(),
       storage.readAllColdMemories(),
@@ -104,8 +92,6 @@ export async function persistUnderFactDedupWindow<T>(
   return serializeMutations(`fact-dedup:${storageDir}`, () =>
     withHeldFileLock(
       path.join(storageDir, "fact-dedup.lock"),
-      // Bounded: the window holds one corpus confirm + one memory write, not a
-      // scan-length lock (catalog round 5 adoption note).
       { staleMs: 5_000, maxWaitMs: 2_000, pollMs: 50 },
       async (acquired) => {
         if (!acquired) {

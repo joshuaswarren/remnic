@@ -81,7 +81,6 @@ const subject: LifecycleSubject<CatalogReadRepairState> = {
     state.afterRepair = await waitForRepair(state.catalogPath);
 
     if (row.dimensions.restart) {
-      // A fresh instance over the persisted (repaired) file.
       const restarted = new NamespaceCatalog(catalogConfig(state.dir));
       state.secondReasons = [];
       const reasons = state.secondReasons;
@@ -89,7 +88,6 @@ const subject: LifecycleSubject<CatalogReadRepairState> = {
     }
 
     if (row.dimensions.dedupeOrReplay) {
-      // The same instance reads again: nothing to report and no second rewrite.
       state.secondReasons = [];
       const reasons = state.secondReasons;
       await state.catalog.listNamespaces(undefined, { onIncomplete: (reason) => reasons.push(reason) });

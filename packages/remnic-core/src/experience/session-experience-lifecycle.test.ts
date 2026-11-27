@@ -1,9 +1,3 @@
-/**
- * Session-end experience extraction through the real flush lifecycle
- * (issue #2979): `flushSession(reason: "session_end")` drains the buffer
- * and then derives at most one agent-experience episode; `before_reset`
- * must not write one; gate off must write nothing anywhere.
- */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -70,7 +64,6 @@ test("session_end flush writes exactly one pending_review agent-experience episo
       assert.match(body, /subject: agent/);
       assert.match(body, /category: procedure/);
       assert.match(body, /experience_session_hash/);
-      // A second session_end drain sees an empty buffer and must not duplicate.
       await orchestrator.flushSession(SESSION, { reason: "session_end" });
       assert.equal((await sessionEndMemories(memoryDir)).length, 1, "replay must not duplicate");
     },

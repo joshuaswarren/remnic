@@ -21,9 +21,6 @@
  * catch what passive detection misses.
  */
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export type PassiveCorrectionPolarity = "update" | "retract" | "stop_storing";
 
@@ -49,7 +46,6 @@ export interface DetectorTurn {
 }
 
 // ---------------------------------------------------------------------------
-// Pattern definitions
 // ---------------------------------------------------------------------------
 
 interface CorrectionPattern {
@@ -146,7 +142,6 @@ const PATTERNS: readonly CorrectionPattern[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Anti-fixture guards
 // ---------------------------------------------------------------------------
 
 /**
@@ -179,10 +174,8 @@ const SELF_RESOLVE_REGEX =
   /(?:actually|wait|no)[,\s]+(?:never\s*mind|forget\s*(?:that|it)|the\s+(?:original|first)\s+(?:was|is)\s+(?:right|correct)|scratch\s+that|disregard)/i;
 
 // ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
-/** Extract `[m:xxxx]` handle references from text (#1582). */
 export function extractHandles(text: string): string[] {
   const matches = text.match(/\[m:[0-9a-fA-F]{4,}\]/g);
   return matches ?? [];
@@ -194,7 +187,6 @@ export function extractHandles(text: string): string[] {
  */
 function extractTargetHint(text: string, match: RegExpMatchArray): string {
   const matchStart = match.index ?? 0;
-  // Take a window around the match: 20 chars before to 60 chars after.
   const start = Math.max(0, matchStart - 20);
   const end = Math.min(text.length, matchStart + match[0].length + 60);
   const window = text.slice(start, end).replace(/\s+/g, " ").trim();
@@ -212,7 +204,6 @@ function extractCorrectedAssertion(
   polarity: PassiveCorrectionPolarity,
 ): string {
   if (polarity === "retract") return "";
-  // For update/stop_storing, the full turn IS the assertion (truncated).
   const trimmed = text.replace(/\s+/g, " ").trim();
   return trimmed.length > 200 ? trimmed.slice(0, 197) + "..." : trimmed;
 }
@@ -223,7 +214,6 @@ function extractCorrectedAssertion(
  * words the user is relaying, not the user correcting their own memory).
  */
 function isWithinQuotes(text: string, matchIndex: number): boolean {
-  // Only DOUBLE quotes delimit quoted speech. Single quotes (ASCII apostrophe
   // and smart single quotes) are deliberately NOT treated as delimiters: in
   // English they are overwhelmingly contractions/possessives
   // ("I don't think we switched"), which would falsely mark a
@@ -282,7 +272,6 @@ export function detectPassiveCorrections(
     const content = turn.content?.trim();
     if (!content) continue;
 
-    // Anti-fixture guards take precedence — one guard kills ALL corrections
     // from this turn (a hypothetical turn can't contain a real correction).
     const guard = detectAntiFixture(content);
     if (guard) continue;
@@ -293,7 +282,6 @@ export function detectPassiveCorrections(
       const match = pattern.regex.exec(content);
       if (!match) continue;
 
-      // Reject corrections that appear within quotation marks — the user is
       // relaying someone else's words, not correcting their own stored memory.
       if (match.index !== undefined && isWithinQuotes(content, match.index)) {
         continue;
@@ -301,7 +289,6 @@ export function detectPassiveCorrections(
 
       const targetHint = extractTargetHint(content, match);
       const correctedAssertion = extractCorrectedAssertion(content, pattern.polarity);
-      // Polarity-agnostic: "actually, we don't use Redis anymore" matches
       // both the update ("actually") and retract ("don't use ... anymore")
       // patterns with the same targetHint — emit one correction, not two
       // (review: "deduplicate overlapping passive-correction cues").

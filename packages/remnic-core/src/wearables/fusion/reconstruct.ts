@@ -1,20 +1,3 @@
-/**
- * Wearable cross-source fusion — reconstruct inputs from stored transcripts.
- *
- * The on-demand service path fuses from already-synced day transcripts
- * (offline, no connector calls). Those files store a human-readable
- * markdown body, so this module parses it back into the normalized
- * `FusionConversationInput[]` shape the fusion engine consumes.
- *
- * Precision caveat (documented, accepted for this foundational PR):
- * the rendered body carries minute-precision clock times in the
- * configured timezone. We reconstruct them as `${date}T${HH}:${MM}:00Z`
- * — every source for a given day is rendered in the SAME timezone, so
- * relative within-day comparisons and time-window alignment stay
- * correct even though the absolute ISO is timezone-normalized. Full
- * segment-level alignment with sub-minute precision is a deferred
- * follow-up (see PR body).
- */
 
 import {
   isValidTranscriptDate,
@@ -33,20 +16,8 @@ const CONVERSATION_HEADING =
 const LOCATION_LINE = /^\*Location: (.+)\*$/;
 const CLOCK_PATTERN = /^(\d{2}):(\d{2})$/;
 
-/** Minutes in a 24-hour day. */
 const MINUTES_PER_DAY = 24 * 60;
 
-/**
- * Upper bound on a plausible single-conversation duration, used to decide
- * whether an earlier heading end clock (or segment clock) is a genuine
- * midnight wrap (start -> midnight -> end/segment within this bound)
- * versus a malformed/ordinary earlier clock that should stay on the same
- * date and be clamped downstream. Generous enough that any legitimate
- * overnight wrap a wearable source would emit still rolls forward; tight
- * enough that a near-24h implied span (e.g. 14:00 -> 13:00) is treated as
- * the error it almost certainly is instead of producing a day-spanning
- * window that broadly clusters unrelated neighbors (#1849).
- */
 const MAX_PLAUSIBLE_WRAP_MINUTES = 12 * 60;
 
 /** Rendered clock ("HH:MM") -> timezone-normalized ISO; "--:--" -> undefined. */
@@ -74,7 +45,6 @@ function clockMinutesOfDay(clock: string): number | undefined {
   return hour * 60 + Number.parseInt(match[2], 10);
 }
 
-/** Increment a YYYY-MM-DD date string by one calendar day (UTC arithmetic). */
 function nextCalendarDay(date: string): string {
   const [y, m, d] = date.split("-").map((part) => Number.parseInt(part, 10));
   const dt = new Date(Date.UTC(y, m - 1, d));
@@ -96,13 +66,6 @@ export function reconstructFusionInputs(
   dayTranscripts: ReadonlyArray<{
     source: string;
     body: string;
-    /**
-     * Whether the body was written by the escape-aware serializer
-     * (`bodyIsEscaped(meta)`). When falsy (legacy) the segment text and
-     * speaker label are used verbatim — no escape decoding — so a legacy
-     * transcript's literal two-character `\n`/`\r` is never altered
-     * (issue #1849).
-     */
     escaped?: boolean;
   }>,
 ): FusionConversationInput[] {
@@ -151,19 +114,6 @@ export function reconstructFusionInputs(
         const [, startClock, endClock, title, id] = heading;
         const startMin = clockMinutesOfDay(startClock);
         const endMin = clockMinutesOfDay(endClock);
-        // A conversation whose end clock reads EARLIER than its start
-        // clock MAY have wrapped past midnight. Roll its end to the next
-        // calendar day ONLY when the implied wrap duration (start ->
-        // midnight -> end) is within a plausible single-conversation
-        // bound; a near-24h implied span (e.g. start 14:00, end 13:00)
-        // is almost certainly a malformed/ordinary earlier clock, not a
-        // midnight crossing. Leaving that end on the SAME date keeps
-        // endIso < startIso so the downstream cluster clamp collapses it
-        // to the start instead of stretching the window across most of
-        // the day and broadly clustering unrelated neighbors (#1849).
-        // Post-midnight SEGMENTS roll independently below under the SAME
-        // plausibility bound: a segment whose clock precedes the start
-        // clock is rolled only when the implied wrap is plausible.
         const wrapped =
           startMin !== undefined && endMin !== undefined && endMin < startMin;
         const wrapDuration =
@@ -198,20 +148,6 @@ export function reconstructFusionInputs(
         const { label, clock, text: rawText } = segmentMatch;
         const text = escaped ? unescapeSegmentText(rawText) : rawText;
         const segMin = clockMinutesOfDay(clock);
-        // A segment clock EARLIER than the conversation start clock MAY
-        // have crossed midnight. Roll it to the next calendar day ONLY
-        // when the implied wrap duration (start -> midnight -> segment)
-        // is within the SAME plausible single-conversation bound as the
-        // heading end; a near-24h implied span (e.g. start 14:00,
-        // segment 13:00) is almost certainly a malformed/provider-skew
-        // earlier clock, not a midnight crossing. Leaving it on the SAME
-        // date keeps segIso < startIso so the downstream cluster clamp
-        // collapses it instead of stretching the interval across most of
-        // the day and broadly clustering unrelated neighbors (#1849).
-        // Driven by the segment-vs-start comparison directly — NOT gated
-        // on `wrapped` — so a heading whose end is missing/unparseable
-        // (e.g. `## 23:55–--:--`) still rolls a plausible `[00:05]`
-        // segment forward.
         const segWrapDuration =
           current.wrapStartMin !== undefined && segMin !== undefined
             ? MINUTES_PER_DAY - current.wrapStartMin + segMin
@@ -224,18 +160,11 @@ export function reconstructFusionInputs(
           segWrapDuration <= MAX_PLAUSIBLE_WRAP_MINUTES;
         const segDate = plausibleSegWrap ? nextCalendarDay(date) : date;
         const startIso = clockToIso(clock, segDate);
-        // Decode the safely-serialized speaker label back to its original
-        // form ONLY when the body is escape-aware; legacy raw labels are
-        // used verbatim so their literal characters are never altered
-        // (#1849).
         const speaker = escaped
           ? unescapeSpeakerLabel(label.trim())
           : label.trim();
         const segment: FusionSegmentInput = {
           speaker,
-          // Self status is read from the RESERVED `(you)` marker, which the
-          // renderer guarantees can only appear on the wearer's label -
-          // never on a non-self display name (issue #1849).
           isSelf: hasSelfMarker(speaker),
           text,
           ...(startIso !== undefined ? { startIso } : {}),

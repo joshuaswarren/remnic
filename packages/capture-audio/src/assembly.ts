@@ -60,7 +60,6 @@ export function assembleConversations(
   return conversations;
 }
 
-/** Default per issue #1897 config surface. */
 export const DEFAULT_CONVERSATION_GAP_MINUTES = 10;
 
 /** A conversation the stateful assembler is building incrementally. */
@@ -90,7 +89,6 @@ function cloneSegment(segment: AssemblySegment): AssemblySegment {
   };
 }
 
-/** Parse an ISO-8601 timestamp to epoch ms, rejecting garbage loudly. */
 function epochMs(value: string, field: string): number {
   const ms = Date.parse(value);
   if (!Number.isFinite(ms)) {

@@ -140,9 +140,6 @@ export interface MergeCapsuleResult {
   manifest: ExportManifestV2;
 }
 
-// ---------------------------------------------------------------------------
-// Main entry point
-// ---------------------------------------------------------------------------
 
 /**
  * Merge a V2 capsule archive into an existing memory directory using
@@ -173,7 +170,6 @@ export async function mergeCapsule(
   const conflictMode: MergeCapsuleConflictMode =
     opts.conflictMode ?? "skip-conflicts";
 
-  // Rule 51: reject invalid conflictMode values up-front before any I/O.
   if (
     conflictMode !== "skip-conflicts" &&
     conflictMode !== "prefer-source" &&
@@ -186,7 +182,6 @@ export async function mergeCapsule(
   }
 
   // ---------------------------------------------------------------------------
-  // Parse + validate archive
   // ---------------------------------------------------------------------------
 
   const raw = await readFile(archiveAbs);
@@ -216,7 +211,6 @@ export async function mergeCapsule(
   const manifest = bundle.manifest;
   const capsule = manifest.capsule;
 
-  // Build path → manifest entry index for O(1) checksum lookup.
   const manifestIndex = new Map<string, ExportManifestV2["files"][number]>();
   for (const f of manifest.files) {
     manifestIndex.set(f.path, f);
@@ -236,27 +230,13 @@ export async function mergeCapsule(
   }
 
   // ---------------------------------------------------------------------------
-  // Phase 1: verify checksums + validate paths before ANY filesystem mutation.
-  // (gotcha #25: don't destroy old state before confirming new state succeeds)
   // ---------------------------------------------------------------------------
 
   const rootReal = await realpath(rootAbs).catch(() => rootAbs);
 
-  // Tracks normalized, case-folded target paths seen so far in phase 1.  Maps
-  // targetAbs.toLowerCase() → first source path so the collision error can name
-  // both offending entries.  Two manifest entries whose computed target paths
-  // normalise to the same absolute path (e.g. `subdir/file.md` and
-  // `subdir/./file.md`, or differing case on case-insensitive filesystems such
-  // as macOS and Windows) would both refer to the same inode.  In
-  // `skip-conflicts`/`prefer-local` modes one entry would be misclassified as a
-  // local conflict against the OTHER entry's just-written content; in
-  // `prefer-source` the second entry would silently overwrite the first.  We
-  // reject the import up-front before any write (Codex P2 thread on PR #748,
-  // mirroring `capsule-import.ts`).
   const seenTargetPaths = new Map<string, string>();
 
   for (const rec of bundle.records) {
-    // Checksum validation.
     const entry = manifestIndex.get(rec.path);
     if (!entry) {
       throw new Error(
@@ -272,7 +252,6 @@ export async function mergeCapsule(
       );
     }
 
-    // Path-traversal validation (mirrors capsule-import.ts).
     if (rec.path.includes("\\")) {
       throw new Error(
         `mergeCapsule: record path contains backslash separators (Windows-style paths are not allowed): ${rec.path}`,
@@ -290,7 +269,6 @@ export async function mergeCapsule(
       );
     }
 
-    // Lexical root containment check.
     const targetAbs = path.join(rootReal, fromPosixRelPath(rec.path));
     if (!isPathInsideRoot(rootReal, targetAbs)) {
       throw new Error(
@@ -298,11 +276,8 @@ export async function mergeCapsule(
       );
     }
 
-    // Symlink-aware containment check (shared helper from fs-utils).
     await assertRealpathInsideRoot(rootReal, targetAbs, rec.path, "mergeCapsule");
 
-    // Target-file symlink guard: if the target already exists as a symlink,
-    // reject — writes through symlinks can redirect to unexpected locations.
     const targetLstat = await lstat(targetAbs).catch(() => null);
     if (targetLstat !== null && targetLstat.isSymbolicLink()) {
       throw new Error(
@@ -310,19 +285,6 @@ export async function mergeCapsule(
       );
     }
 
-    // Duplicate normalized target path detection (Codex P2 #748, mirrors
-    // capsule-import.ts).  `path.join` already normalises `.` segments
-    // (e.g. `subdir/./file.md` → `subdir/file.md`).  On case-insensitive
-    // filesystems (macOS default, Windows), two paths that differ only in case
-    // would resolve to the same inode.  We fold the dedup key to lowercase so
-    // that `subdir/File.md` and `subdir/file.md` are detected as duplicates
-    // before any write occurs.  This is intentionally unconditional: the cost
-    // of an extra `.toLowerCase()` on case-sensitive filesystems is negligible,
-    // and a defensive lowercase is far simpler than probing filesystem
-    // case-sensitivity at runtime.  Without this guard, prefer-source mode
-    // would silently overwrite one entry with the other, and skip-conflicts /
-    // prefer-local would misclassify the second entry as a local conflict
-    // against the first entry's freshly written content.
     const dedupKey = targetAbs.toLowerCase();
     const firstSourcePath = seenTargetPaths.get(dedupKey);
     if (firstSourcePath !== undefined) {
@@ -334,7 +296,6 @@ export async function mergeCapsule(
     seenTargetPaths.set(dedupKey, rec.path);
   }
 
-  // Detect manifest-only entries (missing record). Treat as corruption.
   for (const f of manifest.files) {
     if (!recordPaths.has(f.path)) {
       throw new Error(
@@ -344,49 +305,24 @@ export async function mergeCapsule(
   }
 
   // ---------------------------------------------------------------------------
-  // Phase 2: classify records and apply conflict mode.
   // ---------------------------------------------------------------------------
 
   const merged: MergeCapsuleWrittenRecord[] = [];
   const skipped: MergeCapsuleSkippedRecord[] = [];
   const conflicts: MergeCapsuleConflictRecord[] = [];
-  // Same write-boundary rule as capsule-import (issue #2213): records land
-  // with their entityRef resolved through the target's migration journal,
-  // read through the identity-keyed cache PER RECORD so a peer migration
-  // completing mid-merge is picked up for every record written after it.
   const journalStateDir = path.join(rootReal, "state");
   const historicalIdCache = new HistoricalEntityCanonicalIdCache();
-  // Entity pages in THIS capsule can re-establish collisions the target's
-  // journal already resolved (Codex P1): once the next migration parks the
-  // mapping, a memory canonicalized onto the canonical claimant is
-  // permanently misattributed. Memories whose ref targets a capsule-supplied
-  // entity id merge byte-faithful behind the reconcile marker instead.
   const capsuleEntityIds = new Set(
     bundle.records
       .filter((record) =>
         classifyEntityRefWritePath(rootReal, path.join(rootReal, fromPosixRelPath(record.path))) === "entity")
       .map((record) => path.basename(record.path, ".md")),
   );
-  // Write a record with its entityRef resolved AT the write, then repair if
-  // the journal moved across the write itself — a parked mapping cannot be
-  // fixed after the fact by the reconcile pass (issue #2213). Only memory-tier
-  // records canonicalize; entities/ pages carry relationship TARGETS only
-  // rewriteRelationshipTargets understands, so they merge byte-faithful with
-  // a reconcile marker; everything else merges losslessly. The corpus bump
-  // lands AFTER the repair so a warm cache rescan never captures pre-repair
-  // bytes.
-  // The reconcile marker is published ONCE, after every record landed
-  // (Codex P1, round 21): a per-record marker could be consumed by a peer
-  // between a legacy-preserving memory write and its colliding entity page,
-  // canonicalizing the memory onto the wrong claimant irreversibly.
   let reconcileNeeded = false;
   const writeCanonicalRecord = async (targetAbs: string, rawContent: string): Promise<void> => {
     const kind = classifyEntityRefWritePath(rootReal, targetAbs);
     const rawRef = kind === "memory" ? readEntityRefFromFrontmatter(rawContent) : null;
     if (kind === "memory" && rawRef !== null && capsuleEntityIds.has(rawRef)) {
-      // Ref targets a capsule-supplied entity page (potential collision
-      // claimant): keep the legacy bytes; the deferred marker lets the
-      // migration settle the collision and rewrite per its verdict (Codex P1).
       await writeFile(targetAbs, rawContent, "utf-8");
       reconcileNeeded = true;
       bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
@@ -402,10 +338,6 @@ export async function mergeCapsule(
     }
     const idsAtWrite = historicalIdCache.get(journalStateDir);
     const written = canonicalizeEntityRefFrontmatter(rawContent, idsAtWrite);
-    // Snapshot the pre-write bytes: a repair failure after the write must
-    // restore them (or remove a newly created target) before propagating —
-    // the merge reports failure, so disk must return to its pre-write state
-    // and warm caches stay consistent (AGENTS.md §14).
     const originalBytes = await readLocalFile(targetAbs);
     await writeFile(targetAbs, written, "utf-8");
     try {
@@ -428,7 +360,6 @@ export async function mergeCapsule(
     bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
   };
 
-  // Sort by source path for deterministic output (mirrors capsule-import.ts).
   const sortedRecords = [...bundle.records].sort((a, b) =>
     a.path.localeCompare(b.path),
   );
@@ -441,23 +372,12 @@ export async function mergeCapsule(
     const localContent = await readLocalFile(targetAbs);
 
     if (localContent === null) {
-      // No local copy — always write regardless of mode. Resolve at the write
-      // itself and verify the journal afterwards: a peer migration completing
-      // during any of these awaits (or the write) would otherwise strand the
-      // reference — capsule writes bump only the corpus version, which the
-      // migration fingerprint deliberately ignores.
       await mkdir(path.dirname(targetAbs), { recursive: true });
       await writeCanonicalRecord(targetAbs, rec.content);
       merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted: false });
       continue;
     }
 
-    // Local file exists. A local copy already holding the CANONICALIZED form
-    // (computed AFTER the local read, so a journal published during that
-    // await is reflected) is done. A local copy matching the RAW archive
-    // bytes while a mapping applies is UPGRADED in place — skipping would
-    // leave the legacy entityRef on disk forever, since corpus bumps no
-    // longer trigger migration rewrites (issue #2213).
     const idsAtCompare = historicalIdCache.get(journalStateDir);
     const compareRef = readEntityRefFromFrontmatter(rec.content);
     const canonicalContent =
@@ -469,11 +389,6 @@ export async function mergeCapsule(
     const canonicalSha256 =
       canonicalContent === rec.content ? entry.sha256 : sha256String(canonicalContent).sha256;
 
-    // The identical verdict is only valid for the snapshot it was computed
-    // under (Codex P1): a mapping parked/removed mid-compare can make the
-    // local copy's formerly-canonical ref stale with nothing left to repair
-    // it. A moved journal falls through to the write path, which resolves at
-    // the write and repairs after it.
     if (localSha256 === canonicalSha256 && historicalIdCache.get(journalStateDir) === idsAtCompare) {
       skipped.push({ path: rec.path, reason: "identical" });
       continue;
@@ -484,7 +399,6 @@ export async function mergeCapsule(
       continue;
     }
 
-    // Content differs → conflict.
     const { sha256: archiveSha256 } = sha256String(rec.content);
     conflicts.push({
       path: rec.path,
@@ -493,15 +407,12 @@ export async function mergeCapsule(
     });
 
     if (conflictMode === "skip-conflicts" || conflictMode === "prefer-local") {
-      // Keep local copy, skip archive entry.
       skipped.push({ path: rec.path, reason: "conflict" });
       continue;
     }
 
-    // conflictMode === "prefer-source": snapshot local then overwrite.
     let snapshotted = false;
     if (opts.versioning && opts.versioning.enabled) {
-      // Gotcha #54: snapshot BEFORE overwriting.
       await createVersion(
         targetAbs,
         localContent,
@@ -514,14 +425,10 @@ export async function mergeCapsule(
       snapshotted = true;
     }
 
-    // Same write-time re-resolve + post-write repair as above — the
-    // snapshot/read awaits give a peer migration a real window.
     await writeCanonicalRecord(targetAbs, rec.content);
     merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted });
   }
 
-  // Every record — including every collision claimant entity page — is on
-  // disk; NOW the reconcile pass can settle collisions safely.
   if (reconcileNeeded) {
     await requestEntityCanonicalIdReconcile(journalStateDir);
   }
@@ -537,20 +444,15 @@ export async function mergeCapsule(
     );
   }
 
-  // Sort output lists for determinism.
   merged.sort((a, b) => a.sourcePath.localeCompare(b.sourcePath));
   skipped.sort((a, b) => a.path.localeCompare(b.path));
   conflicts.sort((a, b) => a.path.localeCompare(b.path));
 
-  // Per-write corpus bumps happen inside the loop above (Cursor Medium, #1902):
-  // a concurrent readAllMemories during the merge rescans and never serves the
-  // pre-merge corpus mid-batch.
 
   return { merged, skipped, conflicts, manifest };
 }
 
 // ---------------------------------------------------------------------------
-// Private helpers
 // ---------------------------------------------------------------------------
 
 async function readLocalFile(absPath: string): Promise<string | null> {

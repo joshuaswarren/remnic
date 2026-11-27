@@ -49,13 +49,6 @@ export interface ReplicaPeersConfig {
   maxWatermarkAgeDeltaMs: number;
 }
 
-/**
- * Expand `${ENV_VAR}` placeholders in a config string, matching config.ts's
- * `resolveEnvVars` semantics (throw on unset var / malformed placeholder).
- * Inlined rather than imported because config.ts imports THIS module for
- * `parseReplicaPeersConfig`, so importing back would be circular — the same
- * reason extraction-liveness.ts inlines its numeric validation.
- */
 function expandEnvValue(value: string): string {
   const resolved = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name: string) => {
     const envValue = process.env[name];
@@ -64,9 +57,6 @@ function expandEnvValue(value: string): string {
     }
     return envValue;
   });
-  // An UNTERMINATED `${NAME` matches neither the replacement regex nor the
-  // balanced leftover check below, so the literal typo would be sent as the
-  // bearer token and surface as a misleading `http_401` (round 8, codex P2).
   const unterminated = resolved.match(/\$\{[^}]*$/);
   if (unterminated) {
     throw new Error(`replicaPeers: unterminated environment variable placeholder: ${unterminated[0]}`);
@@ -103,20 +93,12 @@ function asRecord(value: unknown, label: string): Record<string, unknown> {
 }
 
 function parseReplicaPeerToken(raw: unknown, index: number): AgentAccessAuthToken | undefined {
-  // Only an OMITTED token selects unauthenticated polling. A present `null` (round
-  // 4, codex P2) or an explicit empty/whitespace string (round 6, codex P2) is a
-  // present-but-invalid credential: silently dropping it polls without the token
-  // and surfaces a healthy peer as `http_401`, hiding the real config error.
   if (raw === undefined) return undefined;
   if (typeof raw === "string") {
     const trimmed = raw.trim();
     if (trimmed.length === 0) {
       throw new Error(`replicaPeers.peers[${index}].token must be a non-empty string or a SecretRef object`);
     }
-    // Re-validate AFTER expansion: `${PEER_TOKEN}` pointing at a whitespace-only
-    // env value clears the check above, then resolveAgentAccessAuthToken
-    // normalizes it to undefined — silently downgrading an explicitly
-    // authenticated peer to an unauthenticated poll read as http_401 (round 9).
     const expanded = expandEnvValue(trimmed);
     if (expanded.trim().length === 0) {
       throw new Error(`replicaPeers.peers[${index}].token expanded to an empty value`);
@@ -142,20 +124,10 @@ function parseReplicaPeer(value: unknown, index: number): ReplicaPeerConfig {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`replicaPeers.peers[${index}].url must be an http(s) URL (got ${parsed.protocol})`);
   }
-  // The health path is appended to this base by string concatenation, so a query
-  // or fragment would corrupt the request URL (`https://h?x` + `/engram/v1/health`
-  // targets `/` with a mangled query; a fragment drops the path). Reject them at
-  // parse time — a peer URL must be a clean base (round 6, codex). Embedded
-  // credentials (`user:pass@host`) are rejected too: Node's fetch refuses to
-  // construct a request from a URL with credentials, so a healthy peer would
-  // falsely read as unreachable while redaction hid the config mistake.
   if (parsed.search.length > 0 || parsed.hash.length > 0 || parsed.username.length > 0 || parsed.password.length > 0) {
     throw new Error(`replicaPeers.peers[${index}].url must be a clean base URL (no query, fragment, or embedded credentials)`);
   }
   const token = parseReplicaPeerToken(record.token, index);
-  // Store the CANONICAL form: `new URL()` tolerates surrounding whitespace that
-  // the raw string keeps, and the health path is appended by concatenation - so
-  // " https://peer /engram/v1/health" reads as an unreachable healthy peer.
   const canonical = parsed.toString().replace(/\/+$/, "");
   return token === undefined ? { url: canonical } : { url: canonical, token };
 }

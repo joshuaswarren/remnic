@@ -8,10 +8,6 @@ import { StorageManager } from "./storage.js";
 import { SecureStoreLockedError } from "./secure-store/secure-fs.js";
 import type { BehaviorSignalEvent } from "./types.js";
 
-// Issue #1909 (Part C): appendBehaviorSignals used to re-read + JSON.parse the
-// whole (unbounded) behavior-signals.jsonl on EVERY append to rebuild a dedup
-// key set. It now keeps the key set in memory, validated by (size, mtime) file
-// identity; a foreign write forces a reload, matching the catalog cache pattern.
 
 function signal(memoryId: string, signalHash: string): BehaviorSignalEvent {
   return {
@@ -68,7 +64,6 @@ test("steady-state appends reuse the cached key set — no full-file reload", as
       "the same in-memory key set is reused across appends (no reload/re-parse)",
     );
 
-    // Duplicate memoryId:signalHash is still suppressed via the cached set.
     const appended = await storage.appendBehaviorSignals([signal("m1", "h1")]);
     assert.equal(appended, 0, "duplicate signal is deduped against the cached set");
     assert.strictEqual(owner.behaviorSignalsKeyCache?.keys, firstKeySet, "still no reload");
@@ -87,13 +82,10 @@ test("a foreign modification (changed size/mtime) forces a reload and dedups aga
     const owner = cacheOf(storage);
     const firstKeySet = owner.behaviorSignalsKeyCache?.keys;
 
-    // Another process appends a row out-of-band, changing size + mtime.
     await appendFile(signalsPath, `${JSON.stringify(signal("m-foreign", "h-foreign"))}\n`, "utf8");
-    // Ensure mtime advances even on coarse-grained clocks.
     const future = new Date(Date.now() + 5_000);
     await utimes(signalsPath, future, future);
 
-    // Appending the foreign row again must be deduped — proving we reloaded.
     const appended = await storage.appendBehaviorSignals([signal("m-foreign", "h-foreign")]);
     assert.equal(appended, 0, "foreign row was reloaded and recognized as a duplicate");
     assert.notStrictEqual(
@@ -131,10 +123,8 @@ test("malformed rows on disk are skipped (fail-open) and do not block deduping v
     );
 
     const storage = new StorageManager(dir);
-    // m1:h1 already present (valid row) → deduped despite the malformed line.
     const dup = await storage.appendBehaviorSignals([signal("m1", "h1")]);
     assert.equal(dup, 0, "valid existing row is recognized; malformed row ignored");
-    // A new distinct signal appends fine.
     const fresh = await storage.appendBehaviorSignals([signal("m2", "h2")]);
     assert.equal(fresh, 1);
   });
@@ -142,13 +132,10 @@ test("malformed rows on disk are skipped (fail-open) and do not block deduping v
 
 test("SecureStoreLockedError propagates when reading an encrypted ledger while locked", async () => {
   await withMemoryDir(async (dir) => {
-    // Write an encrypted behavior-signals ledger under a key.
     const writer = new StorageManager(dir);
     writer.setSecureStoreKey(Buffer.alloc(32, 3));
     await writer.appendBehaviorSignals([signal("m1", "h1")]);
 
-    // A fresh, locked, secure-required store must not silently read plaintext —
-    // reading the encrypted ledger to rebuild the dedup set throws.
     const locked = new StorageManager(dir);
     locked.setSecureStoreRequired(true);
     locked.setSecureStoreKey(null);
@@ -160,20 +147,14 @@ test("SecureStoreLockedError propagates when reading an encrypted ledger while l
 });
 
 test("a failed append leaves the dedup cache clean so a retry persists the events", async () => {
-  // Issue #1909 review finding 4 (HIGH data-loss): on a cache hit the dedup set
-  // must NOT be mutated before the append is durable. Otherwise a failed append
-  // (unchanged size/mtime) leaves the next call cache-hitting a poisoned set and
-  // silently dropping the events forever.
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);
-    // Seed a row so the in-memory dedup cache is populated (exercise the hit path).
     await storage.appendBehaviorSignals([signal("m0", "h0")]);
     const owner = cacheOf(storage);
     const cachedKeys = owner.behaviorSignalsKeyCache?.keys;
     assert.ok(cachedKeys, "cache seeded");
     const sizeBefore = cachedKeys.size;
 
-    // Force the next underlying secure append to fail.
     const appendOwner = storage as unknown as {
       appendStorageSecureFile: (filePath: string, content: string) => Promise<void>;
     };
@@ -202,7 +183,6 @@ test("a failed append leaves the dedup cache clean so a retry persists the event
       "cache size is unchanged after the failed append",
     );
 
-    // The retry (append now succeeds) persists the previously-dropped event.
     const n = await storage.appendBehaviorSignals([signal("m1", "h1")]);
     assert.equal(n, 1, "the retry is NOT deduped away — the event is persisted");
     const rows = await readRows(path.join(dir, "state", "behavior-signals.jsonl"));
@@ -211,11 +191,6 @@ test("a failed append leaves the dedup cache clean so a retry persists the event
 });
 
 test("concurrent appends serialize: both batches persist once and a later append dedups against their union", async () => {
-  // Issue #1909 review round 3: without a per-instance mutex, two concurrent
-  // appends each snapshot their own dedup set before the writes serialize; the
-  // later completion commits an INCOMPLETE set under the final file identity, so
-  // a subsequent call cache-hits a set missing the first batch and writes
-  // duplicate signals.
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);
     const signalsPath = path.join(dir, "state", "behavior-signals.jsonl");
@@ -228,8 +203,6 @@ test("concurrent appends serialize: both batches persist once and a later append
     assert.equal(n2, 1, "second concurrent batch persisted");
     assert.equal((await readRows(signalsPath)).length, 2, "both concurrent batches written exactly once");
 
-    // Re-submitting BOTH keys must dedup against the UNION of the two batches —
-    // proving the cache reflects everything actually on disk.
     const n3 = await storage.appendBehaviorSignals([signal("mA", "hA"), signal("mB", "hB")]);
     assert.equal(n3, 0, "later append deduped against the union of both concurrent batches");
     assert.equal((await readRows(signalsPath)).length, 2, "no duplicate rows written");

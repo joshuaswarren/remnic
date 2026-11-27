@@ -33,21 +33,17 @@ test("neutral prior: explicit zero counters match absent counters", () => {
 
 test("single failure does not exile the memory (1/3, not 0)", () => {
   const result = computeMemoryWorth({ mw_success: 0, mw_fail: 1, now: NOW });
-  // Laplace: (0+1) / (0+1+2) = 1/3.
   assert.ok(Math.abs(result.score - 1 / 3) < 1e-9);
   assert.equal(result.confidence, 1);
 });
 
 test("single success does not saturate the memory (2/3, not 1)", () => {
   const result = computeMemoryWorth({ mw_success: 1, mw_fail: 0, now: NOW });
-  // Laplace: (1+1) / (1+0+2) = 2/3.
   assert.ok(Math.abs(result.score - 2 / 3) < 1e-9);
   assert.equal(result.confidence, 1);
 });
 
 test("large counters converge toward empirical frequency", () => {
-  // 90 successes out of 100 → raw frequency 0.9.
-  // Laplace: (90+1) / (90+10+2) = 91 / 102 ≈ 0.8922.
   const result = computeMemoryWorth({
     mw_success: 90,
     mw_fail: 10,
@@ -78,12 +74,10 @@ test("score is monotonic in successes (more wins ⇒ higher score)", () => {
 });
 
 test("corrupt inputs (negative, NaN, float) fail safely to prior", () => {
-  // Negative counters → treated as 0 (upstream already rejects, but defend).
   const negative = computeMemoryWorth({ mw_success: -5, mw_fail: -2, now: NOW });
   assert.equal(negative.score, 0.5);
   assert.equal(negative.confidence, 0);
 
-  // NaN / Infinity counters → treated as 0.
   const nanCounter = computeMemoryWorth({
     mw_success: Number.NaN,
     mw_fail: Number.POSITIVE_INFINITY,
@@ -92,9 +86,6 @@ test("corrupt inputs (negative, NaN, float) fail safely to prior", () => {
   assert.equal(nanCounter.score, 0.5);
   assert.equal(nanCounter.confidence, 0);
 
-  // Non-integer counters are refused outright (not floored). A stored `1.9`
-  // is a corruption signal and we'd rather score to the prior than pretend
-  // it was "1 real success".
   const floatCounter = computeMemoryWorth({
     mw_success: 1.9,
     mw_fail: 0,
@@ -105,10 +96,6 @@ test("corrupt inputs (negative, NaN, float) fail safely to prior", () => {
 });
 
 test("decay: stale outcomes are pulled back toward the prior", () => {
-  // 5 successes, 0 failures, observed exactly one half-life ago.
-  // With halfLife = 1d, decay factor = 0.5 so effective counts = (2.5, 0)
-  // and score = (2.5+1)/(2.5+0+2) = 3.5/4.5 ≈ 0.7778. Without decay it would
-  // have been (5+1)/(5+0+2) = 6/7 ≈ 0.857.
   const dayMs = 24 * 60 * 60 * 1000;
   const lastAccessed = new Date(NOW.getTime() - dayMs).toISOString();
   const decayed = computeMemoryWorth({
@@ -132,8 +119,6 @@ test("decay: stale outcomes are pulled back toward the prior", () => {
 });
 
 test("decay: extremely old outcomes collapse toward 0.5", () => {
-  // 1000 days old with a 1-day half-life ⇒ factor ≈ 2^-1000, functionally 0.
-  // Effective counts are ~0, so the ratio lands on the uniform prior.
   const dayMs = 24 * 60 * 60 * 1000;
   const lastAccessed = new Date(NOW.getTime() - 1000 * dayMs).toISOString();
   const result = computeMemoryWorth({
@@ -176,9 +161,6 @@ test("decay: zero or negative half-life disables decay", () => {
 });
 
 test("decay: future lastAccessed timestamps clamp to age=0", () => {
-  // If a test / tool seeds lastAccessed slightly in the future, we must not
-  // apply negative decay (which would blow up to >1). Age clamps to zero, so
-  // the raw counts are used untouched.
   const dayMs = 24 * 60 * 60 * 1000;
   const lastAccessed = new Date(NOW.getTime() + dayMs).toISOString();
   const fresh = computeMemoryWorth({
@@ -205,7 +187,6 @@ test("decay: unparseable lastAccessed is ignored, not fatal", () => {
     now: NOW,
     halfLifeMs: 1000,
   });
-  // Same as if no timestamp were supplied at all.
   const baseline = computeMemoryWorth({
     mw_success: 2,
     mw_fail: 1,
@@ -216,9 +197,6 @@ test("decay: unparseable lastAccessed is ignored, not fatal", () => {
 });
 
 test("partial corruption fails the whole record to the prior", () => {
-  // Codex P2: `mw_success: 10` with `mw_fail: NaN` must NOT read as strong
-  // positive evidence. Either counter being corrupt must collapse both to
-  // the prior.
   const sGoodFBad = computeMemoryWorth({
     mw_success: 10,
     mw_fail: Number.NaN,
@@ -235,9 +213,6 @@ test("partial corruption fails the whole record to the prior", () => {
   assert.equal(sBadFGood.score, 0.5);
   assert.equal(sBadFGood.confidence, 0);
 
-  // Sanity: an absent counter is not corruption, so a record with
-  // `mw_success: 10, mw_fail: undefined` still reads as strong positive
-  // evidence (legacy half-instrumentation is allowed).
   const sGoodFAbsent = computeMemoryWorth({
     mw_success: 10,
     mw_fail: undefined,
@@ -248,9 +223,6 @@ test("partial corruption fails the whole record to the prior", () => {
 });
 
 test("overflow-prone counters fail safely to the neutral prior", () => {
-  // 1e308 + 1e308 + 2 overflows to Infinity in IEEE-754, which would drive
-  // the ratio to 0 instead of the neutral 0.5. The helper must detect the
-  // corruption and collapse to the prior.
   const huge = computeMemoryWorth({
     mw_success: 1e308,
     mw_fail: 1e308,
@@ -261,8 +233,6 @@ test("overflow-prone counters fail safely to the neutral prior", () => {
   assert.ok(Number.isFinite(huge.score));
   assert.ok(Number.isFinite(huge.confidence));
 
-  // Merely-very-large but still safe-integer counts should pass through
-  // without collapsing. Laplace of (1000, 1000) is exactly 0.5.
   const large = computeMemoryWorth({
     mw_success: 1000,
     mw_fail: 1000,
@@ -273,9 +243,6 @@ test("overflow-prone counters fail safely to the neutral prior", () => {
 });
 
 test("invalid `now` Date does not poison output with NaN", () => {
-  // If a caller mis-constructs `now` (e.g., `new Date("bad")`), the helper
-  // must still return finite, well-clamped numbers rather than NaN — a NaN
-  // score would sort arbitrarily in downstream recall ranking.
   const invalidNow = new Date("not-a-date");
   const result = computeMemoryWorth({
     mw_success: 2,
@@ -288,14 +255,11 @@ test("invalid `now` Date does not poison output with NaN", () => {
   assert.ok(Number.isFinite(result.p_success));
   assert.ok(Number.isFinite(result.confidence));
   assert.ok(result.score >= 0 && result.score <= 1);
-  // With decay disabled by the invalid now, raw counts (2 successes, 1
-  // failure) yield Laplace (2+1)/(2+1+2) = 3/5 = 0.6.
   assert.ok(Math.abs(result.score - 0.6) < 1e-9);
   assert.equal(result.confidence, 3);
 });
 
 test("score is always within [0, 1]", () => {
-  // Extreme cases: huge failure count, tiny decay factor, etc.
   const cases = [
     { mw_success: 0, mw_fail: 1_000_000 },
     { mw_success: 1_000_000, mw_fail: 0 },
@@ -309,9 +273,6 @@ test("score is always within [0, 1]", () => {
 });
 
 test("p_success mirrors score", () => {
-  // These two fields are distinct in name so observability can label them
-  // separately, but by construction they are the same number. Pin that so
-  // a future diverging refactor is caught by tests.
   const r = computeMemoryWorth({ mw_success: 3, mw_fail: 2, now: NOW });
   assert.equal(r.score, r.p_success);
 });

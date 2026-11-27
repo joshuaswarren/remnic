@@ -20,7 +20,6 @@ export const ACTIVITY_DIR_NAME = "activity";
 
 /** Attribute at most this much dwell to a single snapshot (idle gaps capped). */
 const MAX_DWELL_MS = 15 * 60_000;
-/** Notable-excerpt caps. */
 const NOTABLE_MAX_WINDOWS = 10;
 const NOTABLE_EXCERPT_CHARS = 280;
 
@@ -40,14 +39,11 @@ export function isValidActivityDate(date: string): boolean {
 
 export function activityDigestPath(memoryDir: string, date: string): string {
   if (!isValidActivityDate(date)) {
-    // Never interpolate an unvalidated date into a filesystem path (a `../`
-    // would escape <memoryDir>/activity/). Reject loudly.
     throw new RangeError(`Invalid activity date "${date}"; expected YYYY-MM-DD.`);
   }
   return path.join(memoryDir, ACTIVITY_DIR_NAME, `${date}.md`);
 }
 
-// ── DST-aware local-day window ──────────────────────────────────────────────
 
 export function timezoneOffsetIso(instant: Date, timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -68,16 +64,6 @@ export function assertValidTimezone(timezone: string): void {
 }
 
 function zonedDayStartIso(date: string, timezone: string): string {
-  // The first UTC instant whose local wall-clock is this date at 00:00. Probe
-  // several instants across the day to collect every offset in play, keep an
-  // offset only if constructing local midnight with it lands on an exact
-  // local midnight, then take the EARLIEST such instant — the FIRST 00:00
-  // across a rollback that repeats local midnight (America/Cancun dropped
-  // LMT −05:47:04 for −06:00 exactly at local midnight 1922-01-01, so 00:00
-  // occurred twice; the day must start at the first one).
-  // Probe the previous UTC day too: for zones east of UTC the requested date's
-  // UTC instants all fall after local midnight, so the pre-transition offset
-  // valid at the real local 00:00 is only observable on the prior UTC day.
   const wall = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
     year: "numeric",
@@ -98,14 +84,6 @@ function zonedDayStartIso(date: string, timezone: string): string {
     return `${year}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`;
   };
   const localDate = (ms: number): string => localStamp(ms).slice(0, 10);
-  // Derive each probe's offset at FULL precision (seconds included) from the
-  // rendered wall clock, never from a longOffset string: those strings
-  // truncate to whole minutes while historical LMT offsets carry seconds
-  // (America/Cancun was −05:47:04; Asia/Manila −15:56:08). A candidate built
-  // from a truncated offset lands off the true midnight instant, the
-  // exact-stamp check below rejects it, and a midnight repeated by a
-  // rollback silently resolves to the later occurrence under the new
-  // whole-minute offset — misattributing the gap between the two.
   const offsetMs = (ms: number): number | null => {
     const wallAsUtc = Date.parse(`${localStamp(ms)}Z`);
     return Number.isFinite(wallAsUtc) ? wallAsUtc - ms : null;
@@ -124,26 +102,10 @@ function zonedDayStartIso(date: string, timezone: string): string {
     if (offset === null) continue;
     const candidate = midnightUtc - offset;
     if (!Number.isFinite(candidate)) continue;
-    // Accept only an EXACT local midnight. This rejects a wall-clock midnight
-    // that never occurred (spring-forward at 00:00, Egypt 2026) and one whose
-    // instant the transition already carried past (Asia/Manila's LMT midnight
-    // of 1844-12-31 lands on the post-transition clock as 1845-01-01).
     if (localStamp(candidate) !== `${date}T00:00:00`) continue;
     if (best === null || candidate < best) best = candidate;
   }
   if (best === null) {
-    // No exact local midnight: either local midnight was skipped by a
-    // spring-forward (00:00 → 01:00) or the ENTIRE civil date never existed
-    // (Pacific/Apia 2011-12-30; Asia/Manila 1844-12-31). Extending the
-    // never-backdate convention, resolve the day start to the first instant
-    // whose local calendar date reaches `date`. Local date is monotone
-    // non-decreasing in the UTC instant (a fall-back never crosses local
-    // midnight backwards), so binary-search a 48h bracket down to the
-    // millisecond — transitions can carry seconds (Manila's landed at
-    // :56:08, not on a minute boundary), so minute granularity mis-resolves
-    // by up to 59s and hands the skipped date a window of its own. The
-    // bracket is safe: `<date>T00:00Z − 24h` is always locally before
-    // `date`, and `<date>T00:00Z + 24h` is always locally on/after it.
     let lo = midnightUtc - 24 * 3_600_000;
     let hi = lo + 48 * 3_600_000;
     while (lo < hi) {
@@ -181,14 +143,6 @@ export function activityDayWindow(date: string, timezone: string): { startUtc: s
   assertValidTimezone(timezone);
   const startUtc = zonedDayStartIso(date, timezone);
   const endUtc = zonedDayStartIso(nextIsoDate(date), timezone);
-  // Skipped-date semantics (Pacific/Apia 2011-12-30 class): the skipped
-  // date's start and the following date's start both resolve to the
-  // transition instant, so the window is naturally zero-width. Keep it
-  // that way: a date that never occurred contributes to no daily total
-  // (daysOverlappingWeek drops zero-width days) and a connector sync for
-  // it fetches nothing. Pushing the end forward to stay non-degenerate
-  // would alias the next real day's interval and double-attribute every
-  // card in it to two daily totals.
   return { startUtc, endUtc };
 }
 
@@ -213,12 +167,9 @@ export function activityDateInTimezone(instant: Date, timezone: string): string 
   }
 }
 
-// ── Rendering ───────────────────────────────────────────────────────────────
 
 function sortedByTime(snapshots: ActivitySnapshot[]): ActivitySnapshot[] {
   return [...snapshots].sort((a, b) => {
-    // Compare by parsed instant, not raw string, so mixed valid ISO forms
-    // (Z vs offset, varying precision) still order chronologically.
     const at = Date.parse(a.capturedAtUtc);
     const bt = Date.parse(b.capturedAtUtc);
     if (at !== bt && Number.isFinite(at) && Number.isFinite(bt)) return at < bt ? -1 : 1;
@@ -226,8 +177,6 @@ function sortedByTime(snapshots: ActivitySnapshot[]): ActivitySnapshot[] {
     const bid = b.id ?? 0;
     if (aid < bid) return -1;
     if (aid > bid) return 1;
-    // Unsaved snapshots (pre-store) both default to id 0; fall back to the
-    // content hash (their dedup identity), then app/window, for a total order.
     if (a.contentHash !== b.contentHash) return a.contentHash < b.contentHash ? -1 : 1;
     if (a.app !== b.app) return a.app < b.app ? -1 : 1;
     if (a.windowTitle !== b.windowTitle) return a.windowTitle < b.windowTitle ? -1 : 1;

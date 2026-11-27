@@ -78,9 +78,6 @@ function makeFactory(client: GoogleDriveClient): GoogleDriveClientFactory {
   return async () => client;
 }
 
-// ---------------------------------------------------------------------------
-// Config validation
-// ---------------------------------------------------------------------------
 
 test("validateGoogleDriveConfig accepts a minimal valid config", () => {
   const cfg = validateGoogleDriveConfig({ ...SYNTHETIC_CREDS });
@@ -188,17 +185,14 @@ test("validateGoogleDriveConfig rejects missing credentials", () => {
 });
 
 test("validateGoogleDriveConfig rejects malformed pollIntervalMs", () => {
-  // Non-number — should throw, never silently default. CLAUDE.md #51.
   assert.throws(
     () => validateGoogleDriveConfig({ ...SYNTHETIC_CREDS, pollIntervalMs: "300000" }),
     /pollIntervalMs/,
   );
-  // Below the floor.
   assert.throws(
     () => validateGoogleDriveConfig({ ...SYNTHETIC_CREDS, pollIntervalMs: 50 }),
     /≥1000/,
   );
-  // Above the ceiling.
   assert.throws(
     () =>
       validateGoogleDriveConfig({
@@ -207,7 +201,6 @@ test("validateGoogleDriveConfig rejects malformed pollIntervalMs", () => {
       }),
     /≤/,
   );
-  // Non-integer.
   assert.throws(
     () => validateGoogleDriveConfig({ ...SYNTHETIC_CREDS, pollIntervalMs: 3000.5 }),
     /integer/,
@@ -238,12 +231,10 @@ test("validateGoogleDriveConfig rejects malformed folderIds", () => {
     () => validateGoogleDriveConfig({ ...SYNTHETIC_CREDS, folderIds: [42] }),
     /folderIds.*strings/,
   );
-  // Path-traversal-shaped ids must be rejected.
   assert.throws(
     () => validateGoogleDriveConfig({ ...SYNTHETIC_CREDS, folderIds: ["../etc/passwd"] }),
     /not a valid Drive folder id/,
   );
-  // Too short — fewer than 8 chars.
   assert.throws(
     () => validateGoogleDriveConfig({ ...SYNTHETIC_CREDS, folderIds: ["short"] }),
     /not a valid Drive folder id/,
@@ -251,7 +242,6 @@ test("validateGoogleDriveConfig rejects malformed folderIds", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Connector identity
 // ---------------------------------------------------------------------------
 
 test("createGoogleDriveConnector exposes the documented id and display name", () => {
@@ -263,7 +253,6 @@ test("createGoogleDriveConnector exposes the documented id and display name", ()
 });
 
 // ---------------------------------------------------------------------------
-// First-sync bootstrap behavior
 // ---------------------------------------------------------------------------
 
 test("first sync (cursor=null) returns no docs and seeds the cursor", async () => {
@@ -290,7 +279,6 @@ test("first sync rejects an empty start token from upstream", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Incremental sync produces expected memory-import events
 // ---------------------------------------------------------------------------
 
 test("incremental sync emits ConnectorDocument entries for Google-native files", async () => {
@@ -359,19 +347,14 @@ test("incremental sync uses media download for plain-text MIME types", async () 
 test("incremental sync skips binary, trashed, removed, and oversize files", async () => {
   const page: DriveChangesPage = {
     changes: [
-      // Binary — not in our text allowlist.
       makeChange({ id: "fileid-img", mimeType: "image/png" }),
-      // Trashed.
       makeChange({ id: "fileid-trash", mimeType: "application/vnd.google-apps.document", trashed: true }),
-      // Removed (no `file` payload).
       { removed: true, fileId: "fileid-removed" },
-      // Oversize.
       makeChange({
         id: "fileid-huge",
         mimeType: "text/plain",
         size: String(50 * 1024 * 1024),
       }),
-      // OK — should still come through.
       makeChange({ id: "fileid-ok", mimeType: "text/plain", size: 100 }),
     ],
     newStartPageToken: "tok-end",
@@ -465,8 +448,6 @@ test("a single 404 in fetchDocument does not poison the whole pass", async () =>
 });
 
 test("a 403 permission-denied is treated as terminal (skip-and-continue, cursor advances)", async () => {
-  // 403 mirrors 404: the file is inaccessible and won't become accessible
-  // by retrying. Skip-and-log is the right call. Cursor advance is fine.
   const page: DriveChangesPage = {
     changes: [
       makeChange({ id: "fileid-good", mimeType: "text/plain" }),
@@ -504,15 +485,10 @@ test("a 403 permission-denied is treated as terminal (skip-and-continue, cursor 
   const result = await connector.syncIncremental({ cursor, config });
   assert.equal(result.newDocs.length, 1);
   assert.equal(result.newDocs[0].source.externalId, "fileid-good");
-  // Cursor MUST advance for terminal errors — there's nothing to retry.
   assert.equal(result.nextCursor.value, "tok-end");
 });
 
 test("a transient 429 re-throws and the cursor does NOT advance", async () => {
-  // CLAUDE.md gotcha: silently swallowing transient errors permanently
-  // loses imports during outages. 429 must surface so the connector
-  // framework can back off and retry on the next poll using the
-  // pre-existing cursor.
   const page: DriveChangesPage = {
     changes: [
       makeChange({ id: "fileid-good", mimeType: "text/plain" }),
@@ -646,7 +622,6 @@ test("a network-layer ECONNRESET re-throws as transient", async () => {
       throw new Error("unexpected export call");
     },
     async getFileMedia() {
-      // No HTTP status — pure network error.
       throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
     },
   };
@@ -665,12 +640,10 @@ test("a network-layer ECONNRESET re-throws as transient", async () => {
 });
 
 test("isTransientDriveError classifies common error shapes", () => {
-  // Terminal — skip-and-continue.
   assert.equal(isTransientDriveError({ status: 404 }), false);
   assert.equal(isTransientDriveError({ response: { status: 403 } }), false);
   assert.equal(isTransientDriveError({ response: { status: 400 } }), false);
   assert.equal(isTransientDriveError({ response: { status: 410 } }), false);
-  // Transient — re-throw.
   assert.equal(isTransientDriveError({ response: { status: 429 } }), true);
   assert.equal(isTransientDriveError({ response: { status: 500 } }), true);
   assert.equal(isTransientDriveError({ response: { status: 503 } }), true);
@@ -678,16 +651,12 @@ test("isTransientDriveError classifies common error shapes", () => {
   // GaxiosError-style string code.
   assert.equal(isTransientDriveError({ code: "429" }), true);
   assert.equal(isTransientDriveError({ code: "503" }), true);
-  // Network errors.
   assert.equal(isTransientDriveError({ code: "ECONNRESET" }), true);
   assert.equal(isTransientDriveError({ code: "ETIMEDOUT" }), true);
   assert.equal(isTransientDriveError({ code: "ENOTFOUND" }), true);
   assert.equal(isTransientDriveError({ code: "EAI_AGAIN" }), true);
-  // AbortError.
   assert.equal(isTransientDriveError({ name: "AbortError" }), true);
-  // Bare Error with no metadata — conservatively transient.
   assert.equal(isTransientDriveError(new Error("unknown")), true);
-  // Non-objects.
   assert.equal(isTransientDriveError(null), false);
   assert.equal(isTransientDriveError(undefined), false);
   assert.equal(isTransientDriveError("oops"), false);
@@ -711,7 +680,6 @@ test("syncIncremental honors abortSignal between pages", async () => {
     async listChanges() {
       const page = pageIdx === 0 ? page1 : page2;
       pageIdx++;
-      // Abort after page 1.
       if (pageIdx === 1) controller.abort();
       return page;
     },
@@ -754,9 +722,6 @@ test("syncIncremental rejects a cursor of an unexpected kind", async () => {
 test("validateConfig is enforced again on every sync pass", async () => {
   const client = makeMockClient({});
   const connector = createGoogleDriveConnector({ clientFactory: makeFactory(client) });
-  // Bypass the boundary by passing a raw config that wouldn't survive
-  // validation. The framework persists the validated config but we want
-  // to make sure a JS caller cannot smuggle bad state into a sync.
   const badConfig = { clientId: "ok", clientSecret: "ok", refreshToken: "" } as unknown as ConnectorConfig;
   const cursor: ConnectorCursor = {
     kind: GOOGLE_DRIVE_CURSOR_KIND,

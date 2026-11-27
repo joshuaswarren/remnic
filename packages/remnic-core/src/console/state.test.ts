@@ -36,10 +36,8 @@ test("gatherConsoleState returns a JSON-serializable snapshot", async () => {
     }),
   );
 
-  // capturedAt is ISO-8601
   assert.match(snapshot.capturedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
 
-  // Must round-trip cleanly through JSON
   const json = JSON.stringify(snapshot);
   const parsed = JSON.parse(json);
   assert.equal(typeof parsed, "object");
@@ -62,7 +60,6 @@ test("one subsystem failure does not crash gatherConsoleState", async () => {
     }),
   );
 
-  // Buffer section is empty + an entry in errors
   assert.equal(snapshot.bufferState.turnsCount, 0);
   assert.equal(snapshot.bufferState.byteCount, 0);
   assert.ok(
@@ -70,7 +67,6 @@ test("one subsystem failure does not crash gatherConsoleState", async () => {
     `expected bufferState error, got ${JSON.stringify(snapshot.errors)}`,
   );
 
-  // Other sections still populated
   assert.equal(snapshot.qmdProbe.debug, "stub");
 });
 
@@ -96,7 +92,6 @@ test("missing optional accessors fall back to placeholders", async () => {
   assert.deepEqual(snapshot.extractionQueue.recentVerdicts, []);
   assert.deepEqual(snapshot.dedupRecent, []);
   assert.equal(snapshot.bufferState.turnsCount, 0);
-  // No errors — these are graceful empty fallbacks, not failures.
   assert.deepEqual(snapshot.errors, []);
 });
 
@@ -136,7 +131,6 @@ test("maintenance ledger tail reads the most recent N rows", async () => {
         }),
       );
     }
-    // Add a malformed row to confirm the parser tolerates it.
     lines.push("not-json");
     writeFileSync(
       path.join(ledgerDir, "rebuilt-observations.jsonl"),
@@ -146,7 +140,6 @@ test("maintenance ledger tail reads the most recent N rows", async () => {
     const snapshot = await gatherConsoleState({
       config: { memoryDir: baseDir },
     });
-    // Capped at 50; oldest-first within the tail window.
     assert.equal(snapshot.maintenanceLedgerTail.length, 50);
     assert.ok(
       snapshot.maintenanceLedgerTail[0].ts <
@@ -177,7 +170,6 @@ test("maintenance ledger merges judge-verdicts + rebuilt-observations and picks 
   try {
     const ledgerDir = path.join(baseDir, "state", "observation-ledger");
     mkdirSync(ledgerDir, { recursive: true });
-    // Verdicts file: ts-ordered append log with two events.
     writeFileSync(
       path.join(ledgerDir, "extraction-judge-verdicts.jsonl"),
       [
@@ -185,10 +177,6 @@ test("maintenance ledger merges judge-verdicts + rebuilt-observations and picks 
         JSON.stringify({ ts: "2026-04-25T11:00:00Z", verdictKind: "reject" }),
       ].join("\n") + "\n",
     );
-    // Rebuilt-observations file: sorted by sessionKey/hour, NOT
-    // recency. Includes a row from a lexicographically-late session
-    // that's actually the OLDEST event, and a row from a
-    // lexicographically-early session that's the MOST-RECENT.
     writeFileSync(
       path.join(ledgerDir, "rebuilt-observations.jsonl"),
       [
@@ -209,10 +197,6 @@ test("maintenance ledger merges judge-verdicts + rebuilt-observations and picks 
     const snapshot = await gatherConsoleState(
       makeOrchestrator({ config: { memoryDir: baseDir } }),
     );
-    // Most-recent ts is the aardvark row at hour=2026-04-25T12:00:00Z.
-    // The byte-tail-only approach would have picked the zebra row
-    // because it sits last in the file. Streaming top-N visits every
-    // row and keeps the truly-most-recent.
     const tail = snapshot.maintenanceLedgerTail;
     assert.ok(tail.length >= 3);
     const last = tail[tail.length - 1];

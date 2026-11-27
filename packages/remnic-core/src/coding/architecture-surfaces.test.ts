@@ -39,9 +39,6 @@ import type {
   MemoryFrontmatter,
 } from "../types.js";
 
-// ──────────────────────────────────────────────────────────────────────────
-// Fixtures
-// ──────────────────────────────────────────────────────────────────────────
 
 const NOW = "2026-07-05T12:00:00.000Z";
 
@@ -126,8 +123,6 @@ function makeStubStorage(initialMemories: MemoryFile[] = []): StubStorage {
       const m = allMemories.find((mem) => mem.frontmatter.id === id);
       if (m) {
         m.content = newContent;
-        // Apply sourceConnector backfill to the in-memory frontmatter so
-        // tests can verify the caller's intent matches what reaches storage.
         if (options?.sourceConnector) {
           (m.frontmatter as unknown as Record<string, unknown>).sourceConnector = options.sourceConnector;
         }
@@ -159,7 +154,6 @@ function makeContext(overrides: Partial<ArchitectureSurfaceContext> = {}): Archi
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Subcommand validation
 // ──────────────────────────────────────────────────────────────────────────
 
 test("subcommands: isArchitectureSubcommand narrows valid values", () => {
@@ -178,7 +172,6 @@ test("subcommands: formatArchitectureSubcommands lists valid options", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Gate predicates
 // ──────────────────────────────────────────────────────────────────────────
 
 test("gate: surface enabled when config + architectureCard + coding context all true", () => {
@@ -207,7 +200,6 @@ test("gate: visibility (tools/list) matches config-only check", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Handler gate — throws when gate fails
 // ──────────────────────────────────────────────────────────────────────────
 
 test("handler: throws when gate is off (no coding context)", async () => {
@@ -220,7 +212,6 @@ test("handler: throws when gate is off (no coding context)", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// get — not-found when no card exists
 // ──────────────────────────────────────────────────────────────────────────
 
 test("get: returns found=false when no card exists in namespace", async () => {
@@ -233,7 +224,6 @@ test("get: returns found=false when no card exists in namespace", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// get — found when card exists
 // ──────────────────────────────────────────────────────────────────────────
 
 test("get: returns found=true with card content when card exists", async () => {
@@ -249,10 +239,6 @@ test("get: returns found=true with card content when card exists", async () => {
 });
 
 test("get: strips the [Attributes:] suffix writeMemory appends (cursor review)", async () => {
-  // writeMemory appends `\n[Attributes: cardKind=architecture]` to the stored
-  // body when structuredAttributes are present. The card markdown returned to
-  // clients must NOT include that storage-metadata suffix, and byteSize must
-  // reflect the card alone.
   const cardMarkdown = "# Architecture Card\n\nreal content";
   const storedContent = `${cardMarkdown}\n[Attributes: cardKind=architecture]`;
   const storage = makeStubStorage([makeCardMemory({ content: storedContent })]);
@@ -266,12 +252,6 @@ test("get: strips the [Attributes:] suffix writeMemory appends (cursor review)",
 });
 
 test("get: shares storage's stripper — legitimate trailing attributes-like line is not truncated (cursor review)", async () => {
-  // The handler now uses the shared `stripAttributesSuffix` from
-  // structured-attributes.ts (dedup). That helper only strips a single-line
-  // enrichment whose payload has no premature `]` or embedded newline — so
-  // card markdown that legitimately ends in an attributes-LIKE line (e.g. one
-  // quoting a `[config]` token) is returned verbatim. The old local copy only
-  // checked the trailing `]` and would have sliced this content in half.
   const cardMarkdown =
     "# Architecture Card\n\nreal content\n[Attributes: see the [config] section]";
   const storage = makeStubStorage([makeCardMemory({ content: cardMarkdown })]);
@@ -284,7 +264,6 @@ test("get: shares storage's stripper — legitimate trailing attributes-like lin
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// refresh — first write (no existing card)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("refresh: first card written via writeMemory, no version snapshot", async () => {
@@ -307,7 +286,6 @@ test("refresh: first card written via writeMemory, no version snapshot", async (
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// refresh — update existing card (snapshot before overwrite, rule 25)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("refresh: existing card snapshotted before update (rule 25)", async () => {
@@ -332,7 +310,6 @@ test("refresh: existing card snapshotted before update (rule 25)", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// refresh — build failure → tagged failure, nothing persisted
 // ──────────────────────────────────────────────────────────────────────────
 
 test("refresh: build failure throws, nothing persisted (rule 34/44)", async () => {
@@ -376,7 +353,6 @@ test("refresh: invalid_root build failure surfaces the code", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// refresh — truncated card carries the truncation tag
 // ──────────────────────────────────────────────────────────────────────────
 
 test("refresh: truncated card carries 'truncated' tag in write options", async () => {
@@ -396,18 +372,12 @@ test("refresh: truncated card carries 'truncated' tag in write options", async (
   const result = await handleCodingArchitecture({ subcommand: "refresh", sessionKey: "s1" }, ctx);
   if (result.subcommand !== "refresh") return;
   assert.equal(result.truncated, true);
-  // Tags are passed in the writeMemory options and the stub stores them in frontmatter.
   assert.deepEqual(storage.written[0]!.options.tags, [ARCHITECTURE_CARD_TAG, "truncated"]);
   const written = storage.memories[storage.memories.length - 1];
   assert.ok(written?.frontmatter.tags?.includes("truncated"), "truncated tag present");
 });
 
 test("refresh: tombstone-blocked write surfaces refreshed:false + blocked reason (#1645)", async () => {
-  // findArchitectureCardMemory filters non-active cards, so a blocked prior
-  // card resolves to null and the refresh takes the first-card writeMemory
-  // path. When that write is tombstone-blocked (#1579), the response must
-  // report refreshed:false with a blocked reason — NOT refreshed:true, which
-  // would hide the block from callers/UI.
   const base = makeStubStorage();
   const storage: StubStorage = {
     ...base,
@@ -427,13 +397,9 @@ test("refresh: tombstone-blocked write surfaces refreshed:false + blocked reason
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// get — truncation derived from content, not from a stale tag (cursor review)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("get: truncation derived from content marker, surviving an update that left stale tags", async () => {
-  // Seed a card that was originally truncated (tag present) but whose
-  // content was later updated to a non-truncated body via updateMemory
-  // (which does not refresh frontmatter tags).
   const storage = makeStubStorage([
     makeCardMemory({
       content: "# Fresh card — no truncation marker",
@@ -462,7 +428,6 @@ test("get: truncation true when content carries the marker", async () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// findArchitectureCardMemory — helper
 // ──────────────────────────────────────────────────────────────────────────
 
 test("findArchitectureCardMemory: returns null when no card in namespace", async () => {
@@ -494,8 +459,6 @@ test("findArchitectureCardMemory: returns the most recently updated card", async
 });
 
 test("findArchitectureCardMemory: rejects tagged fact without cardKind marker (codex review)", async () => {
-  // A user-created fact that merely happens to be tagged "architecture-card"
-  // must NOT be treated as the managed card (would be overwritten on refresh).
   const storage = makeStubStorage([
     makeCardMemory({ frontmatter: { structuredAttributes: {} } }),
   ]);
@@ -512,7 +475,6 @@ test("findArchitectureCardMemory: skips cards with archivedAt set (cursor review
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Prove-fail-before: tools/list gate (rule 39)
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -556,7 +518,6 @@ test("tools/list: engram.coding_architecture present when gate on", async () => 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Registry fitness: coding_architecture operation is registered
 // ──────────────────────────────────────────────────────────────────────────
 
 test("registry: coding_architecture operation is registered through the boundary", () => {
@@ -566,7 +527,6 @@ test("registry: coding_architecture operation is registered through the boundary
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Three surfaces → one service method (rule 22 spirit)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("MCP surface: engram.coding_architecture dispatches through the boundary to service.codingArchitecture", async () => {
@@ -614,11 +574,9 @@ test("MCP surface: remnic.coding_architecture alias dispatches identically", asy
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Regression: sourceConnector provenance through updateMemory (codex finding)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("refresh: updateMemory backfills sourceConnector when connector provided", async () => {
-  // Seed an existing card WITHOUT sourceConnector (pre-provenance card).
   const storage = makeStubStorage([
     makeCardMemory({
       content: "# Old card — pre-provenance",
@@ -630,7 +588,6 @@ test("refresh: updateMemory backfills sourceConnector when connector provided", 
     sourceConnector: "chatgpt",
   });
   await handleCodingArchitecture({ subcommand: "refresh", sessionKey: "s1" }, ctx);
-  // updateMemory must have been called with sourceConnector in the options.
   assert.equal(storage.updated.length, 1, "updateMemory called once");
   assert.equal(
     storage.updated[0]!.options.sourceConnector,
@@ -640,8 +597,6 @@ test("refresh: updateMemory backfills sourceConnector when connector provided", 
 });
 
 test("refresh: updateMemory omits sourceConnector when no connector in context", async () => {
-  // Existing card, no connector in the context — updateMemory must still
-  // succeed without breaking frontmatter.
   const storage = makeStubStorage([
     makeCardMemory({
       content: "# Existing card",
@@ -659,8 +614,6 @@ test("refresh: updateMemory omits sourceConnector when no connector in context",
 });
 
 test("refresh: updateMemory retains existing sourceConnector via frontmatter spread", async () => {
-  // Existing card already HAS sourceConnector — updateMemory's frontmatter
-  // spread preserves it even when the refresh call doesn't pass it again.
   const storage = makeStubStorage([
     makeCardMemory({
       content: "# Card with connector",
@@ -671,7 +624,6 @@ test("refresh: updateMemory retains existing sourceConnector via frontmatter spr
   const result = await handleCodingArchitecture({ subcommand: "refresh", sessionKey: "s1" }, ctx);
   if (result.subcommand !== "refresh") return;
   assert.equal(result.refreshed, true);
-  // The card memory in storage must still have its sourceConnector.
   const card = storage.memories.find((m) => m.frontmatter.id === "connector-card");
   assert.equal(
     card?.frontmatter.sourceConnector,

@@ -16,12 +16,6 @@ import type { MeetingMemoryWriter } from "./memory-generator.js";
 import type { SealedMemoryEnvelope } from "../write-envelope.js";
 import type { MemoryWriteResult } from "../storage.js";
 
-// Integration coverage for the builder driving the CONCRETE memory generator
-// (createMeetingMemoryGenerator) through the seam — migrated out of the engine
-// build.test.ts (issue #1900 re-slice). The engine test asserts SEAM contract
-// with an inline fake; these tests assert the real memory-generation BEHAVIOR
-// (episode idempotency, retract-on-delete, and smart/review/off trust-gating)
-// end to end through MeetingsBuilder.
 
 const MEMORY_DIR = "/mem";
 const DATE = "2026-03-10";
@@ -67,7 +61,6 @@ function enoent(): NodeJS.ErrnoException {
   return err;
 }
 
-/** Fake meeting memory writer modelling source-scoped dedup + retire. */
 class FakeMeetingWriter implements MeetingMemoryWriter {
   writes: Array<{ source: string; content?: string; status?: string; category: string; meetingId?: string }> = [];
   retired: string[] = [];
@@ -169,8 +162,6 @@ test("builder writes a deterministic episode memory per built record when a writ
   assert.equal(first.meetings.length, 1);
   assert.deepEqual(first.episodes, { written: 1, skipped: 0 });
   assert.equal(memoryWriter.writes.length, 1);
-  // Rebuild with an unchanged record: the memory layer skips it entirely
-  // (round 2) — no episode probe, no second write, no episode aggregate.
   const second = await builder.buildDay(DATE);
   assert.equal(second.episodes, undefined, "an unchanged rebuild generates nothing");
   assert.equal(memoryWriter.writes.length, 1);
@@ -198,9 +189,6 @@ test("finding 2 — an unchanged-record rebuild fires zero LLM calls and writes 
   assert.ok(writesAfterFirst > 0, "the first build writes memories");
   assert.equal(calls.length, 1, "reindex fires on the first build");
 
-  // Rebuild with byte-identical data: the record is unchanged, so the memory
-  // layer must skip it entirely — no extractor call, no rewrite, no reindex
-  // (round 2 — the LLM must never re-run on an idempotent rebuild).
   const second = await build();
   assert.equal(second.built, 0, "the record was unchanged");
   assert.equal(extractor.calls, 1, "no extractor call on an unchanged rebuild");
@@ -230,9 +218,6 @@ test("finding 3 — a changed record under a kept id refreshes its memories, not
   )?.content;
   assert.ok(staleEpisode !== undefined, "the first build wrote an episode");
 
-  // Rebuild: identical window (full overlap → same id) but the record changed
-  // (app + transcript) → updatedIds. The memory layer must RETRACT the prior
-  // memories and regenerate, so recall is refreshed and never duplicated/stale.
   const secondData: MeetingDayData = {
     detection: { date: DATE, appSpans: [appSpan("Meet", START, END)], audioWindows: [audioWin("desktop", START, END)] },
     conversations: [conv("desktop", "d1", [seg("we shipped v3", "2026-03-10T14:05:00.000Z")])],
@@ -277,8 +262,6 @@ test("finding 9 — removing a meeting retires its episode/summary memories", as
   assert.ok(episodeContent !== undefined, "episode written for the meeting");
   assert.equal(await memoryWriter.hasMemoryFromSource(meetingSourceLabel(staleId), episodeContent!), true);
 
-  // Rebuild: a non-overlapping later meeting replaces it → the stale meeting is
-  // removed, and its meeting-derived memories must be retired too.
   const LATER_START = "2026-03-10T16:00:00.000Z";
   const LATER_END = "2026-03-10T17:00:00.000Z";
   const second: MeetingDayData = {

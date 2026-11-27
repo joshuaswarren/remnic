@@ -35,15 +35,6 @@ export function checkMergedContent(input: {
   if (typeof merged !== "string" || merged.trim() === "") {
     return { ok: false, reason: "empty", limit };
   }
-  // Storage persists `sanitizeMemoryContent(text).text`, so a merged body the
-  // sanitizer would rewrite can never round-trip: the persist-side CAS and
-  // provenance equality checks compare the RAW judge output, and a target
-  // holding the sanitization placeholder reads back as a concurrent
-  // replacement — the rollback then "succeeds" while the original body is
-  // lost and the caller also creates the fact. Refusing here means the merge
-  // decision becomes a create and no mutation ever runs. Checked before the
-  // length limit: an injection-pattern body is refused as unsafe whatever its
-  // length.
   if (!sanitizeMemoryContent(merged).clean) {
     return { ok: false, reason: "unsafe", limit };
   }

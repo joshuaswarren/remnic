@@ -107,17 +107,8 @@ export async function searchVerifiedEpisodes(options: {
   if (queryTokens.size === 0 || options.maxResults <= 0) return [];
 
   const storage = new StorageManager(options.memoryDir, undefined, options.hotMemoriesCacheEnabled);
-  // Key the derived episode cache on the CORPUS version, not memory-status
-  // (Codex P1, #1902): the episode map is derived from the full corpus, and
-  // plain creates/writeChunk bump only the corpus sentinel (memory-status is
-  // deliberately left unchanged to keep the entity cache warm). Keying on
-  // memory-status would let a peer process serve a stale episode map that omits
-  // newly created memories.
   const version = storage.getMemoryCorpusVersion();
 
-  // Use derived episode cache to avoid O(146K) filter+map on every call — but
-  // honor the hotMemoriesCacheEnabled opt-out (Codex P2): when disabled, never
-  // read or retain the derived map, always rebuild from a fresh scan.
   const cacheEnabled = storage.isHotCacheEnabled();
   const keyId = storage.hotCacheKeyId();
   let verifiedMemoryById = cacheEnabled ? getCachedEpisodeMap(storage.dir, version, keyId, storage.hotCacheTtlMs()) : null;

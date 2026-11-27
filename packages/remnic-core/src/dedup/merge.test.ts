@@ -51,14 +51,10 @@ import { invalidationCommitFingerprint, isSemanticFrontmatterChange, markCasComm
 import type { CasRevisionReadStatus } from "../storage/cas-revision-store.js";
 import { attachCitation } from "../source-attribution.js";
 
-// The merge snapshot trigger must stay a literal union: a widened
-// `VersionTrigger` (e.g. annotated `readonly string[]`) would let an unknown
-// trigger compile and then fail `readManifest` at runtime.
 // @ts-expect-error "not-a-trigger" is not a VersionTrigger
 const rejectedTrigger: VersionTrigger = "not-a-trigger";
 void rejectedTrigger;
 
-// ── Fixtures (synthetic; no real paths, hosts, or memory content) ─────────────
 
 const INCOMING = "Deploys of the billing service run on Tuesdays at 09:00 UTC.";
 const EXISTING = "Billing service deploys happen on Tuesdays.";
@@ -95,7 +91,6 @@ const mergeJudge = async (input: {
   reason: "same deploy cadence",
 });
 
-// ── Decision: band, gates, and backend-failure taxonomy ──────────────────────
 
 test("decideSemanticMerge: only the [minSimilarity, dedupThreshold) band merges", async () => {
   for (const [score, expected] of [
@@ -294,7 +289,6 @@ test("decideSemanticMerge: ineligible hits ranked above a valid target never cro
   assert.equal(decision.action === "merge" && decision.targetId, "valid-target");
 });
 
-// ── Config parsing ───────────────────────────────────────────────────────────
 
 test("parseSemanticMergeConfig: defaults are off with a valid band", () => {
   const { semanticMerge } = parseConfig({});
@@ -450,13 +444,11 @@ test("parseSemanticMergeConfig: malformed categories are rejected, not silently 
   );
 });
 
-// ── Persistence ──────────────────────────────────────────────────────────────
 
 interface MergeHarness {
   deps: ExtractionPersistDeps;
   storage: StorageManager;
   target: MemoryFile;
-  /** Simulate another writer committing a new body to the target. */
   setTargetContent: (content: string, revision?: string) => Promise<string>;
   calls: {
     contentUpdates: Array<{ id: string; content: string; actor?: string }>;
@@ -488,29 +480,17 @@ async function harness(
     config?: Partial<Record<string, unknown>>;
     targetCategory?: string;
     targetStatus?: MemoryStatus;
-    /** Stamp `toolScoped: true` on the target's frontmatter (finding A). */
     targetToolScoped?: boolean;
-    /** Stamp `subject` on the target's frontmatter (finding A). */
     targetSubject?: MemorySubject;
-    /** Stamp `origin` on the target's frontmatter (finding A). */
     targetOrigin?: string;
-    /** Stamp `confidence`/`confidenceTier` on the target's frontmatter (final round A). */
     targetConfidence?: number;
-    /** Stamp `provenance` on the target's frontmatter (finding B). */
     targetProvenance?: "verified" | "unverified" | "none";
-    /** Stamp `faithfulness` on the target's frontmatter (finding C). */
     targetFaithfulness?: { verdict: "entailed" | "contradicted" | "unsupported" | "unchecked" | "skipped_no_span" };
-    /** Stamp `sourceConnector` on the target's frontmatter (finding D). */
     targetSourceConnector?: string;
-    /** Stamp `valid_at` on the target's frontmatter (round N+2 A). */
     targetValidAt?: string;
-    /** Stamp `invalid_at` on the target's frontmatter (round N+2 A). */
     targetInvalidAt?: string;
-    /** Stamp `memoryKind` on the target's frontmatter (round N+2 B). */
     targetMemoryKind?: MemoryFrontmatter["memoryKind"];
-    /** Stamp stale intent routing fields on the target's frontmatter (round N+3 A). */
     targetIntent?: { goal: string; actionType: string; entityTypes: string[] };
-    /** Seed `updated` on the target's frontmatter (receipt-clock tests). */
     targetUpdated?: string;
     /**
      * Model what StorageManager.writeMemoryFrontmatter does on success: the
@@ -519,7 +499,6 @@ async function harness(
      * receipt is observable (#2813 P1, round 3).
      */
     applyFrontmatterPatches?: boolean;
-    /** Top-level parseConfig overrides (citation enablement, round N+2 C). */
     topLevelConfig?: Record<string, unknown>;
     lookupHits?: SemanticDedupHit[];
     mutateOnWrite?: string;
@@ -537,9 +516,7 @@ async function harness(
      * decision, not the stub's opinion.
      */
     retireAtPatch?: boolean;
-    /** Force the frontmatter patch to fail after the content update commits. */
     frontmatterFails?: boolean;
-    /** Force the automatic rollback of that committed content to fail. */
     rollbackFails?: boolean;
     /**
      * #2807: force `updateMemoryIfUnchanged` itself to THROW on the
@@ -1053,7 +1030,6 @@ test("applySemanticMergeAtPersist: versioning off refuses to merge (no rollback 
   assert.deepEqual(h.calls.contentUpdates, []);
 });
 
-// ── Finding 1: connector boundaries survive a merge ──────────────────────────
 
 test("decideSemanticMerge: a foreign-connector neighbor is never a merge target", async () => {
   const base = {
@@ -1123,7 +1099,6 @@ test("applySemanticMergeAtPersist: the incoming fact's connector scopes the look
   assert.equal(await readFile(h.target.path, "utf8").then((t) => t.includes(EXISTING)), true);
 });
 
-// ── Finding 2: the write is conditional on the judged snapshot ───────────────
 
 test("applySemanticMergeAtPersist: a target changed after judging creates, never clobbers", async () => {
   const CONCURRENT = "Billing service deploys happen on Tuesdays, paused during freeze weeks.";
@@ -1165,7 +1140,6 @@ test("applySemanticMergeAtPersist: a failed compare-and-swap creates instead of 
   assert.equal(onDisk.includes(MERGED), false);
 });
 
-// ── Finding 3: a failed frontmatter patch really restores the body ───────────
 
 test("applySemanticMergeAtPersist: a failed frontmatter patch restores the pre-merge body", async () => {
   const h = await harness({ frontmatterFails: true });
@@ -1486,7 +1460,6 @@ test("applySemanticMergeAtPersist: consecutive degraded merges keep the manifest
   assert.equal(history.versions.at(-1)?.trigger, "semantic-merge", "the newest entry is the kept recovery point");
 });
 
-// ── Item A: extraction metadata a merge cannot carry ─────────────────────────
 
 test("applySemanticMergeAtPersist: new metadata the merge cannot carry bypasses merging", async () => {
   const cases: Array<[string, ApplySemanticMergeOptions["incomingMetadata"]]> = [
@@ -1539,7 +1512,6 @@ test("applySemanticMergeAtPersist: metadata the target already carries still mer
   ]);
 });
 
-// ── Item B: the merged body registers under the write path's identity ────────
 
 test("applySemanticMergeAtPersist: the merged fact restamps contentHash off the canonical raw form", async () => {
   const h = await harness();
@@ -1689,7 +1661,6 @@ test("applySemanticMergeAtPersist: repair registers the merged hash for a cold-t
   }
 });
 
-// ── Finding A: judge output the sanitizer would rewrite never mutates ───────
 
 test("decideSemanticMerge: unsafe merged output is judge_invalid, never a merge", async () => {
   // Storage persists sanitizeMemoryContent(text).text. A merged body matching
@@ -1755,7 +1726,6 @@ test("applySemanticMergeAtPersist: unsafe judge output never leaves a sanitizati
   assert.equal(await storage.hasFactContentHash(EXISTING), true);
 });
 
-// ── Finding 4: a disabled feature never invalidates a legacy config ──────────
 
 test("parseSemanticMergeConfig: a low dedup threshold with no semanticMerge block still parses", () => {
   for (const semanticDedupThreshold of [0.8, 0.75, 0.5]) {
@@ -1781,7 +1751,6 @@ test("parseSemanticMergeConfig: a low dedup threshold with no semanticMerge bloc
   );
 });
 
-// ── Finding A: a merge must never widen a tool-scoped fact's recall scope ────
 
 test("applySemanticMergeAtPersist: a tool-scoped incoming fact never merges into an unscoped target", async () => {
   const h = await harness();
@@ -1820,7 +1789,6 @@ test("applySemanticMergeAtPersist: a tool-scoped target keeps its stricter scope
   assert.equal("toolScoped" in h.calls.frontmatterPatches[0].patch, false);
 });
 
-// ── Finding A: a merge must not relabel content across the subject guard ────
 
 
 test("applySemanticMergeAtPersist: a user-subject fact never merges into an agent-labeled target", async () => {
@@ -1858,7 +1826,6 @@ test("applySemanticMergeAtPersist: an identical subject still merges", async () 
   assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
 });
 
-// ── Finding C: promoted copies are reconciled only by the create path ────────
 
 test("applySemanticMergeAtPersist: a target with promoted copies bypasses the merge before any mutation", async () => {
   const h = await harness();
@@ -1883,7 +1850,6 @@ test("applySemanticMergeAtPersist: a target with promoted copies bypasses the me
   assert.equal(history.versions.length, 0, "the bypass must precede the rollback snapshot");
 });
 
-// ── Round N+11 (A): only ACTIVE promoted copies block a merge ────────────────
 
 test("mergeTargetHasPromotedCopies: a namespace holding only a superseded copy does not block the merge (round N+11 A)", async () => {
   const sourceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-scan-src-"));
@@ -1948,7 +1914,6 @@ test("mergeTargetHasPromotedCopies: a namespace holding only a superseded copy d
   }
 });
 
-// ── Round N+11 (C): a failed CAS must not discard the oldest rollback point ──
 
 test("applySemanticMergeAtPersist: a failed CAS at a full version history keeps the oldest rollback point (round N+11 C)", async () => {
   const RACED = "Billing service deploys happen on Tuesdays, except during a freeze.";
@@ -2085,7 +2050,6 @@ test("applySemanticMergeAtPersist: a reverted metadata failure rolls the staged 
   assert.equal(after.currentVersion, before.currentVersion, "currentVersion must return to the pre-attempt newest");
 });
 
-// ── Final round: origin authority, log privacy, least-privilege subject ──────
 
 test("applySemanticMergeAtPersist: a cross-origin merge into a user-authority target is refused (finding A)", async () => {
   const h = await harness({ targetOrigin: "user" });
@@ -2214,7 +2178,6 @@ test("applySemanticMergeAtPersist: an absent incoming subject never reinforces a
   );
 });
 
-// ── Final round: the create-path parity gate ─────────────────────────────────
 
 test("applySemanticMergeAtPersist: a merged outcome carries the committed merged body (finding A)", async () => {
   const h = await harness();
@@ -2433,7 +2396,6 @@ test("applySemanticMergeAtPersist: an identical connector scope still merges (fi
   assert.equal(outcome.action, "merged");
 });
 
-// ── Final round: min confidence across a merge; no promotion from an inactive target ──
 
 test("applySemanticMergeAtPersist: a lower incoming confidence downgrades the merged record (final round A)", async () => {
   const h = await harness({ targetConfidence: 0.9 });
@@ -2727,10 +2689,6 @@ test("applySemanticMergeAtPersist: no suggested links leaves the target's commit
 });
 
 test("applySemanticMergeAtPersist: a suggested link naming the merge target itself is discarded, not attached (finding B)", async () => {
-  // Memory linking and the merge judge both search on the incoming content,
-  // so the suggested neighbor is often the merge target itself. Attaching it
-  // would make the surviving record its own neighbor — recall-navigate would
-  // return the current memory and burn traversal budget for nothing.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-selflink-"));
   const storage = new StorageManager(dir);
   await storage.ensureDirectories();
@@ -2786,7 +2744,6 @@ test("parseSemanticMergeConfig: unknown or never-mergeable categories are reject
   );
 });
 
-// ── Round N+2: validity bounds, memoryKind parity, raw hash, strict config ───
 
 test("applySemanticMergeAtPersist: a target with invalid_at never takes unbounded claims (round N+2 A)", async () => {
   // inferMemoryStatus ignores temporal validity, so this target is still
@@ -2994,7 +2951,6 @@ test("parseSemanticMergeConfig: present-but-unparseable maxCandidates throws; ab
     12,
   );
 });
-// ── Round N+7: trust gate, promotion reconciliation, citation, graph parity ──
 
 test("buildMergedTargetPromotionPayload: a degraded merge never yields a promotion payload (round N+7 A)", async () => {
   // Patch fails AND rollback fails: the target holds the merged body with its
@@ -3147,7 +3103,6 @@ test("applySemanticMergeAtPersist: mixed default+custom citation markers hash as
   assert.equal(stamped, ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text));
 });
 
-// ── #2916: reapply inline attribution to the committed merged body ───────────
 
 test("applySemanticMergeAtPersist: a legacy target with no liftable marker still commits an attributed body (#2916)", async () => {
   const h = await harness({ topLevelConfig: { inlineSourceAttributionEnabled: true } });
@@ -3429,7 +3384,6 @@ test("applySemanticMergeAtPersist: a lost CAS race does not hash an all-placehol
   assert.equal(onDisk.includes("agent-a"), false);
 });
 
-/** Minimal real-dir harness for the merged-target post-effects executor. */
 async function postEffectsHarness(options: {
   graphEdgeThrows?: boolean;
 } = {}): Promise<{
@@ -4108,7 +4062,6 @@ test("runMergedTargetPostEffects: a THROWING build's rollback preserves the newe
 });
 
 
-// ── #2807: deferred P2 follow-ups from the #2771 round cap ──────────────────
 
 test("applySemanticMergeAtPersist: a content CAS that throws before changing the target discards the staged snapshot (#2807)", async () => {
   // Scenario A — the CAS throws at lock acquisition: the target was never

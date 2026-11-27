@@ -101,8 +101,6 @@ test("rejects malformed keys (#2917)", () => {
 });
 
 test("rejects a final key that starts with a YAML indicator (#2917)", () => {
-  // Prefix "[" + key "focus" is the review case: the written line would
-  // be `[focus: 220`, which is not a mapping entry.
   for (const key of ["[focus", "{focus", "*focus", "&focus", "!focus", "%focus"]) {
     assert.equal(
       validateVaultProperties([{ key, value: "220" }]).ok,

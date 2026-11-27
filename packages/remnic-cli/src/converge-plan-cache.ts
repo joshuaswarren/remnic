@@ -11,33 +11,6 @@ import {
 } from "@remnic/core/reconcile/manifest.js";
 import { type MemoryStatus } from "@remnic/core/types.js";
 
-/**
- * Resumable converge planning cache (issue #2803).
- *
- * The FIRST plan against a boot-scale pair spends most of its wall time in
- * the manifest phase (local corpus sha256 + per-namespace peer manifest
- * fetches), and one transient failure near the end used to discard all of
- * it. This module persists per-namespace manifest work under the EXISTING
- * converge cursor directory so a retry reuses everything that already
- * completed and recomputes only what changed.
- *
- * Entries are content-addressed by filename — `<side>-<nsHash16>-
- * <watermark16>.json` — where the address covers peer identity (normalized
- * URL, credentials stripped), config (citation template), schema/normalizer
- * versions, the namespace, and the corpus watermark (a digest over the
- * sorted `path\0sha256` census). A changed watermark or scope writes a NEW
- * file; superseded files for the same side+namespace are pruned.
- *
- * Privacy: entries carry only file metadata (path, sha256, mtimeMs, bytes)
- * and memory IDENTITY (id/category/contentHash/status) — never file bodies,
- * never the peer token, never the peer URL (only its one-way scope hash).
- * The peer URL and namespace names already live in the cursor files beside
- * this cache, so the namespace label inside an entry adds no new exposure.
- *
- * Failure policy: every read and prune fails OPEN (corrupt/stale data means
- * recompute, never a failed plan); every write failure is swallowed (the
- * cache is an optimization, not a source of truth).
- */
 
 export const CONVERGE_PLAN_CACHE_FORMAT_VERSION = 1;
 /** Upper bound on entries kept per scope; oldest-mtime entries are pruned. */
@@ -49,13 +22,6 @@ const CONVERGE_PLAN_CACHE_MAX_SCOPE_DIRS = 8;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/i;
 
-/**
- * Fail-open guard (#2965): a cached row whose memory status is not a real
- * MemoryStatus must reject the whole entry (recompute) instead of feeding
- * an unknown string into duplicate collapsing. Satisfies the union so a
- * misspelled literal fails to compile; a NEW status added upstream merely
- * makes warm entries miss once and recompute — the safe direction.
- */
 const MEMORY_STATUSES: readonly MemoryStatus[] = [
   "active",
   "pending_review",
@@ -188,7 +154,6 @@ function normalizeEntryFile(raw: unknown): ReconcileManifestFile | null {
     if (typeof candidate.contentHash !== "string" || !SHA256_HEX.test(candidate.contentHash)) return null;
     if (typeof candidate.category !== "string") return null;
     if (!MEMORY_STATUSES.includes(candidate.status as MemoryStatus)) return null;
-    // normalizerVersion/identityResolutionVersion are OPTIONAL — streamed
     // peer manifest rows legitimately omit them. Version drift is caught by
     // the scope key (it folds the current constants in), never here.
     const normalizerVersion = typeof candidate.normalizerVersion === "number" ? candidate.normalizerVersion : undefined;
@@ -571,13 +536,6 @@ export class ConvergePlanCache {
     }
   }
 
-  /**
-   * Refresh savedAt while the cache stays open (#2965): on hosts without
-   * readable /proc start ticks the 24h lease is the only steal guard, and a
-   * plan legitimately longer than that must not have its lock stolen
-   * mid-run. Renewal rides the per-namespace checkpoint cadence; it skips
-   * a lock that was stolen from us (nonce mismatch).
-   */
   private async renewLease(): Promise<void> {
     if (this.closed) return;
     try {

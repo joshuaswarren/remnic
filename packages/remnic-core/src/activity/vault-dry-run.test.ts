@@ -22,8 +22,6 @@ test("planVaultDryRun predicts a mixed batch with correct per-file outcomes and 
   ]);
 });
 
-// The real publisher refuses to create missing notes (missing_file), so a
-// dry run must predict that skip rather than promise an update.
 test("a missing note predicts the publisher's skip, not a create", () => {
   const status = planVaultDryRun([{ path: "new.md", currentText: null, nextText: "body" }]);
   assert.deepEqual(status.counts, { updated: 0, unchanged: 0, skipped: 1, error: 0 });
@@ -99,8 +97,6 @@ test("input is not mutated", () => {
   assert.deepEqual(inputs, snapshot);
 });
 
-// Round 3: undefined and non-string text fields are malformed input, never a
-// prediction. Two undefined fields used to compare equal and report unchanged.
 test("undefined and non-string text fields throw rather than predict", () => {
   for (const bad of [
     { path: "a.md", currentText: undefined as unknown as string, nextText: "x" },

@@ -48,14 +48,6 @@ export function shouldIncludeCoreRecallForReplay(options: {
     (options.replayExtractionMode !== "skip" || !options.skipExtractionLcmFirst);
 }
 
-/**
- * Recall section ids the harness authors as responder guidance (they are
- * instruction-shaped by design and may quote short evidence snippets the
- * harness already selected). They are trusted like core memory: never
- * screened, never fenced. Every other section quotes raw conversation or
- * derived content and goes through the configured defenses. The security
- * suite's rows recall only core sections, so this list does not touch them.
- */
 export const HARNESS_AUTHORED_RECALL_SECTIONS: ReadonlySet<string> = new Set([
   "core",
   "contradiction-guidance",
@@ -80,13 +72,6 @@ function unfencedSection(text: string): SecuredBenchRecallSection {
   return { text, offsetAt: (offset) => offset };
 }
 
-/**
- * The authority fence prepends two header lines, prefixes every content line
- * with a quote marker, and appends one closing delimiter line. Derive the
- * header width and marker length from the fence just rendered so the map
- * cannot drift from `renderAuthorityFence` output; the recall-trace fencing
- * tests fail loudly if the fence shape ever changes.
- */
 function fencedSectionOffsets(content: string, text: string): (offset: number) => number {
   const headerChars = text.indexOf("\n", text.indexOf("\n") + 1) + 1;
   const firstLineEnd = content.indexOf("\n");
@@ -97,8 +82,6 @@ function fencedSectionOffsets(content: string, text: string): (offset: number) =
     for (let i = 0; i < offset; i++) {
       if (content.charCodeAt(i) === 10) lines++;
     }
-    // Every content line carries its own quote marker, including the line
-    // holding the offset, so the marker count is lines-before plus one.
     return headerChars + offset + markerChars * (lines + 1);
   };
 }
@@ -124,12 +107,6 @@ export function secureBenchRecallSection(
   return { text, offsetAt: fencedSectionOffsets(content, text) };
 }
 
-/**
- * Rewrite the offset pair named by `startKey`/`endKey` on every receipt from
- * pre-securing section coordinates into the secured coordinates recorded in
- * the recall trace. Without it, a fenced section makes every recorded range
- * point at fence header bytes instead of the quoted content.
- */
 export function translateSelectionOffsets<T>(
   receipts: readonly T[],
   offsetAt: (offset: number) => number,
@@ -170,11 +147,6 @@ function exactContextEvidenceLines(recalledText: string): string[] {
   });
 }
 
-/**
- * Classify support from the exact final context supplied to the responder.
- * This intentionally avoids auxiliary zero-hit searches: a different recall
- * tier may have contributed strong verbatim evidence to this context.
- */
 export function assessRemnicRecallSupport(
   request: BenchRecallSupportRequest,
   supportThreshold = DEFAULT_ANSWER_SUPPORT_MIN_COVERAGE,

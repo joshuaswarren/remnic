@@ -20,19 +20,8 @@ import type {
 
 export const REDACTION_PLACEHOLDER = "[redacted]";
 
-/**
- * Built-in patterns. Conservative by design — false positives erase
- * real transcript content, so each pattern targets formats that are
- * near-certain PII:
- *  - US SSN with separators (123-45-6789). Bare 9-digit runs are NOT
- *    matched (too many false positives: ids, tracking numbers).
- *  - Payment-card-like runs: 13–19 digits in groups separated by
- *    spaces/dashes (4111 1111 1111 1111) or contiguous 15–16 digits.
- */
 const BUILT_IN_PATTERNS: RegExp[] = [
   /\b\d{3}-\d{2}-\d{4}\b/g,
-  // Starts and ENDS on a digit so a trailing separator is never
-  // consumed (replacing it would glue the placeholder to the next word).
   /\b\d(?:[ -]?\d){12,18}\b/g,
 ];
 
@@ -51,14 +40,11 @@ export function redactText(
   let redactions = 0;
   let result = text;
 
-  // SSN pattern first (more specific than the digit-run pattern).
   result = result.replace(BUILT_IN_PATTERNS[0], () => {
     redactions += 1;
     return REDACTION_PLACEHOLDER;
   });
 
-  // Digit-run pattern with a post-match digit-count check so short
-  // grouped numbers ("call 555 0125 today") survive.
   result = result.replace(BUILT_IN_PATTERNS[1], (match) => {
     const digits = match.replace(/\D/g, "");
     if (digits.length < CARD_MIN_DIGITS || digits.length > 19) {
@@ -96,8 +82,6 @@ export function compileRedactionPatterns(patterns: string[]): RegExp[] {
       );
     }
     try {
-      // Operator-supplied regexes from the operator's own config —
-      // length-capped above; never request input.
       return new RegExp(pattern, "gi");
     } catch (err) {
       throw new Error(
@@ -109,14 +93,6 @@ export function compileRedactionPatterns(patterns: string[]): RegExp[] {
   });
 }
 
-/**
- * Built-in phrases that BEGIN an off-the-record span.
- *
- * Conservative by design: a false positive elides real transcript
- * content. Every phrase is a fixed multi-word expression, or a loanword
- * that only means "off the record" (issue #2196). Operators extend this
- * list through `wearables.offTheRecordMarkers.start`.
- */
 export const BUILT_IN_OFF_THE_RECORD_START: readonly string[] = [
   "off the record",
   "fuera de registro",
@@ -134,14 +110,6 @@ export const BUILT_IN_OFF_THE_RECORD_START: readonly string[] = [
   "بدون تسجيل",
 ];
 
-/**
- * Built-in phrases that END an off-the-record span.
- *
- * Shorter than the start list on purpose. A start phrase with no
- * matching end phrase elides through the end of the conversation, which
- * is the fail-closed direction; an over-eager end phrase would leak. So
- * a language only appears here when the phrase is unambiguous.
- */
 export const BUILT_IN_OFF_THE_RECORD_END: readonly string[] = [
   "back on the record",
   "on the record",
@@ -169,11 +137,6 @@ export interface CompiledOffTheRecordMarkers {
   end: RegExp | null;
 }
 
-/**
- * Compile marker settings into matchers. Omitting `settings` yields the
- * built-in lists, so callers that never configured markers keep the
- * previous behavior plus the new languages.
- */
 export function compileOffTheRecordMarkers(
   settings?: OffTheRecordMarkerInput,
 ): CompiledOffTheRecordMarkers {
@@ -215,9 +178,6 @@ export function applyOffTheRecord(
   let droppedSegments = 0;
   const segments = [];
   for (const segment of conversation.segments) {
-    // Matched folded, stored as written: the transcript keeps the ASR's own
-    // bytes while a decomposed or Turkic-uppercase spelling still reaches
-    // the marker.
     const probe = foldForMatching(segment.text);
     if (!offRecord && markers.start.test(probe)) {
       offRecord = true;

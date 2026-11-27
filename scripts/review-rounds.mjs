@@ -91,8 +91,6 @@ function openRound({ state, headSha, now, threads, botActivity }) {
     headSha,
     lastHeadChangedAt: now,
     pushes: 0,
-    // Round-budget ledger (issue #2442): cumulative per-PR fix-round count and
-    // one-shot stamps, carried forward across rounds.
     fixRounds: state?.fixRounds ?? 0,
     fixRoundWarnedAt: state?.fixRoundWarnedAt ?? null,
     capIssueUrl: state?.capIssueUrl ?? null,
@@ -141,10 +139,6 @@ function isNewBotActivity(activity, state) {
   return true;
 }
 
-/**
- * Decide the next round action from a snapshot of GitHub activity.
- * The reducer is pure so fixture replay can validate the state machine without GitHub.
- */
 export function decideRound({
   state = null,
   headSha,
@@ -178,10 +172,6 @@ export function decideRound({
         state: openRound({ state, headSha, now, threads, botActivity: activity }),
       };
     }
-    // Force-dispatch is an absolute maintainer override in ANY state: reopen a
-    // fresh round on the current head and dispatch it (cursor). This branch is
-    // reachable (unlike the earlier dead `!dispatchIssuedAt` guard removed in an
-    // earlier round) because closed states always carry dispatchIssuedAt.
     if (forceDispatch) {
       return {
         action: "dispatch",
@@ -193,9 +183,6 @@ export function decideRound({
         ),
       };
     }
-    // A new push after dispatch (before the next bot round opens) must still be
-    // recorded so the ledger head/telemetry tracks the latest SHA rather than
-    // staying pinned to the dispatched head (codex).
     if (typeof headSha === "string" && headSha.length > 0 && headSha !== state.headSha) {
       return wait(noteHead(state, headSha, now), "round-dispatched");
     }
@@ -205,9 +192,6 @@ export function decideRound({
   let next = noteHead(state, headSha, now);
   next = mergeThreadIds(next, threads);
   if (activity && isNewBotActivity(activity, next)) next.lastBotActivity = activity;
-  // Force-dispatch is an absolute maintainer override (issue #1992 escape
-  // hatch): it wins over an open thread set, the debounce, and even an empty
-  // round, so it is checked first.
   if (forceDispatch) {
     return {
       action: "dispatch",
@@ -215,22 +199,12 @@ export function decideRound({
       state: closeForDispatch(next, now, "force-label"),
     };
   }
-  // Round-budget ledger (issue #2442): one fix round per open round — the
-  // FIRST push after the round's bot findings is that round's batched fix;
-  // later micro-pushes coalesce into the same fix round. Post-dispatch pushes
-  // (closed branch above) never count.
   if (state.pushes === 0 && next.pushes === 1) {
     next.fixRounds = (next.fixRounds ?? 0) + 1;
   }
 
-  // Nothing to act on yet (round opened with no threads and no pushes): a clean
-  // bot review has nothing to auto-close or debounce-dispatch, so wait rather
-  // than churn a pointless new round. Force-dispatch above still overrides this.
   if (next.threadIds.length === 0 && next.pushes === 0) return wait(next, "no-round-work");
 
-  // Max-age auto-close unwedges a round whose threads were abandoned (issue
-  // #1992); an empty round is already handled above so this only fires when the
-  // round has real work.
   const age = parseTime(now) - parseTime(next.openedAt);
   if (age >= maxAgeMs) {
     return {
@@ -254,7 +228,6 @@ export function decideRound({
   return wait(next, "debounce");
 }
 
-/** Return unresolved threads in the current round, using existing guard semantics. */
 export function getGuardUnresolvedThreads(state, threads, botAliases = []) {
   const candidates = Array.isArray(threads) ? threads : [];
   const roundIds = state ? new Set(state.threadIds ?? []) : null;
@@ -291,8 +264,6 @@ function isValidRoundState(state) {
   if (!state || state.version !== 1 || !["open", "closed"].includes(state.status)) return false;
   if (!Number.isInteger(state.round) || state.round < 1) return false;
   if (!Number.isInteger(state.pushes) || state.pushes < 0) return false;
-  // Round-budget fields (issue #2442) are optional so pre-budget ledgers
-  // deployed during shadow v1 still parse (missing counts read as 0).
   if (state.fixRounds !== undefined && (!Number.isInteger(state.fixRounds) || state.fixRounds < 0)) {
     return false;
   }
@@ -346,10 +317,6 @@ export function upsertRoundLedgerComment(body, state) {
 }
 
 function activityTime(activity) {
-  // Return the MOST RECENT timestamp available. A bot that edits a standing
-  // verdict comment leaves created_at at the original time and advances
-  // updated_at, so the latest timestamp (not created_at first) determines
-  // whether the edited activity is current-head (issue #1992).
   const candidates = [
     activity?.submitted_at, activity?.submittedAt,
     activity?.updated_at, activity?.updatedAt,
@@ -370,10 +337,6 @@ function activityId(activity, kind) {
   return commit || at ? `${kind}:${commit ?? ""}:${at ?? ""}` : null;
 }
 
-// Tolerate markdown/punctuation between the label and the SHA so the documented
-// bot verdict form (`**Reviewed commit:** `1234567``) is recognized as a pin and
-// a stale review of an older commit is rejected instead of passing the timestamp
-// fallback (issue #1992 stale-activity handling).
 const SHA_REFERENCE_PATTERN =
   /\b(?:reviewed\s+)?(?:sha|commit|head|rev|revision)[\s:#*`]*([0-9a-f]{7,40})\b|\bfor\s+([0-9a-f]{7,40})\b/gi;
 
@@ -429,9 +392,6 @@ function toActivityMarker(activity, kind) {
   };
 }
 
-// A check run is a landed review only when it completed with a verdict-bearing
-// conclusion; a queued/in-progress or infra-aborted check is not bot activity
-// (issue #1992, mirroring ai-review-gate's positive-conclusion policy).
 const POSITIVE_CHECK_CONCLUSIONS = new Set(["success", "neutral"]);
 
 function checkRunIsLandedReview(checkRun) {
@@ -440,7 +400,6 @@ function checkRunIsLandedReview(checkRun) {
   return POSITIVE_CHECK_CONCLUSIONS.has(normalizeLogin(checkRun?.conclusion));
 }
 
-/** Return the newest current-head activity from configured bot groups. */
 export function hasCurrentBotActivity({
   aliases = [],
   headSha,

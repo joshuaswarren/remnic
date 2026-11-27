@@ -303,8 +303,6 @@ test("observe idempotency ring retains keys past the old 512-entry bound", () =>
     lastExtractionAt: null,
     extractionCount: 0,
   };
-  // 512 was the pre-widening cap; a session busier than that must still
-  // dedupe its earliest captures after a long client outbox replay.
   for (let i = 0; i < 600; i++) {
     recordBufferedAdmissionIdempotencyKey(state, `k${i}`, 1);
   }

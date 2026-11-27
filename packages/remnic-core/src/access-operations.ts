@@ -1,16 +1,3 @@
-/**
- * Pilot operation definitions for the access boundary (issue #1525).
- *
- * Three operations migrate through the registry in this PR — `memory_get`,
- * `memory_search`, and the `memory_store` write op — so the boundary's
- * normalization matrix (rules 17/28/36/48/51) and shared error mapping reach
- * MCP, HTTP, and CLI from one place. Domain-group migrations (memory ops →
- * connectors → namespaces …) land as follow-up PRs that add `defineOperation`
- * calls here and delete the surface-local validation they replace.
- *
- * Importing this module for its side effects registers the pilot operations;
- * surfaces then dispatch via {@link getOperation} from `./access-boundary.js`.
- */
 
 import { z } from "zod";
 
@@ -43,24 +30,9 @@ import {
   type DeltaSurfaceResponse,
 } from "./coding/session-delta-surfaces.js";
 
-// ---------------------------------------------------------------------------
-// memory_get — fetch one memory by id
-// ---------------------------------------------------------------------------
 
-/**
- * `memoryId` is required and non-empty (rule 51: the MCP dispatcher previously
- * fell back to `typeof args.memoryId === "string" ? args.memoryId : ""`,
- * silently passing an empty id into the service). `namespace` is
- * `.nullable().optional()` because MCP clients send `null` (gotcha #2).
- * `namespace` has no `.min(1)` because the pre-boundary handlers forwarded
- * empty/whitespace strings, and `resolveNamespace` treats empty identically
- * to absent (both trim to falsy → default namespace). Rejecting empty would
- * break HTTP callers that send a bare `?namespace=` (Cursor review).
- */
 const memoryGetSchema = z.object({
   memoryId: z.string().trim().min(1, "memoryId is required").max(512),
-  // Issue #1582 — when memoryId is a `[m:xxxx]` handle, sessionKey scopes the
-  // resolution to this session's recent recall history.
   sessionKey: z.string().trim().min(1).max(512).nullable().optional(),
   namespace: z.string().trim().max(256).nullable().optional(),
 });
@@ -91,20 +63,13 @@ export const memoryGetOperation = defineOperation<MemoryGetInput, MemoryGetOutpu
 });
 
 // ---------------------------------------------------------------------------
-// memory_search — semantic search across memories
 // ---------------------------------------------------------------------------
 
 const memorySearchSchema = z.object({
   query: z.string().trim().min(1, "query is required").max(2048),
   namespace: z.string().trim().max(256).nullable().optional(),
-  // No upper cap: the pre-boundary MCP handler forwarded any finite number to
-  // memorySearch, and the QMD/search backends honor large limits. Capping at
-  // 100 would reject existing clients that request larger result sets.
   maxResults: z.number().int().min(1).nullable().optional(),
   collection: z.string().trim().min(1).max(256).nullable().optional(),
-  // Ranking mode. Mirrors the in-process manager's override so a host that
-  // asks for vector or lexical ranking gets the same semantics whether it
-  // talks to an embedded orchestrator or a standalone daemon (issue #2120).
   mode: z.enum(["search", "hybrid", "bm25", "vector"]).nullable().optional(),
 });
 
@@ -142,7 +107,6 @@ export const memorySearchOperation = defineOperation<MemorySearchInput, MemorySe
 });
 
 // ---------------------------------------------------------------------------
-// memory_store — the pilot WRITE op
 // ---------------------------------------------------------------------------
 
 export type MemoryStoreInput = MemoryStoreRequest;
@@ -154,9 +118,6 @@ export interface MemoryStoreOutput {
 export const memoryStoreOperation = defineOperation<MemoryStoreInput, MemoryStoreOutput>({
   name: "memory_store",
   description: "Store an explicit memory through the access layer.",
-  // The canonical wire schema (issue #2482): its category transform already
-  // mapped compat aliases to "fact", so `input.category` is finite here. The
-  // raw spelling survives on `ctx.rawInput` for the coercion note (#2829).
   schema: memoryStoreRequestSchema,
   handler: async (input, ctx) => {
     const rawCategory = retainedCategoryAlias(ctx.rawInput);
@@ -167,10 +128,6 @@ export const memoryStoreOperation = defineOperation<MemoryStoreInput, MemoryStor
         ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
         ...(rawCategory ? { rawCategory } : {}),
       },
-      // Forward transport-level hooks (e.g. HTTP's atomic write-quota gate)
-      // so the hook still fires inside the service's idempotent-write lock —
-      // never before, never on a replay (#1434 invariant preserved by the
-      // boundary migration).
 
       ctx.hooks,
     );
@@ -179,21 +136,8 @@ export const memoryStoreOperation = defineOperation<MemoryStoreInput, MemoryStor
 });
 
 // ---------------------------------------------------------------------------
-// coding_decision — decision-record surfaces (issue #1548 Track A PR 2)
 // ---------------------------------------------------------------------------
 
-/**
- * The subcommand field is required and MUST be one of the four valid values
- * (rule 51 — reject loudly, list the options, never silently default). The
- * remaining fields are optional because each subcommand uses a different
- * subset; the handler validates subcommand-specific requirements after
- * routing.
- */
-/**
- * MCP clients send `null` for absent optional fields. Zod `.optional()`
- * rejects `null`, so strip nulls at the object level before the inner
- * schema validates (review: cursor null-field thread).
- */
 const codingDecisionSchema = z.preprocess(
   (data) => {
     if (data && typeof data === "object" && !Array.isArray(data)) {
@@ -238,7 +182,6 @@ export const codingDecisionOperation = defineOperation<
 });
 
 // ---------------------------------------------------------------------------
-// coding_architecture — architecture-card surfaces (issue #1548 Track A PR 3)
 // ---------------------------------------------------------------------------
 
 const codingArchitectureSchema = z.preprocess(
@@ -322,7 +265,6 @@ const codegraphSurfaceSchema = z.preprocess(
 ) as z.ZodType<CodegraphSurfaceRequest>;
 
 // ---------------------------------------------------------------------------
-// coding_delta — session-delta surface (issue #1548 Track A PR 4)
 // ---------------------------------------------------------------------------
 
 const codingDeltaSchema = z.preprocess(
@@ -362,13 +304,8 @@ export const codingDeltaOperation = defineOperation<
 });
 
 // ---------------------------------------------------------------------------
-// memory_correct_plan / memory_correct_apply — Correction Contract (#1580)
 // ---------------------------------------------------------------------------
 //
-// One plan/apply pipeline for every memory correction (supersession,
-// invalidation, tombstone, edit, rescope, redaction). The MCP/HTTP/CLI
-// surfaces all dispatch through these two ops so the boundary's validation +
-// error mapping reach every correction path (rule 22 / 39).
 
 const memoryCorrectPlanSchema = z.preprocess(
   (data) => {
@@ -487,14 +424,8 @@ export const memoryCorrectApplyOperation = defineOperation<
 });
 
 // ---------------------------------------------------------------------------
-// Surface registration map — what each transport calls the pilot ops
 // ---------------------------------------------------------------------------
 
-/**
- * The canonical short names (no `engram.`/`remnic.` prefix) of the operations
- * the boundary owns today. The fitness test treats this set as the migrated
- * set; everything else on a surface is unmigrated and counted by the ratchet.
- */
 export const codegraphIndexOperation = defineOperation<
   CodegraphSurfaceRequest,
   { result: CodegraphSurfaceResponse }
@@ -691,19 +622,12 @@ export const codegraphIngestTracesOperation = defineOperation<
   },
 });
 
-// Batch-migrated operations (issue #1525): registers all remaining
-// handlers through the boundary as a side effect of importing this module.
 import "./access-operations-batch.js";
-// Owner-controlled support passport operations (issue #2355).
 import "./support-passport/access-operations.js";
-// Remnic Relay mission evidence operations (issue #1966).
 import "./relay/mission-access.js";
-// Location sync surfaces (issue #2047).
 import "./location/access-operations.js";
 import "./standup/access-operations.js";
-// Recall navigation (issue #1956).
 import "./recall-navigation-operations.js";
-// Memory-store browse verbs (issue #2978).
 import "./memory-browse-operations.js";
 
 export const REGISTERED_OPERATIONS = [

@@ -18,9 +18,6 @@ export type QuarantineFormat = "text" | "json";
 
 export function renderQuarantineList(records: readonly QuarantinedRecord[], format: QuarantineFormat): string {
   if (format === "json") {
-    // Project to metadata only — the raw `payload` is the original
-    // observe/memory_store request and can carry full user memory text, which
-    // must not leak through an operator-facing list command.
     const summary = records.map((record) => ({
       timestamp: record.timestamp,
       operation: record.operation,
@@ -68,13 +65,7 @@ export async function replayQuarantine(opts: {
   for (const entry of await opts.store.entries()) {
     const { record } = entry;
     const basePayload = record.payload as Record<string, unknown>;
-    // Default to the principal the write was originally attributed to, so authz
-    // resolves against that identity unless the operator overrides with --principal.
     const principal = opts.principal ?? record.principal ?? undefined;
-    // Stable idempotency key derived from the parked file name: if a re-submit
-    // succeeds but the record cannot be removed, a later replay dedupes to the
-    // same write server-side instead of duplicating the side effect (observe has
-    // no content dedupe). A key already present in the payload is preserved.
     const idempotencyKey =
       typeof basePayload.idempotencyKey === "string" && basePayload.idempotencyKey.length > 0
         ? basePayload.idempotencyKey

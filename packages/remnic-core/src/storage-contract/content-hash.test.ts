@@ -1,12 +1,3 @@
-/**
- * Issue #1533 — Phase A contract test: content hash identity.
- *
- * Rule 23: the write-side and dedup-side MUST hash the same `rawContent`,
- * never the timestamped/cited form. `writeMemory` persists a `contentHash` on
- * the frontmatter for facts; `hasFactContentHash` queries the dedup index.
- * This test pins that the two sides agree so subsequent extractions of the
- * same logical fact are deduped correctly even when citation timestamps differ.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -41,18 +32,15 @@ test("content-hash: contentHashSource overrides the persisted body for dedup (ru
   const { storage, cleanup } = await makeStorage();
   try {
     const rawFact = "We migrated to MySQL in March";
-    // Persist a citation-annotated body, but index the RAW fact text
     await storage.writeMemory("fact", `${rawFact} [cited 2026-01-01]`, {
       contentHashSource: rawFact,
     });
 
-    // Querying with the RAW fact (not the cited form) must hit
     assert.equal(
       await storage.hasFactContentHash(rawFact),
       true,
       "hasFactContentHash must match on the raw fact, not the cited body",
     );
-    // The cited form should NOT be separately indexed (it has the citation suffix)
     assert.equal(
       await storage.hasFactContentHash(`${rawFact} [cited 2026-01-01]`),
       false,
@@ -67,22 +55,12 @@ test("content-hash: the shared dedup index covers every active category, but has
   const { storage, cleanup } = await makeStorage();
   try {
     await storage.writeMemory("decision", "we chose option B");
-    // writeMemory only registers facts on the write hot path, but the
-    // authoritative corpus rebuild (first fact-hash use) indexes EVERY active
-    // registered category (PR #2016) so a restart never re-creates an identical
-    // decision/preference/commitment. The SHARED content-hash index is therefore
-    // category-agnostic — probe it directly.
     const shared = await storage.getAuthoritativeFactHashIndex();
     assert.equal(
       shared.has("we chose option B"),
       true,
       "the shared dedup index must cover all active categories, not only facts",
     );
-    // hasFactContentHash, however, is fact-ONLY (PR #2016): a non-fact body must
-    // NOT satisfy a fact-hash check, or an unrelated decision/preference/note
-    // would suppress a real fact candidate for direct consumers (wearable/native
-    // writers, explicit-capture) that trust a hit before their own category or
-    // source confirmation.
     assert.equal(
       await storage.hasFactContentHash("we chose option B"),
       false,
@@ -97,7 +75,6 @@ test("content-hash: hasFactContentHash is fact-only — a non-fact body sharing 
   const { storage, cleanup } = await makeStorage();
   try {
     const body = "the launch window closes on friday";
-    // An unrelated non-fact memory shares the normalized body.
     await storage.writeMemory("preference", body);
     const shared = await storage.getAuthoritativeFactHashIndex();
     assert.equal(
@@ -110,7 +87,6 @@ test("content-hash: hasFactContentHash is fact-only — a non-fact body sharing 
       false,
       "a preference must not satisfy hasFactContentHash — a direct consumer would else skip a real fact",
     );
-    // A genuine active fact with the same body DOES satisfy the fact-only check.
     await storage.writeMemory("fact", body);
     assert.equal(
       await storage.hasFactContentHash(body),
@@ -165,7 +141,6 @@ test("content-hash: fact-only membership across write, supersede, and rebuild �
     const supersededBody = "the staging region retires on friday";
     const activeBody = "the production region stays";
 
-    // Write: both facts register fact-only membership on the shared index.
     await storage.writeMemory("fact", supersededBody);
     await storage.writeMemory("fact", activeBody);
     assert.equal(
@@ -175,11 +150,6 @@ test("content-hash: fact-only membership across write, supersede, and rebuild �
     );
     assert.equal(await storage.hasFactContentHash(activeBody), true);
 
-    // Supersede: the frontmatter rewrite runs syncFactHashIndexAfterRewrite →
-    // removeFactContentHashesForMemories, which must drop BOTH the shared hash
-    // and the fact-only partition. A stale partition entry is the PR #2016
-    // stale-true bug class: wearable / explicit-capture / promotion callers
-    // would skip a valid re-write.
     const mem = (await storage.readAllMemories()).find((m) =>
       (m.content ?? "").includes(supersededBody),
     );
@@ -197,9 +167,6 @@ test("content-hash: fact-only membership across write, supersede, and rebuild �
       "the untouched fact keeps its fact-only membership",
     );
 
-    // Rebuild: a fresh instance repopulates the index from the corpus. The
-    // superseded fact must stay out of the fact-only partition; the active
-    // fact must survive.
     const reopened = new StorageManager(baseDir);
     await reopened.ensureDirectories();
     assert.equal(

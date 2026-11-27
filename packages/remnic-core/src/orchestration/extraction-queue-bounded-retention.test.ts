@@ -21,17 +21,6 @@ import {
   type TurnIngestionDeps,
 } from "./turn-ingestion.js";
 
-/**
- * Controlled real-queue workload for the unbounded-retention flaw (#3324
- * follow-up). While the drain is blocked (the production OOM shape: LLM
- * latency >> trigger cadence), every new buffered turn re-triggers
- * extraction and enqueues a FULL prefix snapshot of the buffer. On current
- * main each queued closure retains its own deep copy of every overlapping
- * turn, so queued memory grows superlinearly with trigger count. The bounded
- * design shares turn objects across overlapping queued snapshots of the same
- * buffer key — exact value semantics (bufferTurnsEqual) with O(union)
- * retention instead of O(sum of snapshots).
- */
 
 class FakeStorage implements BufferStorage {
   constructor(private readonly initial: BufferState) {}
@@ -45,11 +34,8 @@ interface Harness {
   coordinator: TurnIngestionCoordinator;
   queue: ExtractionQueueCoordinator;
   buffer: SmartBuffer;
-  /** Turn arrays as they reached the extraction boundary, in drain order. */
   received: BufferTurn[][];
-  /** Release the blocked drain; resolves when every accepted task exited. */
   release(): Promise<void>;
-  /** Accepted tasks: running or queued. */
   outstanding(): number;
 }
 
@@ -156,8 +142,6 @@ test("overlapping queued same-key snapshots share turn objects (bounded retentio
   for (let index = 0; index < h.received.length; index += 1) {
     assert.equal(h.received[index]?.length, index + 1, `window ${index} is the full prefix snapshot`);
   }
-  // Bounded-memory proof: consecutive snapshots overlap by identity, so the
-  // queue retains the union of turn objects, not one deep copy per snapshot.
   for (let index = 1; index < h.received.length; index += 1) {
     const previous = h.received[index - 1];
     const current = h.received[index];
@@ -226,8 +210,6 @@ test("distinct scopes stay independent: different accepted pins never alias", as
   );
   await h.release();
   await Promise.allSettled(settlementPromises);
-  // Each scope group is its own queued task with its own window; no cross-scope
-  // turn objects may be shared.
   const acceptedAWindow = h.received.find(
     (window) => window.some((turn) => turn.writeNamespaceOverride === "ns-a"),
   );
@@ -279,9 +261,7 @@ test("pre-aborted automatic capture settles without queueing", async () => {
 test("abort while queued: settled task starts, skips extraction, queue drains", async () => {
   const h = makeHarness();
   const controller = new AbortController();
-  // Occupies the single worker (starts synchronously on enqueue).
   await h.coordinator.processTurn("user", "running", "k");
-  // Same key: queues behind the running task while the drain is blocked.
   const settled: unknown[] = [];
   await h.coordinator.queueBufferedExtraction([makeTurn("queued then aborted")], "trigger_mode", {
     bufferKey: "k",
@@ -302,7 +282,6 @@ test("abort while queued: settled task starts, skips extraction, queue drains", 
 test("abort while queued: onTaskExit fires at once, not after the queue head finishes", async () => {
   const h = makeHarness();
   const controller = new AbortController();
-  // Occupies the single worker; the drain stays blocked until release().
   await h.coordinator.processTurn("user", "running", "k");
   let exited = 0;
   await h.coordinator.queueBufferedExtraction([makeTurn("queued then aborted")], "trigger_mode", {
@@ -312,8 +291,6 @@ test("abort while queued: onTaskExit fires at once, not after the queue head fin
     onTaskExit: () => { exited += 1; },
   });
   controller.abort();
-  // A claim-lease owner waiting on this exit must not be held by an unrelated
-  // running extraction: nothing of this task ever ran.
   assert.equal(exited, 1, "queued task that never started reports exit on abort");
   await h.release();
   assert.equal(exited, 1, "the later no-op closure run does not report a second exit");
@@ -328,8 +305,6 @@ test("sharing bound: distinct reference slots equal the union, not the snapshot 
   const stats = h.coordinator.snapshotSharing.stats();
   assert.equal(stats.queuedNodes, turns, "one chain node per accepted automatic task");
   assert.equal(stats.queuedTailRefs, turns, "distinct reference slots = union of turns");
-  // Documents what un-shared retention would be for the same workload: the
-  // sum over full prefix snapshots (1+2+...+N), the quadratic term main pays.
   assert.equal(stats.queuedTotalRefs, (turns * (turns + 1)) / 2);
   await h.release();
   const drained = h.coordinator.snapshotSharing.stats();
@@ -368,18 +343,11 @@ test("representation guard: bufferTurnsEqual turns differing in ignored fields n
   const stats = registry.stats();
   assert.equal(stats.queuedNodes, 3, "each differing-representation turn starts its own chain");
   assert.equal(stats.queuedTailRefs, 3, "nothing shared across representation-inequivalent turns");
-  // The representation check is strictly stronger than bufferTurnsEqual.
   assert.ok(!turnRepresentationEquivalent(plain, withParts));
   assert.ok(!turnRepresentationEquivalent(plain, contextOnly));
 });
 
 test("continuous enqueue/dequeue cycles: released ancestors erode, retention returns to zero", async () => {
-  // Codex P2 reproduction attempt: under continuous single-key
-  // enqueue/dequeue, completed ("released") ancestors stay reachable via
-  // `base` while any descendant is queued. Their content is the descendant's
-  // own window prefix (verified element-wise at admit), so retention is the
-  // union of the still-owed windows — and when every task has exited, the
-  // registry must return to exactly zero with no historical remainder.
   const registry = new ExtractionSnapshotSharingRegistry();
   const cycles = 500;
   const live: { node: SnapshotChain }[] = [];
@@ -388,8 +356,6 @@ test("continuous enqueue/dequeue cycles: released ancestors erode, retention ret
     const turns: BufferTurn[] = [];
     for (let offset = 1; offset <= cycle; offset += 1) turns.push(makeTurn(`cycle ${offset}`));
     live.push({ node: registry.admit("k", turns) });
-    // Interleaved drain: the oldest live task exits before the next admit,
-    // exactly the continuous enqueue/dequeue shape.
     if (live.length > 2) {
       const oldest = live.shift();
       assert.ok(oldest, "oldest live entry present");
@@ -398,7 +364,6 @@ test("continuous enqueue/dequeue cycles: released ancestors erode, retention ret
     const stats = registry.stats();
     if (stats.queuedTotalRefs > peakQueuedTotalRefs) peakQueuedTotalRefs = stats.queuedTotalRefs;
   }
-  // Drain everything.
   for (const entry of live) registry.release(entry.node);
   const final = registry.stats();
   assert.equal(final.queuedNodes, 0, "no historical nodes survive full drain");
@@ -408,11 +373,6 @@ test("continuous enqueue/dequeue cycles: released ancestors erode, retention ret
 });
 
 test("single unchanged turn, one outstanding: reachable chain depth stays bounded", async () => {
-  // Exact Codex P2 shape: 10,000 cycles of one-unchanged-turn admissions
-  // with exactly one outstanding node (admit, then release the previous).
-  // Every admission against an equivalent base creates a tail=[] node
-  // chained onto the previous one: reachable depth grew to 10,000 while
-  // stats reported nodes=1 / tailRefs=0.
   const registry = new ExtractionSnapshotSharingRegistry();
   const cycles = 10_000;
   const turn: BufferTurn = makeTurn("unchanged");
@@ -428,8 +388,6 @@ test("single unchanged turn, one outstanding: reachable chain depth stays bounde
   }
   assert.equal(maxReachableDepth, 1, "identical windows reuse the same chain node: depth stays 1");
   const stats = registry.stats();
-  // The final release may or may not remove the shared node depending on
-  // which sharer exited last; either way at most one bounded node remains.
   assert.ok(stats.queuedNodes <= 1, "at most one bounded node remains");
   assert.ok(stats.queuedTailRefs <= 1, "truthful distinct reference count");
   assert.ok(stats.queuedTotalRefs <= 1, "truthful total");
@@ -437,10 +395,6 @@ test("single unchanged turn, one outstanding: reachable chain depth stays bounde
 });
 
 test("overlapping identical tasks keep the shared node until the last holder releases", async () => {
-  // Main follow-up to the Codex P2 fix: node reuse must keep registry
-  // accounting truthful while ANY sharer is still outstanding — the first
-  // completion may not drop the only bucket entry, and later identical
-  // admissions must keep aliasing onto the shared node.
   const registry = new ExtractionSnapshotSharingRegistry();
   const turn: BufferTurn = makeTurn("shared window");
   const a = registry.admit("k", [turn]);
@@ -449,8 +403,6 @@ test("overlapping identical tasks keep the shared node until the last holder rel
   assert.ok(a === b && b === c, "three overlapping identical tasks share one node");
   assert.equal(registry.stats().queuedNodes, 1);
   registry.release(a);
-  // RED on current code: the first release must not empty the registry while
-  // b and c still hold the node.
   let stats = registry.stats();
   assert.equal(stats.queuedNodes, 1, "shared node survives until the last holder releases");
   assert.equal(stats.queuedTailRefs, 1, "content still counted while sharers remain");
@@ -480,9 +432,6 @@ test("refusal path releases exactly once: registry stays balanced for later work
     bufferKey: "k",
     preemptable: true,
   });
-  // The refusal branch releases the node before any closure existed; the
-  // accounting must be back to zero with no phantom holder, or the next
-  // admission cycle would drift.
   assert.deepEqual(h.coordinator.snapshotSharing.stats(), {
     queuedNodes: 0,
     queuedTotalRefs: 0,
@@ -517,10 +466,6 @@ test("stats report per-task holders and unshared equivalent separately from node
 });
 
 test("released ancestors reachable via base are counted exactly once", async () => {
-  // Main stats-defect shape: admit [a], admit [a,b], release the first node.
-  // The first node is out of the bucket but still reachable through the
-  // second node's base, so both turn references are retained while only one
-  // direct tail remains — bucket-node sums under-reported this (tailRefs=1).
   const registry = new ExtractionSnapshotSharingRegistry();
   const a = registry.admit("k", [makeTurn("a")]);
   const b = registry.admit("k", [makeTurn("a"), makeTurn("b")]);
@@ -532,8 +477,6 @@ test("released ancestors reachable via base are counted exactly once", async () 
   assert.equal(stats.queuedHolders, 1, "one outstanding task");
   assert.equal(stats.unsharedEquivalentRefs, 2, "1 task x 2-turn window");
   assert.equal(stats.queuedTotalRefs, 2, "per-node window basis");
-  // Sibling nodes sharing a base chain: shared ancestors count once in the
-  // reachable tail set but once per node in the per-task window basis.
   const c = registry.admit("k", [makeTurn("a"), makeTurn("b"), makeTurn("c")]);
   assert.equal(c.base, b, "chains onto the queued sibling");
   const siblingStats = registry.stats();
@@ -548,8 +491,6 @@ test("10,000-deep queued chain materializes without stack overflow", async () =>
   const registry = new ExtractionSnapshotSharingRegistry();
   const depth = 10_000;
   let last: ReturnType<ExtractionSnapshotSharingRegistry["admit"]> | undefined;
-  // One shared array grown in place mirrors the real pump: every trigger
-  // hands out a full prefix snapshot of the same buffer.
   const turns: BufferTurn[] = [];
   for (let index = 1; index <= depth; index += 1) {
     turns.push(makeTurn(`deep ${index}`));

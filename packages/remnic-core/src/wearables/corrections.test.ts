@@ -29,7 +29,6 @@ test("literal rules escape regex metacharacters", () => {
   const result = applyCorrections("we run node.js (v22) here", rules, "limitless");
   assert.equal(result.text, "we run Node 22 here");
   assert.equal(result.applied, 1);
-  // The dot must not act as a wildcard.
   assert.equal(
     applyCorrections("nodeXjs (v22)", rules, "limitless").applied,
     0,
@@ -110,7 +109,6 @@ test("saving an invalid rule set is rejected before touching the file", async ()
       saveCorrectionsFile(dir, [{ match: "(", replace: "x", regex: true }]),
       /not a valid regular expression/,
     );
-    // The previously-saved rules are still intact.
     assert.equal((await loadCorrectionsFile(dir)).length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });

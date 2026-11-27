@@ -74,12 +74,9 @@ export async function scanForBinaries(
 
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
-      // Normalize to POSIX separators so redirect matching works on Windows
-      // (markdown links always use forward slashes).
       const relativePath = path.relative(memoryDir, fullPath).split(path.sep).join("/");
 
       if (entry.isDirectory()) {
-        // Skip the manifest directory itself and hidden dirs starting with .
         if (entry.name === ".binary-lifecycle") continue;
         await walk(fullPath);
         continue;
@@ -87,10 +84,8 @@ export async function scanForBinaries(
 
       if (!entry.isFile()) continue;
 
-      // Check pattern match
       if (!matchesPatterns(entry.name, config.scanPatterns)) continue;
 
-      // Check file size
       try {
         const stat = await fsp.stat(fullPath);
         if (stat.size > config.maxBinarySizeBytes) continue;

@@ -137,8 +137,6 @@ export function startDaemon(deps: DaemonDeps): Promise<DaemonHandle> {
     server.once("error", onError);
     server.listen(deps.config.port, deps.config.host, () => {
       server.removeListener("error", onError);
-      // Keep a persistent handler so a post-startup socket error cannot crash
-      // the daemon as an unhandled 'error' event (sanitized; no foreign text).
       server.on("error", (err: NodeJS.ErrnoException) => {
         process.stderr.write(`capture-audio daemon server error: ${err.code ?? err.name}\n`);
       });

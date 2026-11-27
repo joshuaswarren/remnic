@@ -138,7 +138,6 @@ test("parseActivityConfig accepts localhost and 127.x loopback hosts", () => {
 });
 
 test("parseActivityConfig shares the core loopback classification (issue #3012)", () => {
-  // RFC 6761 loopback subdomain and the IPv4-mapped ::1 are loopback.
   assert.equal(
     parseActivityConfig({ enabled: true, sources: [{ machineLabel: "a", baseUrl: "http://daemon.localhost:4319" }] })
       .sources.length,
@@ -149,7 +148,6 @@ test("parseActivityConfig shares the core loopback classification (issue #3012)"
       .sources.length,
     1,
   );
-  // A loopback-shaped DNS name is still not loopback.
   assert.throws(
     () => parseActivityConfig({ enabled: true, sources: [{ machineLabel: "c", baseUrl: "http://127.0.0.1.evil.test:4319" }] }),
     /must target a loopback host/,
@@ -166,7 +164,6 @@ test("parseActivityConfig parses and bounds autoSyncIntervalMinutes", () => {
 });
 
 test("activity config accepts smart extraction only when explicitly selected", () => {
-  // `enabled` defaults false, so no source is required to configure extraction.
   assert.deepEqual(parseActivityConfig({ extractionMode: "smart", maxMemoriesPerDay: 3 }), {
     ...defaultActivityConfig(),
     extractionMode: "smart",
@@ -198,7 +195,6 @@ test("activity config rejects a null maxMemoriesPerDay instead of silently uncap
 test("activity timeline analysis defaults off with no provider settings stored", () => {
   const timeline = parseActivityConfig(undefined).timeline;
   assert.deepEqual(timeline.analysis, { enabled: false });
-  // The gate is independent of the timeline master switch and of capture.
   assert.equal(parseActivityConfig({ timeline: { enabled: true } }).timeline.analysis.enabled, false);
 });
 
@@ -317,9 +313,6 @@ test("activity timeline analysis rejects a non-object or non-boolean block", () 
 });
 
 test("vault publish section names are rejected at config load when the publisher would reject them", () => {
-  // `Timeline-->` and an embedded newline both pass a trimmed-string check
-  // but break the `<!-- remnic:<name>:start -->` marker, so `publishVaultNote`
-  // throws. The accepted config domain must equal the publisher's.
   for (const section of ["Timeline-->", "Time\nline"]) {
     assert.throws(
       () =>
@@ -336,8 +329,6 @@ test("vault publish section names are rejected at config load when the publisher
 });
 
 test("noteTemplate path shape is validated at config load when createMissingNotes is true", () => {
-  // The field is documented vault-relative; an absolute or `..`-bearing
-  // value would only fail later as a publish-time `template_escape`.
   for (const noteTemplate of ["/vault/daily.md", "../daily.md", "Daily/../daily.md"]) {
     assert.throws(
       () => parseActivityConfig({ timeline: { vault: { createMissingNotes: true, noteTemplate } } }),
@@ -351,9 +342,6 @@ test("noteTemplate path shape is validated at config load when createMissingNote
 });
 
 test("an explicitly disabled weekly target loads identically to an omitted one", () => {
-  // Tools that serialize schema defaults write `publish.weekly.enabled: false`;
-  // that must behave exactly like leaving the object out, not demand a
-  // weeklyNotePath the disabled target never uses.
   const explicit = parseActivityConfig({
     timeline: { vault: { publish: { weekly: { enabled: false } } } },
   });
@@ -367,10 +355,6 @@ test("an explicitly disabled weekly target loads identically to an omitted one",
 });
 
 test("an enabled vault rejects relative or whitespace-only vaultPath at config load", () => {
-  // A relative root resolves against the process working directory, so the
-  // same config would update different files depending on how the daemon or
-  // CLI was launched. The contract is absolute or `~`-rooted, enforced at
-  // parse time — not as a publish-time surprise.
   for (const vaultPath of [".", "vault", "../notes", "   "]) {
     assert.throws(
       () => parseActivityConfig({ timeline: { vault: { enabled: true, vaultPath } } }),
@@ -381,7 +365,6 @@ test("an enabled vault rejects relative or whitespace-only vaultPath at config l
     const ok = parseActivityConfig({ timeline: { vault: { enabled: true, vaultPath } } });
     assert.equal(ok.timeline.vault.vaultPath, vaultPath);
   }
-  // A disabled vault may carry any placeholder — nothing resolves it.
   const inert = parseActivityConfig({ timeline: { vault: { enabled: false, vaultPath: "." } } });
   assert.equal(inert.timeline.vault.vaultPath, ".");
 });
@@ -410,8 +393,6 @@ test("readback.journalSection must be a trimmed single-line heading (#2917)", ()
 });
 
 test("heading-strategy section names that cannot round-trip are rejected at config load (#2917)", () => {
-  // `## Timeline #` parses back as `Timeline`. Accepted at load, every
-  // publish would throw before producing a status.
   assert.throws(
     () =>
       parseActivityConfig({

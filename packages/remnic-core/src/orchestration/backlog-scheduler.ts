@@ -1,29 +1,3 @@
-/**
- * Daemon-owned extraction backlog scheduler.
- *
- * ONE bounded in-process loop that owns ALL persisted extraction backlog:
- * at startup (existing drain claims + buffered sessions), on every poll tick
- * (new persisted work), and by retrying keys that are still pending — with
- * bounded memory (per-key COUNTS only; candidate scans never retain turn
- * payloads) and bounded outstanding work (the extraction queue's own
- * maxConcurrency gates submissions, so live foreground work keeps its share
- * of the queue).
- *
- * Claim authority: an existing claim — including an EMPTY ack tombstone — is
- * authoritative over the live buffer's in-memory copy. A tombstoned key is
- * never re-claimed or counted as work; new ingress consumes the tombstone
- * through the native save handover, which is what makes the key a candidate
- * again. Claim creation is fenced: the key is reserved synchronously on the
- * extraction queue BEFORE the async claim decision, so a queued live task for
- * the same key cannot start past the claimed-session gate until the decision
- * settles; live capture continues via the native merge-into-claim protocol.
- *
- * Failed, deferred, or policy-denied outcomes keep their turns durable in the
- * claim and re-submit after backoff (exponential from `retryBaseMs` to
- * `retryMaxMs`, reset by progress; denials wait the full max) — never a busy
- * retry. `stop()` aborts in-flight drains at their chunk boundary and leaves
- * every claim retryable; a restarted daemon's scheduler adopts them.
- */
 
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
@@ -46,7 +20,6 @@ export interface BacklogSchedulerDeps {
   liveBufferCounts():
     | Map<string, { turns: number; retainedTurns: number }>
     | Promise<Map<string, { turns: number; retainedTurns: number }>>;
-  /** Create a fresh lease for a unique owner token. */
   lease(ownerId: string): DrainLease;
   /** Drain one key to quiescence (BufferDrainRunner.drainSession). */
   drainKey(
@@ -121,8 +94,6 @@ interface KeyState {
 const DEFAULT_POLL_MS = 15_000;
 const DEFAULT_RETRY_BASE_MS = 30_000;
 const DEFAULT_RETRY_MAX_MS = 15 * 60_000;
-// Aborted drains normally settle within seconds (a chunk boundary); this only
-// bounds the pathological case, well inside the daemon's stop budget.
 const DEFAULT_STOP_SETTLE_TIMEOUT_MS = 30_000;
 
 export class BacklogScheduler {
@@ -222,8 +193,6 @@ export class BacklogScheduler {
   /** One scan+submit pass (tests drive this instead of the timer). Waits out
    *  any in-progress tick first so the pass always actually scans. */
   async tickForTest(): Promise<void> {
-    // setImmediate: yields to the event loop so pending I/O (a slow first
-    // scan) can finish; a microtask spin would starve it.
     while (this.ticking) await new Promise((resolve) => setImmediate(resolve));
     await this.tick();
   }
@@ -247,10 +216,6 @@ export class BacklogScheduler {
     this.ticking = true;
     const cursorBeforeTick = this.claimCursor;
     try {
-      // Fast bail: a breaker already open must not pay discovery I/O
-      // (listPage reads and parses claim bodies on every poll). The
-      // submitCandidates guard below still catches a breaker that opens
-      // while discovery awaits.
       const breakerBeforeDiscovery = this.deps.breakerSnapshot?.();
       if (
         breakerBeforeDiscovery &&
@@ -259,18 +224,10 @@ export class BacklogScheduler {
       ) {
         return;
       }
-      // stop() may land while discovery's I/O is pending: re-check before
-      // submitting anything, and again per candidate.
-      // A discovery failure (EACCES/EIO on the claims dir) must not reject
-      // into a detached timer callback: it would be an unhandled rejection
-      // that terminates the server. Log, skip this pass, retry next poll.
       let candidates: { key: string; needsClaim: boolean }[];
       try {
         candidates = await this.discoverCandidates();
       } catch (err) {
-        // Discovery may have listed a page before it failed: the page cursor
-        // already moved, so restore it — otherwise those claims wait for the
-        // cursor to wrap instead of the next poll.
         this.claimCursor = cursorBeforeTick;
         log.warn(
           `backlog drain: discovery failed; retrying next poll: ${err instanceof Error ? err.message : String(err)}`
@@ -279,9 +236,6 @@ export class BacklogScheduler {
       }
       if (this.stopped) return;
       const dropped = this.submitCandidates(candidates);
-      // The concurrency bound stopped submission mid-page: rewind the page
-      // cursor so the unsubmitted claims are re-listed on the next tick
-      // (already-submitted ones are gated by inFlight and key backoff).
       if (dropped) this.claimCursor = cursorBeforeTick;
     } finally {
       this.ticking = false;
@@ -318,13 +272,7 @@ export class BacklogScheduler {
     return this.deps.queue.maxConcurrency;
   }
 
-  /** Submit discovery candidates within the queue's concurrency bound. */
   private submitCandidates(candidates: { key: string; needsClaim: boolean }[]): boolean {
-    // Breaker-open churn guard: a full attempt reads the claim, rebuilds the
-    // buffer/coordinator and re-renders chunks before the breaker fails it
-    // fast — pure heap pressure per poll during a provider stall. Skip while
-    // the window is open; once it lapses, submissions resume and the
-    // breaker's half-open probe runs as usual.
     const breaker = this.deps.breakerSnapshot?.();
     if (breaker && breaker.state === "open" && this.now() < breaker.openUntilMs) {
       return true;
@@ -336,9 +284,6 @@ export class BacklogScheduler {
         break;
       }
       if (!this.candidateEligible(candidate)) continue;
-      // Fence the claim decision: reserve the key synchronously BEFORE the
-      // async rename so no queued task for it can pass the claimed gate in
-      // the meantime. Release happens when the decision settles.
       if (candidate.needsClaim) {
         if (!this.deps.queue.tryReserveKey(candidate.key)) continue;
         this.reserved.add(candidate.key);
@@ -348,8 +293,6 @@ export class BacklogScheduler {
     return dropped;
   }
 
-  /** inFlight is the authority for "already submitted" — key state only
-   *  exists once an outcome landed (backoff/denied gating below). */
   private candidateEligible(candidate: { key: string; needsClaim: boolean }): boolean {
     if (this.stopped || this.inFlight.size >= this.submissionLimit()) return false;
     if (this.inFlight.has(candidate.key)) return false;
@@ -357,26 +300,17 @@ export class BacklogScheduler {
     return !(state && this.now() < state.nextAttemptMs);
   }
 
-  /** Claim (when needed), then drain one key; the reservation spans the async
-   *  claim decision, the queue entry carries the key afterwards. */
   private async submit(key: string, needsClaim: boolean): Promise<void> {
     const controller = new AbortController();
     const { promise: settled, resolve: settle } = Promise.withResolvers<void>();
     this.inFlight.set(key, { controller, settled });
     try {
       if (!(await this.claimForSubmit(key, needsClaim, this.options.ownerId))) return;
-      // Stopped between the claim decision and the task: leave the claim
-      // with its lease (it expires; the next start adopts) — never drain.
       if (this.stopped) return;
       await this.drainClaimedKey(key, controller.signal, this.options.ownerId);
     } catch (err) {
-      // Claim/drain failures are scheduler-level: the claim content is
-      // untouched — count failed and back off (never an unhandled rejection
-      // in the detached submission).
       this.counters.failed += 1;
       const message = err instanceof Error ? err.message : String(err);
-      // SAFETY: a thrown non-Error (incl. null) carries no retry hint; the
-      // optional chain reads the hint off Error throws only.
       this.setBackoff(key, (err as { turnsRemaining?: number } | null | undefined)?.turnsRemaining ?? 0, message);
       log.warn(`backlog drain: ${key} submission failed: ${message}`);
     } finally {
@@ -417,8 +351,6 @@ export class BacklogScheduler {
     } catch (err) {
       this.counters.failed += 1;
       const message = err instanceof Error ? err.message : String(err);
-      // SAFETY: a thrown non-Error (incl. null) carries no retry hint; the
-      // optional chain reads the hint off Error throws only.
       this.setBackoff(key, (err as { turnsRemaining?: number } | null | undefined)?.turnsRemaining ?? 0, message);
       log.warn(`backlog drain: ${key} threw: ${message}`);
     }
@@ -429,8 +361,6 @@ export class BacklogScheduler {
     const previous = this.keys.get(key);
     const progressed = outcome.turnsRemaining < (previous?.turnsRemaining ?? Number.POSITIVE_INFINITY);
     if (outcome.status === "drained") {
-      // The claim is now an empty tombstone: authoritative, nothing pending.
-      // New ingress consumes it via the native save path and re-candidates.
       this.keys.delete(key);
       this.counters.processed += 1;
       this.counters.durableOutputs += outcome.durableOutputCount;
@@ -448,7 +378,6 @@ export class BacklogScheduler {
     );
   }
 
-  /** Denied backlog counters for a non-drained outcome. */
   private recordNonDrainedCounters(
     previous: KeyState | undefined,
     outcome: DrainSessionOutcome,
@@ -517,8 +446,6 @@ export function wireBacklogScheduler(
       queue: orchestrator.extractionQueueCoordinator,
       claims: orchestrator.storage.bufferDrainClaims(),
       liveBufferCounts: async () => {
-        // The daemon's buffer may be lazy: ensure the persisted state is in
-        // memory before counting (load is guarded/idempotent).
         await orchestrator.buffer.load();
         return orchestrator.buffer.entryCounts();
       },
@@ -534,8 +461,6 @@ export function wireBacklogScheduler(
         };
       },
       drainKey: (key, drainOptions) => runner.drainSession(key, drainOptions),
-      // The orchestrator's one shared provider breaker (foreground and every
-      // claim-backed drain accumulate toward the same threshold).
       breakerSnapshot: () => orchestrator.getExtractionResilienceStatus().breaker,
       maxTurnsPerSession: () => resolveMaxTurnsPerSession(orchestrator.config.bufferMaxTurnsPerSession),
     },

@@ -19,7 +19,6 @@
 import path from "node:path";
 import process from "node:process";
 
-// Consume `@remnic/bench` through its published package boundary
 // (CLAUDE.md rule 26). The root package.json lists it under
 // `devDependencies` with the `workspace:*` protocol so the script
 // resolves against the workspace symlink at dev time; the published

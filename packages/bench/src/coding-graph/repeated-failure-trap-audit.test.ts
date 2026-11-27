@@ -280,7 +280,6 @@ async function seedTerminalAuditRows(
 }
 
 test("computeTrapAuditMetrics: 15/30 trapped and 24/30 nonfixed passes", () => {
-  // 15 TRAPPED, 9 UNFIXED, 6 FIXED = 30 tasks
   const rows: RepeatedFailureTrapAuditRow[] = [];
   for (let i = 1; i <= 15; i++) {
     rows.push(makeDummyRow(`task-${i}`, "TRAPPED"));
@@ -323,9 +322,6 @@ test("computeTrapAuditMetrics: 15/30 trapped and 24/30 nonfixed passes", () => {
 });
 
 test("computeTrapAuditMetrics: 8/30 trapped fails the 0.30 floor", () => {
-  // 8 TRAPPED (0.267, below the 0.30 floor), 16 UNFIXED, 6 FIXED = 30 tasks.
-  // Non-fixed is 24/30 = 0.80 and clears its own floor, so this isolates the
-  // trapped-rate rejection.
   const rows: RepeatedFailureTrapAuditRow[] = [];
   for (let i = 1; i <= 8; i++) {
     rows.push(makeDummyRow(`task-${i}`, "TRAPPED"));
@@ -344,9 +340,6 @@ test("computeTrapAuditMetrics: 8/30 trapped fails the 0.30 floor", () => {
 });
 
 test("computeTrapAuditMetrics: 14/30 nonfixed fails the 0.50 floor", () => {
-  // 12 TRAPPED (0.40, clears the trapped floor), 2 UNFIXED, 16 FIXED = 30 tasks.
-  // Non-fixed is 14/30 = 0.467, just under the 0.50 floor, so this isolates the
-  // non-fixed rejection.
   const rows: RepeatedFailureTrapAuditRow[] = [];
   for (let i = 1; i <= 12; i++) {
     rows.push(makeDummyRow(`task-${i}`, "TRAPPED"));
@@ -387,14 +380,12 @@ test("verifyTrapAuditArtifact: rejects tampered artifact or drift", () => {
   const validHash = computeTrapAuditArtifactHash(payload);
   const artifact: RepeatedFailureTrapAuditArtifact = { ...payload, artifactHash: validHash };
 
-  // Tampered payload with valid hash
   const tampered: RepeatedFailureTrapAuditArtifact = {
     ...artifact,
     artifactHash: "bad".padEnd(64, "0"),
   };
   assert.equal(verifyTrapAuditArtifact(tampered, TEST_EXPECTED_AUDIT).valid, false);
 
-  // Mismatched profile hash drift
   const drifted = verifyTrapAuditArtifact(artifact, {
     ...TEST_EXPECTED_AUDIT,
     modelProfileHash: "d".repeat(64),
@@ -653,7 +644,6 @@ test("runTrapAudit rejects a tampered prior retry trace with unchanged usage", a
         reasoningOutput: number;
       };
     };
-    // Keep strict equality here: this test pins the complete normalized usage contract.
     assert.deepEqual(retryTrace.usage, {
       input: 2,
       output: 1,

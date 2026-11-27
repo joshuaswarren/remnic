@@ -1,9 +1,3 @@
-/**
- * Loads and validates a user-customized taxonomy from disk, merging
- * with the built-in defaults.
- *
- * User taxonomies are stored at `<memoryDir>/.taxonomy/taxonomy.json`.
- */
 
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -13,10 +7,8 @@ import { DEFAULT_TAXONOMY } from "./default-taxonomy.js";
 const TAXONOMY_DIR = ".taxonomy";
 const TAXONOMY_FILE = "taxonomy.json";
 
-/** Maximum allowed slug length */
 const MAX_SLUG_LENGTH = 32;
 
-/** Regex for valid slug: lowercase letters, digits, hyphens */
 const SLUG_RE = /^[a-z][a-z0-9-]*$/;
 const VALID_MEMORY_CATEGORIES = new Set([
   "fact",
@@ -34,10 +26,6 @@ const VALID_MEMORY_CATEGORIES = new Set([
   "reasoning_trace",
 ]);
 
-/**
- * Validate a taxonomy category slug.
- * Throws if the slug is invalid.
- */
 export function validateSlug(slug: string): void {
   if (slug.length === 0) {
     throw new Error("Taxonomy category ID must not be empty");
@@ -54,10 +42,6 @@ export function validateSlug(slug: string): void {
   }
 }
 
-/**
- * Validate an entire taxonomy for structural correctness.
- * Throws on the first error found.
- */
 export function validateTaxonomy(taxonomy: Taxonomy): void {
   if (typeof taxonomy.version !== "number" || taxonomy.version < 1) {
     throw new Error("Taxonomy version must be a positive integer");
@@ -115,7 +99,6 @@ export function validateTaxonomy(taxonomy: Taxonomy): void {
     }
   }
 
-  // Validate parentId references
   for (const cat of taxonomy.categories) {
     if (cat.parentId !== undefined && !seenIds.has(cat.parentId)) {
       throw new Error(
@@ -161,9 +144,6 @@ export async function loadTaxonomy(memoryDir: string): Promise<Taxonomy> {
   const userVersion = obj.version;
   const userCategories = obj.categories as TaxonomyCategory[];
 
-  // Validate: reject duplicate IDs in user categories before merging.
-  // Without this check, duplicates are silently collapsed with last-write-wins
-  // semantics when inserted into the Map.
   const userIdCounts = new Map<string, number>();
   for (const cat of userCategories) {
     const id = typeof cat.id === "string" ? cat.id : String(cat.id);
@@ -178,7 +158,6 @@ export async function loadTaxonomy(memoryDir: string): Promise<Taxonomy> {
     );
   }
 
-  // Merge: user categories override defaults by ID
   const mergedMap = new Map<string, TaxonomyCategory>();
   for (const cat of DEFAULT_TAXONOMY.categories) {
     mergedMap.set(cat.id, { ...cat });
@@ -196,9 +175,6 @@ export async function loadTaxonomy(memoryDir: string): Promise<Taxonomy> {
   return merged;
 }
 
-/**
- * Save a taxonomy to the user's memory directory.
- */
 export async function saveTaxonomy(
   memoryDir: string,
   taxonomy: Taxonomy,
@@ -210,16 +186,10 @@ export async function saveTaxonomy(
   await writeFile(filePath, JSON.stringify(taxonomy, null, 2) + "\n", "utf-8");
 }
 
-/**
- * Get the taxonomy directory path for a given memory directory.
- */
 export function getTaxonomyDir(memoryDir: string): string {
   return path.join(memoryDir, TAXONOMY_DIR);
 }
 
-/**
- * Get the taxonomy file path for a given memory directory.
- */
 export function getTaxonomyFilePath(memoryDir: string): string {
   return path.join(memoryDir, TAXONOMY_DIR, TAXONOMY_FILE);
 }

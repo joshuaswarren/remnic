@@ -1,16 +1,3 @@
-/**
- * Issue #1533 — Phase A contract test: atomic write semantics.
- *
- * Rule 54 (CLAUDE.md): replace operations MUST write temp-then-rename, NEVER
- * delete-before-write. This test pins that invariant by making rename fail
- * (read-only target directory) and asserting the original file survives the
- * failed overwrite.
- *
- * The atomic write primitive lives in secure-fs (`writeMaybeEncryptedFile`)
- * and is consumed by StorageManager via `writeStorageSecureFile`. We test the
- * primitive directly here because it is the single atomicity seam every write
- * entry point depends on.
- */
 
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -26,12 +13,10 @@ test("atomicity: writeMaybeEncryptedFile writes temp-then-rename (no temp files 
     const target = path.join(dir, "target.md");
     await writeMaybeEncryptedFile(target, "first content", null, {}, dir);
 
-    // No temp files left behind
     const { readdir } = await import("node:fs/promises");
     const entries = await readdir(dir);
     assert.deepEqual(entries.sort(), ["target.md"]);
 
-    // Overwrite — still only the target, no leftover temp
     await writeMaybeEncryptedFile(target, "second content", null, {}, dir);
     const entries2 = await readdir(dir);
     assert.deepEqual(entries2.sort(), ["target.md"]);
@@ -44,7 +29,6 @@ test("atomicity: writeMaybeEncryptedFile writes temp-then-rename (no temp files 
 });
 
 test("atomicity: a failed rename leaves the original file intact (never delete-before-write)", async (t) => {
-  // Skip on root — chmod restrictions don't apply.
   if (process.getuid && process.getuid() === 0) {
     t.skip("chmod-based test is unreliable when running as root");
     return;
@@ -55,7 +39,6 @@ test("atomicity: a failed rename leaves the original file intact (never delete-b
     const target = path.join(dir, "survivor.md");
     await writeMaybeEncryptedFile(target, "original", null, {}, dir);
 
-    // Make the directory read-only so the rename into place fails.
     await chmod(dir, 0o500);
     try {
       await assert.rejects(
@@ -63,13 +46,9 @@ test("atomicity: a failed rename leaves the original file intact (never delete-b
         // rename (or temp write) fails — the exact error varies by platform
       );
 
-      // THE CONTRACT: the original file must still be readable with its
-      // original content. Delete-before-write would have destroyed it before
-      // the failed rename.
       const survived = await readMaybeEncryptedFile(target, null, dir);
       assert.equal(survived, "original", "original file must survive a failed atomic replace");
     } finally {
-      // Restore perms so cleanup works.
       await chmod(dir, 0o700);
     }
   } finally {
@@ -93,7 +72,6 @@ test("atomicity: StorageManager.updateMemory preserves the original on overwrite
     const after = await storage.getMemoryById(id);
     assert.ok(after);
     assert.equal(after!.content, "version two");
-    // The id is stable across the update (same file path, not a new memory)
     assert.equal(after!.frontmatter.id, id);
   } finally {
     await cleanup();

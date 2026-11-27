@@ -1,24 +1,3 @@
-/**
- * Recall navigation (issue #1956) — session-scoped follow-up tools over
- * already-served recall results.
- *
- * Composes existing primitives; owns no new storage and no new link types:
- *   - authority: the session's last `windowSnapshots` recall id sets
- *     (`RecallHandleHistoryStore`, the same ring `resolveMemoryHandle` reads)
- *   - isolation: every read resolves through the caller's resolved readable
- *     namespace and ONE storage instance (pattern 30 — no arbitrary-id
- *     fishing across namespaces)
- *   - disclosure: `planDisclosureStep` enforces strictly-deeper expansion;
- *     rendering reuses `shapeMemorySummary` (single formatter, rule 22)
- *   - links: frontmatter `links` via `selectTraverseNeighbors`
- *   - budget: per-call character cap drawn from the recall character budget,
- *     with per-item disclosure/token spend reported through the SAME
- *     disclosure accounting X-ray aggregates (`estimateRecallTokens` +
- *     `summarizeDisclosureTokens`).
- *
- * Unknown, expired (outside the window), or foreign ids are rejected with a
- * typed error naming the constraint (pattern 39) — never reinterpreted.
- */
 
 import { EngramAccessInputError, shapeMemorySummary, type EngramAccessMemorySummary } from "./access-service.js";
 import { parseIdOrHandle, resolveHandle } from "./recall-handles.js";
@@ -302,7 +281,6 @@ export async function runRecallNavigation(
     );
   }
   if (request.limit !== undefined) {
-    // Validate at the seam so every surface reports the same fault.
     clampLimit(request.limit, deps.config.maxNeighbors);
   }
   const windowSnapshots = deps.config.windowSnapshots;
@@ -384,9 +362,6 @@ export async function runRecallNavigation(
     }
     const items: NavigationItem[] = [];
     for (const neighbor of selection.neighbors) {
-      // Neighbors resolve through the SAME namespace storage: a link pointing
-      // at a memory in another namespace simply is not found here, so a stale
-      // or foreign edge can never leak content across namespaces.
       const neighborMemory = await storage.getMemoryById(neighbor.targetId);
       if (!neighborMemory) continue;
       items.push(toNavigationItem(shapeMemorySummary(neighborMemory, storage.dir, "chunk"), { linkType: neighbor.linkType }));
@@ -400,9 +375,6 @@ export async function runRecallNavigation(
     });
   }
 
-  // entity_neighbors: memories sharing the source memory's entityRef, capped
-  // by limit, rendered at chunk depth. No entityRef → no neighbors (empty is
-  // an honest answer, not an error).
   const entityRef = memory.frontmatter.entityRef?.trim();
   if (!entityRef) {
     return successResult(request, { memoryId, namespace, items: [], truncated: false, budgetChars: deps.recallBudgetChars });

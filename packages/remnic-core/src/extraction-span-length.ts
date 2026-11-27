@@ -1,8 +1,3 @@
-/**
- * Isolated span-length helper (issue #2333 leftover).
- *
- * Pure. Extraction wiring waits on the Phase A bench gate.
- */
 
 export function spanLength(opts: { start: number; end: number }): number {
   const { start, end } = opts;

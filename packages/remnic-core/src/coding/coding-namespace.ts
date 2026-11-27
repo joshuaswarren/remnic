@@ -43,9 +43,6 @@ export interface CodingNamespaceOverlay {
   scope: "project" | "branch";
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Sanitization
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Normalize a projectId / branch fragment so the resulting namespace passes
@@ -59,12 +56,6 @@ export interface CodingNamespaceOverlay {
  * NOT a security boundary — projectIds come from `resolveGitContext` (known
  * hex), and branch names come from local git. This defends against corrupt
  * input only.
- */
-/**
- * Single-pass sanitization — each input character is visited exactly once.
- * Rewriting as an explicit loop (instead of chained `replace()` calls with
- * greedy quantifiers) closes the polynomial-backtracking surface that
- * CodeQL flagged on patterns like `-+` and `^-+|-+$`.
  */
 export function sanitizeFragment(input: string): string {
   if (typeof input !== "string") return "";
@@ -87,40 +78,16 @@ export function sanitizeFragment(input: string): string {
       prevIsDash = true;
     }
   }
-  // Strip a single trailing dash introduced by the final run of unsafe chars.
   if (out.endsWith("-")) out = out.slice(0, -1);
   return out;
 }
 
-/**
- * Cap to the router's per-namespace upper bound.
- *
- * Raw truncation alone would collapse distinct long inputs that differ near
- * the end (e.g. two `feat/...` branches with different suffixes) into the
- * same namespace — silently mixing recall/write state across branches or
- * projects. When truncation is needed, we append a short deterministic
- * hash suffix (`-<8hex>`) derived from the FULL pre-truncated value so
- * collisions only happen under true hash collisions, not simple prefix
- * overlap.
- *
- * The tail is trimmed to leave room for the separator and 8-char hash and
- * any trailing `-` introduced by the slice is stripped so the final
- * character before `-<hash>` is always alphanumeric or `.`/`_`.
- */
 const MAX_NAMESPACE_LEN = 64;
 const HASH_SUFFIX_LEN = 9; // "-" + 8 hex chars
 
 function capLength(value: string): string {
   if (value.length <= MAX_NAMESPACE_LEN) return value;
-  // Reuse the FNV-1a 32-bit hash from git-context — one canonical
-  // implementation, one set of edge-case fixes. Uses Math.imul for
-  // correct 32-bit wrap-around, which plain `*` would not guarantee
-  // for the largest intermediate products.
   const hash = stableHash(value);
-  // Trim trailing '-' with a linear, non-backtracking loop. A regex
-  // like `-+$` is linear too, but an explicit loop keeps CodeQL happy
-  // about polynomial backtracking warnings when several `\-+` patterns
-  // appear in the same module.
   let end = MAX_NAMESPACE_LEN - HASH_SUFFIX_LEN;
   while (end > 0 && value.charCodeAt(end - 1) === 45 /* '-' */) end -= 1;
   return `${value.slice(0, end)}-${hash}`;
@@ -144,17 +111,6 @@ export function projectTagProjectId(projectTag: string): string {
   return `tag:${frag || "unknown"}${suffix}`;
 }
 
-/**
- * Preserve case when sanitizing a principal-derived base namespace. The
- * router's `isSafeRouteNamespace` check accepts `[A-Za-z0-9._-]{1,64}`, so
- * upper-case characters in the principal name are safe and MUST be kept to
- * avoid colliding two otherwise-distinct principals (e.g. `Alice` vs
- * `alice`) into the same combined namespace.
- *
- * Otherwise identical to `sanitizeFragment`: single-pass, linear, no
- * polynomial-backtracking quantifiers, unsafe chars collapse to `-` with
- * leading/trailing dashes suppressed.
- */
 function sanitizeBaseFragment(input: string): string {
   if (typeof input !== "string") return "";
   const trimmed = input.trim();
@@ -236,13 +192,6 @@ export function branchNamespaceName(projectId: string, branch: string): string {
   const projectFrag = sanitizeFragment(projectId);
   const trimmedBranch = branch.trim();
   const branchFrag = sanitizeFragment(trimmedBranch);
-  // Lossy-sanitization disambiguator: append hash of the raw (trimmed)
-  // branch when sanitization actually changed the string. Preserves
-  // distinctness across `feat/x` vs `feat-x` and `Feature` vs `feature`.
-  // The comparison uses the raw trimmed value (NOT `.toLowerCase()`) so
-  // case-only variants are treated as lossy and receive their own hash.
-  // Empty / already-safe-lowercase inputs get no hash so the common case
-  // stays readable.
   const disambig = trimmedBranch.length > 0 && branchFrag !== trimmedBranch;
   const base = `project-${projectFrag || "unknown"}-branch-${branchFrag || "unknown"}`;
   const suffixed = disambig ? `${base}-${stableHash(trimmedBranch)}` : base;
@@ -250,7 +199,6 @@ export function branchNamespaceName(projectId: string, branch: string): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Overlay resolver
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -273,40 +221,18 @@ export function resolveCodingNamespaceOverlay(
   config: Pick<CodingModeConfig, "projectScope" | "branchScope" | "globalFallback">,
   defaultNamespace?: string,
 ): CodingNamespaceOverlay | null {
-  // No context supplied (session isn't in a git repo, or connector didn't
-  // attach one) → no overlay.
   if (!codingContext) return null;
 
-  // Project scope disabled → no overlay at all. Branch scope depends on
-  // project scope being on; there is no branch-only mode.
   if (!config.projectScope) return null;
 
-  // Require a non-empty projectId — defensive.
   const projectId = typeof codingContext.projectId === "string" ? codingContext.projectId.trim() : "";
   if (!projectId) return null;
 
   const projectNs = projectNamespaceName(projectId);
 
-  // Root/global namespace fallback: when `globalFallback` is true, include
-  // the principal's self namespace in readFallbacks so cross-project knowledge
-  // remains visible. CLAUDE.md #30: the gate is `globalFallback` — set to
-  // false for strict project isolation.
   //
-  // The fallback value is "" (empty string), NOT the defaultNamespace name.
-  // The orchestrator passes each fallback through combineNamespaces(principal, fallback),
-  // and combineNamespaces(base, "") returns base unchanged — yielding the
-  // principal's own namespace. Using the actual namespace name (e.g., "default")
-  // would produce "default-default" after combination, missing the target.
   const includeRoot = config.globalFallback === true;
 
-  // Branch-scope layering (PR 3):
-  //   - only when config.branchScope is explicitly true
-  //   - only when we actually have a branch (null in detached HEAD)
-  //   - project namespace becomes a read fallback so project-level memories
-  //     remain visible from any branch (deliberate asymmetry — branch writes
-  //     don't leak up, but project reads leak down).
-  //   - when globalFallback is on, the root namespace is also appended so
-  //     globally useful memories surface in every branch.
   if (config.branchScope && typeof codingContext.branch === "string" && codingContext.branch.length > 0) {
     const branchNs = branchNamespaceName(projectId, codingContext.branch);
     const fallbacks = [projectNs];
@@ -326,7 +252,6 @@ export function resolveCodingNamespaceOverlay(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Diagnostics (issue #569 PR 3 + PR 8)
 // ──────────────────────────────────────────────────────────────────────────
 
 export interface CodingScopeDescription {
@@ -397,8 +322,6 @@ export function describeCodingScope(
   }
 
   const overlay = resolveCodingNamespaceOverlay(codingContext, config, defaultNamespace);
-  // Unreachable in practice given the guards above, but keep the return
-  // shape consistent if the resolver grows new null branches later.
   if (!overlay) {
     return {
       scope: "none",
@@ -420,59 +343,10 @@ export function describeCodingScope(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// LCM session-key namespacing (#1495)
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * Reserved structural sentinel for the namespaced LCM `session_id` encoding
- * (#1495 P1). U+001F (UNIT SEPARATOR) is a C0 control character that CANNOT
- * occur in a route namespace (`isSafeRouteNamespace` ⇒ `[A-Za-z0-9._-]{1,64}`,
- * see routing/engine.ts) and does not occur in any legitimate session key, so
- * it is an unforgeable structural marker for the namespace boundary.
- *
- * SECURITY — why this is unforgeable (the #1495 P1 fix):
- * The LCM archive is keyed by the `session_id` STRING (exact `session_id = ?`
- * and prefix `session_id LIKE '<prefix>%'`), NOT physically partitioned by
- * namespace. The previous encoding `${namespace}:${sessionKey}` shared the SAME
- * string space as a raw default-store key, so a caller authorized for the
- * `default` store could pass a raw `sessionKey` equal to another namespace's
- * encoded key (`"<overlay-ns>:<victim-session>"`) and exact-match the victim's
- * rows — a cross-tenant read leak.
- *
- * The new encoding makes the namespaced and default key-spaces PROVABLY
- * DISJOINT:
- *   - Overlay key  = `\x1f<namespace>\x1f<sessionKey>` — always begins with
- *     `\x1f` followed by a NON-`\x1f` character (the namespace is non-empty and
- *     `\x1f`-free). The leading `\x1f<namespace>\x1f` is an unambiguous,
- *     injective frame: the namespace cannot contain `\x1f`, so the second `\x1f`
- *     terminates it without any escaping of the (raw) session key.
- *   - Default key  = the raw `sessionKey`, UNLESS it already begins with the
- *     sentinel, in which case it is escaped to begin with `\x1f\x1f` (see
- *     `escapeDefaultLcmKey`). A default key therefore NEVER matches the overlay
- *     frame `\x1f<non-\x1f>…`.
- * Hence no caller-controlled raw `sessionKey` (default path) can reproduce an
- * overlay key, closing the forgery for BOTH the exact-`session_id` match and the
- * `sessionPrefix` LIKE match (an overlay prefix `\x1f<ns>\x1f<rawPrefix>` stays a
- * valid LIKE-prefix of the overlay full keys, and a default prefix can only
- * LIKE-match default keys).
- *
- * Existing default-store rows need NO migration: legitimate session keys never
- * contain `\x1f`, so `escapeDefaultLcmKey` is a no-op for them and they remain
- * byte-for-byte their raw form. The namespaced encoding is NEW in this
- * unreleased PR, so changing its shape costs nothing.
- */
 const LCM_NS_SENTINEL = "\u001f";
 
-/**
- * Make a default-store (raw) LCM key disjoint from the namespaced key-space.
- *
- * Namespaced overlay keys always begin with `\x1f` followed by a non-`\x1f`
- * namespace character. A raw default key collides with that frame ONLY if it
- * begins with `\x1f`. Legitimate session keys never contain `\x1f`, so this is a
- * pure no-op for them; a forged key that begins with `\x1f` is escaped to begin
- * with `\x1f\x1f`, which can never equal an overlay key (whose second character
- * is a `[A-Za-z0-9._-]` namespace char, never `\x1f`).
- */
 function escapeDefaultLcmKey(sessionKey: string): string {
   return sessionKey.startsWith(LCM_NS_SENTINEL)
     ? `${LCM_NS_SENTINEL}${sessionKey}`
@@ -510,13 +384,8 @@ export function lcmSessionKeyForNamespace(
     namespace.length > 0 &&
     namespace !== defaultNamespace
   ) {
-    // Namespaced (overlay / explicit) key: frame the namespace with the reserved
-    // sentinel so the boundary is unambiguous AND unforgeable from the default
-    // key-space. The namespace is guaranteed `\x1f`-free by `isSafeRouteNamespace`.
     return `${LCM_NS_SENTINEL}${namespace}${LCM_NS_SENTINEL}${sessionKey}`;
   }
-  // Default store: raw sessionKey, escaped only if it would otherwise intrude on
-  // the namespaced key-space (no-op for every legitimate key).
   return escapeDefaultLcmKey(sessionKey);
 }
 
@@ -560,8 +429,6 @@ export function lcmReadSessionIdsForNamespaces(
   sessionKey: string | undefined,
   defaultNamespace: string,
 ): Array<string | undefined> {
-  // Sessionless ⇒ a single archive-wide read (no `session_id` filter). NEVER the
-  // literal "default" session id (codex P2).
   if (typeof sessionKey !== "string" || sessionKey.length === 0) {
     return [undefined];
   }

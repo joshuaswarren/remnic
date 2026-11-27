@@ -265,8 +265,6 @@ export class CasRevisionStore {
     }
     const root = parsed as Record<string, unknown>;
     if (root.state !== undefined) {
-      // Two-phase shard: strict shape. A state-bearing shard that does not
-      // validate is corruption — unavailability, never a usable identity.
       if (
         root.version !== 1 ||
         typeof root.path !== "string" ||
@@ -306,8 +304,6 @@ export class CasRevisionStore {
             foreign,
           };
     }
-    // Pre-two-phase shard: a full-shape match reads as committed; anything
-    // else keeps the legacy fall-through (legacy metadata, then absence).
     if (
       root.version === 1 &&
       root.path === relativePath &&
@@ -613,9 +609,6 @@ export class CasRevisionStore {
         if (outcome === "commit") {
           const committedDigest =
             view.expectedDigest ?? (await this.digestDurableFile(relativePath));
-          // #2870: publish the canonical semantic fingerprint alongside the
-          // byte digest so promotion can bind semantic identity without
-          // refusing on access-only telemetry flushes.
           const committedSemanticFingerprint =
             await this.semanticFingerprintDurableFile(relativePath);
           await this.writeShard(shardPath, relativePath, token, lock, "committed", undefined, {

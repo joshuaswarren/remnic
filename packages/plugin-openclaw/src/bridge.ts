@@ -1,12 +1,3 @@
-/**
- * OEO Bridge — Embedded vs Delegate mode for the OpenClaw Remnic bridge.
- *
- * Embedded mode (default): Starts EMO in-process AND exposes HTTP :4318
- * so external agents (Claude Code, Codex, etc.) can share the same memory.
- *
- * Delegate mode: Connects to a running EMO daemon instead of starting in-process.
- * Used when `remnic daemon install` has been run and the daemon is already active.
- */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -57,37 +48,14 @@ export {
 
 export type BridgeMode = "embedded" | "delegate";
 
-/**
- * One endpoint `auto` may dial, plus the config file it came from — the
- * credential tier is bound to that file so a second daemon's token cannot be
- * sent to the first.
- */
 interface DaemonEndpointCandidate {
   host: string;
   port: number;
   configPath?: string;
-  /** Resolved once at discovery so dedupe can compare credentials. */
   token: string;
-  /**
-   * A credential the unit file supplies directly, which outranks anything the
-   * config path resolves to. Carried onto `BridgeConfig` so delegate requests
-   * keep using the token the probe authenticated with.
-   */
   authTokenOverride?: string;
-  /** The unit that supplied `authTokenOverride`, so it can be re-read. */
   authTokenUnit?: DaemonUnitSource;
-  /**
-   * Same daemon, different dial address: a same-host loopback rewrite and the
-   * configured interface address are aliases of ONE endpoint. They share a
-   * probe allocation so a daemon slower than a half-share is not timed out on
-   * both aliases (the second dial only happens when the first REFUSES, which
-   * costs no time).
-   */
   aliasGroup: string;
-  /**
-   * The credential written in this candidate's own config file, retried when
-   * the primary (gateway token store) one is rejected.
-   */
   fallbackToken?: string;
 }
 
@@ -95,48 +63,11 @@ export interface BridgeConfig {
   mode: BridgeMode;
   daemonHost: string;
   daemonPort: number;
-  /**
-   * The configured interface address behind a same-host loopback rewrite,
-   * dialed only when the loopback probe fails: a daemon bound to exactly that
-   * address answers no loopback dial.
-   */
   daemonHostFallback?: string;
-  /**
-   * True when this resolution already proved the daemon healthy. `auto` does,
-   * as part of its corpus-identity probe; explicit `delegate` does not. Lets
-   * the caller skip a second liveness request that would otherwise let a
-   * synchronous registration spend twice the configured preflight budget.
-   */
   healthVerified?: boolean;
-  /**
-   * The config file the resolved endpoint came from, when discovery found one.
-   * Delegate requests bind their credential tier to it, so a deployment with
-   * two configs sends each daemon its OWN token.
-   */
   daemonConfigPath?: string;
-  /**
-   * A credential taken from the installed unit's environment, which the
-   * gateway does not inherit and no config file carries. Delegate requests
-   * must use it or they authenticate as a different daemon would.
-   *
-   * Only for values with no other source. A credential that came from a CONFIG
-   * FILE is signalled by {@link daemonAuthPrefersConfig} instead, so a rotated
-   * token is re-read rather than frozen at detection time.
-   */
   daemonAuthTokenOverride?: string;
-  /**
-   * The unit `daemonAuthTokenOverride` came from. Delegate requests re-read it
-   * per request, so rotating the token in the unit (or its drop-in, or its
-   * `EnvironmentFile=`) and restarting the daemon does not 401 every route
-   * until the gateway restarts too.
-   */
   daemonAuthUnit?: DaemonUnitSource;
-  /**
-   * The probe authenticated with `daemonConfigPath`'s own `server.authToken`
-   * rather than the gateway token store. Delegate requests must make the same
-   * choice — but by RE-READING that file each time, so rotating the token does
-   * not 401 every route until the gateway restarts.
-   */
   daemonAuthPrefersConfig?: boolean;
 }
 
@@ -155,12 +86,10 @@ export interface DaemonAuthToken {
   readonly source: DaemonAuthTokenSource;
 }
 
-/** Everything a delegate-mode request needs to reach the standalone daemon. */
 export interface DelegateDaemonTarget {
   host: string;
   port: number;
   resolveAuthToken: () => DaemonAuthToken;
-  /** Drop a credential after a 401 so the next resolver call can fall back. */
   invalidateAuthToken?: (auth: DaemonAuthToken) => void;
 }
 
@@ -192,10 +121,6 @@ export interface DaemonHealthResult {
   readonly tokenSource?: DaemonAuthTokenSource;
 }
 
-/**
- * Validate a caller-supplied probe budget, in the same range the config
- * parser enforces. Shared so the public detector cannot drift from it.
- */
 function assertProbeBudget(timeoutMs: number | undefined): number {
   if (timeoutMs === undefined) return DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_BRIDGE_HEALTH_TIMEOUT_MS) {
@@ -641,34 +566,12 @@ function readDaemonPort(): number {
   return readDaemonServerConfig().port ?? DEFAULT_PORT;
 }
 
-/** What a caller may ask for; `auto` defers to same-host daemon detection. */
 export type BridgeModeRequest = BridgeMode | "auto";
 
-/**
- * Same-host daemon detection for `bridgeMode: "auto"` (issue #2120).
- *
- * Explicit overrides are the CALLER's job — `resolveBridgeMode` consults this
- * only after env and config both say `auto`. Two gates must pass before an
- * auto deployment delegates:
- *
- *   1. Liveness — a PID file or a local/service-configured endpoint is only a
- *      hint (PIDs go stale and get reused), so the endpoint must answer.
- *   2. Corpus identity — the daemon must report the SAME memoryDir the plugin
- *      is configured for. Delegating to a daemon serving a different corpus
- *      would silently redirect every recall and write; an unknown memoryDir
- *      (older daemon, or a token without health access) is not a match.
- */
 export function detectDaemonBridgeMode(options: {
-  /** The plugin's configured memoryDir, used for the corpus-identity gate. */
   memoryDir: string;
   timeoutMs?: number;
   onSkip?: (reason: string) => void;
-  /**
-   * Injectable unit-file probe. The SYSTEM unit directories are absolute, so a
-   * caller that redirects `HOME` still discovers the real host's installed
-   * daemon; tests for the lower-precedence config candidates pass a probe that
-   * reports no installed unit.
-   */
   unitExists?: (candidate: string) => boolean;
 }): BridgeConfig {
   const endpoints = daemonEndpointCandidates(options.unitExists);
@@ -687,19 +590,6 @@ export function detectDaemonBridgeMode(options: {
     ...(primary.authTokenUnit === undefined ? {} : { daemonAuthUnit: primary.authTokenUnit }),
   };
 
-  // `bridgeHealthTimeoutMs` is documented as the TOTAL preflight budget, and
-  // registration is synchronous — probing several stale endpoints for the full
-  // budget each would hold gateway startup for a multiple of it. Every probe
-  // shares one deadline.
-  // A library consumer reaches this entry point directly, bypassing the config
-  // parser. An invalid budget must be REJECTED, not reinterpreted: zero or a
-  // negative silently skips every probe and selects embedded beside a running
-  // same-corpus daemon, which is the exact failure this detector exists to
-  // prevent (AGENTS.md §1).
-  // Same reasoning as the budget: a library consumer reaches this entry point
-  // directly. A blank corpus can never match, so the walk would return
-  // `embedded` — an invalid required argument dressed up as a mode decision,
-  // which binds an embedded runtime beside the daemon the caller meant to find.
   if (options.memoryDir.trim() === "") {
     throw new Error("detectDaemonBridgeMode requires a non-empty memoryDir to verify the daemon corpus");
   }
@@ -746,15 +636,6 @@ export function detectDaemonBridgeMode(options: {
       );
       break;
     }
-    // Cap each probe at a SHARE of what is left rather than handing it the
-    // whole budget. Installed-unit candidates deliberately precede cwd/home,
-    // so one stale endpoint that accepts a connection and stalls would
-    // otherwise eat the entire preflight and the live daemon behind it would
-    // never be dialed. The share is over the endpoint GROUPS still unprobed,
-    // so the last group can still use everything that remains — and the
-    // loopback/interface aliases of ONE daemon share a single allocation
-    // instead of halving it, since the second dial only happens when the
-    // first REFUSES (which costs no time).
     const started = groupDeadlines.get(aliasGroup);
     if (started === undefined) {
       const perGroupMs = Math.max(
@@ -763,16 +644,7 @@ export function detectDaemonBridgeMode(options: {
       );
       groupDeadlines.set(aliasGroup, Date.now() + Math.min(remainingMs, perGroupMs));
     }
-    // BOTH attempts share this group's slice, so one stalling endpoint with a
-    // fallback credential cannot burn two shares and starve the healthy daemon
-    // behind it. The FIRST attempt gets the whole slice: reserving half for a
-    // retry would cut short a daemon that is merely still warming up, and a
-    // readiness stall is not something a different token fixes.
     const candidateDeadline = groupDeadlines.get(aliasGroup) ?? Date.now();
-    // The clock can cross the deadline between deriving it and spending it —
-    // trivially so at the supported minimum budget of 1ms. The public probe
-    // REJECTS a non-positive budget, and rightly so, but reaching it with one
-    // here would turn an exhausted budget into a thrown configuration error.
     const firstAttemptMs = candidateDeadline - Date.now();
     if (firstAttemptMs <= 0) {
       options.onSkip?.(
@@ -788,10 +660,6 @@ export function detectDaemonBridgeMode(options: {
       configPath,
       usedToken,
     );
-    // Retry ONLY on an actual authentication rejection, and only with a
-    // different credential: the gateway's token store outranks a config file
-    // inside `loadDaemonAuth`, which is wrong for a daemon running under
-    // another account with a static `server.authToken`.
     if (health.rejectedAuth === true && fallbackToken !== undefined) {
       const retryMs = candidateDeadline - Date.now();
       if (retryMs > 0) {
@@ -827,14 +695,9 @@ export function detectDaemonBridgeMode(options: {
       daemonPort,
       healthVerified: true,
       ...(configPath === undefined ? {} : { daemonConfigPath: configPath }),
-      // A unit-supplied credential has no other source, so it is carried by
-      // value; a config-supplied one is re-read from its file per request.
       ...(usedToken !== undefined && usedToken === authTokenOverride
         ? {
             daemonAuthTokenOverride: usedToken,
-            // The unit rides along so the credential can be re-read per
-            // request; the frozen value stays as the fallback for a unit that
-            // later becomes unreadable.
             ...(authTokenUnit === undefined ? {} : { daemonAuthUnit: authTokenUnit }),
           }
         : {}),
@@ -846,13 +709,6 @@ export function detectDaemonBridgeMode(options: {
   return embedded;
 }
 
-/**
- * The mode the deployment ASKED for, without probing anything.
- *
- * Split out so a caller can tell "delegate was attempted and failed" from
- * "this deployment is embedded and something unrelated is misconfigured" —
- * only the former is a fallback worth recording.
- */
 export function resolveRequestedBridgeMode(configBridgeMode: string): BridgeModeRequest {
   const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
   const isRequest = (value: string): value is BridgeModeRequest =>
@@ -890,13 +746,6 @@ export function detectBridgeMode(options: { memoryDir?: string } = {}): BridgeCo
   return resolveBridgeMode("", options);
 }
 
-/**
- * Whether this deployment was asking for delegate at all.
- *
- * An unparseable bridgeMode is itself the thing the operator got wrong, so it
- * counts as an attempt: only a deployment that clearly said `embedded` has
- * nothing to fall back FROM.
- */
 export function requestedDelegate(configBridgeMode: string): boolean {
   try {
     return resolveRequestedBridgeMode(configBridgeMode) !== "embedded";
@@ -905,24 +754,11 @@ export function requestedDelegate(configBridgeMode: string): boolean {
   }
 }
 
-/**
- * Resolve the bridge mode for the plugin runtime (issue #2120).
- *
- * Precedence is env override > plugin config > `embedded`. `auto` is the only
- * value that consults detection: it exists so a fleet can ship ONE config that
- * delegates on hosts running a same-corpus daemon and stays embedded
- * everywhere else. `embedded` remains the default precisely because
- * auto-flipping a co-located deployment on restart would be a silent behavior
- * change; `auto` makes that flip an explicit opt-in.
- */
 export function resolveBridgeMode(
   configBridgeMode: string,
   options: { memoryDir?: string; timeoutMs?: number; onSkip?: (reason: string) => void } = {},
 ): BridgeConfig {
   const requested = resolveRequestedBridgeMode(configBridgeMode);
-  // Validated for EVERY mode, not just the branch that spends it: an invalid
-  // budget is a caller bug, and accepting it silently on an explicit mode
-  // would make the same value an error only after someone flips to `auto`.
   assertProbeBudget(options.timeoutMs);
   if (requested === "auto") {
     const memoryDir = options.memoryDir ?? "";
@@ -935,10 +771,6 @@ export function resolveBridgeMode(
       onSkip: options.onSkip,
     });
   }
-  // The config the endpoint came from rides along so delegate requests bind
-  // their credential to the SAME file. Without it `loadDaemonAuth` rescans and
-  // can pair this endpoint with another file's token, which the daemon answers
-  // with a 401 and the plugin reads as "no daemon".
   const selectedConfig = selectedDaemonConfigPath();
   const configuredHost = readConfiguredDaemonHost();
   const fallbackHost = sameHostDialFallback(configuredHost);
@@ -951,13 +783,6 @@ export function resolveBridgeMode(
   };
 }
 
-/**
- * The `server.authToken` a specific config file declares, read fresh.
- *
- * Delegate requests call this per request rather than reusing the value
- * detection succeeded with, so rotating the daemon's token does not 401 every
- * route until the gateway restarts.
- */
 export function readDaemonConfigAuthToken(configPath: string): string | undefined {
   return readServerBlock(configPath)?.authToken;
 }
@@ -1032,7 +857,6 @@ export function loadDaemonAuth(
     }
   }
 
-  // Bound to the caller's config when given, else the discovery order.
   for (const candidate of configPath === undefined ? configPathCandidates() : [configPath]) {
     if (!fileExists(candidate)) continue;
     try {
@@ -1047,8 +871,6 @@ export function loadDaemonAuth(
         return { token, source: "daemon configuration" };
       }
     } catch {
-      // Unreadable or malformed: it names no credential. Keep looking when we
-      // are scanning; a caller-bound path simply has none.
       continue;
     }
     // A readable config with no token IS the answer for a bound path: the

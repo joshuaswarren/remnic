@@ -90,7 +90,6 @@ function isConnectorSecretConfigKey(key: string): boolean {
 export interface ConnectorCursor {
   /** Connector-defined cursor kind (e.g. `"pageToken"`, `"historyId"`, `"sinceTs"`). */
   readonly kind: string;
-  /** Connector-defined opaque cursor value. */
   readonly value: string;
   /** ISO 8601 timestamp of when this cursor was last written. */
   readonly updatedAt: string;
@@ -108,7 +107,6 @@ export interface ConnectorDocumentSource {
   readonly externalId: string;
   /** Optional source-system revision/version (etag, page version, history id). */
   readonly externalRevision?: string;
-  /** Optional canonical URL pointing back at the source document. */
   readonly externalUrl?: string;
   /** ISO 8601 timestamp of when the connector fetched this document. */
   readonly fetchedAt: string;
@@ -122,11 +120,9 @@ export interface ConnectorDocumentSource {
 export interface ConnectorDocument {
   /** Connector-local stable id for this document. SHOULD match `source.externalId`. */
   readonly id: string;
-  /** Optional human-readable title. */
   readonly title?: string;
   /** Body content. Plaintext or Markdown — connectors document their format. */
   readonly content: string;
-  /** Provenance. Required. */
   readonly source: ConnectorDocumentSource;
 }
 
@@ -184,7 +180,6 @@ export interface LiveConnector {
   readonly id: string;
   /** Short human-readable name shown in CLI / status output. */
   readonly displayName: string;
-  /** Optional longer description. */
   readonly description?: string;
 
   /**
@@ -203,10 +198,6 @@ export interface LiveConnector {
    */
   persistConfig?(validated: ConnectorConfig): ConnectorConfig;
 
-  /**
-   * Run one incremental sync pass. See `SyncIncrementalArgs` /
-   * `SyncIncrementalResult` for the contract.
-   */
   syncIncremental(args: SyncIncrementalArgs): Promise<SyncIncrementalResult>;
 }
 
@@ -229,9 +220,6 @@ export function persistableConnectorConfig(
  */
 export const CONNECTOR_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
-/**
- * Returns `true` if `id` is a syntactically valid connector id.
- */
 export function isValidConnectorId(id: unknown): id is string {
   return typeof id === "string" && CONNECTOR_ID_PATTERN.test(id);
 }

@@ -22,11 +22,6 @@ interface Script {
   sleeps: number[];
 }
 
-/**
- * Request-driven fake X MCP server: initialize and notifications always
- * succeed, tools/call pops the next scripted step and echoes the
- * request id — immune to the client's internal id allocation.
- */
 function makeClient(toolScript: ToolStep[], sessionHeader = "sess-42"): { client: XMcpClient; script: Script } {
   const script: Script = { sessionHeader, toolScript, calls: [], sleeps: [] };
   const client = new XMcpClient({

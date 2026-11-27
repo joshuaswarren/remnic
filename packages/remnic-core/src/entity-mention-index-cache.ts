@@ -224,14 +224,12 @@ function wantsSnippetReconcile(index: unknown): boolean {
 }
 
 function armRebuild(slot: Slot): void {
-  // A recall that arrives while a scan is already running must not grant
   // another follow-up. The chain stops after the one already armed.
   if (!slot.rebuild) slot.followUps = 1;
   startRebuild(slot);
 }
 
 function startRebuild(slot: Slot): void {
-  // A recall that arrives during a scan is not a write. The follow-up is
   // armed only when the scan's end identity differs from the identity it
   // started with. Setting `again` here made every concurrent recall pay a
   // second full corpus scan after a stable rebuild.
@@ -253,7 +251,6 @@ function startRebuild(slot: Slot): void {
         slot.identity = ended;
         return;
       }
-      // Scan overlapped later writes. Keep the start identity so the next
       // recall stays stale and exactly one follow-up reconcile runs.
       slot.identity = started;
       slot.again = true;
@@ -264,7 +261,6 @@ function startRebuild(slot: Slot): void {
     })
     .finally(() => {
       if (slot.rebuild === handle.pending) slot.rebuild = null;
-      // One automatic follow-up per caller-started rebuild. A store that keeps
       // changing during every scan waits for the next recall (or settle) instead
       // of chaining full scans with nobody waiting.
       if (!slot.again || slot.followUps <= 0) return;
@@ -352,7 +348,6 @@ export async function resolveEntityMentionIndex<T>(options: {
     const captured = captureDirGenerations(options.scopeKey);
     const started = options.currentIdentity();
     const index = await options.buildFull(options.abortSignal);
-    // A clear or family eviction during this first scan must not publish it.
     if (!generationsCurrent(captured)) return index;
     publishDirGenerations(captured);
     const ended = options.currentIdentity();
@@ -395,7 +390,6 @@ export async function resolveEntityMentionIndex<T>(options: {
     existing.again = false;
     const token = existing.token;
     const captured = captureDirGenerations(existing.scopeKey);
-    // Shared scan. This caller's abort stops its wait and leaves the scan
     // running. Publish when the scan settles, even if this caller has left.
     // A family eviction bumps the token and the root generation; this scan
     // must not install its result or start a follow-up that would republish.

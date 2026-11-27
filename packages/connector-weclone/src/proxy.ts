@@ -1,9 +1,3 @@
-/**
- * OpenAI-compatible HTTP proxy for WeClone with Remnic memory injection.
- *
- * Intercepts POST /v1/chat/completions to inject recalled memories,
- * forwards all other requests transparently to the WeClone API.
- */
 
 import * as http from "node:http";
 import type { WeCloneConnectorConfig } from "./config.js";
@@ -33,10 +27,6 @@ class BodyLimitExceededError extends Error {
   }
 }
 
-/**
- * Read the entire body of an IncomingMessage as a string (UTF-8).
- * Used for paths that need to parse JSON (e.g. chat completions).
- */
 function readBody(req: http.IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -62,10 +52,6 @@ function readBody(req: http.IncomingMessage, maxBytes: number): Promise<string> 
   });
 }
 
-/**
- * Read the entire body of an IncomingMessage as raw bytes.
- * Used for the transparent proxy path to avoid corrupting binary/multipart uploads.
- */
 function readRawBody(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -141,10 +127,6 @@ export async function writeResponseChunkRespectingBackpressure(
   return (await waitForResponseDrain(res)) === "drain";
 }
 
-/**
- * Build a flat headers record from IncomingHttpHeaders,
- * normalizing array values to comma-separated strings.
- */
 function flattenHeaders(
   raw: http.IncomingHttpHeaders
 ): Record<string, string> {
@@ -174,10 +156,6 @@ function forwardRequestHeaders(
   return forwardHeaders;
 }
 
-/**
- * Build standard headers for Remnic daemon requests.
- * Includes Authorization if an auth token is configured.
- */
 function remnicHeaders(authToken?: string): Record<string, string> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (authToken) {
@@ -186,9 +164,6 @@ function remnicHeaders(authToken?: string): Record<string, string> {
   return headers;
 }
 
-/**
- * Call Remnic daemon recall endpoint for the given session and query.
- */
 async function recallMemories(
   daemonUrl: string,
   sessionKey: string,
@@ -215,10 +190,6 @@ async function recallMemories(
   return memories;
 }
 
-/**
- * Fire-and-forget observation to the Remnic daemon.
- * Errors are caught and silently discarded to avoid adding latency.
- */
 function observeTurn(
   daemonUrl: string,
   sessionKey: string,
@@ -269,10 +240,6 @@ function extractTextContent(content: unknown): string {
   return parts.join("\n");
 }
 
-/**
- * Extract the last user message's text content from a chat completion
- * messages array. Handles both string and multimodal array content.
- */
 function lastUserMessage(messages: Array<{ role: string; content: unknown }>): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === "user") {
@@ -291,9 +258,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/**
- * Extract the assistant reply from a WeClone chat completion response.
- */
 function extractAssistantReply(responseBody: Record<string, unknown>): string {
   const choices = responseBody.choices as
     | Array<{ message?: { content?: string } }>
@@ -304,11 +268,6 @@ function extractAssistantReply(responseBody: Record<string, unknown>): string {
   return "";
 }
 
-/**
- * Strip trailing slashes from a URL without using a regex quantifier
- * on the same character, which CodeQL flags as polynomial ReDoS
- * (`js/polynomial-redos`). A simple loop is O(n) and cannot backtrack.
- */
 function stripTrailingSlashes(s: string): string {
   let end = s.length;
   while (end > 0 && s.charCodeAt(end - 1) === 47 /* '/' */) {
@@ -317,19 +276,12 @@ function stripTrailingSlashes(s: string): string {
   return end === s.length ? s : s.slice(0, end);
 }
 
-/**
- * Parse a URL string into { origin, basePath } where `basePath` is the
- * configured path prefix (e.g. "/weclone/v1") with any trailing slashes
- * stripped. Falls back safely for malformed inputs.
- */
 function splitBaseUrl(urlStr: string): { origin: string; basePath: string } {
   try {
     const parsed = new URL(urlStr);
     const basePath = stripTrailingSlashes(parsed.pathname);
     return { origin: parsed.origin, basePath };
   } catch {
-    // Fallback: strip trailing path components without ReDoS-prone regex.
-    // Split on the first "/" after the scheme.
     const schemeEnd = urlStr.indexOf("://");
     if (schemeEnd === -1) {
       return { origin: stripTrailingSlashes(urlStr), basePath: "" };
@@ -387,20 +339,6 @@ const HOP_BY_HOP_RESPONSE_HEADERS = new Set([
   "trailer",
 ]);
 
-/**
- * Forward a request transparently to the WeClone API.
- *
- * If the configured WeClone URL has a non-empty base path (e.g.
- * "https://host/weclone/v1"), the proxy forwards incoming request paths
- * such that "/v1/models" maps to "https://host/weclone/v1/models". For
- * URLs without a base path, paths map 1:1 to the upstream origin.
- *
- * The request body (if any) is forwarded as raw bytes via Uint8Array so
- * that multipart/binary uploads are not corrupted.
- *
- * Reads the full upstream response before writing to the client
- * to avoid partial-header or hanging-body issues.
- */
 async function transparentProxy(
   weclone: { origin: string; basePath: string },
   method: string,
@@ -410,18 +348,9 @@ async function transparentProxy(
   res: http.ServerResponse,
   maxResponseBytes: number
 ): Promise<void> {
-  // Map the client-facing path into an upstream path.
   //
-  // The proxy exposes an OpenAI-compatible `/v1/...` surface. When the
-  // configured `wecloneApiUrl` itself already ends in `/v1` (or any
-  // path prefix), treat the configured prefix as the upstream mount
-  // point and rewrite `/v1/<rest>` to `<basePath>/<rest>`.
   //
-  // - basePath "" (no prefix): forward path as-is.
-  // - basePath "/v1": "/v1/models" -> "/v1/models" (no change).
-  // - basePath "/weclone/v1": "/v1/models" -> "/weclone/v1/models".
   //
-  // Split off any query string so rewriting operates on the pathname only.
   const qIdx = path.indexOf("?");
   const rawPath = qIdx === -1 ? path : path.slice(0, qIdx);
   const querySuffix = qIdx === -1 ? "" : path.slice(qIdx);
@@ -435,7 +364,6 @@ async function transparentProxy(
   }
   const targetUrl = `${weclone.origin}${upstreamPathname}${querySuffix}`;
 
-  // Remove hop-by-hop request headers and replace host with upstream origin
   const forwardHeaders = forwardRequestHeaders(headers);
 
   const fetchInit: RequestInit = {
@@ -443,9 +371,6 @@ async function transparentProxy(
     headers: forwardHeaders,
   };
   if (body && method !== "GET" && method !== "HEAD") {
-    // Copy into a plain ArrayBuffer so the forwarded request keeps the exact
-    // byte payload while remaining compatible with this package's BodyInit
-    // typing during declaration builds.
     const rawBody = new ArrayBuffer(body.byteLength);
     new Uint8Array(rawBody).set(body);
     fetchInit.body = rawBody;
@@ -454,10 +379,8 @@ async function transparentProxy(
   try {
     const upstream = await fetch(targetUrl, fetchInit);
 
-    // Read full body before sending any headers to the client
     const responseBuffer = await readResponseBuffer(upstream, maxResponseBytes);
 
-    // Build response headers, filtering hop-by-hop and setting Content-Length
     const responseHeaders: Record<string, string> = {};
     for (const [key, value] of upstream.headers.entries()) {
       if (!HOP_BY_HOP_RESPONSE_HEADERS.has(key.toLowerCase())) {
@@ -479,17 +402,9 @@ async function transparentProxy(
   }
 }
 
-/**
- * Create a WeClone proxy instance.
- */
 export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy {
-  // Normalize upstream URLs: strip trailing slashes to prevent double-slash
-  // when appending path segments. Use a loop (not regex) to avoid the
-  // polynomial-ReDoS class flagged by CodeQL for `/\/+$/`.
   const wecloneApiUrl = stripTrailingSlashes(config.wecloneApiUrl);
   const remnicDaemonUrl = stripTrailingSlashes(config.remnicDaemonUrl);
-  // Pre-split the WeClone URL so transparentProxy and the chat path can
-  // honor a configured base path (e.g. "/weclone/v1").
   const wecloneParts = splitBaseUrl(wecloneApiUrl);
   const maxRequestBytes = config.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES;
   const maxResponseBytes = config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -513,20 +428,14 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
     const url = req.url ?? "/";
     const method = (req.method ?? "GET").toUpperCase();
 
-    // Parse the request URL into a pathname (stripping query string and
-    // normalizing trailing slash). Using pathname for route matching avoids
-    // silently falling through when clients append query params like
-    // `?api-version=2023-05-15` (common with Azure OpenAI-compatible SDKs).
     let pathname = url;
     const queryStart = url.indexOf("?");
     if (queryStart !== -1) pathname = url.slice(0, queryStart);
-    // Normalize trailing slash for route matching only (not for forwarding).
     const normalizedPathname =
       pathname.length > 1 && pathname.endsWith("/")
         ? pathname.slice(0, -1)
         : pathname;
 
-    // --- Health check ---
     if (normalizedPathname === "/health" && method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
@@ -536,7 +445,6 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
       return;
     }
 
-    // --- Chat completions with memory injection ---
     if (normalizedPathname === "/v1/chat/completions" && method === "POST") {
       let bodyStr: string;
       try {
@@ -574,9 +482,6 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
 
       const headers = req.headers as Record<string, string | string[] | undefined>;
       const sessionKey = sessionMapper.resolve(headers, parsed);
-      // Validate `messages` is an array with object entries before use so
-      // malformed payloads (`messages: "..."`, `messages: {}`, etc.) return
-      // a structured 400 instead of surfacing as a 500 internal error.
       if (parsed.messages !== undefined && !Array.isArray(parsed.messages)) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(
@@ -587,9 +492,6 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
         );
         return;
       }
-      // Messages may contain multimodal content-parts arrays; keep them
-      // untyped and validate strings at each use site. Drop entries that
-      // are not plain objects so downstream `.map()` cannot throw.
       const rawMessages: ForwardedChatMessage[] = [];
       for (const raw of parsed.messages ?? []) {
         if (raw === null || typeof raw !== "object") continue;
@@ -602,7 +504,6 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
       }
       const query = lastUserMessage(rawMessages);
 
-      // Recall memories (graceful degradation on failure)
       let memoryBlock = "";
       if (query.length > 0) {
         try {
@@ -622,20 +523,13 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
         }
       }
 
-      // Build the forwarded messages array. Only the *first* system message
-      // is rewritten with injected memory (or, if no system exists, a
-      // synthetic system message is prepended). Subsequent system messages
-      // are forwarded verbatim so distinct system instructions are not
-      // silently overwritten.
       const outMessages: ForwardedChatMessage[] = [];
       const firstSystemIdx = rawMessages.findIndex((m) => m.role === "system");
       const position = config.memoryInjection.position;
 
       if (memoryBlock.length === 0) {
-        // No memory to inject — forward original messages unchanged.
         for (const m of rawMessages) outMessages.push(m);
       } else if (firstSystemIdx === -1) {
-        // No existing system message: prepend a synthetic one.
         outMessages.push({ role: "system", content: memoryBlock });
         for (const m of rawMessages) outMessages.push(m);
       } else {
@@ -663,13 +557,6 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
         messages: outMessages,
       };
 
-      // Forward to WeClone. If `wecloneApiUrl` has a path prefix (the
-      // common `/v1` or custom mounts like `/weclone/v1`), forward to
-      // `${basePath}/chat/completions`. If the configured URL has no
-      // base path at all, default to the standard OpenAI `/v1/chat/completions`.
-      // Preserve any query string on the incoming request (e.g. Azure's
-      // `?api-version=...`) so version selectors and tenant hints reach
-      // upstream unchanged.
       const chatBase = wecloneParts.basePath.length > 0
         ? wecloneParts.basePath
         : "/v1";
@@ -688,9 +575,7 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
           body: JSON.stringify(modifiedBody),
         });
 
-        // --- Streaming path ---
         if (parsed.stream === true) {
-          // If upstream returned an error, pass through as-is (don't force SSE headers)
           if (!upstream.ok) {
             const errBody = await readResponseBuffer(upstream, maxResponseBytes);
             res.writeHead(upstream.status, {
@@ -794,7 +679,6 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
           }
           if (clientClosed || streamLimitExceeded) return;
 
-          // Best-effort: reconstruct assistant content for observation
           try {
             if (!observationDisabled) {
               const tail = decoder.decode();
@@ -820,10 +704,8 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
           return;
         }
 
-        // --- Non-streaming path ---
         const responseBytes = await readResponseBuffer(upstream, maxResponseBytes);
 
-        // Parse response for observation (best-effort)
         let assistantReply = "";
         try {
           const responseJson = JSON.parse(
@@ -834,12 +716,10 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
           // Non-JSON response -- skip observation
         }
 
-        // Fire-and-forget observe
         if (query.length > 0 && assistantReply.length > 0) {
           observeTurn(remnicDaemonUrl, sessionKey, query, assistantReply, config.remnicAuthToken);
         }
 
-        // Return upstream response to caller, stripping hop-by-hop headers
         const chatResponseHeaders: Record<string, string> = {};
         for (const [key, value] of upstream.headers.entries()) {
           if (!HOP_BY_HOP_RESPONSE_HEADERS.has(key.toLowerCase())) {
@@ -863,8 +743,6 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
       return;
     }
 
-    // --- All other paths: transparent proxy ---
-    // Use raw bytes to avoid corrupting binary/multipart uploads.
     let body: Buffer | null = null;
     try {
       body = method !== "GET" && method !== "HEAD"

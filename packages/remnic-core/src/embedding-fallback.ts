@@ -289,19 +289,11 @@ export class EmbeddingFallback {
 
     let queryResult = await this.embedForSearch(query, provider, options);
     if (!queryResult) return [];
-    // Effective query embedding: swapped to the disk index's provider
-    // below when the on-disk generation has a different identity. `let` so
-    // the swap reassigns; TS narrowing bound for control flow.
     let active = queryResult;
 
-    // Recall fails OPEN on index read failures (corrupt/oversized/mixed
-    // generations, unreadable shard dirs): return [] without caching so a
-    // later mutation still revalidates and fails closed (issue #3146).
     try {
       const diskIdentity = await this.readIndexIdentityFromDisk();
       if (diskIdentity && !sameIndexIdentity(diskIdentity, queryResult.provider)) {
-        // The provider swap needs a NETWORK embed: run it OUTSIDE the
-        // generation lock, then re-verify the identity under the lock below.
         const diskProvider = await this.resolveFallbackProviderForIndexIdentity(diskIdentity);
         if (diskProvider) {
           const diskQueryResult = await this.embedForSearch(query, diskProvider, options);
@@ -321,17 +313,11 @@ export class EmbeddingFallback {
         }
       }
 
-      // Cold load only (cache miss): the complete shard enumeration + read
-      // happens under the generation mutation lock so a concurrent swap can
-      // never leave a cached SUBSET of the generation (codex
-      // PRRT_kwDORJXyws6mZ72p). Warm cached searches stay lock-free.
       let index: EmbeddingIndexFile;
       try {
         index = await this.loadIndexUnderGenerationLock(active.provider);
       } catch (err) {
         if (err instanceof EmbeddingGenerationLockUnavailableError) {
-          // Existing read diagnostic, recorded once per failed load; recall
-          // itself fails open.
           await this.store.recordIndexStatusForLoad(
             `generation mutation lock unavailable: ${err instanceof Error ? err.message : String(err)}`,
           );
@@ -385,12 +371,6 @@ export class EmbeddingFallback {
   async indexFile(memoryId: string, content: string, filePath: string): Promise<void> {
     const provider = await this.resolveProvider();
     if (!provider) return;
-    // Indexing is not on the write-critical path: a newly persisted memory
-    // has already been written to disk by the time we reach this call. Use
-    // the long "index" timeout so slow local embedding backends can still
-    // add the entry to the index. Previously this used the short lookup
-    // budget and silently dropped updates, leaving later dedup lookups
-    // blind to the memory. Related: PR #399 P2.
     const result = await this.embedWithEffectiveProvider(content, provider, {
       mode: "index",
     });
@@ -460,10 +440,6 @@ export class EmbeddingFallback {
           throw err;
         }
       }
-      // A no-op removal (id absent from every candidate index) performs no
-      // save: it must NOT clear a recorded persistence failure, or the
-      // operator console would report an unresolved failure as fixed
-      // without any demonstration that storage is writable (round 6).
       if (saved) await this.store.recordIndexWriteOutcome(null, memoryId);
     });
   }
@@ -475,22 +451,12 @@ export class EmbeddingFallback {
         withEmbeddingGenerationLock(this.generationStateDir, async (section) => {
           this.lockSection = section;
           try {
-            // A peer process may have persisted while this process did not
-            // hold the generation lock: drop any cached index so the
-            // mutation loads the real disk state (codex P1).
             this.loaded = null;
             this.loadedFromDisk = false;
-            // Recover an interrupted replacement BEFORE the mutation's identity
-            // probes and existence checks: a deletion no-op must not skip
-            // persistence while the published generation sits in the rename-gap
-            // backup, and insertions must load the restored vectors rather than
-            // a fresh empty index (issue #3148, codex round 3).
             let recovered = false;
             try {
               recovered = await this.store.recoverIfInterrupted(this.generationFence());
             } catch (err) {
-              // Record the recovery failure durably BEFORE rejecting the
-              // mutation: the write-outcome try below is never reached.
               await this.store.recordIndexWriteOutcome(err).catch(() => undefined);
               throw err;
             }
@@ -503,10 +469,6 @@ export class EmbeddingFallback {
             this.lockSection = null;
           }
         }).catch(async (err) => {
-          // A lock ACQUISITION failure never reaches the mutation closure's
-          // own write-outcome recording. Route it through the existing
-          // durable diagnostic exactly once (codex PRRT_kwDORJXyws6mZ8qS);
-          // in-lock failures were already recorded by the closure.
           if (err instanceof EmbeddingGenerationLockUnavailableError) {
             await this.store.recordIndexWriteOutcome(err, memoryId).catch(() => undefined);
           }
@@ -620,8 +582,6 @@ export class EmbeddingFallback {
         if (options.throwOnTimeout) {
           throw err;
         }
-        // Fail-open: recall-path callers get an empty result rather than an
-        // unhandled rejection that would abort recall entirely.
         log.debug("embedding fallback search: backend unavailable on lookup, returning [] (throwOnTimeout=false)");
         return null;
       }
@@ -643,12 +603,6 @@ export class EmbeddingFallback {
     provider: ProviderConfig,
     options: { mode?: EmbedMode } = {},
   ): Promise<EmbeddingResult | null> {
-    // Bound the fetch so a hung embedding endpoint cannot stall callers.
-    // The lookup path uses a short budget (see DEFAULT_EMBEDDING_LOOKUP_TIMEOUT_MS
-    // docblock) so semantic dedup fails open fast. The index path uses a
-    // much longer budget because slow local backends (CPU embedding models)
-    // otherwise drop index updates and blind later dedup lookups. See
-    // DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS docblock and PR #399 P2 review.
     const mode: EmbedMode = options.mode ?? "lookup";
     const timeoutMs =
       mode === "index"
@@ -682,15 +636,6 @@ export class EmbeddingFallback {
       });
       if (!res.ok) {
         log.debug(`embedding fallback request failed: ${provider.type} ${res.status}`);
-        // Round 11 fix (Finding Ur_J): on the LOOKUP path, a non-2xx response
-        // means the embedding backend is effectively unavailable. Throw the
-        // tagged error so search() (when called with throwOnTimeout) propagates
-        // to decideSemanticDedup's backend_unavailable branch, activating the
-        // per-batch short-circuit. Without this, repeated 429/5xx responses
-        // would silently return [] for every fact in the batch.
-        //
-        // On the INDEX path a non-2xx is non-fatal (the memory is already
-        // persisted; index update can be skipped) — return null there.
         if (mode === "lookup") {
           throw new EmbeddingTimeoutError(
             `embedding backend returned ${res.status} (${provider.type})`,
@@ -706,9 +651,6 @@ export class EmbeddingFallback {
         .filter((n: number) => Number.isFinite(n));
       return normalized.length > 0 ? { provider, vector: normalized } : null;
     } catch (err) {
-      // Round 11 (Finding Ur_J): the !res.ok branch above throws
-      // EmbeddingTimeoutError directly. Re-throw it here so the catch does
-      // not swallow our own intentional signal back into a null return.
       if (isLookupBackendUnavailableError(err)) {
         throw err;
       }
@@ -722,36 +664,13 @@ export class EmbeddingFallback {
         log.warn(
           `embedding fallback fetch timed out after ${timeoutMs}ms (${provider.type}, mode=${mode})`,
         );
-        // Round 9 fix (Finding UZqB): on the LOOKUP path a timeout means the
-        // embedding backend is effectively unavailable — re-throw so that
-        // search() propagates the error to semanticDedupLookup, which lets it
-        // reach decideSemanticDedup's catch block and return
-        // reason="backend_unavailable". Without this, search() would silently
-        // return [] and the per-batch batchBackendUnavailable flag would never
-        // flip, causing subsequent facts in the same batch to each pay a full
-        // timeout roundtrip (N × timeout instead of 1 × timeout).
-        //
-        // On the INDEX path a timeout is not fatal (the memory is already
-        // persisted; index update can be skipped) — return null there so
-        // indexFile() stays non-blocking.
         if (mode === "lookup") {
           throw new EmbeddingTimeoutError(
             `embedding backend timed out after ${timeoutMs}ms (${provider.type})`,
           );
         }
       } else {
-        // Round 12 fix (PR #399 thread PRRT_kwDORJXyws56U6Gi): non-timeout
-        // transport failures (ECONNREFUSED, DNS errors, TLS failures) are just
-        // as fatal as timeouts on the LOOKUP path — the embedding backend is
-        // effectively unreachable. Throw EmbeddingTimeoutError so that
-        // search() (when called with throwOnTimeout:true) propagates the error
-        // to decideSemanticDedup's backend_unavailable branch, activating the
-        // per-batch short-circuit. Without this, each fact in the batch would
-        // pay a full ECONNREFUSED roundtrip and return null → [] → no_candidates,
-        // preventing batchBackendUnavailable from ever being set.
         //
-        // On the INDEX path a transport failure is non-fatal — the memory is
-        // already persisted; index update can be safely skipped.
         if (mode === "lookup") {
           log.warn(
             `embedding fallback transport error on lookup path (${provider.type}): ${err}`,
@@ -824,12 +743,7 @@ export class EmbeddingFallback {
   private async loadIndexUnderGenerationLock(provider: ProviderConfig): Promise<EmbeddingIndexFile> {
     if (this.loaded && this.loadedFromDisk) return this.loaded;
     return await withEmbeddingGenerationLock(this.generationStateDir, async () => {
-      // Another in-process consumer may have warmed the cache while this
-      // call waited on the lock.
       if (this.loaded && this.loadedFromDisk) return this.loaded;
-      // Re-check the on-disk identity UNDER the lock: a peer swap during the
-      // caller's embed means the cold load must fail open, never serve a
-      // mixed generation (codex PRRT_kwDORJXyws6mZ72p).
       const diskIdentity = await this.store.identityFromDisk();
       if (diskIdentity && !sameIndexIdentity(diskIdentity, provider)) {
         throw new EmbeddingIndexStorageError(
@@ -850,10 +764,6 @@ export class EmbeddingFallback {
 
     const layout = await this.store.detectLayout();
     if (layout === "sharded") {
-      // Published generation: shards are the ONLY authoritative state. A
-      // legacy embeddings.json left over by a crash between the atomic
-      // publish and its recovery rename is never merged (single-generation
-      // rule, issue #3146).
       diskIdentity = await this.store.readShardGenerationInto(merged);
     } else if (layout === "legacy") {
       const read = await this.store.readLegacy();
@@ -866,9 +776,6 @@ export class EmbeddingFallback {
           `refusing to continue from an unreadable embedding index at ${this.store.legacyPath}: ${read.reason}`,
         );
       } else if (read.outcome === "foreign") {
-        // Valid JSON but not an index we recognize (wrong version/shape).
-        // Overwriting it would destroy unknown data, so mutation fails
-        // closed; the file stays in place for recovery.
         await this.store.recordIndexStatusForLoad("unrecognized index format");
         throw new EmbeddingIndexStorageError(
           `refusing to continue from a malformed embedding index at ${this.store.legacyPath} (unrecognized format); file preserved in place`,

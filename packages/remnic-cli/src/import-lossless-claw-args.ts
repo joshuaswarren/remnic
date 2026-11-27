@@ -1,7 +1,4 @@
-// ---------------------------------------------------------------------------
 // Pure argv parser for `remnic import-lossless-claw`.
-//
-// Kept side-effect-free and dependency-free (no @remnic/core import) so the
 // parser can be unit-tested without booting the orchestrator or pulling in
 // the SQLite native module. The orchestration in import-lossless-claw-cmd.ts
 // does the real I/O.

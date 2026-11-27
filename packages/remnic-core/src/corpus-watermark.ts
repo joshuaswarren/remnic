@@ -1,40 +1,3 @@
-/**
- * Corpus watermark (issue #2149) — a cheap, comparable fingerprint of a
- * daemon's active-memory corpus.
- *
- * Deployment shape this addresses: two daemons behind an active/backup VIP,
- * each owning its own memory directory. Nothing compared the two corpora, so a
- * pair could diverge for months (e.g. one holding ~190k files, its backup
- * ~340k with different histories) with no signal until a manual audit. This
- * module ships the WATERMARK primitive and the read surfaces that expose it;
- * peer polling and divergence alerting are a follow-up.
- *
- * The digest is a CENSUS fingerprint (per day-partition file counts), NOT a
- * content hash — two daemons that agree on how many memory FILES live in
- * each `<tier>:<category>/<day>` partition produce the same digest, so a
- * differing digest is a cheap divergence signal without reading or hashing file
- * bodies. Buckets are tier-aware (`hot:` / `cold:`): demoted memories stay
- * reachable via cold recall, so the census counts BOTH tiers and a hot/cold
- * split shows in the digest rather than being silently folded together (issue
- * #2156 finding D). `newestWriteAt` stays scoped to the newest HOT partition
- * only, so the freshness probe stays O(one day's active files) even on a 100k+
- * corpus.
- *
- * Robustness (issue #2156 review rounds):
- * - `/health` and `remnic doctor` resolve their namespace set through the ONE
- *   {@link resolveCorpusNamespaceRoots} helper — config-driven enumeration
- *   unioned with the PERSISTED namespace catalog read from config — so both
- *   surfaces enumerate the same tenants and cannot drift.
- * - The `/health` builder serves through a stale-while-revalidate
- *   {@link CorpusWatermarkCache}, so a probe NEVER awaits the recursive corpus
- *   scan (it returns the cached/stale value and refreshes in the background).
- * - Each namespace's census brackets its hot+cold walk with a corpus-mutation
- *   sentinel and retries when a tier migration races it, so a transient
- *   double-count/miss is never cached as a false divergence.
- * - An unreadable corpus root (EACCES) is OMITTED, not published as a false
- *   empty; a missing root (ENOENT — a not-yet-created namespace) is a genuine
- *   empty corpus.
- */
 
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -46,12 +9,6 @@ import type { PluginConfig } from "./types.js";
 
 export interface CorpusWatermark {
   namespace: string;
-  /**
-   * Count of memory files under the census scan roots (hot + cold). This is a
-   * FILE census, not a status-filtered active count: reading each file's
-   * frontmatter status would defeat the cheap-probe design, so an in-place
-   * status change (e.g. archived-in-place) is not reflected here.
-   */
   memoryFileCount: number;
   /** Newest `YYYY-MM-DD` day-partition seen in the HOT tier, or null when none is dated. */
   newestPartition: string | null;
@@ -75,13 +32,6 @@ const DAY_PARTITION_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** Cold-tier root segment (relative to a namespace base dir): `<baseDir>/cold/...`. */
 const COLD_TIER_DIR = "cold";
 
-/**
- * True when `token` is not just `YYYY-MM-DD`-shaped but a REAL calendar day.
- * The regex alone accepts impossible dates (e.g. `2026-99-99`) that would then
- * sort lexically above every valid partition and corrupt `newestPartition`
- * (issue #2156 round-6); round-tripping through a UTC Date rejects month/day
- * overflow. A malformed dir falls back to the unpartitioned bucket.
- */
 function isRealCalendarDay(token: string): boolean {
   if (!DAY_PARTITION_RE.test(token)) return false;
   const [year, month, day] = token.split("-").map(Number);
@@ -98,11 +48,6 @@ interface ParsedPath {
 function parsePartition(baseDir: string, filePath: string): ParsedPath {
   const rel = path.relative(baseDir, filePath).split(path.sep).join("/");
   const parts = rel.split("/");
-  // Cold-tier files live under `<baseDir>/cold/<category>/<day>/...`; hot files
-  // sit directly under `<baseDir>/<category>/<day>/...`. Strip the leading
-  // `cold/` segment so the category/day parse is tier-agnostic, then prefix the
-  // bucket with the tier so a hot and cold partition of the same day never
-  // collide (they must diverge the digest, not fold together).
   const tier: CorpusTier = parts[0] === COLD_TIER_DIR ? "cold" : "hot";
   const categoryParts = tier === "cold" ? parts.slice(1) : parts;
   if (categoryParts.length >= 2 && isRealCalendarDay(categoryParts[1])) {
@@ -161,10 +106,6 @@ export async function computeCorpusWatermark(input: {
   const parsedByPath: ParsedPath[] = [];
   let sinceYield = 0;
   for (const filePath of paths) {
-    // Parsing one path is cheap, but a census covers the whole corpus (100k+
-    // paths): one uninterrupted pass holds the main thread for hundreds of
-    // milliseconds. Yield to the event loop every CENSUS_YIELD_EVERY paths so
-    // observe/recall interleave; the result is order-independent and identical.
     if (sinceYield >= CENSUS_YIELD_EVERY) {
       sinceYield = 0;
       await yieldToEventLoop();
@@ -173,9 +114,6 @@ export async function computeCorpusWatermark(input: {
     const parsed = parsePartition(baseDir, filePath);
     parsedByPath.push(parsed);
     census.set(parsed.bucket, (census.get(parsed.bucket) ?? 0) + 1);
-    // Freshness is the newest ACTIVE (hot) write. Cold memories are demoted and
-    // keep their original (older) partition date, so they never advance the
-    // freshness probe and their files are never stat-ed below.
     if (parsed.tier === "hot" && parsed.date !== null && (newestPartition === null || parsed.date > newestPartition)) {
       newestPartition = parsed.date;
     }
@@ -190,12 +128,6 @@ export async function computeCorpusWatermark(input: {
       if (parsedByPath[i].tier !== "hot" || parsedByPath[i].date !== newestPartition) continue;
       newestPaths.push(paths[i]);
     }
-    // The freshness sweep is one stat per file in the newest hot partition; it
-    // runs in the corpus-scan worker so the periodic census does not spend
-    // main-thread time on a per-file syscall sweep. A file that vanished
-    // (ENOENT) reports null; a backend read failure (EACCES/EIO/…) propagates
-    // with its errno code so the namespace is omitted, not published with a
-    // stale/null freshness (issue #2156 round-6).
     const mtimes = await corpusScanWorker.request({ kind: "stat-mtimes", paths: newestPaths });
     let maxMtimeMs = Number.NEGATIVE_INFINITY;
     for (const mtimeMs of mtimes) {
@@ -206,9 +138,6 @@ export async function computeCorpusWatermark(input: {
     }
   }
 
-  // Stamp AFTER the (possibly slow) stat loop so an age-based HA consumer never
-  // sees a timestamp earlier than when the scan actually finished (finding
-  // round-4). An explicit `now` (tests / determinism) still wins.
   const computedAt = (input.now ?? new Date()).toISOString();
 
   return {
@@ -240,17 +169,6 @@ export interface CorpusStorage {
 /** Max census re-scans when a corpus mutation keeps racing the walkers. */
 const CENSUS_RACE_MAX_ATTEMPTS = 3;
 
-/**
- * Compute one namespace's watermark from its storage, spanning BOTH tiers so a
- * cold-tier divergence is caught. Reads are STRICT: the collectors propagate a
- * backend read failure (EACCES on the root OR any nested category dir, ENOTDIR,
- * …) so an unreadable corpus is OMITTED by the caller rather than published as a
- * false empty census; a missing root (ENOENT — a not-yet-created namespace)
- * stays a genuine empty corpus. The hot+cold walk is bracketed by the
- * corpus-mutation sentinel (when the storage exposes one) and retried on change;
- * if it never stabilizes (sustained tier churn) this THROWS rather than caching
- * a transient double-count/miss as a false divergence.
- */
 async function computeNamespaceWatermark(
   namespace: string,
   storage: CorpusStorage,
@@ -335,8 +253,6 @@ export async function resolveCorpusNamespaceRoots(options: {
     config,
     propagateDiscoveryErrors: options.propagateDiscoveryErrors,
   });
-  // Default namespace first so it wins the representative label when several
-  // configured names collapse onto one root (namespaces disabled → memoryDir).
   const ordered = [
     ...configDriven.filter((entry) => entry.namespace === config.defaultNamespace),
     ...configDriven.filter((entry) => entry.namespace !== config.defaultNamespace),
@@ -360,23 +276,8 @@ export async function resolveCorpusNamespaceRoots(options: {
   return roots;
 }
 
-/**
- * Divergence detection tolerates a watermark that is stale by up to a minute
- * (peers are compared on a slow cadence); a health/readiness probe does NOT
- * tolerate a full corpus scan (a recursive realpath-per-Markdown-file walk) on
- * every request. This TTL is that trade-off: recompute a namespace's watermark
- * at most once per window; probes in between serve the cached census (whose
- * `computedAt` shows its staleness).
- */
 export const WATERMARK_CACHE_TTL_MS = 60_000;
 
-/**
- * Cap on concurrent background corpus scans. A probe that finds many namespaces
- * cold/expired would otherwise fan out one recursive hot/cold walk PER namespace
- * at once, a periodic unbounded filesystem-work burst that can starve recall and
- * storage (issue #2156 round-9). Excess refreshes queue and start as slots free;
- * single-flight still dedupes duplicate requests for the same namespace.
- */
 const MAX_CONCURRENT_WATERMARK_REFRESHES = 4;
 
 /**
@@ -415,7 +316,6 @@ export class CorpusWatermarkCache {
   }
 
   private refresh(namespace: string, compute: () => Promise<CorpusWatermark>): void {
-    // Single-flight + not-already-queued: one background scan per namespace.
     if (this.inFlight.has(namespace) || this.queued.has(namespace)) return;
     const run = (): void => {
       this.activeRefreshes += 1;
@@ -433,7 +333,6 @@ export class CorpusWatermarkCache {
         });
       this.inFlight.set(namespace, pending);
     };
-    // Bound the concurrent fan-out: run now if a slot is free, else queue.
     if (this.activeRefreshes < this.maxConcurrentRefreshes) {
       run();
     } else {
@@ -452,13 +351,6 @@ export class CorpusWatermarkCache {
   }
 
 
-  /**
-   * Stale-while-revalidate the resolved namespace roots (issue #2156 round-7).
-   * Namespace enumeration (config scan + persisted-catalog parse) is O(tenants)
-   * filesystem work; without this it ran on every probe ahead of the watermark
-   * cache. NEVER awaits: returns the cached/stale roots (or undefined when cold)
-   * and single-flights a background refresh.
-   */
   getResolvedRoots(compute: () => Promise<CorpusNamespaceRoot[]>): CorpusNamespaceRoot[] | undefined {
     const fresh = this.rootsEntry !== undefined && this.clock() < this.rootsEntry.expiresAt;
     if (!fresh && this.rootsInFlight === undefined) {
@@ -502,14 +394,12 @@ export class CorpusWatermarkCache {
   }
 }
 
-/** Orchestrator surface the service watermark builder reads — satisfied by Orchestrator. */
 export interface CorpusWatermarkHost {
   config: PluginConfig;
   getStorage(namespace: string): CorpusStorage | Promise<CorpusStorage>;
 }
 
 export interface ServiceCorpusWatermarkOptions {
-  /** Stale-while-revalidate cache so probes never await the corpus scan. */
   cache?: CorpusWatermarkCache;
   /**
    * Presenting token capabilities. When the token is namespace-restricted the
@@ -565,7 +455,6 @@ export async function computeServiceCorpusCensus(
       return { watermarks: [], complete: false }; // never enumerated — not an empty corpus
     }
   }
-  // Enumeration still warming (cold): served on a later probe, and NOT complete.
   if (!roots) return { watermarks: [], complete: false };
   const visible = roots.filter((root) => root.namespaces.some((ns) => capabilityAllowsNamespace(options.caps, ns)));
   const watermarks: CorpusWatermark[] = [];
@@ -581,7 +470,6 @@ export async function computeServiceCorpusCensus(
       try {
         watermarks.push(await compute());
       } catch {
-        // One tenant's storage/scan failed — omit just that namespace.
         complete = false;
       }
     }

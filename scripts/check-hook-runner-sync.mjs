@@ -2,8 +2,6 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Fail when a host package's copy of the shared hook runner (issue #2483)
-// drifts from the canonical source. Mirrors check-openclaw-plugin-sync.mjs.
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
 const source = path.resolve(repoRoot, "scripts", "hook-runner", "remnic-hook-core.cjs");

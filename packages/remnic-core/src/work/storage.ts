@@ -53,7 +53,6 @@ function parseFrontmatter(raw: string): { data: Record<string, unknown>; body: s
 
 function toSafeSlug(value: string): string {
   let slug = value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-");
-  // Trim leading/trailing dashes without ReDoS-prone anchored quantifiers
   let start = 0;
   while (start < slug.length && slug[start] === "-") start++;
   let end = slug.length;

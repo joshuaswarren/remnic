@@ -1,22 +1,3 @@
-/**
- * Tests for `capsule-cli.ts` pure helpers (issue #676 PR 6/6 round-3).
- *
- * Scenarios covered:
- *   1. parseCapsuleMergeOptions returns the raw archive path (tilde expansion
- *      is the caller's responsibility — done in cli.ts).
- *   2. parseCapsuleListOptions forwards --dir without modification (caller
- *      expands tilde).
- *   3. parseCapsuleListOptions falls back to defaultDir when --dir is omitted.
- *   4. capsule-cli.ts does NOT import `os` (unused import removed).
- *   5. parseCapsuleInspectOptions returns the archive argument as-is.
- *   6. defaultCapsulesDir appends ".capsules" to the memory dir.
- *   7. capsule list ENOENT is swallowed; other readdir errors are re-thrown.
- *   8. merge archive ID-lookup: bare name is resolved via capsule store dir.
- *   9. capsule list --dir explicit ENOENT must NOT be swallowed.
- *  10. capsule merge tilde expansion: expandTildePath on ~/... paths.
- *  11. capsule merge encrypted archive guard: .enc path rejected with clear error.
- *  12. docs/capsules.md uses --name / --out-dir / --peer-ids flags matching cli.ts.
- */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -27,7 +8,6 @@ import {
   defaultCapsulesDir,
 } from "./capsule-cli.js";
 
-// ─── 1. parseCapsuleMergeOptions preserves tilde in returned archive ───────────
 
 test("parseCapsuleMergeOptions preserves tilde path for caller to expand", () => {
   const result = parseCapsuleMergeOptions(
@@ -61,14 +41,12 @@ test("parseCapsuleMergeOptions throws on missing archive", () => {
   );
 });
 
-// ─── 2 & 3. parseCapsuleListOptions --dir handling ────────────────────────────
 
 test("parseCapsuleListOptions uses provided --dir without expansion", () => {
   const result = parseCapsuleListOptions(
     { dir: "~/my-capsules", format: "text" },
     "/default/.capsules",
   );
-  // Raw tilde preserved — cli.ts calls expandTildePath on the result.
   assert.equal(result.capsulesDir, "~/my-capsules");
   assert.equal(result.format, "text");
 });
@@ -86,10 +64,8 @@ test("parseCapsuleListOptions rejects unknown format", () => {
   );
 });
 
-// ─── 4. capsule-cli.ts does not use `os` ──────────────────────────────────────
 
 test("capsule-cli module does not import node:os (unused import removed)", async () => {
-  // Read the source text and verify `os` is not imported.
   const { readFile } = await import("node:fs/promises");
   const { fileURLToPath } = await import("node:url");
   const { dirname, join } = await import("node:path");
@@ -101,7 +77,6 @@ test("capsule-cli module does not import node:os (unused import removed)", async
   );
 });
 
-// ─── 5. parseCapsuleInspectOptions ────────────────────────────────────────────
 
 test("parseCapsuleInspectOptions returns archive and format", () => {
   const result = parseCapsuleInspectOptions("my-capsule.capsule.json.gz", {});
@@ -116,15 +91,12 @@ test("parseCapsuleInspectOptions throws on missing archive", () => {
   );
 });
 
-// ─── 6. defaultCapsulesDir ────────────────────────────────────────────────────
 
 test("defaultCapsulesDir appends .capsules to memory dir", () => {
   assert.equal(defaultCapsulesDir("/home/user/.memory"), "/home/user/.memory/.capsules");
   assert.equal(defaultCapsulesDir("/tmp/mem"), "/tmp/mem/.capsules");
 });
 
-// ─── 7. readdir ENOENT swallowing — only ENOENT, not other errors ─────────────
-//
 // These tests exercise the patched capsule list readdir error handling in
 // cli.ts by invoking the underlying Node.js readdir semantics. We simulate the
 // two error classes by reading a non-existent path (ENOENT) and a file path
@@ -136,7 +108,6 @@ test("readdir on missing directory throws ENOENT which should be swallowed", asy
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
 
-  // Create a temp dir, then construct a path inside it that doesn't exist.
   const tmp = mkdtempSync(join(tmpdir(), "capsule-list-test-"));
   const missing = join(tmp, "nonexistent-capsules");
 
@@ -160,7 +131,6 @@ test("readdir on a file path throws non-ENOENT error which must NOT be swallowed
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
 
-  // Create a regular file and then try to readdir it — yields ENOTDIR.
   const tmp = mkdtempSync(join(tmpdir(), "capsule-list-test-"));
   const filePath = join(tmp, "not-a-directory.txt");
   await writeFile(filePath, "content");
@@ -179,14 +149,11 @@ test("readdir on a file path throws non-ENOENT error which must NOT be swallowed
   );
 });
 
-// ─── 8. merge archive ID-lookup path resolution ───────────────────────────────
-//
 // Verifies that the 3-step path resolution logic added to `capsule merge`
 // produces the correct archive path for each case. We test the pure resolution
 // logic inline here (not through the CLI action, which needs an orchestrator).
 
 test("merge path resolution: explicit absolute path is used as-is", async () => {
-  // Simulates step 1: arg looks like an explicit path → tilde-expand and use.
   const { expandTildePath } = await import("./utils/path.js");
   const input = "/absolute/path/my-capsule.capsule.json.gz";
   const expanded = expandTildePath(input);
@@ -203,14 +170,10 @@ test("merge path resolution: tilde in explicit path is expanded", async () => {
     `${homedir()}/backups/my-capsule.capsule.json.gz`,
     "leading tilde must be expanded to the home directory",
   );
-  // After expansion the path starts with '/' so `looksLikePath` is true —
-  // the ID-lookup branch is skipped.
   assert.ok(expanded.startsWith("/"), "expanded tilde path starts with /");
 });
 
 test("merge path resolution: bare capsule id resolves to store path", async () => {
-  // Simulates step 3: bare name does not exist at cwd → look up in store.
-  // We verify that joining capsulesDir + id + extension produces the right path.
   const { join } = await import("node:path");
   const capsulesDir = "/home/user/.memory/.capsules";
   const capsuleId = "my-snapshot-2026-01-01";
@@ -230,15 +193,12 @@ test("merge path resolution: bare capsule id resolves to store path", async () =
   );
 });
 
-// ─── 9. capsule list --dir explicit ENOENT must NOT be swallowed ──────────────
 //
 // When --dir is explicitly provided by the user and the directory doesn't
 // exist, the list action must throw — not silently return empty results.
 // (Cursor PRRT_kwDORJXyws59spK8)
 
 test("parseCapsuleListOptions preserves explicit --dir value even if it doesn't exist", () => {
-  // The pure parser just records the value; it's the cli.ts action handler that
-  // must validate existence when dirWasExplicit is true.
   const nonExistent = "/tmp/capsule-cli-test-does-not-exist-" + Date.now();
   const result = parseCapsuleListOptions({ dir: nonExistent }, "/default/.capsules");
   assert.equal(
@@ -258,9 +218,6 @@ test("capsule list: explicit --dir that does not exist produces readdir ENOENT",
   } catch (err) {
     caught = err as NodeJS.ErrnoException;
   }
-  // The error code is ENOENT — which the list action must re-throw (not swallow)
-  // when the user explicitly passed --dir, since a missing explicit path is
-  // almost certainly a mistake (typo or unmounted path).
   assert.ok(caught !== null, "expected readdir to throw for nonexistent dir");
   assert.equal(caught.code, "ENOENT", "nonexistent --dir produces ENOENT");
   // Confirm the distinction: for the DEFAULT capsulesDir, ENOENT is swallowed
@@ -268,18 +225,13 @@ test("capsule list: explicit --dir that does not exist produces readdir ENOENT",
   // The cli.ts action tracks dirWasExplicit and re-throws when true.
 });
 
-// ─── 10. capsule merge tilde expansion ────────────────────────────────────────
 //
-// cli.ts calls expandTildePath(parsed.archive) immediately after parsing, so a
-// ~/... path is expanded before the looksLikePath / ID-lookup branching.
-// Verify the helper expands correctly.
 
 test("expandTildePath expands ~/... merge archive paths to absolute", async () => {
   const { expandTildePath } = await import("./utils/path.js");
   const { homedir } = await import("node:os");
   const home = homedir();
 
-  // Typical user-typed merge archive path.
   const input = "~/capsules/daily-backup.capsule.json.gz";
   const expanded = expandTildePath(input);
   assert.equal(
@@ -287,8 +239,6 @@ test("expandTildePath expands ~/... merge archive paths to absolute", async () =
     `${home}/capsules/daily-backup.capsule.json.gz`,
     "leading tilde must be replaced with the actual home directory",
   );
-  // After expansion the path starts with '/' so cli.ts treats it as an explicit
-  // path and does not attempt ID-lookup in the capsules store.
   assert.ok(
     expanded.startsWith("/"),
     "expanded tilde path must start with / (bypasses ID-lookup branch)",
@@ -305,7 +255,6 @@ test("expandTildePath does not modify already-absolute merge archive paths", asy
   );
 });
 
-// ─── 11. capsule merge encrypted archive guard ────────────────────────────────
 //
 // The cli.ts merge action rejects .enc archives before calling mergeCapsule
 // (which only understands plain gzip). This test verifies that isEncryptedCapsuleFile
@@ -318,10 +267,8 @@ test("isEncryptedCapsuleFile returns false for plain .capsule.json.gz path", asy
   const { join } = await import("node:path");
   const { isEncryptedCapsuleFile } = await import("./transfer/capsule-crypto.js");
 
-  // Write a minimal gzip-like file (gzip magic bytes) — not an .enc file.
   const tmp = mkdtempSync(join(tmpdir(), "capsule-merge-guard-"));
   const plain = join(tmp, "test.capsule.json.gz");
-  // gzip magic: 0x1f 0x8b
   writeFileSync(plain, Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
 
   const result = await isEncryptedCapsuleFile(plain);
@@ -338,7 +285,6 @@ test("isEncryptedCapsuleFile returns false for .enc path with non-REMNIC-ENC mag
   const { join } = await import("node:path");
   const { isEncryptedCapsuleFile } = await import("./transfer/capsule-crypto.js");
 
-  // A file that has .enc extension but does NOT start with REMNIC-ENC magic.
   const tmp = mkdtempSync(join(tmpdir(), "capsule-merge-guard-"));
   const fakeEnc = join(tmp, "test.capsule.json.gz.enc");
   writeFileSync(fakeEnc, Buffer.from("not-an-encrypted-file"));
@@ -351,18 +297,13 @@ test("isEncryptedCapsuleFile returns false for .enc path with non-REMNIC-ENC mag
   );
 });
 
-// ─── 12. docs/capsules.md flag alignment with cli.ts ─────────────────────────
 //
-// Verifies that docs/capsules.md uses the actual CLI flags (--name, --out-dir,
-// --peer-ids) and does not contain the stale --out or --peers flags.
-// (Codex P2 PRRT_kwDORJXyws59so7T)
 
 test("docs/capsules.md uses --name flag (not positional <name> argument)", async () => {
   const { readFile } = await import("node:fs/promises");
   const { fileURLToPath } = await import("node:url");
   const { dirname, resolve } = await import("node:path");
   const dir = dirname(fileURLToPath(import.meta.url));
-  // docs/ is at the repo root, three levels above packages/remnic-core/src/
   const docsPath = resolve(dir, "../../../docs/capsules.md");
   const src = await readFile(docsPath, "utf-8");
 
@@ -382,7 +323,6 @@ test("docs/capsules.md uses --name flag (not positional <name> argument)", async
     src.includes("--include-transcripts"),
     "docs must document --include-transcripts flag",
   );
-  // Negative checks: old flag names must not appear in the export section.
   const exportSection = src.slice(
     src.indexOf("### `remnic capsule export`"),
     src.indexOf("### `remnic capsule import`"),

@@ -109,7 +109,6 @@ export class NegativeExampleStore {
     if (!Number.isFinite(opts.perHit) || opts.perHit < 0) return 0;
     if (!Number.isFinite(opts.cap) || opts.cap < 0) return 0;
 
-    // Cap effect to avoid runaway ranking distortion.
     const hits = Math.min(10, entry.notUseful);
     const raw = hits * opts.perHit;
     return Math.min(opts.cap, raw);

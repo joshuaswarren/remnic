@@ -1,22 +1,6 @@
-// ---------------------------------------------------------------------------
-// Shared serialized-mutation utilities for TOCTOU hotspots (issue #1524).
 //
-// Two complementary primitives that the namespace catalog (`queueCritical` +
-// `withHeldCatalogLock`), the storage router's resolve-hook serialization, and
-// the summary-snapshot writer each re-implement today:
 //
-//   1. `serializeMutations(key, task)` — keyed IN-PROCESS async serialization
-//      that recovers after a rejection (CLAUDE.md rule #40). One failed task
-//      never poisons the tasks queued behind it; the failed task's error is
-//      still surfaced to ITS caller.
 //
-//   2. `withHeldFileLock(lockPath, opts, task)` — a held CROSS-PROCESS file
-//      lock with replacement-safe stale breaking (the NG7Bg invariant from
-//      #1506 round 28) and ownership-checked release.
-//
-// This is the UTILITY module only. Per-issue PR split: one PR for the utility
-// + tests (this file), then one PR per adoption hotspot (catalog, router
-// provenance, summary snapshot). No adoptions live here.
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from "node:crypto";
@@ -25,45 +9,15 @@ import path from "node:path";
 import { sleep } from "./sleep.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. serializeMutations — keyed async serialization with rejection recovery
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * One entry in the per-key serialization map. `tail` is the recovered promise
- * the next queued task chains off of; it never rejects (both settle handlers
- * swallow), so a prior task's failure can never break subsequent ones.
- */
 interface MutationChainEntry {
   tail: Promise<void>;
 }
 
-/**
- * Instance-scoped keyed serializer. Holds the per-key chain map so that all
- * tasks queued under the same key on the SAME serializer run strictly in order.
- *
- * The map is instance-scoped (not module-level) so tests can construct a fresh
- * serializer per case and avoid cross-test contamination, and so adopters that
- * want isolation (e.g. one serializer per storage root) can have it. The free
- * {@link serializeMutations} export delegates to a single shared default
- * instance for callers that want process-wide serialization.
- */
 export class MutationSerializer {
   private readonly chains = new Map<string, MutationChainEntry>();
 
-  /**
-   * Run `task` strictly after every other task already queued under `key` on
-   * this serializer has settled.
-   *
-   * Rejection recovery (rule #40, mirroring the catalog's `queueCritical`):
-   * if a prior task rejects, later tasks STILL RUN, while the rejecting task's
-   * error is surfaced to ITS OWN caller. Concretely, the recovered tail is
-   * `run.then(noop, noop)` — never a bare `.then(fn)`, which would let one
-   * failure kill every queued task behind it.
-   *
-   * No unbounded growth: when a chain's last task settles and no newer task
-   * chained onto it, its entry is deleted (the storage router's
-   * `inFlightResolved` marker-then-clear discipline).
-   */
   serialize<T>(key: string, task: () => Promise<T>): Promise<T> {
     if (typeof key !== "string" || key.length === 0) {
       throw new TypeError("MutationSerializer.serialize: key must be a non-empty string");
@@ -78,29 +32,12 @@ export class MutationSerializer {
       this.chains.set(key, entry);
     }
 
-    // Chain this task off the prior tail. `tail.then(task)` runs task only once
-    // the previous task has settled, preserving read-modify-write ordering.
     const run = entry.tail.then(task);
 
-    // Recover the tail after a rejection so a failed task never poisons later
-    // ones. Both handlers swallow; `run` still carries the original resolution
-    // (or rejection) to THIS caller. This is the line a naive `.then(fn)`
-    // implementation omits — see the "naive poison chain" prove-fail test.
     const recovered = run.then(settleNoop, settleNoop);
     entry.tail = recovered;
 
-    // Self-cleaning: once our recovered tail settles, if no newer task chained
-    // onto us the entry still points at `recovered` and is safe to delete. A
-    // concurrent `serialize()` call enqueues synchronously and would have
-    // replaced `entry.tail` BEFORE this microtask runs, so the identity check
-    // is race-free (no newer task's entry can be wrongly removed).
     //
-    // `recovered` cannot reject in correct operation (both handlers above
-    // swallow) and the cleanup body cannot throw — but we attach a rejection
-    // handler anyway so that IF the recovery invariant is ever broken, the
-    // failure surfaces as a behavioral assertion (skipped tasks) rather than an
-    // unhandled-rejection storm that masks which task failed. The handler is a
-    // no-op: cleanup only runs on fulfillment.
     void recovered.then(
       () => {
         if (entry && entry.tail === recovered) {
@@ -122,21 +59,10 @@ export class MutationSerializer {
   }
 }
 
-/**
- * Recovery handler shared by both settle arms. Named (not inline
- * `() => undefined`) so the chain assignment stays self-documenting in stack
- * traces and the review-patterns poison-chain check can see the chain is
- * recovered, not bare `.then(fn)`.
- */
 function settleNoop(): void {
   /* swallow — the original resolution/rejection is carried by `run` */
 }
 
-/**
- * Process-wide default serializer backing the free {@link serializeMutations}
- * export. Lazy so it is only created when first used (tests that construct
- * their own `MutationSerializer` pay nothing).
- */
 let defaultSerializer: MutationSerializer | undefined;
 
 /**
@@ -151,10 +77,8 @@ export function serializeMutations<T>(key: string, task: () => Promise<T>): Prom
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. withHeldFileLock — cross-process held file lock with stale breaking
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Options for {@link withHeldFileLock}. */
 export interface HeldFileLockOptions {
   /**
    * A lock whose mtime is older than this (in ms) is treated as a crashed
@@ -239,11 +163,8 @@ export interface HeldFileLockController {
   readonly failure?: "timeout" | "error";
 }
 
-/** Default bounded acquisition wait, mirroring the catalog. */
 const DEFAULT_MAX_WAIT_MS = 5_000;
-/** Default busy-lock poll interval, mirroring the catalog. */
 const DEFAULT_POLL_MS = 50;
-/** Floor for the derived heartbeat cadence. */
 const MIN_HEARTBEAT_MS = 100;
 /** Node's setTimeout/setInterval 32-bit signed-int ceiling (2^31 − 1 ms ≈ 24.8
  * days). Delays above this are silently clamped to 1ms by the Node timer, so
@@ -251,7 +172,6 @@ const MIN_HEARTBEAT_MS = 100;
  * (chatgpt-codex-connector P2). */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
-/** Internal handle for a lock we successfully acquired. */
 interface HeldLock {
   readonly path: string;
   readonly ownerId: string;
@@ -302,11 +222,6 @@ export async function withHeldFileLock<T>(
     );
   }
 
-  // Validate optional timings: a NaN/Infinity here is a real hazard (e.g.
-  // `Date.now() + NaN` === NaN, so `Date.now() >= deadline` is always false and
-  // the bounded acquire loop would wait forever instead of falling back to
-  // best-effort). Reject invalid input rather than silently defaulting it
-  // (codex P2 review). Omitting an option still picks its default.
   const maxWaitMs = optionalPositiveMs(opts.maxWaitMs, "maxWaitMs", DEFAULT_MAX_WAIT_MS, MAX_TIMER_DELAY_MS);
   const pollMs = optionalPositiveMs(opts.pollMs, "pollMs", DEFAULT_POLL_MS, MAX_TIMER_DELAY_MS);
   const heartbeatMs = optionalPositiveMs(
@@ -328,11 +243,6 @@ export async function withHeldFileLock<T>(
         `at or below ${MAX_TIMER_DELAY_MS} ms.`,
     );
   }
-  // Wrap the consumer's warning hook so a throwing callback never turns a
-  // non-fatal advisory lock warning into an unhandled rejection (heartbeat
-  // catch handler) or overrides the task's result (release path). The option
-  // is documented as never throwing into the caller; enforce that here
-  // (codex P2 review).
   const rawWarn = opts.onLockWarning;
   const warn = (message: string, err: unknown): void => {
     if (!rawWarn) return;
@@ -343,10 +253,6 @@ export async function withHeldFileLock<T>(
     }
   };
 
-  // Per-call owner identity. Two withHeldFileLock calls in the SAME process
-  // get different ids, so neither mistakes the other's lock for its own
-  // (stronger than the catalog's per-instance id, which is what we want for a
-  // stateless utility).
   const ownerId = randomUUID();
   const lockDir = path.dirname(lockPath);
 
@@ -356,16 +262,7 @@ export async function withHeldFileLock<T>(
   }
   const held = acquisition;
 
-  // Heartbeat: while WE hold the lock, refresh its mtime so age-based stale
-  // detection sees an active holder and does not break us out from under
-  // (catalog round 5). Failures are swallowed (advisory lock); the timer is
-  // always cleared in the finally.
   //
-  // OWNERSHIP CHECK (codex P2): if our event loop was paused long enough that
-  // another process judged us stale, broke our lock, and created a replacement,
-  // we must NOT refresh the replacement's mtime — that would keep a (possibly
-  // crashed) replacement looking fresh. Verify lockHeldBySelf before each
-  // utimes; if ownership is lost, stop heartbeating (our lock is gone).
   const heartbeat = setInterval(() => {
     lockHeldBySelf(held)
       .then((ours) => {
@@ -376,7 +273,6 @@ export async function withHeldFileLock<T>(
         warn("withHeldFileLock heartbeat refresh failed", err);
       });
   }, heartbeatMs);
-  // Don't keep the event loop alive solely for the heartbeat.
   heartbeat.unref?.();
   const controller: HeldFileLockController = {
     refresh: () => refreshHeldLock(held, warn, opts.onBeforeRefreshUtimesForTest),
@@ -389,17 +285,6 @@ export async function withHeldFileLock<T>(
   }
 }
 
-/**
- * Resolve an optional millisecond timing option, REJECTING invalid values
- * (NaN, Infinity, non-positive, or above `maxMs`) rather than silently defaulting
- * them. A NaN or Infinity maxWaitMs would make the bounded acquire loop wait
- * forever (`Date.now() + NaN` is NaN); a non-positive poll/heartbeat makes no
- * sense. Timer-backed options (pollMs, heartbeatMs) are bounded to Node's
- * setTimeout ceiling (`MAX_TIMER_DELAY_MS`): a value above 2^31−1 is silently
- * clamped to 1ms by the timer, turning a typo into tight polling (codex P2).
- * Omitting the option (`undefined`) picks `fallback`. Non-number types are also
- * rejected (defensive against config/env coercion).
- */
 function optionalPositiveMs(
   value: number | undefined,
   name: "maxWaitMs" | "pollMs" | "heartbeatMs",
@@ -424,12 +309,6 @@ function optionalPositiveMs(
   return value;
 }
 
-/**
- * Human-readable label for a rejected numeric input. Makes the error message
- * immediately actionable for NaN/Infinity (which print as "NaN"/"Infinity" via
- * String() but are easier to triage with an explicit sign), and surfaces the
- * actual type for non-number values (defensive against config/env coercion).
- */
 function formatInvalidNumber(value: unknown): string {
   if (typeof value === "number") {
     if (Number.isNaN(value)) return "NaN";
@@ -440,11 +319,6 @@ function formatInvalidNumber(value: unknown): string {
   return `${typeof value} ${JSON.stringify(value)}`;
 }
 
-/**
- * Atomically create the lock file, looping until acquired or the bounded
- * deadline. Reports `timeout` for a busy lock and `error` for permanent
- * filesystem setup/I/O failures so callers can choose the safe policy.
- */
 async function acquireLock(
   lockPath: string,
   lockDir: string,
@@ -456,7 +330,6 @@ async function acquireLock(
   try {
     await mkdir(lockDir, { recursive: true });
   } catch {
-    // Lock-directory setup failure is a permanent acquisition error.
     return { failure: "error" };
   }
   const deadline = Date.now() + maxWaitMs;
@@ -467,20 +340,11 @@ async function acquireLock(
       try {
         await handle.writeFile(`${process.pid} ${ownerId} ${new Date().toISOString()}\n`, "utf8");
       } catch {
-        // The metadata write failed; the lock file may be empty or partial.
-        // Our ownership check on release would NOT find this ownerId, leaving
-        // a malformed lock that lingers until stale and blocks other callers
-        // out of the mutex (codex P2). Undo our exclusive create and report
-        // acquisition failure so the caller runs best-effort instead.
         wroteMeta = false;
       } finally {
         try {
           await handle.close();
         } catch {
-          // close() can report a deferred I/O error (e.g. write that appeared
-          // to succeed but failed on flush). The lock file may be malformed —
-          // treat it as a metadata-write failure so the cleanup path unlinks
-          // the orphaned lock (codex P2 review).
           wroteMeta = false;
         }
       }
@@ -491,39 +355,17 @@ async function acquireLock(
       return { path: lockPath, ownerId };
     } catch (err) {
       if ((err as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") {
-        // Unexpected filesystem errors are permanent acquisition failures.
         return { failure: "error" };
       }
       // Lock exists: break it if stale, then poll. breakStaleLock is
       // replacement-safe (NG7Bg) and never throws.
       await breakStaleLock(lockPath, opts.staleMs, opts.onBeforeBreakStaleUnlinkForTest);
       if (Date.now() >= deadline) return { failure: "timeout" };
-      // Cap the sleep to the remaining budget so a large pollMs cannot block
-      // acquisition far past maxWaitMs (e.g. maxWaitMs=1000, pollMs=60000
-      // would otherwise block ~60s instead of 1s — codex P2).
       await sleep(Math.min(pollMs, deadline - Date.now()));
     }
   }
 }
 
-/**
- * Replacement-safe stale-lock breaking (NG7Bg, #1506 round 28). Capture the
- * lock's identity when judging it stale, then ATOMICALLY rename it to a unique
- * trash path and verify the moved content matches. A replacement lock created
- * in the race window is either left untouched (different identity at
- * lockPath, so the rename moves the stale lock — not the replacement) or
- * restored (if the rename accidentally moves a replacement, the verify
- * detects the mismatch and renames it back).
- *
- * ATOMICITY (codex P2): `rename` is atomic on POSIX — only ONE contender can
- * successfully rename a given file. This eliminates the TOCTOU between the
- * identity/stat checks and the deletion that a bare `unlink` leaves open:
- * without rename, contender A could verify identity X, pause, then unlink
- * contender B's freshly acquired replacement Y. With rename, A moves whatever
- * is at lockPath, then checks: if it is X, A broke the stale lock; if it is
- * not X (a replacement appeared between A's last check and the rename), A
- * restores it.
- */
 async function breakStaleLock(
   lockPath: string,
   staleMs: number,
@@ -533,46 +375,28 @@ async function breakStaleLock(
   try {
     const info = await stat(lockPath);
     if (Date.now() - info.mtimeMs <= staleMs) {
-      // Not stale (a live holder's heartbeat keeps it fresh) — leave it.
       return;
     }
     staleIdentity = await readFile(lockPath, "utf8");
   } catch {
-    // Lock vanished (released by holder) or stat/read failed — nothing to do.
     return;
   }
-  // Test seam: simulate a replacement lock being created in the race window
-  // between the staleness judgment and the atomic break. No-op in production.
   if (onBeforeBreakStaleUnlinkForTest) {
     await onBeforeBreakStaleUnlinkForTest();
   }
   try {
-    // Re-validate immediately before breaking: the lock must still carry the
-    // SAME identity AND still be stale.
     const current = await readFile(lockPath, "utf8");
     if (current !== staleIdentity) return; // replaced — leave the fresh lock
     const recheck = await stat(lockPath);
     if (Date.now() - recheck.mtimeMs <= staleMs) return; // heartbeat refreshed it
 
-    // ATOMIC BREAK: rename is atomic on POSIX. Only one contender succeeds;
-    // others get ENOENT (the file is already gone). After the rename, verify
-    // the moved content: if it matches staleIdentity we broke the right lock;
-    // if it does not, a replacement appeared in the window and we restore it.
     const trashPath = `${lockPath}.breaking.${process.pid}.${Date.now()}`;
     await rename(lockPath, trashPath);
     try {
       const moved = await readFile(trashPath, "utf8");
       if (moved !== staleIdentity) {
-        // We accidentally moved a replacement lock (created between our last
-        // check and the rename). Restore it so the replacement holder's lock
-        // survives. Use link (not rename) to AVOID overwriting a fresh lock
-        // that a third contender may have acquired at lockPath while the file
-        // was in trash: link fails with EEXIST if lockPath exists, leaving
-        // the third contender's lock intact (codex P2 review).
         try {
           await link(trashPath, lockPath);
-          // link succeeded — remove the redundant trash hard link. The lock
-          // now lives only at lockPath.
           await unlink(trashPath).catch(() => undefined);
         } catch {
           // lockPath already exists (a third contender acquired it). Do NOT
@@ -583,13 +407,8 @@ async function breakStaleLock(
           // lockPath so it does not block other contenders.
         }
       } else {
-        // Content matches — but verify the moved file is STILL stale. The
-        // original holder may have resumed and heartbeated between our
-        // pre-rename stat() and the rename, refreshing the mtime. If so, the
-        // holder is live: restore the lock instead of deleting it (codex P2).
         const movedStat = await stat(trashPath);
         if (Date.now() - movedStat.mtimeMs <= staleMs) {
-          // Mtime was refreshed — the holder resumed. Restore the lock.
           try {
             await link(trashPath, lockPath);
             await unlink(trashPath).catch(() => undefined);
@@ -598,12 +417,10 @@ async function breakStaleLock(
             // unlink the moved file (it may be a live lock). Leave it in trash.
           }
         } else {
-          // Still stale — we broke the right lock. Clean up the trash.
           await unlink(trashPath).catch(() => undefined);
         }
       }
     } catch {
-      // Could not read the trash file — clean it up best-effort.
       await unlink(trashPath).catch(() => undefined);
     }
   } catch {
@@ -611,34 +428,12 @@ async function breakStaleLock(
   }
 }
 
-/**
- * Release the lock ONLY if its content still identifies THIS acquirer (same
- * owner id). Two-stage ownership check:
- *
- *   1. PRE-CHECK (chatgpt-codex-connector P2): read lockPath BEFORE renaming.
- *      If the lock is already a replacement (a contender broke our stale lock),
- *      return WITHOUT renaming — renaming a replacement out of lockPath leaves
- *      it empty, letting a third contender acquire while the replacement holder
- *      is still active. The replacement is safe at lockPath; leave it alone.
- *
- *   2. ATOMIC CLAIM: if the pre-check saw our ownerId, rename lockPath→trash
- *      (POSIX-atomic) and re-verify on the moved file. A replacement could
- *      appear between the pre-check and the rename; if the moved file is no
- *      longer ours, restore it via link (non-overwriting). This ties the
- *      ownership check to the deletion so a bare readFile-then-unlink TOCTOU
- *      cannot delete a fresh replacement (codex P2).
- */
 async function releaseLock(
   held: HeldLock,
   warn: (message: string, err: unknown) => void,
   onAfterReleaseRenameForTest: (() => Promise<void> | void) | undefined,
 ): Promise<void> {
   try {
-    // PRE-CHECK (chatgpt-codex-connector P2): read lockPath before renaming. If
-    // the lock is no longer ours, a contender broke our stale lock and created a
-    // replacement. Return WITHOUT renaming — renaming the replacement out of
-    // lockPath leaves it empty, so a third contender could acquire while the
-    // replacement holder is still active. The replacement is safe at lockPath.
     let precheck: string;
     try {
       precheck = await readFile(held.path, "utf8");
@@ -648,40 +443,27 @@ async function releaseLock(
     if (!precheck.includes(held.ownerId)) {
       return; // replacement lock — leave it untouched for its holder.
     }
-    // It was ours when we read it. Atomically claim via rename, then re-verify
-    // on the moved file: a replacement could appear between the pre-check read
-    // above and this rename.
     const trashPath = `${held.path}.releasing.${process.pid}.${Date.now()}`;
     await rename(held.path, trashPath);
-    // Test seam: simulate a third contender acquiring the now-empty lockPath
-    // in the rename-to-restore window. No-op in production.
     if (onAfterReleaseRenameForTest) {
       await onAfterReleaseRenameForTest();
     }
     try {
       const moved = await readFile(trashPath, "utf8");
       if (moved.includes(held.ownerId)) {
-        // Still our lock — safe to delete.
         await unlink(trashPath).catch(() => undefined);
       } else {
-        // Not ours: a replacement appeared between the pre-check and the rename.
-        // Restore it via link (non-overwriting — if lockPath already has a newer
-        // lock, leave it).
         try {
           await link(trashPath, held.path);
         } catch {
-          // lockPath already exists — a newer holder is active. Leave the
-          // moved file in trash rather than destroying a live lock (codex P2).
           return;
         }
         await unlink(trashPath).catch(() => undefined);
       }
     } catch {
-      // Could not read the moved file — clean it up best-effort.
       await unlink(trashPath).catch(() => undefined);
     }
   } catch (err) {
-    // Best-effort release; a stale lock will be broken on the next acquire.
     warn("withHeldFileLock release failed", err);
   }
 }
@@ -702,22 +484,6 @@ async function lockHeldBySelf(held: HeldLock): Promise<boolean> {
   }
 }
 
-/**
- * Re-assert ownership and refresh the lock mtime for {@link HeldFileLockController.refresh}.
- * Returns `true` only while THIS acquirer still owns the lock. When ownership
- * was lost (a peer stale-broke and replaced the lock while a CPU-bound section
- * blocked the event loop), returns `false` WITHOUT touching the replacement's
- * mtime — mirroring the heartbeat's ownership guard.
- *
- * FAIL-CLOSED on the mtime bump (#2033): a `utimes` failure means we cannot
- * prove the lock is still ours AND fresh — the file may have been stale-broken,
- * deleted, or replaced between the ownership check and the bump — so we report
- * lost ownership rather than let the caller rewrite the ledger on an unrefreshed
- * (soon-stale) or already-replaced lock. After a successful bump we RE-CHECK
- * ownership: a peer could have broken and replaced the lock in the window, in
- * which case `utimes` just refreshed the replacement's mtime and we must not
- * report held.
- */
 async function refreshHeldLock(
   held: HeldLock,
   warn: (message: string, err: unknown) => void,
@@ -734,26 +500,8 @@ async function refreshHeldLock(
   return lockHeldBySelf(held);
 }
 
-/**
- * Process-wide chains serializing meta updates per state dir inside one
- * process. The cross-process advisory lock below only orders DIFFERENT
- * processes; without the chain, two same-process updates would contend on the
- * lock file and one could time out to failure.
- */
 const metaUpdateChains = new Map<string, Promise<unknown>>();
 
-/**
- * Serialized meta read-modify-write for one state dir (`<stateDir>/meta.json`).
- * Parallel extraction workers (the daemon's bounded queue and out-of-process
- * buffer-drain workers) each load meta, mutate counters, fingerprints or retry
- * state, and save; unlocked, a slow writer's save silently reverts a fast
- * writer's update. The chain orders same-process callers and the advisory lock
- * file (`meta.json.lock`) orders different processes; a worker that cannot
- * take the lock inside the budget FAILS the update instead of writing
- * unlocked — callers are fail-open, so the outcome is a logged miss retried by
- * the next extraction, never a silent lost update. The mutator may return
- * `false` to skip the save (nothing changed).
- */
 export async function updateMetaSerialized<M>(
   dir: string,
   loadMeta: () => Promise<M>,
@@ -764,15 +512,8 @@ export async function updateMetaSerialized<M>(
   const run = previous.then(() =>
     withHeldFileLock(
       path.join(dir, "meta.json.lock"),
-      // Bounded: a meta update is a short read-merge-write, never a scan.
       { staleMs: 5_000, maxWaitMs: 2_000, pollMs: 50 },
       async (acquired) => {
-        // A lock we could not take (busy peer past the wait budget, or a
-        // filesystem error) must NOT fall back to an unlocked
-        // read-modify-write: that silently reintroduces the lost-update race
-        // this function exists to close. Fail instead — every caller treats
-        // meta updates as fail-open, so the outcome is a logged miss that
-        // the next extraction retries, never a silent clobber.
         if (!acquired) {
           throw new Error(`meta update skipped: meta.json.lock not acquired (${dir})`);
         }
@@ -782,7 +523,6 @@ export async function updateMetaSerialized<M>(
       },
     ),
   );
-  // Every waiter keeps its own result/error; the chain only carries completion.
   metaUpdateChains.set(dir, run.then(() => undefined, () => undefined));
   await run;
 }

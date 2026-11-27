@@ -59,10 +59,8 @@ test("aged-dataset bench runs in quick mode and emits expected metrics", async (
     assert.ok("recall_at_5_delta" in task.scores);
     assert.ok("hot_share" in task.scores);
     assert.ok("cold_share" in task.scores);
-    // recall@K is in [0, 1].
     assert.ok(task.scores.recall_at_5_full >= 0 && task.scores.recall_at_5_full <= 1);
     assert.ok(task.scores.recall_at_5_hot_only >= 0 && task.scores.recall_at_5_hot_only <= 1);
-    // hot_share + cold_share should sum to 1 (within float epsilon).
     const sum = task.scores.hot_share + task.scores.cold_share;
     assert.ok(Math.abs(sum - 1) < 1e-9, `hot+cold share must sum to 1, got ${sum}`);
   }
@@ -74,11 +72,6 @@ test("aged-dataset bench runs in quick mode and emits expected metrics", async (
 
 test("aged-dataset bench reports plausible hot/cold split for default policy", async () => {
   const result = await runRetentionAgedDatasetBenchmark(options());
-  // The default policy demotes memories ≥14d old with value ≤ 0.35. With
-  // ageSkew=1.5 and a 365d horizon, a meaningful fraction of memories
-  // should land in the cold tier — but not all of them (recently-created
-  // and high-value memories must stay hot). Use loose bounds so this
-  // doesn't false-fail when defaults change in PR 3.
   const firstTask = result.results.tasks[0];
   assert.ok(firstTask, "expected at least one task");
   const coldShare = firstTask.scores.cold_share;
@@ -118,7 +111,6 @@ test("aged-dataset bench reports task completion callbacks", async () => {
 test("aged-dataset bench threads options.seed into the generator", async () => {
   const a = await runRetentionAgedDatasetBenchmark(options({ seed: 1234 }));
   const b = await runRetentionAgedDatasetBenchmark(options({ seed: 5678 }));
-  // Different seed → different fixture → different first-task topFull.
   const aTopFull = JSON.parse(a.results.tasks[0].actual).topFull;
   const bTopFull = JSON.parse(b.results.tasks[0].actual).topFull;
   assert.notDeepEqual(
@@ -126,8 +118,6 @@ test("aged-dataset bench threads options.seed into the generator", async () => {
     bTopFull,
     "different seeds must produce different fixtures",
   );
-  // And meta.seeds must reflect the seed actually used (not the
-  // hardcoded baseOptions seed).
   assert.deepEqual(a.meta.seeds, [1234]);
   assert.deepEqual(b.meta.seeds, [5678]);
 });
@@ -159,9 +149,6 @@ test("aged-dataset bench rejects invalid run seeds before reporting metadata", a
 
 test("aged-dataset bench produces non-empty aggregates", async () => {
   const result = await runRetentionAgedDatasetBenchmark(options());
-  // Aggregate keys should include the per-task score names. If we used
-  // buildTieredAggregates without setting details.tier, this object
-  // would be empty.
   const keys = Object.keys(result.results.aggregates);
   assert.ok(
     keys.includes("recall_at_5_full"),
@@ -194,8 +181,6 @@ test("aged-dataset Pareto sampler produces a long-tail distribution (no clamping
     seed: 0xa686,
     nowIso: "2026-04-25T12:00:00.000Z",
   });
-  // Per-topic memory counts come from the memory frontmatter tags
-  // (the first tag is the topic keyword).
   const TOPIC_KEYWORDS = [
     "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta",
     "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron", "pi",
@@ -206,21 +191,15 @@ test("aged-dataset Pareto sampler produces a long-tail distribution (no clamping
     const idx = TOPIC_KEYWORDS.indexOf(tag);
     if (idx >= 0) memoriesByTopic[idx] += 1;
   }
-  // Topic 0 (highest-frequency) must have more memories than topic 15
-  // (lowest). The previous clamped Pareto would have made topic 15 a
-  // second hotspot rivaling topic 0.
   assert.ok(
     memoriesByTopic[0] > memoriesByTopic[15],
     `topic 0 must dominate over topic 15: topic0=${memoriesByTopic[0]} topic15=${memoriesByTopic[15]}`,
   );
-  // And the last rank must not be a second hotspot.
   assert.ok(
     memoriesByTopic[15] <= memoriesByTopic[0] / 2,
     `last-rank topic must not be a second hotspot: topic0=${memoriesByTopic[0]} topic15=${memoriesByTopic[15]}`,
   );
 
-  // Query-count distribution must also reflect the Pareto skew (P1 fix):
-  // topic 0 should drive proportionally more queries than topic 15.
   const queriesByTopic: number[] = new Array(16).fill(0);
   for (const q of fixture.queries) {
     queriesByTopic[q.topicId] += 1;
@@ -232,8 +211,6 @@ test("aged-dataset Pareto sampler produces a long-tail distribution (no clamping
 });
 
 test("aged-dataset bench enforces MAX_TOTAL_QUERIES cap", async () => {
-  // The fixture must trim to MAX_TOTAL_QUERIES=200 even when rounding
-  // would otherwise push the total over. (Codex P2 review on PR #698.)
   const fixture = generateAgedDataset({
     size: 4000,
     horizonDays: 365,

@@ -31,7 +31,6 @@ const OFFLINE_ENV = ["REMNIC_OFFLINE_TOKEN", "REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_T
 /** env object for runCli: strip every credential env var the resolver reads. */
 const NO_TOKEN_ENV = Object.fromEntries(OFFLINE_ENV.map((name) => [name, undefined]));
 
-// ── Isolate HOME for CLI-level tests (the dispatcher runs migrateFromEngram) ──
 let tempHome = "";
 let originalHome: string | undefined;
 
@@ -54,7 +53,6 @@ async function makeTokenFile(dir: string, name: string, content: string, mode = 
   return file;
 }
 
-// ── Resolver unit tests ───────────────────────────────────────────────────────
 
 test("argv token wins over file and env; tokenFromArgv is true", () => {
   const result = resolveCredentialChannel(
@@ -326,7 +324,6 @@ test("parseTokenFileFlag maps absent and empty values to null", () => {
   assert.equal(parseTokenFileFlag("/home/user/secrets/peer.token"), "/home/user/secrets/peer.token");
 });
 
-// ── Offline CLI routing tests ────────────────────────────────────────────────
 
 test("offline status with an empty REMNIC_OFFLINE_TOKEN fails before any work (#2831)", async () => {
   const result = await runCli(["offline", "status"], {
@@ -387,7 +384,6 @@ test("offline help documents --token-file and the full env chain", async () => {
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /--token-file <path>/);
   assert.match(result.stdout, /ENGRAM_AUTH_TOKEN/);
-  // The chain may wrap across lines in the rendered help; collapse whitespace
   // before asserting the full precedence order.
   const flat = result.stdout.replace(/\s+/g, " ");
   assert.match(flat, /--token > --token-file > REMNIC_OFFLINE_TOKEN > REMNIC_AUTH_TOKEN > ENGRAM_AUTH_TOKEN/);

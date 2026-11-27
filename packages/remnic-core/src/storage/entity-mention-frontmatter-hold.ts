@@ -13,12 +13,6 @@ type MentionHoldStorage = {
   readMemoryByPath(pathname: string): Promise<MemoryFile | null>;
 };
 
-/**
- * Metadata frontmatter writes may suppress the mention epoch only when the
- * file still has the same body, entityRef, and origin while the path lock is
- * held. The write runs in that same lock so a concurrent body or entityRef
- * change cannot be overwritten under suppression.
- */
 export async function holdMentionNeutralFrontmatter<T>(
   storage: MentionHoldStorage,
   memory: MemoryFile,

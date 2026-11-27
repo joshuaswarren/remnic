@@ -1,6 +1,3 @@
-// ---------------------------------------------------------------------------
-// Gemini (Google Takeout "Gemini Apps Activity") parser (issue #568 slice 4)
-// ---------------------------------------------------------------------------
 
 import { parseIsoOffsetTimestamp } from "@remnic/core";
 //
@@ -9,13 +6,6 @@ import { parseIsoOffsetTimestamp } from "@remnic/core";
 // user sent. The schema is stable across exports we have observed:
 //
 //   {
-//     "header": "Gemini Apps",
-//     "title": "Asked: <user prompt>",          // older exports
-//     "text":  "<user prompt>",                 // newer exports
-//     "titleUrl": "https://gemini.google.com/...",
-//     "time": "2026-02-14T09:30:00.000Z",
-//     "products": ["Gemini Apps"],
-//     "subtitles": [{ "name": "Model: Gemini X" }]
 //   }
 //
 // Prompts are pre-extracted by Google (no DOM scraping). The user prompt text
@@ -23,12 +13,8 @@ import { parseIsoOffsetTimestamp } from "@remnic/core";
 // Assistant responses are NOT exported by Takeout (Google omits them), so
 // we only import the user's prompts.
 //
-// The parser accepts either the raw `My Activity.json` contents (JSON string
-// or already-parsed array) or a combined bundle object
-// `{ activities: [...] }` for future bundle-auto-detect (PR 7).
 
 // ---------------------------------------------------------------------------
-// Raw export shapes
 // ---------------------------------------------------------------------------
 
 /**
@@ -59,7 +45,6 @@ export interface ParsedGeminiExport {
 }
 
 // ---------------------------------------------------------------------------
-// Public parse API
 // ---------------------------------------------------------------------------
 
 export interface GeminiParseOptions {
@@ -77,11 +62,6 @@ export interface GeminiParseOptions {
  * parsed array. Non-Gemini records are filtered out by default.
  */
 export function parseGeminiExport(input: unknown, options: GeminiParseOptions = {}): ParsedGeminiExport {
-  // File-backed adapter contract: `runImportCommand` passes `undefined` when
-  // `--file` is omitted. Gemini is a file-only importer (Takeout doesn't
-  // expose an API), so a missing payload MUST surface as a user-facing
-  // error rather than silently succeeding with 0 memories. Cursor review
-  // on PR #600 flagged the silent-success path.
   if (input === undefined || input === null) {
     throw new Error(
       "The 'gemini' importer requires a file. Pass `--file <path>` pointing at " +
@@ -101,7 +81,6 @@ export function parseGeminiExport(input: unknown, options: GeminiParseOptions = 
 
   if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
-    // Common wrapper shapes: { activities: [...] } or { MyActivity: [...] }.
     let sawKnownKey = false;
     for (const key of ["activities", "MyActivity", "activity"] as const) {
       const v = obj[key];
@@ -110,12 +89,6 @@ export function parseGeminiExport(input: unknown, options: GeminiParseOptions = 
         appendActivities(result.activities, v, options);
       }
     }
-    // Codex review on PR #600: pointing --file at a random JSON object
-    // (e.g. a config file) used to report a successful 0-memory import.
-    // We now throw a user-facing error when no known wrapper key was
-    // present. This differs from strict mode because the "array or
-    // object" shape check already passed — we just didn't find anything
-    // that looked like a Gemini export inside the object.
     if (!sawKnownKey) {
       throw new Error(
         "Gemini export object has no recognized activity key. Expected one of " +
@@ -126,14 +99,6 @@ export function parseGeminiExport(input: unknown, options: GeminiParseOptions = 
     return result;
   }
 
-  // Codex review on PR #600 — primitive payloads (numbers, booleans,
-  // strings, etc.) must always throw, regardless of strict mode. Silently
-  // returning a 0-memory success on a JSON primitive (e.g. `true`,
-  // `"text"`, `123`) hides operator input mistakes and makes automation
-  // treat a broken import as healthy. Report the actual received value —
-  // `typeof null === "object"` is the JS trap CLAUDE.md rule 18 calls
-  // out. Using describeType() sidesteps the "received object" message
-  // for null inputs.
   throw new Error(`Gemini export must be a JSON array or object; received ${describeType(raw)}`);
 }
 
@@ -180,7 +145,6 @@ function isGeminiRecord(record: GeminiActivityRecord): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
 function coerceJson(input: unknown): unknown {

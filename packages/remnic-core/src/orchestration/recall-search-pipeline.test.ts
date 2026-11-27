@@ -15,7 +15,6 @@ function result(namespace: string, path: string): QmdSearchResult {
   return { docid: `${namespace}:${path}`, namespace, path, score: 1, snippet: path };
 }
 
-/** Unit stub: only search/hybridSearch are exercised by hybrid top-up tests. */
 function makeHybridTopUpStubCoordinator(
   qmd: Pick<RecallSearchPipelineDeps["qmd"], "search" | "hybridSearch">,
   namespaceFromPath: (p: string) => string,
@@ -29,7 +28,6 @@ function makeHybridTopUpStubCoordinator(
     qmd,
     namespaceFromPath,
   };
-  // SAFETY: hybrid top-up tests call fetchQmdMemoryResultsWithArtifactTopUp only; other deps are never read.
   return new RecallSearchPipelineCoordinator(partial as RecallSearchPipelineDeps);
 }
 
@@ -96,9 +94,6 @@ test("recall safety derives sourceConnector exclusively from the hydrated memory
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-conn-prov-"));
   try {
     const coordinator = await makeCoordinator(memoryDir);
-    // Both results arrive carrying an UNTRUSTED sourceConnector (e.g. a remote
-    // search backend casting arbitrary response objects). One's memory carries
-    // a real connector; the other's memory is connectorless.
     const has = { ...result("default", "facts/has.md"), sourceConnector: "untrusted" };
     const none = { ...result("default", "facts/none.md"), sourceConnector: "untrusted" };
     const memHas = {
@@ -119,7 +114,6 @@ test("recall safety derives sourceConnector exclusively from the hydrated memory
     const byPath = new Map(safe.map((r) => [r.path, r.sourceConnector]));
     assert.equal(byPath.get("facts/has.md"), "trusted-pi", "an untrusted result-supplied value is overwritten by the memory's connector");
     assert.equal(byPath.get("facts/none.md"), undefined, "an untrusted value is cleared when the memory is connectorless");
-    // The shared/cached input objects are never mutated.
     assert.equal(has.sourceConnector, "untrusted", "the input result object is not mutated (copy semantics, no cross-recall leak)");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -240,7 +234,6 @@ test("recall safety partitions tool-scoped memories by requesting connector", as
 function scopedCandidatesStub(
   seed: QmdSearchResult[],
 ): RecallSearchPipelineDeps["searchScopedMemoryCandidates"] {
-  // Faithful to production: return only the requested candidates, capped to limit.
   return async (candidatePaths, _query, limit) =>
     seed.filter((r) => candidatePaths.has(r.path)).slice(0, Math.max(0, limit));
 }
@@ -341,11 +334,6 @@ test("query-aware fallback retains non-active candidates for historical filterin
 });
 
 test("query-aware fallback overfetches scoped candidates before exclusion", async () => {
-  // The scoped candidate order puts the NON-recallable meeting record FIRST;
-  // capping the scoped fetch to the caller's limit (1) BEFORE the generic-recall
-  // exclusion would return only the meeting record, which is then filtered out —
-  // dropping facts/a.md with no refill. Overfetching the full candidate set first
-  // and excluding afterward must still surface the recallable hit at the cap.
   const coordinator = queryAwareFallbackCoordinator([
     result("default", MEETING_RECORD),
     result("default", "facts/a.md"),
@@ -375,12 +363,6 @@ function hotSeedCoordinator(seed: QmdSearchResult[]): RecallSearchPipelineCoordi
 }
 
 test("finding 1 (round-4) — hot QMD seed path overfetches scoped seeds before exclusion", async () => {
-  // The query-aware candidate order puts the NON-recallable meeting record FIRST.
-  // The hot seed fetch previously capped the scoped fetch to qmdFetchLimit (1)
-  // BEFORE the generic-recall exclusion, so the sole fetched seed was the meeting
-  // record — filtered out, dropping facts/a.md with no refill. Overfetching the
-  // full candidate set and excluding afterward must still surface the recallable
-  // hit at the cap.
   const coordinator = hotSeedCoordinator([
     result("default", MEETING_RECORD),
     result("default", "facts/a.md"),
@@ -414,7 +396,6 @@ function starvedPrimaryCoordinator(
     config: { memoryDir: "/mem", qmdSearchStrategy: "lex", searchBackend: "qmd" },
     qmd: {},
     searchScopedMemoryCandidates: scopedCandidatesStub(seed),
-    // Faithful to the QMD backend: cap the primary hits to the requested budget.
     searchAcrossNamespaces: async ({ maxResults }: { maxResults: number }) =>
       [...primary].sort((a, b) => b.score - a.score).slice(0, Math.max(0, maxResults)),
     namespaceFromPath: () => "default",
@@ -423,14 +404,6 @@ function starvedPrimaryCoordinator(
 }
 
 test("finding 1 (round-5) — excluded seeds must not fill the merge cap and starve a primary hit", async () => {
-  // Excluded meeting records dominate the query-aware SEED set (higher score),
-  // while the sole recallable memory arrives from the PRIMARY QMD search — so the
-  // scoped-seed overfetch fix and the seed-derived `bestFiltered` fallback cannot
-  // rescue it. The seed MERGE `[...seeds, ...primary]` capped to fetchLimit BEFORE
-  // filterRecallCandidates ran, so every cap slot (even after the two-attempt
-  // fetchLimit growth) went to meeting records later filtered out — dropping
-  // facts/a.md with no refill. Excluding non-recallable paths BEFORE the cap must
-  // let the primary hit survive at qmdFetchLimit=1.
   const meetings = [
     "aaaaaaaa",
     "bbbbbbbb",
@@ -683,8 +656,6 @@ test("#2976 content dates age a memory even when its mtime is fresh (updated bac
     const now = Date.now();
     const fileA = path.join(memoryDir, "facts", "a.md");
     const fileB = path.join(memoryDir, "facts", "b.md");
-    // Both files carry today's mtime — the bulk import / cp -r shape. A has
-    // no created, only a 40-day-old updated; B carries a 40-day-old created.
     await writeDatedFile(fileA, now);
     await writeDatedFile(fileB, now);
     const memoryByPath = new Map<string, MemoryFile>([
@@ -717,7 +688,6 @@ test("#2976 a bulk-touch mtime cluster never inflates freshness (ranking unchang
     const files = ["facts/x.md", "facts/y.md", "facts/z.md"];
     const baseScores = [0.9, 0.8, 0.7];
     const mtimes = [now - 10 * AGE_DAY_MS, now - 30 * AGE_DAY_MS, now - 90 * AGE_DAY_MS];
-    // Undated memories: only mtime can say how old they are.
     const buildMap = () =>
       new Map<string, MemoryFile>(
         files.map((rel) => ["default\0" + rel, ageMemory(path.join(memoryDir, rel), {})]),
@@ -727,7 +697,6 @@ test("#2976 a bulk-touch mtime cluster never inflates freshness (ranking unchang
     }
     const results = () => files.map((rel, i) => scoredResult("default", rel, baseScores[i]!));
 
-    // Pre-touch: mtimes are scattered, so each trusted mtime ages its memory.
     const preTouch = await boostCoordinator(memoryDir, 0.5).boostSearchResults(
       results(),
       ["default"],
@@ -743,7 +712,6 @@ test("#2976 a bulk-touch mtime cluster never inflates freshness (ranking unchang
       "pre-touch, the scattered trusted mtimes preserve the base ranking",
     );
 
-    // Bulk touch: every mtime reset to one calendar day (cp -r / restore).
     const bulkDay = now - 1 * AGE_DAY_MS;
     for (const rel of files) {
       await writeDatedFile(path.join(memoryDir, rel), bulkDay);
@@ -775,8 +743,6 @@ test("#2976 an undated memory falls back to a trusted scattered mtime; a dated s
     const now = Date.now();
     const fileA = path.join(memoryDir, "facts", "undated.md");
     const fileB = path.join(memoryDir, "facts", "dated.md");
-    // A: no dates, mtime 2 days ago. B: created 2 days ago, mtime 5 days ago
-    // (different days, one file each — no cluster, mtime stays trusted).
     await writeDatedFile(fileA, now - 2 * AGE_DAY_MS);
     await writeDatedFile(fileB, now - 5 * AGE_DAY_MS);
     const memoryByPath = new Map<string, MemoryFile>([
@@ -792,9 +758,6 @@ test("#2976 an undated memory falls back to a trusted scattered mtime; a dated s
     );
 
     const [undated, dated] = boosted;
-    // 1e-6 (not 1e-9): the pipeline stamps its own Date.now() after this
-    // test's fixture writes, so a few ms of clock drift shifts the 2-day
-    // blend in the 8th decimal.
     const expected = 1 * 0.5 + Math.pow(0.5, 2 / 7) * 0.5;
     assert.ok(undated && Number.isFinite(undated.score), "the undated memory must not score NaN");
     assert.ok(

@@ -1,9 +1,3 @@
-/**
- * Profile-header write-boundary subject for the lifecycle scenario matrix.
- * Profile content is not session state, so only the session-end mutation row
- * applies; the remaining canonical rows are explicit skips rather than false
- * extraction-lifecycle coverage.
- */
 
 import assert from "node:assert/strict";
 

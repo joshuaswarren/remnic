@@ -13,11 +13,6 @@ import type { BenchmarkResult, ProviderConfig } from "./types.js";
 
 export const BUILD_WEEK_EVIDENCE_RECEIPT_SCHEMA_VERSION = 1 as const;
 
-/**
- * Pinned identity of the deterministic, generated MemCorrect v1 full corpus.
- * Keep the payload hash literal: a generator drift must require a deliberate
- * review here rather than silently redefining already-published evidence.
- */
 export const BUILD_WEEK_MEMCORRECT_DATASET_VERSION = "memcorrect-v1-c077e7" as const;
 export const BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256 =
   "ebbb5889561188354171d3f1323b1284e6c6dc36e40d5fd5cf718ec722401acb" as const;
@@ -168,9 +163,6 @@ const BINARY_METRICS = new Set([
 ]);
 const NON_NEGATIVE_INTEGER_METRICS = new Set(["search_hits", "uptake_latency"]);
 const MEMCORRECT_FULL_SEED = 0xc077e7;
-// The immutable Build Week run predates persistence of `nowIso`. Its exact
-// result bytes, identity, and source commit are pinned so only that historical
-// artifact may use the source-verified canonical timestamp implicitly.
 const LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_SHA256 =
   "1c23b0b80d262c80454b522b5d9526b7d823177d6cb599a4f7acb02a59c80660";
 const LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_ID = "42a3ea8f-b416-477e-b224-2c4ced72e675";
@@ -564,8 +556,6 @@ function providerReceipt(
     provider: providerName,
     model,
     reasoningEffort: reasoningEffort ?? null,
-    // BenchmarkResult does not persist transport service-tier diagnostics.
-    // Keep the public receipt honest instead of inferring a tier from provider type.
     serviceTier: null,
   };
 }
@@ -980,8 +970,6 @@ export function buildBuildWeekEvidenceReceipt(
       source: datasetReceipt.source,
       version: options.datasetVersion,
       payloadSha256: datasetReceipt.payloadSha256,
-      // File-backed benchmarks hash the sorted file inventory. Generated
-      // MemCorrect hashes its pinned generator identity instead.
       manifestSha256: datasetReceipt.manifestSha256,
       fileCount: datasetReceipt.fileCount,
       totalBytes: datasetReceipt.totalBytes,
@@ -1081,10 +1069,6 @@ export async function writeBuildWeekEvidenceReceipt(args: {
     freshIsolatedStoreConfirmed: args.freshIsolatedStoreConfirmed,
     publicationScope: args.publicationScope,
   });
-  // Publish create-only. O_EXCL prevents both a leaf substitution and a
-  // parent-directory swap from replacing any existing private source entry.
-  // Callers that intentionally regenerate a public receipt must choose a new
-  // path or remove the prior public artifact outside this safety boundary.
   const output = await open(args.outputPath, "wx", 0o644);
   let createdStat: Awaited<ReturnType<typeof output.stat>> | undefined;
   let identityError: unknown;
@@ -1094,9 +1078,6 @@ export async function writeBuildWeekEvidenceReceipt(args: {
     try {
       createdStat = await output.stat();
     } catch (error) {
-      // File identity is needed only to remove a failed publication safely.
-      // An fstat failure must not itself strand an otherwise writable,
-      // create-only output before the guarded publication flow begins.
       identityError = error;
     }
     await output.writeFile(serializeBuildWeekEvidenceReceipt(receipt), { encoding: "utf8" });

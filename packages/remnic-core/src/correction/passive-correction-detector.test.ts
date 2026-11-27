@@ -1,13 +1,3 @@
-/**
- * passive-correction-detector.test.ts — fixture matrix for passive correction
- * detection (issue #1581 PR 1).
- *
- * Positive fixtures (≥12): direct update, retraction, stop-storing, tense/
- * morphology variants, correction embedded mid-paragraph, handle-referenced.
- * Anti-fixtures (≥8): quoting someone else's correction; correcting a third
- * party; hypothetical; self-correction within the same turn that resolves
- * itself; the agent being corrected about a tool output, not stored memory.
- */
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
@@ -116,7 +106,6 @@ test("positive: multiple handles extracted", () => {
   assert.ok(results[0].handles.includes("[m:8b1c]"));
 });
 
-// ── Anti-fixtures ──────────────────────────────────────────────────────────
 
 test("anti-fixture: quoting someone else's correction", () => {
   const results = detectPassiveCorrections(
@@ -182,7 +171,6 @@ test("anti-fixture: suppose / hypothetical scenario", () => {
   assert.strictEqual(results.length, 0);
 });
 
-// ── Characterization ───────────────────────────────────────────────────────
 
 test("characterization: assistant turns are not scanned", () => {
   const results = detectPassiveCorrections([
@@ -217,7 +205,6 @@ test("characterization: sourceExcerpt is populated", () => {
   }
 });
 
-// ── extractHandles ─────────────────────────────────────────────────────────
 
 test("extractHandles: extracts [m:xxxx] handles", () => {
   assert.deepStrictEqual(extractHandles("see [m:4f2a] and [m:8b1c]"), ["[m:4f2a]", "[m:8b1c]"]);
@@ -228,18 +215,12 @@ test("extractHandles: returns empty for no handles", () => {
 });
 
 test("contraction does not suppress a correction phrase (review: apostrophe quote detection)", () => {
-  // OLD isWithinQuotes treated the ASCII apostrophe as a quote opener. A single
-  // contraction with no closing apostrophe ("We've switched to Postgres") left
-  // the scanner in quoted mode and suppressed the correction — a false negative.
-  // Only double quotes delimit quoted speech; apostrophes are contractions.
   const results = detectPassiveCorrections(user("We've switched to Postgres"));
   assert.ok(results.length > 0, "contraction-led correction must be detected");
   assert.ok(results.some((r) => r.polarity === "update"));
 });
 
 test("double-quoted correction is still suppressed (isWithinQuotes uses double quotes only)", () => {
-  // After dropping single-quote handling, real double-quoted speech must STILL
-  // be suppressed — only the delimiter set changed, not the suppression itself.
   const results = detectPassiveCorrections(
     user('Bob told me "that\'s wrong" about the deployment process'),
   );
@@ -248,8 +229,6 @@ test("double-quoted correction is still suppressed (isWithinQuotes uses double q
 });
 
 test("overlapping cues dedup: 'actually, we don't use Redis anymore' emits one correction (review)", () => {
-  // Both the "actually" (update) and "don't use X anymore" (retract) patterns
-  // match the same targetHint. Polarity-agnostic dedup keeps one correction.
   const results = detectPassiveCorrections(
     user("actually, we don't use Redis anymore for caching"),
   );

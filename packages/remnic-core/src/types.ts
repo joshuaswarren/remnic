@@ -207,23 +207,18 @@ export interface SessionObserverBandConfig {
 
 export interface FileHygieneConfig {
   enabled: boolean;
-  // Lint (warn before truncation risk)
   lintEnabled: boolean;
   lintBudgetBytes: number;
   lintWarnRatio: number;
   lintPaths: string[];
-  // Rotation/splitting
   rotateEnabled: boolean;
   rotateMaxBytes: number;
   rotateKeepTailChars: number;
   rotatePaths: string[];
   archiveDir: string;
-  // Cadence
   runMinIntervalMs: number;
-  // Optional warnings log (future-proofed)
   warningsLogEnabled: boolean;
   warningsLogPath: string;
-  // Optional index file (future-proofed)
   indexEnabled: boolean;
   indexPath: string;
 }
@@ -447,11 +442,6 @@ export interface ProvenanceConfig {
   enabled: boolean;
   /** Maximum characters stored per quote; longer quotes truncate at a word boundary. Default 300. */
   maxQuoteChars: number;
-  /**
-   * When true, facts whose quote cannot be located are routed to
-   * `pending_review` instead of `active`. Stays false until #1576 lands and
-   * the bench shows the gate is safe (rule 48).
-   */
   requireSpans: boolean;
 }
 
@@ -474,12 +464,6 @@ export interface CodingModeConfig {
    * is used unchanged (pre-#569 behaviour).
    */
   projectScope: boolean;
-  /**
-   * When true, recall/write also overlay the current branch on top of the
-   * project namespace. Default false — branch-scope is opt-in because active
-   * development typically wants recall across branches. (Wired by PR 3 of
-   * issue #569; declared here so the schema ships in one slice.)
-   */
   branchScope: boolean;
   /**
    * When true (default), project-scoped and branch-scoped sessions include
@@ -494,10 +478,7 @@ export interface CodingModeConfig {
   globalFallback: boolean;
 }
 
-// CodingKnowledgeConfig — Track A (issue #1548) durable coding-knowledge
-// surface. Master gate plus per-feature switches. Off by default.
 export interface CodingKnowledgeConfig {
-  /** Master gate. Off = byte-for-byte pre-feature behaviour on every path. */
   enabled: boolean;
   /** Decision-record surfaces + briefing titles (effective only under the master gate). */
   decisionRecords: boolean;
@@ -569,10 +550,7 @@ export interface CodingGraphLspConfig {
   maxRequestsPerRun?: number;
 }
 
-// ChatConfig — conversational memory inspection and correction (issue #1583).
-// Off by default — spawns LLM calls so explicit opt-in (rule 48).
 export interface ChatConfig {
-  /** Master gate. Off = no tools/endpoints/CLI registered (byte-identical, rule 39). */
   enabled: boolean;
   /** Routing override for the chat LLM (empty = use the default chain). */
   model: string;
@@ -587,15 +565,6 @@ export interface SupportPassportConfig {
   trustedProxyAddresses: string[];
 }
 
-/**
- * Session-scoped coding context. Produced by `resolveGitContext()` in the
- * connector layer and attached to a session so that recall + write paths can
- * compute an overlay namespace.
- *
- * All fields mirror `GitContext` from `./coding/git-context.ts`; kept as a
- * separate interface because `types.ts` must stay dependency-free (it is
- * imported by every other module).
- */
 export interface CodingContext {
   projectId: string;
   branch: string | null;
@@ -688,11 +657,6 @@ export function confidenceTier(score: number): ConfidenceTier {
 /** Default TTL in days for speculative memories (auto-expire if unconfirmed) */
 export const SPECULATIVE_TTL_DAYS = 30;
 
-/**
- * Shape for semantic chunking config overrides stored in PluginConfig.
- * Mirrors SemanticChunkingConfig from semantic-chunking.ts without creating
- * a circular import (types.ts is imported by everything).
- */
 export interface SemanticChunkingConfigShape {
   targetTokens: number;
   minTokens: number;
@@ -850,15 +814,12 @@ export interface PluginConfig
   fileHygiene?: FileHygieneConfig;
   nativeKnowledge?: NativeKnowledgeConfig;
   agentAccessHttp: AgentAccessHttpConfig;
-  // Access tracking (Phase 1A)
   accessTrackingEnabled: boolean;
   accessTrackingBufferMaxSize: number;
-  // Retrieval options
   recencyWeight: number;
   boostAccessCount: boolean;
   /** Record empty recall impressions (memoryIds: []) when no memories are injected. Disabled by default. */
   recordEmptyRecallImpressions: boolean;
-  // v2.2 Advanced Retrieval
   queryExpansionEnabled: boolean;
   queryExpansionMaxQueries: number;
   /** Minimum token length to consider for query expansion. */
@@ -871,24 +832,20 @@ export interface PluginConfig
   rerankCacheEnabled: boolean;
   rerankCacheTtlMs: number;
   feedbackEnabled: boolean;
-  // v2.2 Negative Examples (safe defaults: off unless enabled)
   /** If true, allow recording negative examples and apply a soft penalty during ranking. */
   negativeExamplesEnabled: boolean;
   /** Score penalty per "not useful" hit (typical QMD scores ~0-1). Keep small. */
   negativeExamplesPenaltyPerHit: number;
   /** Maximum penalty applied from negative examples. */
   negativeExamplesPenaltyCap: number;
-  // Chunking (Phase 2A)
   chunkingEnabled: boolean;
   chunkingTargetTokens: number;
   chunkingMinTokens: number;
   chunkingOverlapSentences: number;
-  // Semantic Chunking (Issue #368)
   /** Enable semantic chunking with embedding-based topic boundary detection. Default: false. */
   semanticChunkingEnabled: boolean;
   /** Optional overrides for the semantic chunking algorithm. */
   semanticChunkingConfig: Partial<SemanticChunkingConfigShape>;
-  // Contradiction Detection (Phase 2B)
   contradictionDetectionEnabled: boolean;
   contradictionSimilarityThreshold: number;
   contradictionMinConfidence: number;
@@ -899,7 +856,6 @@ export interface PluginConfig
   contradictionLocalization: ContradictionLocalizationConfig;
   /** One-hop dependency invalidation propagation settings (issue #2326). */
   dependencyPropagation: DependencyPropagationConfig;
-  // Temporal Supersession (issue #375)
   /**
    * When enabled, writes that carry `structuredAttributes` mark any older
    * fact with the same `entityRef + attribute_name` supersession key and a
@@ -976,19 +932,12 @@ export interface PluginConfig
    * / dreams / pattern-reinforcement. Off = rollback safety (rule 30).
    */
   tombstonesEnabled: boolean;
-  /**
-   * Tier-4 semantic tombstone matching (issue #1579). Off by default — ships
-   * dark until MemCorrect (#1584) shows an acceptable false-block rate
-   * (rule 48). When `true`, the tombstone lookup also checks embedding cosine
-   * similarity against tombstoned normalized text.
-   */
   tombstonesSemanticMatch: boolean;
   /**
    * Cosine threshold for tier-4 semantic tombstone matching. Default `0.9`.
    * Only consulted when `tombstonesSemanticMatch` is `true`.
    */
   tombstonesSemanticThreshold: number;
-  // Direct-answer retrieval tier (issue #518)
   /**
    * When true, recall checks whether a single validated memory in a
    * high-trust taxonomy bucket can answer the query before invoking QMD.
@@ -1068,12 +1017,6 @@ export interface PluginConfig
   recallMaxConcurrentPerPrincipal: number;
   /** Coalesce identical concurrent recalls per principal; each caller gets its own clone. Default true. */
   recallSingleFlightEnabled: boolean;
-  /**
-   * When true, recall multiplies candidate scores by the Memory Worth factor
-   * from `mw_success` / `mw_fail` (see `computeMemoryWorth`): failed memories
-   * sink; neutral ones untouched (multiplier 1.0). Default false until the
-   * benchmark shows precision tie-or-win.
-   */
   recallMemoryWorthFilterEnabled: boolean;
   /**
    * When false, the Trust/Memory-Worth recall stage skips its corpus-level
@@ -1119,11 +1062,6 @@ export interface PluginConfig
    * every layer on every write (rollback lever; no featureset change).
    */
   scopedCacheInvalidationEnabled: boolean;
-  // Unified TrustScore recall stage (issue #1577). Combines memory-worth,
-  // provenance, faithfulness, corroboration, contradiction, feedback, recency,
-  // and optional domain calibration into one [0,1] trust score applied as a
-  // bounded recall multiplier. Subsumes the Memory Worth multiplier when on
-  // (the orchestrator runs exactly one of the two — rule 39).
   /**
    * Master gate for the unified TrustScore recall stage. Default `false`: off
    * = the stage is absent and ranking is byte-identical to the pre-feature
@@ -1168,31 +1106,23 @@ export interface PluginConfig
    * counter values.
    */
   recallMemoryWorthHalfLifeMs: number;
-  // Memory Linking (Phase 3A)
   memoryLinkingEnabled: boolean;
-  // Conversation Threading (Phase 3B)
   threadingEnabled: boolean;
   threadingGapMinutes: number;
-  // Memory Summarization (Phase 4A)
   summarizationEnabled: boolean;
   summarizationTriggerCount: number;
   summarizationRecentToKeep: number;
   summarizationImportanceThreshold: number;
   summarizationProtectedTags: string[];
-  // Topic Extraction (Phase 4B)
   topicExtractionEnabled: boolean;
   topicExtractionTopN: number;
-  // Transcript & Context Preservation (v2.0)
-  // Transcript archive
   transcriptEnabled: boolean;
   transcriptRetentionDays: number;
   /** Channel types to skip from transcript logging (e.g., ["cron"]) */
   transcriptSkipChannelTypes: string[];
-  // Transcript injection
   transcriptRecallHours: number;
   maxTranscriptTurns: number;
   maxTranscriptTokens: number;
-  // Checkpoint
   checkpointEnabled: boolean;
   checkpointTurns: number;
   // Compaction reset: trigger session reset after compaction instead of continuing degraded.
@@ -1275,17 +1205,11 @@ export interface PluginConfig
   secureStoreEnabled: boolean;
   /** Encrypt new writes when the secure-store is unlocked. Default true. */
   secureStoreEncryptOnWrite: boolean;
-  // Coding-agent project/branch scoping (issue #569)
   codingMode: CodingModeConfig;
-  // Coding-knowledge durable memory surface (issue #1548 Track A). Off
-  // by default — byte-for-byte pre-feature behaviour when `enabled === false`
-  // (rule 39).
   codingKnowledge: CodingKnowledgeConfig;
   /** Action-site failure gate (issue #2382). Off by default; advisory only. */
   actionGate: ActionGateConfig;
   heartbeat: HeartbeatConfig;
-  // Conversational memory inspection and correction (issue #1583). Off by
-  // default — byte-identical pre-feature when enabled === false (rule 39).
   chat: ChatConfig;
   /** Owner-controlled support passport. Off by default. */
   supportPassport: SupportPassportConfig;
@@ -1299,7 +1223,6 @@ export interface PluginConfig
   subjectGuard: SubjectGuardMode;
   /** Min accessCount reuse signal for promotion candidates (issue #2372). Default 3. */
   promotionCandidates: { minAccessCount: number };
-  // Extraction judge (issue #376)
   /** Enable the LLM-as-judge fact-worthiness gate on extracted facts. Default false (opt-in). */
   extractionJudgeEnabled: boolean;
   /** Model override for the judge LLM. Empty string means use the local model. */
@@ -1385,7 +1308,6 @@ export interface PluginConfig
   correctionIntentModel: string;
   /** Base URL of a local openai-compatible endpoint serving the correction-intent classifier (issue #1585). Empty default = rule-based detection. */
   correctionIntentBaseUrl: string;
-  // Hourly summaries
   hourlySummariesEnabled: boolean;
   daySummaryEnabled: boolean;
   /** Timezone override for the day summary cron (issue #1475). */
@@ -1397,12 +1319,10 @@ export interface PluginConfig
   summaryRecallHours: number;
   maxSummaryCount: number;
   summaryModel: string;
-  // v2.4 Extended hourly summaries
   hourlySummariesExtendedEnabled: boolean;
   hourlySummariesIncludeToolStats: boolean;
   hourlySummariesIncludeSystemMessages: boolean;
   hourlySummariesMaxTurnsPerRun: number;
-  // v2.4 Conversation index (optional)
   conversationIndexEnabled: boolean;
   conversationIndexBackend: "qmd" | "faiss";
   conversationIndexQmdCollection: string;
@@ -1421,36 +1341,30 @@ export interface PluginConfig
   conversationRecallTopK: number;
   conversationRecallMaxChars: number;
   conversationRecallTimeoutMs: number;
-  // Evaluation harness foundation
   evalHarnessEnabled: boolean;
   evalShadowModeEnabled: boolean;
   benchmarkBaselineSnapshotsEnabled: boolean;
   benchmarkDeltaReporterEnabled: boolean;
   benchmarkStoredBaselineEnabled: boolean;
   evalStoreDir: string;
-  // Objective-state memory foundation
   objectiveStateMemoryEnabled: boolean;
   objectiveStateSnapshotWritesEnabled: boolean;
   objectiveStateRecallEnabled: boolean;
   objectiveStateStoreDir: string;
-  // Causal trajectory memory foundation
   causalTrajectoryMemoryEnabled: boolean;
   causalTrajectoryStoreDir: string;
   causalTrajectoryRecallEnabled: boolean;
   actionGraphRecallEnabled: boolean;
-  // Trust-zone memory foundation
   trustZonesEnabled: boolean;
   quarantinePromotionEnabled: boolean;
   trustZoneStoreDir: string;
   trustZoneRecallEnabled: boolean;
   memoryPoisoningDefenseEnabled: boolean;
   memoryRedTeamBenchEnabled: boolean;
-  // Harmonic retrieval foundation
   harmonicRetrievalEnabled: boolean;
   abstractionAnchorsEnabled: boolean;
   abstractionNodeStoreDir: string;
   episodicContextEnabled: boolean;
-  // Episodic/semantic split foundation
   verifiedRecallEnabled: boolean;
   semanticRulePromotionEnabled: boolean;
   semanticRuleVerificationEnabled: boolean;
@@ -1470,7 +1384,6 @@ export interface PluginConfig
    * `chooseConsolidationOperator`.  Issue #561 PR 3.
    */
   operatorAwareConsolidationEnabled: boolean;
-  // Pattern reinforcement (issue #687 PR 2/4)
   /**
    * When true, the pattern-reinforcement maintenance job runs on its
    * configured cadence and clusters duplicate non-procedural memories
@@ -1547,7 +1460,6 @@ export interface PluginConfig
    * injection even when `peerProfileRecallEnabled` is true.
    */
   peerProfileRecallMaxFields: number;
-  // Creation-memory foundation
   creationMemoryEnabled: boolean;
   memoryUtilityLearningEnabled: boolean;
   promotionByOutcomeEnabled: boolean;
@@ -1570,7 +1482,6 @@ export interface PluginConfig
   workIndexAutoRebuildEnabled: boolean;
   workIndexAutoRebuildDebounceMs: number;
 
-  // Observability
   /** If true, log slow operations (local LLM + related I/O) with durations and metadata (no content). */
   slowLogEnabled: boolean;
   /**
@@ -1582,14 +1493,12 @@ export interface PluginConfig
   traceRecallContent: boolean;
   /** Threshold for slow operation logging (ms). */
   slowLogThresholdMs: number;
-  // Performance profiling (opt-in)
   /** If true, collect and persist timing traces for recall and extraction pipelines. */
   profilingEnabled: boolean;
   /** Directory for profiling trace JSONL files. Defaults to <memoryDir>/profiling. */
   profilingStorageDir: string;
   /** Maximum number of trace files to keep (rolling window). */
   profilingMaxTraces: number;
-  // Extraction stability guards (P0/P1).
   extractionDedupeEnabled: boolean;
   extractionSourceGroundingEnabled: boolean;
   extractionDedupeWindowMs: number;
@@ -1643,7 +1552,6 @@ export interface PluginConfig
   inlineSourceAttributionFormatHistory: string[];
   consolidationRequireNonZeroExtraction: boolean;
   consolidationMinIntervalMs: number;
-  // QMD maintenance (debounced singleflight)
   qmdMaintenanceEnabled: boolean;
   qmdMaintenanceDebounceMs: number;
   /**
@@ -1662,7 +1570,6 @@ export interface PluginConfig
   qmdEmbedMinIntervalMs: number;
   qmdUpdateTimeoutMs: number;
   qmdUpdateMinIntervalMs: number;
-  // Local LLM resilience
   localLlmRetry5xxCount: number;
   localLlmRetryBackoffMs: number;
   localLlm400TripThreshold: number;
@@ -1687,7 +1594,6 @@ export interface PluginConfig
    * `3000`. Consolidation is unaffected.
    */
   localLlmThinkingThresholdChars: number;
-  // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
   /** Master gate. When false, restores pre-change behavior (extractor called on every triggered observe; no gate). */
   extractionRetryEnabled: boolean;
   /** Per-fingerprint exponential backoff schedule (ms), indexed by attempt number. */
@@ -1710,7 +1616,6 @@ export interface PluginConfig
   /** Maximum rendered characters per extraction call; oversized turns split
    *  into verbatim `extractionPartOf` parts so every part is extracted. Default: `12000`. */
   extractionCallMaxChars: number;
-  // Local LLM fast tier (v9.1) — smaller model for quick ops
   localLlmFastEnabled: boolean;
   localLlmFastModel: string;
   localLlmFastUrl: string;
@@ -1730,7 +1635,6 @@ export interface PluginConfig
    * contract is baked into "fast tier" and is unaffected by this flag.
    */
   localLlmDisableThinking: boolean;
-  // Gateway config for fallback AI
   gatewayConfig?: GatewayConfig;
   /**
    * Optional host-supplied resolver for provider API keys. Core never discovers
@@ -1756,7 +1660,6 @@ export interface PluginConfig
     mode?: string;
     profileId?: string;
   } | null>;
-  // Gateway model source (v9.2) — route LLM calls through gateway agent model chain
   modelSource: "plugin" | "gateway";
   gatewayAgentId: string;
   fastGatewayAgentId: string;
@@ -1775,7 +1678,6 @@ export interface PluginConfig
    */
   taskModelChain?: AgentPersonaModelConfig;
 
-  // v3.0 Multi-agent memory (namespaces)
   namespacesEnabled: boolean;
   /**
    * Enable the rebuildable namespace catalog (issue #1499). When enabled and
@@ -1843,7 +1745,6 @@ export interface PluginConfig
   routingRulesEnabled: boolean;
   routingRulesStateFile: string;
 
-  // v4.0 Shared-context (cross-agent shared intelligence)
   sharedContextEnabled: boolean;
   sharedContextDir?: string;
   sharedContextMaxInjectChars: number;
@@ -1854,20 +1755,17 @@ export interface PluginConfig
   sharedCrossSignalSemanticTimeoutMs?: number;
   sharedCrossSignalSemanticMaxCandidates?: number;
 
-  // v5.0 Compounding engine
   compoundingEnabled: boolean;
   compoundingWeeklyCronEnabled: boolean;
   compoundingSemanticEnabled: boolean;
   compoundingSynthesisTimeoutMs: number;
   compoundingInjectEnabled: boolean;
 
-  // IRC (Inductive Rule Consolidation) — preference synthesis
   ircEnabled: boolean;
   ircMaxPreferences: number;
   ircIncludeCorrections: boolean;
   ircMinConfidence: number;
 
-  // CMC (Causal Memory Consolidation) — cross-session causal reasoning
   cmcEnabled: boolean;
   cmcStitchLookbackDays: number;
   cmcStitchMinScore: number;
@@ -1887,44 +1785,37 @@ export interface PluginConfig
   /** @deprecated No effect: lifecycle scoring has no causal impact signal (#3667). Parsed so existing configs load. */
   cmcLifecycleCausalImpactWeight: number;
 
-  // PEDC (Prediction-Error-Driven Calibration) — model-user alignment
   calibrationEnabled: boolean;
   calibrationMaxRulesPerRecall: number;
   calibrationMaxChars: number;
 
-  // Search backend abstraction
   searchBackend?: "qmd" | "remote" | "noop" | "lancedb" | "meilisearch" | "orama";
   remoteSearchBaseUrl?: string;
   remoteSearchApiKey?: string;
   remoteSearchTimeoutMs?: number;
 
-  // LanceDB backend
   lancedbEnabled: boolean;
   lanceDbPath?: string;
   lanceEmbeddingDimension?: number;
 
-  // Meilisearch backend
   meilisearchEnabled: boolean;
   meilisearchHost?: string;
   meilisearchApiKey?: string;
   meilisearchTimeoutMs?: number;
   meilisearchAutoIndex?: boolean;
 
-  // Orama backend
   oramaEnabled: boolean;
   oramaDbPath?: string;
   oramaEmbeddingDimension?: number;
   /** Segment space-free scripts (CJK/Thai) in the Orama lexical index (issue #2187). Default `true`. */
   oramaCjkSegmentation?: boolean;
 
-  // QMD daemon mode
   qmdDaemonEnabled: boolean;
   qmdDaemonUrl: string;
   qmdDaemonRecheckIntervalMs: number;
   qmdIntentHintsEnabled: boolean;
   qmdExplainEnabled: boolean;
 
-  // v7.0 Knowledge Graph Enhancement
   knowledgeIndexEnabled: boolean;
   knowledgeIndexMaxEntities: number;
   knowledgeIndexMaxChars: number;
@@ -1935,7 +1826,6 @@ export interface PluginConfig
   entityRetrievalMaxRelatedEntities: number;
   entityRetrievalRecentTurns: number;
   entitySchemas?: Record<string, EntitySchemaDefinition>;
-  // Recall assembly controls
   recallBudgetChars: number;
   /** Maximum fraction of the total recall budget that the behavioral profile may consume. */
   recallProfileMaxRatio: number;
@@ -1979,7 +1869,6 @@ export interface PluginConfig
   entitySummaryEnabled: boolean;
   entitySynthesisMaxTokens: number;
 
-  // v6.0 Fact deduplication & archival
   /** Enable content-hash deduplication to prevent storing semantically identical facts. */
   factDeduplicationEnabled: boolean;
   semanticDedupEnabled: boolean;
@@ -2086,11 +1975,6 @@ export interface PluginConfig
   tagRecallMaxMatches: number;
   // v8.2 multi-graph memory (PR 18)
   multiGraphMemoryEnabled: boolean;
-  // Incremental GraphIndex edge cache (issue #1904). When true (default), a
-  // single-writer edge append is pushed into the warm edge cache in place
-  // (revalidated by file size for cross-process coherence) instead of nulling
-  // the 6 MB / 30k-edge cache and re-reading + re-parsing it (2-4 s). Set false
-  // to restore the pre-#1904 behavior of nulling the edge cache on every write.
   graphEdgeCacheIncrementalEnabled: boolean;
   // v8.2 PR 19A: graph recall planner gating
   graphRecallEnabled: boolean;
@@ -2166,7 +2050,6 @@ export interface PluginConfig
   /** Number of top competing nodes considered for inhibition (default 7). */
   graphLateralInhibitionTopM: number;
 
-  // Issue #681 PR 2/3 — graph-edge confidence decay maintenance.
   /** Enable the periodic graph-edge confidence decay job. Default false (opt-in). */
   graphEdgeDecayEnabled: boolean;
   /** Cadence in milliseconds at which the cron triggers the decay job. Default 7d. */
@@ -2197,7 +2080,6 @@ export interface PluginConfig
   temporalMemoryTreeEnabled: boolean;
   tmtHourlyMinMemories: number;
   tmtSummaryMaxTokens: number;
-  // Explicit cue recall
   /** Front-load exact stored evidence for query-visible cues like turns, dates, ids, files, and tools. */
   explicitCueRecallEnabled: boolean;
   /** Character budget for the explicit cue evidence section. */
@@ -2244,7 +2126,6 @@ export interface PluginConfig
   eventOrderRecallScanWindowTurns: number;
   /** Recent-token scan window for event-order evidence. */
   eventOrderRecallScanWindowTokens: number;
-  // Lossless Context Management (LCM)
   lcmEnabled: boolean;
   lcmLeafBatchSize: number;
   lcmRollupFanIn: number;
@@ -2260,7 +2141,6 @@ export interface PluginConfig
   /** Max structured file/tool matches injected into recall. */
   messagePartsRecallMaxResults: number;
 
-  // v9.1 Parallel Specialized Retrieval (ASMR-inspired)
   /** Enable three-agent parallel retrieval (DirectFact + Contextual + Temporal). Default false. */
   parallelRetrievalEnabled: boolean;
   /** Per-agent source weights for score blending during merge. */
@@ -2268,11 +2148,9 @@ export interface PluginConfig
   /** Max results fetched per agent before merge. */
   parallelMaxResultsPerAgent: number;
 
-  // Daily Context Briefing (Issue #370)
   /** Briefing configuration knobs — see BriefingConfig for field docs. */
   briefing: BriefingConfig;
 
-  // Codex CLI connector settings (install-time)
   codex: CodexConnectorConfig;
 
   // Live connectors (issue #683). Concrete implementations live under
@@ -2280,13 +2158,11 @@ export interface PluginConfig
   // connector. All defaults are off — operators opt in.
   connectors: LiveConnectorsConfig;
 
-  // MECE Taxonomy (#366)
   /** Enable the MECE taxonomy knowledge directory. Default false. */
   taxonomyEnabled: boolean;
   /** Auto-regenerate RESOLVER.md when taxonomy changes. Default true. */
   taxonomyAutoGenResolver: boolean;
 
-  // Codex CLI — native memory materialization (#378)
   /** Materialize Remnic memories into Codex's expected ~/.codex/memories/ layout. Default true. */
   codexMaterializeMemories: boolean;
   /** Namespace to materialize; "auto" derives from the connector context. Default "auto". */
@@ -2302,7 +2178,6 @@ export interface PluginConfig
   /** Enable Codex marketplace integration. Default true. */
   codexMarketplaceEnabled: boolean;
 
-  // Page-level versioning (issue #371)
   /** Enable page-level versioning with sidecar snapshots. Default false. */
   versioningEnabled: boolean;
   /** Maximum number of version snapshots to keep per page. Default 50. Set to 0 to disable pruning. */
@@ -2310,7 +2185,6 @@ export interface PluginConfig
   /** Name of the sidecar directory inside memoryDir. Default ".versions". */
   versioningSidecarDir: string;
 
-  // Binary file lifecycle management (#367)
   /** Enable binary file lifecycle management (mirror, redirect, clean). Default: false. */
   binaryLifecycleEnabled: boolean;
   /** Grace period in days before a mirrored binary is eligible for local cleanup. Default: 7. */
@@ -2328,13 +2202,11 @@ export interface PluginConfig
    * `REMNIC_EMIT_LEGACY_TOOLS` (falls back to `ENGRAM_EMIT_LEGACY_TOOLS`).
    */
   emitLegacyTools: boolean;
-  // Codex citation parity (issue #379)
   /** Enable oai-mem-citation blocks in recall responses. Default false. */
   citationsEnabled: boolean;
   /** Auto-enable citations when the Codex adapter is detected. Default true. */
   citationsAutoDetect: boolean;
 
-  // External enrichment pipeline (issue #365)
   /** Enable the external enrichment pipeline. Default false. */
   enrichmentEnabled: boolean;
   /** Automatically enrich new entities on creation. Default false. */
@@ -2342,7 +2214,6 @@ export interface PluginConfig
   /** Max candidates accepted per entity per enrichment run. Default 20. */
   enrichmentMaxCandidatesPerEntity: number;
 
-  // Memory extensions discovery (#382)
   /** Whether third-party memory extensions are discovered and injected into consolidation. Default true. */
   memoryExtensionsEnabled: boolean;
   /**
@@ -2351,7 +2222,6 @@ export interface PluginConfig
    */
   memoryExtensionsRoot: string;
 
-  // Offline sync excludes (#1786)
   /**
    * Operator-supplied glob patterns (relative to the memory dir, `*` and
    * `**` supported) excluded from offline-sync push-side enumeration IN
@@ -2921,12 +2791,10 @@ export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMeta
   decayScore?: number;
   /** Lifecycle heat score in [0,1]. */
   heatScore?: number;
-  // Access tracking (Phase 1A)
   /** Number of times this memory has been retrieved */
   accessCount?: number;
   /** Last time this memory was accessed (ISO 8601) */
   lastAccessed?: string;
-  // Memory Worth counters (issue #560)
   // Per-fact outcome counters used to derive a dynamic utility score —
   // `p(success | retrieved)` — as a complement to the static `importance`
   // field. Absent on legacy memories written before #560; readers must treat
@@ -2937,24 +2805,19 @@ export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMeta
   mw_success?: number;
   /** Number of sessions where this memory was retrieved and the outcome was judged a failure. */
   mw_fail?: number;
-  // Importance scoring (Phase 1B)
   /** Importance score with level, reasons, and keywords */
   importance?: ImportanceScore;
-  // Chunking (Phase 2A)
   /** Parent memory ID if this is a chunk */
   parentId?: string;
   /** Chunk index within parent (0-based) */
   chunkIndex?: number;
   /** Total number of chunks for this parent */
   chunkTotal?: number;
-  // Memory Linking (Phase 3A)
   /** Links to other memories */
   links?: MemoryLink[];
-  // Intent-grounded memory routing (v8.0 phase 1)
   intentGoal?: string;
   intentActionType?: string;
   intentEntityTypes?: string[];
-  // Verbatim artifact lineage (v8.0 phase 1)
   artifactType?: "decision" | "constraint" | "todo" | "definition" | "commitment" | "correction" | "fact";
   sourceMemoryId?: string;
   sourceTurnId?: string;
@@ -3018,13 +2881,11 @@ export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMeta
    */
   last_reinforced_at?: string;
   // Claim-level provenance spans (issue #1575).
-  //
   // Verbatim source-utterance excerpts that ground each extracted fact, plus
   // a coarse `provenance` tag recording whether the span was located in the
   // buffered turn text. Absent on legacy memories written before #1575;
   // readers MUST treat both `undefined` (legacy) and `provenance: "none"`
   // uniformly — never crash, never drop the fact (rule 34 spirit).
-  //
   // `charStart` / `charEnd` are best-effort debugging aids — consumers MUST
   // tolerate their absence (turn text is not persisted forever). The span
   // interval is half-open [charStart, charEnd) per rule 35.
@@ -3123,7 +2984,6 @@ export interface ProvenanceSource {
   charEnd?: number;
 }
 
-// Conversation Threading (Phase 3B)
 export interface ConversationThread {
   id: string;
   title: string;
@@ -3134,7 +2994,6 @@ export interface ConversationThread {
   linkedThreadIds: string[];
 }
 
-// Memory Summarization (Phase 4A)
 export interface MemorySummary {
   id: string;
   createdAt: string;
@@ -3153,7 +3012,6 @@ export interface DaySummaryResult {
   risks_or_open_loops: string[];
 }
 
-// Topic Extraction (Phase 4B)
 export interface TopicScore {
   term: string;
   score: number;
@@ -3365,7 +3223,6 @@ export interface EntityMention {
 }
 
 // ---------------------------------------------------------------------------
-// Knowledge Graph Enhancement (Entity Relationships, Activity, Scoring)
 // ---------------------------------------------------------------------------
 
 export interface EntityRelationship {
@@ -3690,8 +3547,6 @@ export interface CompressionGuidelineOptimizerState {
   ruleUpdates?: CompressionGuidelineOptimizerRuleUpdate[];
 }
 
-// Continuity incident + improvement-loop types live in a sibling module to keep
-// types.ts under its size ceiling; re-exported so `./types.js` imports resolve.
 export type {
   ContinuityIncidentState,
   ContinuityIncidentRecord,
@@ -3718,7 +3573,6 @@ export interface SignalScanResult {
 }
 
 // ============================================================================
-// LLM Trace Callback (for external observability plugins)
 // ============================================================================
 
 export interface LlmTraceEvent {
@@ -3770,7 +3624,6 @@ export type EngramTraceEvent = LlmTraceEvent | RecallTraceEvent;
 export type LlmTraceCallback = (event: EngramTraceEvent) => void;
 
 // ============================================================================
-// Gateway Configuration Types (for fallback AI)
 // ============================================================================
 
 export type ModelApi = "openai-completions" | "anthropic-messages" | "google-generative" | "codex-cli" | string;
@@ -3840,7 +3693,6 @@ export interface GatewayConfig {
 }
 
 // ============================================================================
-// Transcript & Context Preservation (v2.0)
 // ============================================================================
 
 export interface TranscriptEntry {

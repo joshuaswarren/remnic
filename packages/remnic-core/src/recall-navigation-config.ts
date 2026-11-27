@@ -1,11 +1,3 @@
-/**
- * Recall-navigation config (issue #1956) — the `recallNavigation` block.
- *
- * Parsed the same way `deepRecall` is: shape-validated, string-coercion
- * safe (§24), no silent clamping of documented values (§33). Navigation is
- * a read-only surface over already-served recall results, so it defaults
- * ON; the `conservative` preset pins `enabled: false`.
- */
 
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 

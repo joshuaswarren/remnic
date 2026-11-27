@@ -7,7 +7,6 @@ import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 
 const PROMPT_RELATIVE_PATH = path.join("prompts", "day_summary.prompt.md");
 
-// Embedded fallback prompt for packaged/plugin-install builds where
 // prompts/day_summary.prompt.md may not be present in the runtime bundle.
 const EMBEDDED_DAY_SUMMARY_PROMPT = `# Baseline day-summary prompt
 
@@ -80,7 +79,6 @@ export async function loadDaySummaryPrompt(): Promise<string> {
     try {
       const { readFile } = await import("node:fs/promises");
       const raw = await readFile(promptPath, "utf-8");
-      // CRLF-compatible regex: allow \r\n or \n line endings
       const match = raw.match(/```(?:[a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)\r?\n```/);
       if (match?.[1]) {
         return match[1].trim();

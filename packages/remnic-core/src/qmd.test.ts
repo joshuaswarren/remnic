@@ -77,8 +77,6 @@ test("resolveQmdCapabilities gates qmd 2.5 features by installed version", () =>
 });
 
 test("buildDefaultStructuredSearches defaults to the full hybrid lex+vec+hyde plan", () => {
-  // Default (no strategy argument) must preserve historical behavior so an
-  // upgrade never silently drops vector/HyDE recall. Issue #1335.
   const searches = buildDefaultStructuredSearches("hermes deployment");
   assert.deepEqual(
     searches.map((s) => s.type),
@@ -111,8 +109,6 @@ test("buildDefaultStructuredSearches lex strategy is BM25-only", () => {
 });
 
 test("buildDefaultStructuredSearches lets an explicit per-call override win over the strategy", () => {
-  // Per-call structuredSearches override must still take precedence regardless
-  // of the configured default strategy.
   const searches = buildDefaultStructuredSearches(
     "hermes deployment",
     { structuredSearches: [{ type: "vec", query: "hermes deployment" }] },
@@ -397,10 +393,6 @@ test("QmdClient keeps legacy --json for older QMD query subprocess output", asyn
 });
 
 test("QmdClient clears the global QMD result caches on a successful refresh (#1904)", async () => {
-  // The centralized invalidation lives in QmdClient.runUpdateForCollection /
-  // runEmbedForCollection so every refresh path (direct update, namespace
-  // router, wearable/OpenClaw sync) invalidates the cached pre-refresh bundles
-  // without each caller having to remember. Defend that contract.
   const { QmdClient } = await import("./qmd.js");
   const { setCachedQmdSearch, getCachedQmdSearch } = await import("./memory-cache.js");
   const client = new QmdClient("test", 5) as any;
@@ -408,8 +400,6 @@ test("QmdClient clears the global QMD result caches on a successful refresh (#19
   client.runQmdCommand = async () => ({ stdout: "", stderr: "" });
   setCachedQmdSearch("stale-bundle", [{ path: "facts/old.md" }]);
   assert.notEqual(getCachedQmdSearch("stale-bundle"), null, "cache populated before refresh");
-  // updateCollectionStrict uses force=true, bypassing throttle/backoff gates so
-  // the refresh deterministically reaches the success point that clears caches.
   await client.updateCollectionStrict("test");
   assert.equal(
     getCachedQmdSearch("stale-bundle"),

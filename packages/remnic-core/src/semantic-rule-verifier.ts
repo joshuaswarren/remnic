@@ -146,7 +146,6 @@ export async function searchVerifiedSemanticRules(options: {
   const minEffectiveConfidence = options.minEffectiveConfidence ?? DEFAULT_MIN_EFFECTIVE_CONFIDENCE;
 
   const candidates: VerifiedSemanticRuleResult[] = [];
-  // ruleMemories is pre-filtered to category=rule and recall-hidden statuses.
   for (const memory of ruleMemories) {
     if (memory.frontmatter.source !== "semantic-rule-promotion") continue;
     const sourceMemoryId = memory.frontmatter.sourceMemoryId;

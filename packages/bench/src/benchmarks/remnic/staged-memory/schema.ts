@@ -1,12 +1,3 @@
-/**
- * Strict versioned schemas for the staged-memory synthetic benchmark
- * (issue #2346).
- *
- * Every fixture file is validated against these zod `.strict()` schemas:
- * unknown fields are rejected, never silently defaulted. Public artifacts
- * carry only the `StagedMemoryPublicResultV1` projection — no question,
- * answer, recalled, gold, distractor, path, or host text leaves a run.
- */
 
 import { z } from "zod";
 
@@ -14,7 +5,6 @@ export const STAGED_MEMORY_BENCHMARK_ID = "staged-memory-synthetic-v1";
 export const STAGED_MEMORY_FIXTURE_NAME = "staged-memory-synthetic";
 export const STAGED_MEMORY_SCHEMA_VERSION = 1;
 export const STAGED_MEMORY_GENERATOR_VERSION = "1.0.0";
-/** Fixed sentinel (dataset convention 4: no wall-clock timestamps in files). */
 export const STAGED_MEMORY_CREATED_AT = "1970-01-01T00:00:00.000Z";
 
 /**
@@ -26,7 +16,6 @@ export const STAGED_MEMORY_NAMESPACES = Object.freeze(["bench-staged-alpha", "be
 
 export const STAGED_MEMORY_TRUSTED_PRINCIPAL = "bench-staged-principal";
 
-/** Diagnostic baseline arms. Controller arms arrive with the #2348 coordinator. */
 export const STAGED_MEMORY_ARMS = Object.freeze([
   "empty",
   "persist-only",

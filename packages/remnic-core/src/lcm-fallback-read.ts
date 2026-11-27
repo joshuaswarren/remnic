@@ -36,10 +36,6 @@ export interface LcmReadSessionTarget {
   sessionIds?: readonly (string | undefined)[];
 }
 
-// `undefined` (a sessionless, archive-wide read) is a distinct, legitimate read
-// target, so it needs a non-string sentinel in the dedupe set. A leading space
-// keeps it disjoint from every real session key / namespaced LCM key (which are
-// `[A-Za-z0-9._-]` plus the U+001F namespace sentinel, never leading-space).
 const UNDEFINED_SESSION_SENTINEL = " <lcm-sessionless>";
 
 /**

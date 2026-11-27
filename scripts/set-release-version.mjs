@@ -126,11 +126,6 @@ for (const relativePath of packagePaths) {
   changed.push(...await syncCompanionManifestVersion(relativePath));
 }
 
-// `JSON.stringify(..., 2)` expands every array onto multiple lines, which biome's
-// formatter rejects for the short arrays in the root package.json (`workspaces`,
-// `files`, `openclaw.extensions`, `pnpm.onlyBuiltDependencies`). Re-format the
-// root manifest so the committed release bump stays lint-clean; otherwise every
-// release would break the `quality` lint gate on main and all subsequent PRs.
 if (!dryRun) {
   const biome = spawnSync(
     process.platform === "win32" ? "pnpm.cmd" : "pnpm",

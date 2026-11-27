@@ -27,9 +27,6 @@ import {
 import type { ChatSessionState } from "./chat-types.js";
 import type { ChatToolExecutor } from "./chat-engine.js";
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
 
 function makeStubExecutor(overrides: Partial<ChatToolExecutor> = {}): ChatToolExecutor {
   const base: ChatToolExecutor = {
@@ -65,7 +62,6 @@ function makeEngine(
 const makeTempDir = (): Promise<string> => managedMakeTempDir("chat-test-");
 
 // ---------------------------------------------------------------------------
-// Tests
 // ---------------------------------------------------------------------------
 
 test("read-only Q&A: LLM calls memory_search and returns a text reply", async () => {
@@ -98,7 +94,6 @@ test("LLM outage → tagged error reply (rule 13)", async () => {
 
 test("tool budget exhaustion → partial reply with skippedTools", async () => {
   const executor = makeStubExecutor();
-  // Script: LLM keeps calling tools forever.
   const llm = new StubChatLlmAdapter([
     { toolCalls: [{ name: "memory_search", arguments: { query: "a" } }] },
     { toolCalls: [{ name: "memory_search", arguments: { query: "b" } }] },
@@ -108,7 +103,6 @@ test("tool budget exhaustion → partial reply with skippedTools", async () => {
   const session = await createChatSession(await makeTempDir(), {});
   const result = await engine.processMessage("search a b", session);
 
-  // With maxToolCallsPerTurn=1, the second tool call is skipped.
   assert.ok(result.skippedTools !== undefined || result.reply.length > 0);
 });
 
@@ -130,7 +124,6 @@ test("confirmation protocol: non-English exact-match confirmations (issue #2198)
   assert.ok(isConfirmationMessage("نعم"));
   assert.ok(isConfirmationMessage("  JA  "));
   assert.ok(isConfirmationMessage("Sí"));
-  // Exact match only — partial or hedged text keeps the no-apply default.
   assert.ok(!isConfirmationMessage("si")); // missing accent, not exact
   assert.ok(!isConfirmationMessage("jam"));
   assert.ok(!isConfirmationMessage("ja, aber"));
@@ -140,7 +133,6 @@ test("confirmation protocol: non-English exact-match confirmations (issue #2198)
 
 test("citation guard: uncited memory assertion gets warning", async () => {
   const executor = makeStubExecutor();
-  // The LLM makes an assertion without calling any tools first.
   const llm = new StubChatLlmAdapter([
     { content: "You remember that the database is PostgreSQL." },
   ]);
@@ -157,7 +149,6 @@ test("citation guard: uncited memory assertion gets warning", async () => {
 
 test("citation guard: cited assertion does NOT get warning", async () => {
   const executor = makeStubExecutor();
-  // LLM calls a tool first, then makes the assertion.
   const llm = new StubChatLlmAdapter([
     { toolCalls: [{ name: "memory_search", arguments: { query: "database" } }] },
     { content: "Based on the search, the database uses PostgreSQL [id: abc]." },
@@ -174,7 +165,6 @@ test("citation guard: cited assertion does NOT get warning", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Session persistence tests
 // ---------------------------------------------------------------------------
 
 test("transcript persisted to JSONL and contains exclusion tag", async () => {
@@ -193,7 +183,6 @@ test("transcript persisted to JSONL and contains exclusion tag", async () => {
   const raw = await readFile(chatSessionFile(dir, session.id), "utf8");
   const lines = raw.split("\n").filter((l) => l.trim());
 
-  // First line is the system header with the exclusion tag.
   const header = JSON.parse(lines[0]!);
   assert.equal(header.role, "system");
   assert.ok(
@@ -237,31 +226,25 @@ test("loadChatSession round-trips transcript entries", async () => {
   const loaded = await loadChatSession(dir, session.id);
   assert.ok(loaded);
   assert.equal(loaded!.principal, "alice");
-  // 3 entries: system header + user + assistant
   assert.equal(loaded!.transcript.length, 3);
 });
 
 // ---------------------------------------------------------------------------
-// Cleanup tests
 // ---------------------------------------------------------------------------
 
 test("cleanupExpiredChatSessions removes old sessions", async () => {
   const dir = await makeTempDir();
   await createChatSession(dir, { principal: "test" });
 
-  // TTL of 0 hours → everything is expired.
   const removed = await cleanupExpiredChatSessions(dir, 0);
   assert.ok(removed >= 1);
 });
 
 // ---------------------------------------------------------------------------
-// Review-round fixes (Thread 16: budget summary error handling)
 // ---------------------------------------------------------------------------
 
 test("budget exhaustion summary LLM failure does not crash (Thread 16)", async () => {
   const executor = makeStubExecutor();
-  // With maxToolCallsPerTurn=1: call 1 executes the tool, call 2's tool is
-  // skipped (budget exhausted), call 3 is the summary. Make the summary throw.
   const llm = new StubChatLlmAdapter([
     { toolCalls: [{ name: "memory_search", arguments: { query: "a" } }] },
   ]);
@@ -269,7 +252,6 @@ test("budget exhaustion summary LLM failure does not crash (Thread 16)", async (
   const originalComplete = llm.complete.bind(llm);
   llm.complete = async (messages, options) => {
     callCount++;
-    // 3rd call is the budget-exhaustion summary — throw to verify the try/catch.
     if (callCount === 3) throw new Error("summary LLM transport failure");
     return originalComplete(messages, options);
   };
@@ -278,13 +260,11 @@ test("budget exhaustion summary LLM failure does not crash (Thread 16)", async (
   const session = await createChatSession(await makeTempDir(), {});
   const result = await engine.processMessage("search a", session);
 
-  // Should return a partial reply, not throw.
   assert.ok(result.reply.length > 0, "Should return a fallback reply");
   assert.ok(result.skippedTools !== undefined, "Should report skipped tools");
 });
 
 // ---------------------------------------------------------------------------
-// TTL boundary (issue #1685 item 1 / #1687 Thread 21)
 // ---------------------------------------------------------------------------
 
 test("cleanupExpiredChatSessions honors TTL boundary [0, ttlHours) — age >= ttl expires", async () => {
@@ -293,14 +273,11 @@ test("cleanupExpiredChatSessions honors TTL boundary [0, ttlHours) — age >= tt
   const ttlMs = ttlHours * 3600 * 1000;
 
   // Session aged past the TTL (mtime set to ttlHours ago; by the time the
-  // sweep stat()s it a few ms have elapsed, so age >= ttl deterministically
-  // — the boundary is inclusive: age ∈ [0, ttl) survives, age >= ttl expires).
   const expired = await createChatSession(dir, { principal: "expired" });
   const expiredFile = chatSessionFile(dir, expired.id);
   const atTtlSeconds = (Date.now() - ttlMs) / 1000;
   await utimes(expiredFile, atTtlSeconds, atTtlSeconds);
 
-  // Session aged well under the TTL → must survive.
   const fresh = await createChatSession(dir, { principal: "fresh" });
   const freshFile = chatSessionFile(dir, fresh.id);
   const underTtlSeconds = (Date.now() - (ttlMs - 6 * 60 * 1000)) / 1000; // ~1.9h old
@@ -309,11 +286,9 @@ test("cleanupExpiredChatSessions honors TTL boundary [0, ttlHours) — age >= tt
   const removed = await cleanupExpiredChatSessions(dir, ttlHours);
   assert.equal(removed, 1, "only the expired session should be removed");
 
-  // The fresh session file must still be on disk.
   const freshStillExists = await readFile(freshFile, "utf8").then(() => true).catch(() => false);
   assert.ok(freshStillExists, "session aged under the TTL must survive the sweep");
 
-  // The expired session file must be gone.
   const expiredGone = await readFile(expiredFile, "utf8").then(() => false).catch(() => true);
   assert.ok(expiredGone, "session aged at/over the TTL must be swept");
 });
@@ -329,7 +304,6 @@ test("appendTranscriptEntry emits strictly-increasing seqs even within the same 
     const e = await appendTranscriptEntry(dir, session.id, { role: "user", content: `m${i}` });
     entries.push(e.seq);
   }
-  // Every seq must be distinct and strictly increasing.
   for (let i = 1; i < entries.length; i++) {
     assert.ok(entries[i]! > entries[i - 1]!, `seq ${entries[i]} must exceed ${entries[i - 1]}`);
   }
@@ -341,7 +315,6 @@ test("appendTranscriptEntry refuses to recreate a swept session (chat_session_ex
   const session = await createChatSession(dir, { principal: "alice" });
   // Simulate the TTL sweep unlinking the file mid-turn (resurrection race).
   await unlink(chatSessionFile(dir, session.id));
-  // Must throw instead of silently recreating a headerless (public) file.
   await assert.rejects(
     appendTranscriptEntry(dir, session.id, { role: "user", content: "x" }),
     /chat_session_expired/,

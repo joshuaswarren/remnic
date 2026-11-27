@@ -1,11 +1,3 @@
-/**
- * Recall composition decision (#2972 layer 2).
- *
- * Extracted from recall-internal so that file stays under its ratchet
- * ceiling. Classifies injected memory context as complete / degraded /
- * missing, builds the compact (first-line) form from section buckets,
- * and turns outer-recall failures into the missing-note instead of "".
- */
 
 import { isAbortError } from "./abort-error.js";
 import {
@@ -55,11 +47,6 @@ function chunkContent(chunk: RecallCompositionChunk): string {
   return typeof chunk === "string" ? chunk : chunk.content;
 }
 
-/**
- * Shallow form of every section chunk: the first line of each entry,
- * so a budget miss prefers breadth-complete-but-shallow over a clipped
- * tail. Empty chunks contribute nothing.
- */
 export function compactRecallContextFromBuckets(
   buckets: Iterable<readonly [unknown, readonly RecallCompositionChunk[]]>,
 ): string {
@@ -147,11 +134,6 @@ export function notifyContextComposition(
   }
 }
 
-/**
- * Outer-recall failure: abort stays silent (empty string). Timeout and
- * other errors become the missing-note so a failed query is never
- * indistinguishable from "no matches".
- */
 export function recallFailureComposition(err: unknown): RecallContextComposition | null {
   if (isAbortError(err)) return null;
   const detail =

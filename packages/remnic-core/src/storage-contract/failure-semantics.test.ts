@@ -1,14 +1,3 @@
-/**
- * Issue #1533 — Phase A contract test: failure semantics.
- *
- * Rule 34: reads distinguish empty-dir from unreadable-dir — `{ok:false}` vs
- * `[]`. Where the current surface already does this, we pin it; where it
- * doesn't, we record the gap (for the silent-failures issue) rather than
- * change behavior here.
- *
- * Also pins containment: a FILE where a directory is expected is skipped via
- * lstat().isDirectory(), not existsSync() (rule 24).
- */
 
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -180,11 +169,6 @@ test("failure-semantics: readMemoryByPath on a malformed markdown file returns n
 });
 
 test("failure-semantics: a FILE where a category directory is expected does not crash readAllMemories", async () => {
-  // Create a FILE named "facts" (not a directory) at the base dir, then scan.
-  // collectActiveMemoryPaths uses lstat().isDirectory() (not existsSync) so a
-  // file-as-directory entry is skipped without crashing (rule 24 containment).
-  // We do NOT call ensureDirectories — it would try to mkdir facts/<today> and
-  // fail on the file. The scan path must be robust independently of dir creation.
   const baseDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fail-file-as-dir-"));
   try {
     StorageManager.clearAllStaticCaches();

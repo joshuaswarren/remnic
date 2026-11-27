@@ -1,22 +1,3 @@
-// Regression suite for issue #3150: offline-sync CHANGESET pushes must be
-// embedding-generation atomic, mirroring the snapshot-side guarantees from
-// PR #3148 (issue #3146):
-//   1. sender changesets carry a complete post-change membership manifest
-//      (`embeddingGenerations`) for every touched generation;
-//   2. the receiver routes manifested generation changes through the shared
-//      locked atomic transaction — changed members publish, unchanged members
-//      carry over from local bytes (hash-verified against the manifest),
-//      removed members sweep — never a per-file mixed generation;
-//   3. delete-only changes shrink through the manifest (survivors carried),
-//      while a manifest-less whole-generation tombstone removes atomically;
-//   4. legacy changesets without a manifest DEFER shard upserts and surface
-//      CONFLICTS (never silent skips) so the push-side base cannot advance
-//      past an unapplied generation;
-//   5. divergence under the lock (daemon rewrote a member, remote-only
-//      member) defers the WHOLE generation as conflicts, disk untouched;
-//   6. secure staging hooks are required (fail closed) exactly like the
-//      snapshot path — no plaintext-downgrade of staged generations;
-//   7. partially filtered generations are omitted whole (filter-to-omit).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -136,7 +117,6 @@ function baseChangeset(changes: OfflineSyncChange[], embeddingGenerations?: Offl
   };
 }
 
-/** Secure-IO spies: real filesystem effects + call recording. */
 function makeIo(root: string) {
   const calls = { stagingWrites: [] as string[], stagingReads: [] as string[], plainWrites: [] as string[], deletes: [] as string[], deleteMtimes: [] as (number | undefined)[] };
   return {
@@ -168,7 +148,6 @@ function makeIo(root: string) {
   };
 }
 
-/** Local generation on disk: shards 0..count-1 with one entry each. */
 async function seedLocalGeneration(root: string, count: number): Promise<Map<string, Buffer>> {
   const local = new Map<string, Buffer>();
   for (let i = 0; i < count; i++) {
@@ -179,9 +158,6 @@ async function seedLocalGeneration(root: string, count: number): Promise<Map<str
   return local;
 }
 
-// ---------------------------------------------------------------------------
-// Receiver — manifested changesets apply through the atomic transaction
-// ---------------------------------------------------------------------------
 
 test("manifested changeset replaces changed shards and carries unchanged members atomically", async () => {
   const root = await tempDir("remnic-3150-apply");
@@ -204,11 +180,9 @@ test("manifested changeset replaces changed shards and carries unchanged members
     const result = await applyOfflineSyncChangeset({ root, changeset, returnCurrentFiles: false, ...io });
     assert.equal(result.conflicts.length, 0);
     assert.ok(result.appliedUpserts >= 2, `changed shards must apply: ${JSON.stringify(result)}`);
-    // Changed members published; unchanged member carried over byte-for-byte.
     assert.deepEqual(await readAll(root, shardRel(0)), new0);
     assert.deepEqual(await readAll(root, shardRel(1)), new1);
     assert.deepEqual(await readAll(root, shardRel(2)), local.get(shardRel(2))!);
-    // Atomic route: staged ciphertext for EVERY member, no per-file writes.
     assert.ok(calls.stagingWrites.length >= 3, `all members must stage: ${JSON.stringify(calls)}`);
     assert.deepEqual(calls.plainWrites, [], "generation members must never take the per-file write path");
   } finally {
@@ -268,9 +242,6 @@ test("manifest-less partial generation deletions defer as conflicts and preserve
     ]);
     const { io } = makeIo(root);
     const result = await applyOfflineSyncChangeset({ root, changeset, returnCurrentFiles: false, ...io });
-    // Incomplete deletion evidence cannot break the generation apart: the
-    // complete published generation survives and the deletes conflict, so
-    // the push side cannot advance its base past them.
     assert.deepEqual(await shardNames(root), ["shard-0000.json", "shard-0001.json", "shard-0002.json"]);
     const expected = new Map<string, string>();
     for (const i of [0, 1, 2]) expected.set(shardRel(i), sha256(local.get(shardRel(i))!));
@@ -285,7 +256,6 @@ test("manifest-less partial generation deletions defer as conflicts and preserve
 });
 
 // ---------------------------------------------------------------------------
-// Receiver — deferrals surface as conflicts, never silent skips
 // ---------------------------------------------------------------------------
 
 test("legacy changeset without a manifest defers shard upserts as conflicts", async () => {
@@ -302,7 +272,6 @@ test("legacy changeset without a manifest defers shard upserts as conflicts", as
       result.conflicts.some((c) => c.path === shardRel(0) && c.reason === "embedding_generation_manifest_required"),
       `deferred member must conflict: ${JSON.stringify(result.conflicts)}`,
     );
-    // Nothing written: the local generation is byte-identical to before.
     assert.deepEqual(await readAll(root, shardRel(0)), local.get(shardRel(0))!);
     assert.deepEqual(await readAll(root, shardRel(1)), local.get(shardRel(1))!);
   } finally {
@@ -342,7 +311,6 @@ test("under-lock divergence defers the whole generation as conflicts, disk untou
   try {
     const local = await seedLocalGeneration(root, 3);
     const new0 = shardDoc({ [SHARD_IDS[0]]: { path: `memories/${SHARD_IDS[0]}.md`, vector: [9, 9] } });
-    // Daemon rewrote shard 1 AFTER the shared base was captured.
     const drifted = shardDoc({ [SHARD_IDS[1]]: { path: `memories/${SHARD_IDS[1]}.md`, vector: [5, 5] } });
     await write(root, shardRel(1), drifted);
     const changeset = baseChangeset(
@@ -394,7 +362,6 @@ test("a remote-only local member (not in base or manifest) conflicts the whole g
 });
 
 // ---------------------------------------------------------------------------
-// Receiver — fail-closed staging and crash safety
 // ---------------------------------------------------------------------------
 
 test("custom IO without staging hooks refuses generation changesets before any write", async () => {
@@ -446,7 +413,6 @@ test("a failed mid-generation stage leaves the local generation byte-identical",
         changeset,
         returnCurrentFiles: false,
         readFile: async (target) => readAll(root, target.path),
-        // Fail on the second staged member: a crash mid-generation stage.
         writeStagingFile: async (target) => {
           staged += 1;
           if (staged > 1) throw new Error("simulated stage failure");
@@ -483,8 +449,6 @@ test("concurrent changeset applies serialize into one complete generation", asyn
       applyOfflineSyncChangeset({ root, changeset: build(7), returnCurrentFiles: false, ...io }),
       applyOfflineSyncChangeset({ root, changeset: build(9), returnCurrentFiles: false, ...io }),
     ]);
-    // Whichever transaction wins the lock, the disk must hold ONE complete
-    // generation — never a mix of both.
     const census = await diskGeneration(root);
     const winner7 = shardDoc({ [SHARD_IDS[0]]: { path: `memories/${SHARD_IDS[0]}.md`, vector: [7, 7] } });
     const winner9 = shardDoc({ [SHARD_IDS[0]]: { path: `memories/${SHARD_IDS[0]}.md`, vector: [9, 9] } });
@@ -522,7 +486,6 @@ test("unbased manifested creation defers instead of overwriting an independent l
   const root = await tempDir("remnic-3150-unbased-create");
   try {
     const local = await seedLocalGeneration(root, 2);
-    // Fresh sender creation: base-less upserts, no shared base evidence.
     const incoming0 = shardDoc({ [SHARD_IDS[2]]: { path: `memories/${SHARD_IDS[2]}.md`, vector: [7, 7] } });
     const incoming1 = shardDoc({ [SHARD_IDS[3]]: { path: `memories/${SHARD_IDS[3]}.md`, vector: [6, 6] } });
     const changeset = baseChangeset(
@@ -557,7 +520,6 @@ test("unbased manifested creation applies to an empty receiver and to an exactly
     assert.equal(freshResult.conflicts.length, 0, `fresh create must apply: ${JSON.stringify(freshResult.conflicts)}`);
     assert.deepEqual((await shardNames(fresh)).length, 2);
 
-    // Identical content already on disk: re-applying the same unbased create is idempotent, not divergent.
     await write(matching, shardRel(0), incoming0);
     await write(matching, shardRel(1), incoming1);
     const matchingIo = makeIo(matching);
@@ -742,7 +704,6 @@ test("marker-only conversion consumes the marker change so the per-file loop nev
 });
 
 // ---------------------------------------------------------------------------
-// Sender — complete manifests, whole-generation omission, validation
 // ---------------------------------------------------------------------------
 
 test("manifest builder emits complete post-change membership and omits filtered generations", async () => {
@@ -781,7 +742,6 @@ test("manifest builder emits complete post-change membership and omits filtered 
         member(shardRel(2), base.get(shardRel(2))!),
       ],
     }]);
-    // Filter-to-omit: one excluded member omits the whole generation.
     const omitted = buildChangesetGenerationManifest({
       changes,
       currentFiles,
@@ -813,9 +773,6 @@ test("the CLI changeset builder still push-filters runtime state (#1786)", async
       ],
       readFile: async (target) => readAll(root, target.path),
     });
-    // Node pushes are pull-restored for runtime state: shards never ride the
-    // inline changeset from this builder, so it carries no generation
-    // protocol fields at all (no unnecessary sender logic).
     assert.deepEqual(changeset.changes, []);
     assert.equal(changeset.embeddingGenerations, undefined);
   } finally {
@@ -829,9 +786,6 @@ test("the CLI changeset builder never announces a partially filtered generation"
     const base = await seedLocalGeneration(root, 3);
     const new0 = shardDoc({ [SHARD_IDS[0]]: { path: `memories/${SHARD_IDS[0]}.md`, vector: [9, 9] } });
     await write(root, shardRel(0), new0);
-    // Guard-rail for the builder itself: even if the #1786 runtime filter
-    // ever lifts, the builder must not emit changes for a generation whose
-    // membership the push filters would split (filter-to-omit, #3148).
     const generations = buildChangesetGenerationManifest({
       changes: [upsertChange(shardRel(0), new0, 100, sha256(base.get(shardRel(0))!))],
       currentFiles: [
@@ -890,34 +844,28 @@ test("normalize rejects incoherent manifests before any apply", async () => {
   const generation = (members: ReturnType<typeof member>[]) =>
     baseChangeset([upsert], [{ shardDir: "state/embeddings", members }]);
 
-  // Duplicate member paths.
   assert.throws(
     () => normalizeOfflineSyncChangeset(generation([member(shardRel(0), changed), member(shardRel(0), changed)])),
     /duplicate/,
   );
-  // Noncanonical dir.
   assert.throws(
     () => normalizeOfflineSyncChangeset(baseChangeset([upsert], [{ shardDir: "state/other", members: [member(shardRel(0), changed)] }])),
     /canonical|embedding/,
   );
-  // Member outside its dir.
   assert.throws(
     () => normalizeOfflineSyncChangeset(generation([member("state/other/shard-0000.json", changed)])),
     /member/,
   );
-  // Upserted shard missing from the manifest (protocol violation for manifest-bearing senders).
   assert.throws(
     () => normalizeOfflineSyncChangeset(generation([member(shardRel(1), changed)])),
     /manifest/,
   );
-  // Legacy changesets (field absent) keep normalizing.
   const legacy = baseChangeset([upsert]) as OfflineSyncChangeset & { embeddingGenerations?: unknown };
   assert.equal(legacy.embeddingGenerations, undefined);
   assert.equal(normalizeOfflineSyncChangeset(baseChangeset([upsert])).changes.length, 1);
 });
 
 // ---------------------------------------------------------------------------
-// Integration — sender changeset reproduces the receiver's generation exactly
 // ---------------------------------------------------------------------------
 
 test("end-to-end: receiver census equals sender census after a manifested changeset", async () => {

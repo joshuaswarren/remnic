@@ -1,19 +1,3 @@
-/**
- * Workspace-ops coordinator — extracted from the orchestrator
- * (issue #1526, seam 24).
- *
- * Owns the periodic workspace/operations surfaces:
- *   - day-summary fact gathering (gatherTodayFacts)
- *   - memory-action policy preview (previewMemoryActionEvent)
- *   - file hygiene runs and identity auto-consolidation
- *   - wearables service construction
- *   - local-LLM model validation
- *   - pattern-reinforcement runs and their namespace fanout
- *   - access-tracking flush
- *
- * Behavior-preserving move from orchestrator.ts (late-binding deps rule,
- * seams 18–23).
- */
 
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -62,11 +46,6 @@ import {
   type DaySummaryGatherOptions,
 } from "../orchestrator.js";
 
-/**
- * Trailing-edge coalescing window for post-sync meeting rebuilds (issue #1900).
- * An activity tick and a wearable window sync often land within seconds; this
- * folds the burst into one build per day.
- */
 const MEETINGS_BUILD_DEBOUNCE_MS = 5_000;
 
 export interface WorkspaceOpsDeps {
@@ -171,27 +150,6 @@ export class WorkspaceOpsCoordinator {
     private readonly deps: WorkspaceOpsDeps,
   ) {}
 
-  /**
-   * Run the pattern-reinforcement maintenance job (issue #687 PR 2/4).
-   *
-   * Cadence-gated on `patternReinforcementCadenceMs` so every caller
-   * (orchestrator cron path, MCP tool, CLI) shares a single floor —
-   * none can call this on a hot loop and burn the corpus.  When the
-   * feature is disabled or the cadence has not elapsed, returns a
-   * synthetic "skipped" result rather than throwing.
-   *
-   * Cadence tracking is per-namespace so a tenant-scoped MCP run in
-   * one namespace does not silence a cron run in another (PR #730
-   * review feedback, Codex P2).  Pass `force: true` for ad-hoc
-   * operator runs that must bypass the cadence floor — mirrors the
-   * pattern used by other maintenance MCP tools.
-   *
-   * `force` deliberately does NOT bypass the master
-   * `patternReinforcementEnabled` flag (PR #730 review feedback,
-   * Cursor Medium).  Operators who have explicitly disabled the
-   * feature must not have their corpus mutated by an MCP tool call —
-   * the only way to run the job is to enable the feature in config.
-   */
   async runPatternReinforcement(options: {
     force?: boolean;
     namespace?: string;
@@ -202,8 +160,6 @@ export class WorkspaceOpsCoordinator {
     result?: PatternReinforcementResult;
   }> {
     const cadenceKey = options.namespace ?? "";
-    // Master switch: a disabled feature is never bypassed, even with
-    // force=true.  `force` only relaxes the cadence floor below.
     if (!resolveConsolidationCapabilities(this.deps.config).patternReinforcement) {
       return { ran: false, skippedReason: "disabled", namespace: cadenceKey };
     }
@@ -247,12 +203,6 @@ export class WorkspaceOpsCoordinator {
           namespace: ctx.candidate.namespace,
           force: options.force,
         });
-        // runPatternReinforcement has its own per-namespace cadence gate
-        // (lastPatternReinforcementAtByNs). When it throttles (ran:false),
-        // signal skip so the planner records state:"skipped" and does NOT
-        // touch lastMaintenanceAt — otherwise a throttled namespace would
-        // look maintained while pattern reinforcement never ran (#1500
-        // review: cadence-skip accuracy).
         if (!result.ran) {
           return {
             skipped: true,
@@ -275,7 +225,6 @@ export class WorkspaceOpsCoordinator {
     if (now - this.deps.lastFileHygieneRunAtMs < hygiene.runMinIntervalMs) return;
     this.deps.lastFileHygieneRunAtMs = now;
 
-    // Rotation first (keeps bootstrap files small).
     if (hygiene.rotateEnabled) {
       for (const rel of hygiene.rotatePaths) {
         const abs = path.isAbsolute(rel)
@@ -308,7 +257,6 @@ export class WorkspaceOpsCoordinator {
       }
     }
 
-    // Lint (warn before truncation risk).
     if (hygiene.lintEnabled) {
       const warnings = await lintWorkspaceFiles({
         workspaceDir: this.deps.config.workspaceDir,
@@ -339,10 +287,6 @@ export class WorkspaceOpsCoordinator {
     }
   }
 
-  /**
-   * Read today's facts and hourly summaries from storage, returning them
-   * as a formatted string suitable for generateDaySummary().
-   */
   async gatherTodayFacts(
     namespace?: string,
     options: DaySummaryGatherOptions = {},
@@ -360,24 +304,11 @@ export class WorkspaceOpsCoordinator {
       ? options.now
       : new Date();
     const targetLocalDate = formatDateInTimeZone(now, timeZone);
-    // Facts are stored under UTC date directories, while the summary target is
-    // a local calendar day. Scan the UTC-date envelope that overlaps the local
-    // day, then filter parseable fact timestamps to that configured local day.
     const datesToScan = utcDateKeysForLocalDay(now, timeZone);
     const MAX_CHARS = 100_000;
 
     // --- Read memory files from each category dir × date directory ---
-    // Iterate every recall category dir (RECALL_FALLBACK_DIRS — single source
-    // of truth) so the day summary includes decisions/, moments/, ... not just
-    // facts/ (#1546). corrections/ is flat, so corrections/<date>/ never exists
-    // and is skipped by the ENOENT guard — preserving the prior exclusion. The
-    // per-file created→local-day filter below is unchanged.
     //
-    // Symlink/containment hardening (mirrors scanDir / the CLI walker): the
-    // gathered contents feed the day-summary LLM input, so a symlinked category
-    // dir (decisions/ → outside memoryDir) must not be followed and leak files.
-    // Resolve the store root once; skip symlinked / out-of-root dirs and
-    // entries; skip the scan gracefully if the root can't be resolved.
     const facts: MemoryFile[] = [];
     let memoryRootReal: string | null = null;
     try {
@@ -421,13 +352,11 @@ export class WorkspaceOpsCoordinator {
       }
     }
 
-    // Sort facts by created timestamp (most recent last) so truncation keeps newest
     facts.sort((a, b) => {
       if (a.frontmatter.created === b.frontmatter.created) return 0;
       return a.frontmatter.created < b.frontmatter.created ? -1 : 1;
     });
 
-    // --- Read hourly summaries for the scanned dates ---
     const hourlySummaries: string[] = [];
     const hourlyBaseDir = path.join(storage.dir, "summaries", "hourly");
     try {
@@ -456,7 +385,6 @@ export class WorkspaceOpsCoordinator {
       // No hourly summaries directory
     }
 
-    // --- Format and truncate ---
     let formatted = formatDaySummaryMemories(facts);
     if (hourlySummaries.length > 0) {
       formatted +=
@@ -464,9 +392,7 @@ export class WorkspaceOpsCoordinator {
         hourlySummaries.join("\n\n---\n\n");
     }
 
-    // Truncate intelligently if over budget: drop oldest facts first
     if (formatted.length > MAX_CHARS) {
-      // Re-build with fewer facts, keeping most recent
       while (facts.length > 1 && formatted.length > MAX_CHARS) {
         facts.shift(); // drop oldest
         formatted = formatDaySummaryMemories(facts);
@@ -476,7 +402,6 @@ export class WorkspaceOpsCoordinator {
             hourlySummaries.join("\n\n---\n\n");
         }
       }
-      // If still over, hard truncate
       if (formatted.length > MAX_CHARS) {
         formatted = formatted.slice(0, MAX_CHARS);
       }
@@ -603,10 +528,6 @@ export class WorkspaceOpsCoordinator {
     };
   }
 
-  /**
-   * Validate local LLM model availability and context window compatibility.
-   * Warns the user if there's a mismatch.
-   */
   async validateLocalLlmModel(): Promise<void> {
     log.debug("Local LLM: validating model configuration");
     try {
@@ -622,7 +543,6 @@ export class WorkspaceOpsCoordinator {
         return;
       }
 
-      // Check for context window mismatch
       const configuredMaxContext = this.deps.config.localLlmMaxContext;
 
       if (modelInfo.contextWindow) {
@@ -678,10 +598,6 @@ export class WorkspaceOpsCoordinator {
         getStorage: async () => await this.deps.getStorageForNamespace(namespace),
         locationConfig: this.deps.config.location,
         extract: (turns) => this.deps.extraction.extract(turns),
-        // Smart memoryMode runs candidates through the SAME extraction
-        // judge (cache + defer counters included) the live extraction
-        // pipeline uses, so wearable facts get identical LLM-as-judge
-        // durability gating.
         judgeFacts: (candidates) =>
           judgeFactDurability(
             candidates,
@@ -698,11 +614,6 @@ export class WorkspaceOpsCoordinator {
           search: async (query, maxResults) => {
             if (!this.deps.qmd.isAvailable()) return null;
             try {
-              // Scope the indexed search to the CALLER namespace's collection so a
-              // non-default caller's transcript_search never returns root or
-              // other-namespace transcripts (#2123). Namespaces off, or the
-              // default/machine-owner namespace rooted at memoryDir, resolve to the
-              // base collection (unchanged); every other namespace to its own.
               let collection: string | undefined;
               if (resolveNamespaceCapabilities(this.deps.config).namespaces === true) {
                 const storage = await this.deps.getStorageForNamespace(namespace);
@@ -721,27 +632,13 @@ export class WorkspaceOpsCoordinator {
                 preview: result.snippet,
               }));
             } catch {
-              // Backend hiccup → tell the service "unavailable" so it
-              // runs its bounded scan fallback instead of returning a
-              // silent empty result (CLAUDE.md rule 34).
               return null;
             }
           },
         },
         reindexSearch: async () => {
-          // qmd.update() clears the global QMD result caches itself on success
-          // (QmdClient.runUpdateForCollection), so newly-indexed wearable
-          // transcript/fact content is never hidden by a pre-sync cache entry
-          // (#1904, Codex).
           await this.deps.qmd.update();
         },
-        // Meeting tail-step (issue #1900): schedule a debounced meeting rebuild
-        // for every day a wearable sync touched. Wired on the shared service so
-        // BOTH the auto-sync adapter and the manual HTTP/MCP/CLI sync path
-        // (EngramAccessService.wearablesSync -> getWearablesService().sync)
-        // rebuild affected meetings. Gated on meetings.enabled so a sync of
-        // other signals never spins up meeting building; a failure never fails
-        // the sync.
         onDaysSynced: async (days) => {
           if (!this.deps.config.meetings.enabled) return;
           try {
@@ -777,10 +674,6 @@ export class WorkspaceOpsCoordinator {
       const memoryDir = this.deps.config.memoryDir;
       const storage = await this.deps.getStorageForNamespace(namespace);
       const store = storage.meetingRecordStore();
-      // Activity is machine-scoped (<memoryDir>/state/activity.sqlite) and is
-      // consumed ONLY by the machine-owner (default) namespace; every other
-      // caller namespace runs audio-only with no activity reader (issue #2123).
-      // A missing/unavailable store degrades to no screen context, never a fail.
       const activity: MeetingsActivityReader | undefined =
         namespace !== this.deps.config.defaultNamespace
           ? undefined
@@ -808,11 +701,6 @@ export class WorkspaceOpsCoordinator {
         config,
         timezone: this.deps.config.activity.timezone,
       });
-      // Production trust-gated summary/fact deps (issue #1900). Built from the
-      // shared LLM clients + the SAME durability-judge closure the wearables
-      // service passes (verdict cache + defer counters included), so meeting
-      // facts inherit identical judge gating — no forked trust/judge/LLM path.
-      // Pure construction (no disk/network); the builder gates on summaryMode.
       const fallbackLlm = new FallbackLlmClient(
         this.deps.config.gatewayConfig,
         fallbackLlmRuntimeContextFromConfig(this.deps.config),
@@ -836,20 +724,9 @@ export class WorkspaceOpsCoordinator {
         config,
         hooks: {
           reindex: async () => {
-            // Meeting records live in the QMD collection root; reindex on change
-            // so `show`/search find them immediately (qmd.update clears its own
-            // result caches). Fired only when records changed; a failure is
-            // surfaced as a build warning, not a hard failure.
             await this.deps.qmd.update();
           },
         },
-        // Memory generation behind the builder seam (issue #1900 decouple): the
-        // deterministic engine depends only on MeetingMemoryGenerator, never on
-        // memory-gen. The generator wraps the same sealed write path the wearables
-        // generator uses — createMeetingMemoryWriter adds the source-scoped
-        // dedup/retire the raw StorageManager lacks — plus the trust-gated
-        // summary/facts layer (extractor + shared durability judge). It gates on
-        // summaryMode internally, so `off` never invokes the extractor.
         memoryGenerator: createMeetingMemoryGenerator(createMeetingMemoryWriter(storage), config, summary),
       });
       service = new MeetingsService({
@@ -870,10 +747,6 @@ export class WorkspaceOpsCoordinator {
   }
 
   async autoConsolidateIdentity(): Promise<void> {
-    // Fan out over the catalog-union namespace set (issue #1499 sweep): a dynamic
-    // namespace that accumulated IDENTITY.md reflections must also be eligible for
-    // auto-consolidation, otherwise its identity file grows unbounded and is never
-    // consolidated. Falls back to the configured set on any catalog read failure.
     const namespaces = resolveNamespaceCapabilities(this.deps.config).namespaces
       ? await this.deps.maintenanceNamespaces()
       : [this.deps.config.defaultNamespace];
@@ -937,18 +810,8 @@ export class WorkspaceOpsCoordinator {
         identityNamespace,
       );
       await storage.writeIdentityReflections("");
-      // NRcCL (codex P2): record a per-namespace catalog write for THIS namespace
-      // after the identity files are updated. This fan-out can mutate a dynamic
-      // namespace via `writeIdentity`/`writeIdentityReflections`, but the
-      // consolidation pass's only consolidated touch covers `this.deps.storage` (the
-      // default) and only fires when `memoryItemMutated` was set by OTHER work — so
-      // a namespace whose sole mutation in the pass is identity consolidation would
       // otherwise keep a stale `lastWriteAt`, making `listNamespaces({ writtenSince })`
-      // and catalog-recency consumers miss the write. Best-effort and
       // failure-tolerant (the storage chokepoint (#1522) swallows errors, never crashing the
-      // consolidation; gotcha #13, rule #40). No double-count with the consolidated
-      // touch above: that one is gated on `memoryItemMutated` (which identity
-      // consolidation does not set), and `markWrite` is idempotent regardless.
       log.info(
         `IDENTITY(${namespace}) consolidated: ${identityContent.length} → ${newContent.length} chars, ${result.learnedPatterns.length} patterns`,
       );
@@ -1007,10 +870,6 @@ export class WorkspaceOpsCoordinator {
     }
   }
 
-  /**
-   * Flush access tracking buffer to disk.
-   * Called during consolidation or when buffer is full.
-   */
   async flushAccessTracking(): Promise<void> {
     if (this.deps.accessTrackingBuffer.size === 0) return;
 

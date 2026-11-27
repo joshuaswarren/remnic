@@ -1,15 +1,3 @@
-/**
- * git-invoker tests (issue #1554 threads 13/14).
- *
- * Covers:
- *  - defaultCodingGitInvoker is a FACTORY FUNCTION (thread 13: the runtime
- *    previously treated it as an object instance and degraded to
- *    runtime_unavailable).
- *  - listTrackedFiles returns the repo's tracked files as repo-relative
- *    forward-slash paths (thread 14: the runtime sources candidatePaths for
- *    executeReindex's full-reindex branch from this method).
- *  - listTrackedFiles degrades to a tagged git failure outside a worktree.
- */
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -51,7 +39,6 @@ test("listTrackedFiles: returns tracked files as repo-relative forward-slash pat
     await mkdir(path.join(dir, "src", "deep"), { recursive: true });
     await writeFile(path.join(dir, "src", "deep", "a.ts"), "export const a = 1;\n");
     await writeFile(path.join(dir, "root.md"), "# root\n");
-    // Untracked file — must NOT appear in listTrackedFiles output.
     await writeFile(path.join(dir, "ignored.txt"), "nope\n");
     const add = launchProcessSync("git", ["add", "src/deep/a.ts", "root.md"], {
       cwd: dir,
@@ -64,7 +51,6 @@ test("listTrackedFiles: returns tracked files as repo-relative forward-slash pat
     const result = invoker.listTrackedFiles(dir);
     assert.equal(result.ok, true);
     if (result.ok) {
-      // Forward-slash repo-relative paths, sorted by git's output order.
       assert.ok(result.paths.includes("src/deep/a.ts"));
       assert.ok(result.paths.includes("root.md"));
       // Untracked file excluded — this is the load-bearing assertion for the

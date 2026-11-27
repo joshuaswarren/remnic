@@ -232,10 +232,6 @@ export function createTimeoutGuardedAdapter(
         );
   }
   if (adapter.correct) {
-    // Preserve the optional correction-contract surface (issue #1584 plan
-    // item 2a) — dropping it here would silently downgrade guarded MemCorrect
-    // runs to the turn-store fallback while still labeling the run
-    // contract-routed (codex P1).
     wrapped.correct = (
       sessionId: string,
       text: string,

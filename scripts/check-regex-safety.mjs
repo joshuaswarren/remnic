@@ -1,29 +1,4 @@
 #!/usr/bin/env node
-/**
- * ReDoS-shape pre-check for changed regex literals (issue #2439).
- *
- * CodeQL flagged the same wrapper-strip regex three times in a row on
- * PR #2438 — each fix traded one polynomial shape for another
- * ([^>]* → bounded attr → bounded content → finally an indexOf scan),
- * costing three full CI+review cycles. This gate is the local mirror of
- * those findings: it scans CHANGED/ADDED lines in .ts/.mts files for
- * regex literals matching the known-flagged shapes and fails with
- * file:line + the literal before a push burns a CodeQL round.
- *
- * Heuristic, not a solver — catching the known-flagged shapes pre-push
- * is the bar. A clean run does NOT prove CodeQL will pass.
- *
- * Usage:
- *   node scripts/check-regex-safety.mjs             # changed lines vs origin/main
- *                                                    # (falls back to HEAD~1 when no
- *                                                    # origin/main; skips when neither)
- *   node scripts/check-regex-safety.mjs <file>...   # full-file scan of the given
- *                                                    # .ts/.mts files (tests, targeted runs)
- *
- * Env: REMNIC_REGEX_SAFETY_BASE_REF overrides the base ref (default
- * origin/main). REMNIC_REGEX_SAFETY_ROOT is a test seam pointing the
- * git mode at another repo root. Node stdlib only — no new deps.
- */
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -37,36 +12,16 @@ const ROOT = process.env.REMNIC_REGEX_SAFETY_ROOT
 
 const SCANNED_EXTENSIONS = new Set([".ts", ".mts"]);
 
-/**
- * Known ReDoS-flagged shapes. Each entry names the CodeQL finding class
- * it mirrors, from the PR #2438 flag rounds:
- *
- *  - lazy-any                  → js/polynomial-redos (round: bounded-content fix
- *                                still used [\s\S]*? / lazy .*? over any-matching input)
- *  - negated-class-alternation → js/polynomial-redos (round 1: [^>]*-style class
- *                                with a preceding literal alternative branch)
- *  - ws-capture-chain          → js/polynomial-redos (round 2: \s* chains adjacent
- *                                to [a-z]+-style captures inside longer patterns)
- *  - nested-quantifier         → js/redos (classic (a+)+ exponential backtracking)
- *
- * Bounded quantifiers ({0,256}) and linear scans (indexOf/loop) are the
- * sanctioned fixes and deliberately do NOT match these detectors.
- */
 export const REDOS_SHAPES = Object.freeze([
   {
     id: "lazy-any",
     codeql: "js/polynomial-redos",
-    // [\s\S]* / [\S\s]+ / [\w\W]*? / [\d\D]+ … any complementary pair in
-    // either order (greedy or lazy), or a lazy .*/.+ — an unbounded
-    // quantifier over a class that matches everything.
     detector: /\[(?:\\s\\S|\\S\\s|\\w\\W|\\W\\w|\\d\\D|\\D\\d)\][*+]\??|\.[*+]\?/,
     fix: "bound the quantifier (e.g. {0,256}) or replace with an indexOf/loop scan",
   },
   {
     id: "negated-class-alternation",
     codeql: "js/polynomial-redos",
-    // [^>]*-style unbounded negated class combined with a literal
-    // alternative branch — the PR #2438 round-1 shape.
     detector: /\[\^[^\]]+\][*+]/,
     requiresAlternation: true,
     fix: "bound the class (e.g. [^>]{0,256}) or drop the alternative and scan with indexOf",
@@ -74,29 +29,17 @@ export const REDOS_SHAPES = Object.freeze([
   {
     id: "ws-capture-chain",
     codeql: "js/polynomial-redos",
-    // Two or more \s*/\s+ adjacent to a capture group or quantified class
-    // inside one pattern — the round-2 shape.
     detector: null,
     fix: "collapse the \\s* chain (single \\s* or bounded \\s{0,8}) or trim before matching",
   },
   {
     id: "nested-quantifier",
     codeql: "js/redos",
-    // A quantified token inside a group that is itself quantified —
-    // (a+)+, (a*)+, (\d{2,})+ exponential backtracking. Detected with a
-    // string scan (not a regex): a regex detector for this shape is
-    // itself the nested-quantifier shape CodeQL flags.
     detector: null,
     fix: "remove one quantifier level or rewrite the matching as a loop",
   },
 ]);
 
-/**
- * Replace escape-targeted punctuation and character-class contents with
- * spaces so shape detectors see only STRUCTURAL regex syntax: `\)` or
- * `[()]` are literals, not group syntax; `\s` / `\d` shorthands survive
- * (their leading backslash targets a letter, not punctuation).
- */
 function maskLiterals(src) {
   let out = "";
   let inClass = false;
@@ -128,17 +71,10 @@ function maskLiterals(src) {
   return out;
 }
 
-/** True when a `{...}` quantifier body has no upper bound ({2,}). */
 function unboundedBrace(braceBody) {
   return /^\d+,$/.test(braceBody);
 }
 
-/**
- * One nesting level only: a `)` carrying `*`/`+` whose group body
- * (no nested groups) ends with an UNBOUNDED quantifier (`*`, `+`, or
- * `{n,}`). Bounded repetitions like `(\d{2})+` are linear and pass.
- * Operates on masked source (escapes/classes already neutralized).
- */
 function hasNestedQuantifier(src) {
   for (let i = 0; i + 1 < src.length; i += 1) {
     if (src[i] !== ")" || (src[i + 1] !== "*" && src[i + 1] !== "+")) continue;
@@ -167,27 +103,13 @@ function shapeMatches(shape, src) {
   return true;
 }
 
-// ── Regex-literal extraction ────────────────────────────────────────────────
 
-/** Characters that may directly precede a regex literal's opening slash. */
 const PRE_REGEX_CHARS = new Set([
   "", " ", "\t", "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}",
   ";", ">", "<", "+", "-", "*", "%", "~", "^", "\n",
 ]);
 
-// No regex-in-regex here: the scanner's own extraction runs as a linear
-// character scan (escapes and character classes respected), because a
-// nested-quantifier extraction pattern is itself js/polynomial-redos
-// bait (CodeQL flagged exactly that on this file's first PR run).
 
-/**
- * Track string spans, same-line block-comment spans, and a trailing
- * comment start on one source line so candidates inside strings or
- * comments are skipped. A `/* ... *​/` pair that closes on the same
- * line only masks its own span — code after `*​/` is still scanned.
- * Best-effort: regex literals containing quote characters can confuse
- * the tracker, which at worst suppresses a later candidate.
- */
 function lineRegions(line) {
   const strings = [];
   const comments = [];
@@ -228,9 +150,6 @@ function lineRegions(line) {
   return { strings, comments, commentStart };
 }
 export function extractRegexLiterals(line) {
-  // JSDoc/block-comment continuation lines start with `*` — code-looking
-  // regexes there are prose, not literals. (A `/*` opener on this line is
-  // handled by commentStart below.)
   if (/^\s*\*/.test(line)) return [];
   const { strings, comments, commentStart } = lineRegions(line);
   const inString = (pos) => strings.some(([s, e]) => pos >= s && pos <= e);
@@ -245,7 +164,6 @@ export function extractRegexLiterals(line) {
     if (!PRE_REGEX_CHARS.has(prev)) continue;
     const after = line[open + 1];
     if (after === undefined || after === "/" || after === "*") continue;
-    // Walk to the closing slash, honoring escapes and [...] classes.
     let i = open + 1;
     let inClass = false;
     let closed = -1;
@@ -272,7 +190,6 @@ export function extractRegexLiterals(line) {
   return out;
 }
 
-/** Scan one line's text; returns findings for the line. */
 export function scanLine(text) {
   const findings = [];
   for (const { literal, src } of extractRegexLiterals(text)) {
@@ -286,7 +203,6 @@ export function scanLine(text) {
   return findings;
 }
 
-// ── Input modes ─────────────────────────────────────────────────────────────
 
 function tryGit(args, cwd = ROOT) {
   try {
@@ -294,6 +210,8 @@ function tryGit(args, cwd = ROOT) {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      // A large diff overflows Node's 1 MB default and fails the gate.
+      maxBuffer: 256 * 1024 * 1024,
     });
   } catch {
     return null;
@@ -305,8 +223,6 @@ function resolveBase() {
   const head = tryGit(["rev-parse", "HEAD"]);
   if (tryGit(["rev-parse", "--verify", `${ref}^{commit}`])) {
     const mergeBase = tryGit(["merge-base", "HEAD", ref]);
-    // On push events (CI on main) origin/main == HEAD and the diff is
-    // empty; fall through to HEAD~1 so the last commit is still scanned.
     if (mergeBase && mergeBase.trim() !== (head ?? "").trim()) {
       return { base: mergeBase.trim(), ref };
     }
@@ -360,9 +276,6 @@ function collectGitModeLines() {
   ]);
   if (diff === null) return { error: `git diff against ${resolved.ref} failed` };
   const added = parseAddedLines(diff);
-  // `git diff` never reports untracked files — a brand-new .ts file is
-  // entirely "added lines", so scan it whole (pre-commit runs before
-  // the first `git add` is guaranteed).
   const untracked = tryGit(["ls-files", "--others", "--exclude-standard", "--", "*.ts", "*.mts"]);
   if (untracked) {
     for (const relPath of untracked.split("\n")) {
@@ -398,7 +311,6 @@ function collectArgvModeLines(files) {
   return { added };
 }
 
-// ── Main ────────────────────────────────────────────────────────────────────
 
 function main() {
   const argvFiles = process.argv.slice(2);

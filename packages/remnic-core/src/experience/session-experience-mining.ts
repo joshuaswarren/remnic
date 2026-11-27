@@ -34,7 +34,6 @@ function mapExperienceOutcome(raw: string | undefined): ObjectiveStateOutcome {
   return "unknown";
 }
 
-/** Convert one promoted episode into a mining record, or `null`. */
 export function experienceMemoryToMiningRecord(memory: MemoryFile): CausalTrajectoryRecord | null {
   if (!isSessionExperienceMemory(memory)) return null;
   if (!isActiveMemoryStatus(memory.frontmatter.status)) return null;

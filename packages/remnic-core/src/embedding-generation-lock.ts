@@ -1,4 +1,3 @@
-// Cross-process embedding-generation mutation lock (issue #3148, Codex P1).
 //
 // Two processes legitimately mutate the SAME embedding generation: the
 // daemon's EmbeddingFallback index mutations (load → modify → persist) and

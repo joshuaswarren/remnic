@@ -51,7 +51,6 @@ test("cachedFiles with matching sha skip the content read (warm manifest build)"
     await fs.promises.writeFile(file, content);
 
     const contentSha = createHash("sha256").update(content).digest("hex");
-    // First (cold) build reads content and produces identities.
     const cold = await buildReconcileManifest({
       files: [{ path: "facts/warm-1.md", sha256: contentSha, mtimeMs: 1, bytes: content.length }],
       parseMemory: parseFrontmatter,
@@ -59,7 +58,6 @@ test("cachedFiles with matching sha skip the content read (warm manifest build)"
     });
     assert.ok(cold.files[0]?.memory?.id === "warm-1");
 
-    // Warm build with cachedFiles: readFile must NEVER be called.
     let readCalled = false;
     const warm = await buildReconcileManifest({
       files: [{ path: "facts/warm-1.md", sha256: contentSha, mtimeMs: 1, bytes: content.length }],
@@ -119,8 +117,6 @@ test("a changed sha invalidates the cached identity (cold re-read)", async () =>
 });
 
 test("the server identity cache lives on a path snapshot enumeration excludes", () => {
-  // The cache is node-local: enumerating it would advertise it as a peer file
-  // and make convergence transfer the cache itself.
   assert.equal(isInternalRemnicStatePath(".remnic/state/converge-identity-cache.json"), true);
   assert.equal(isInternalRemnicStatePath("state/converge-identity-cache.json"), false);
 });
@@ -155,8 +151,6 @@ test("malformed cached identities are rejected instead of trusted", () => {
   assert.equal(isReconcileMemoryIdentity({ ...valid, status: undefined }), false);
   assert.equal(isReconcileMemoryIdentity({ ...valid, normalizerVersion: "4" }), false);
   assert.equal(isReconcileMemoryIdentity({ ...valid, contentHashAliases: [1] }), false);
-  // A well-typed but non-hash value would be reused without a parse and could
-  // shift duplicate decisions, so the guard enforces the producer's format.
   assert.equal(isReconcileMemoryIdentity({ ...valid, contentHash: "not-a-hash" }), false);
   assert.equal(isReconcileMemoryIdentity({ ...valid, contentHashAliases: ["not-a-hash"] }), false);
 });
@@ -181,8 +175,6 @@ test("a cache miss before a cache hit does not overwrite the hit", async () => {
     readFile: async (file) => byPath.get(file.path) ?? null,
   });
 
-  // Warm run where only the FIRST file changed: its rebuild is assigned by
-  // input index while the second file is a cache hit.
   const staleSha = createHash("sha256").update("stale").digest("hex");
   const warm = await buildReconcileManifest({
     files,
@@ -225,8 +217,6 @@ test("the server cache write persists removals and prunes only completed walks",
     ["facts/deleted.md", entry("facts/deleted.md")],
   ]);
 
-  // A completed walk that only observed the surviving file must still write,
-  // or the deleted file's entry stays on disk forever.
   const pruned = planServerIdentityCacheWrite({
     persisted,
     yieldedPaths: new Set(["facts/kept.md"]),
@@ -239,8 +229,6 @@ test("the server cache write persists removals and prunes only completed walks",
     ["facts/kept.md"]
   );
 
-  // An entry dropped because its file lost its identity is a mutation even
-  // though nothing was rebuilt.
   const lostIdentity = planServerIdentityCacheWrite({
     persisted: new Map([["facts/kept.md", entry("facts/kept.md")]]),
     yieldedPaths: new Set(["facts/kept.md", "facts/lost.md"]),
@@ -249,7 +237,6 @@ test("the server cache write persists removals and prunes only completed walks",
   });
   assert.equal(lostIdentity.shouldWrite, true);
 
-  // Nothing changed: no write.
   const unchanged = planServerIdentityCacheWrite({
     persisted,
     yieldedPaths: new Set(["facts/kept.md", "facts/deleted.md"]),
@@ -258,7 +245,6 @@ test("the server cache write persists removals and prunes only completed walks",
   });
   assert.equal(unchanged.shouldWrite, false);
 
-  // An aborted walk never prunes, so it can only add.
   const aborted = planServerIdentityCacheWrite({
     persisted,
     yieldedPaths: new Set(["facts/kept.md"]),
@@ -289,19 +275,16 @@ test("a persisted classification with a matching stat identity skips the file re
     const updates = new Map<string, { statIdentity: string; excluded: boolean }>();
     const exclude = createPersistedSupportPassportPrivateFileExclusion(storage, persisted, updates);
 
-    // Cold: no persisted classification -> reads once and records it.
     assert.equal(await exclude({ root: dir, path: "facts/warm.md", filePath: target }), false);
     assert.equal(reads, 1);
     const recorded = updates.get("facts/warm.md");
     assert.ok(recorded, "the cold classification must be recorded for persistence");
     persisted.set("facts/warm.md", recorded);
 
-    // Warm: the stat identity matches -> no read.
     updates.clear();
     assert.equal(await exclude({ root: dir, path: "facts/warm.md", filePath: target }), false);
     assert.equal(reads, 1, "a matching persisted classification must not re-read the file");
 
-    // A content change moves ctime -> the classification is recomputed.
     await fs.promises.writeFile(target, memoryFile("warm-excl", "changed body"));
     updates.clear();
     assert.equal(await exclude({ root: dir, path: "facts/warm.md", filePath: target }), false);

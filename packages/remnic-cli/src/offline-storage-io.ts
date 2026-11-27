@@ -145,7 +145,6 @@ export async function createOfflineStorageIo(
   captureWriteLockBackoff?: CaptureWriteLockBackoffLimits,
   signal?: AbortSignal
 ): Promise<OfflineStorageIo> {
-  // Sweep crash-orphaned decrypt staging dirs before any snapshot enumeration
   // (#2033 P1). The normal decrypt path removes its own staging dir in a
   // `finally`; a hard crash can strand one. The default exclude glob already
   // keeps such a dir out of any push, so this is defense-in-depth to stop
@@ -167,8 +166,6 @@ export async function createOfflineStorageIo(
     };
   }
   return {
-    // With persisted classifications the warm path skips the per-file
-    // read+parse the plain exclusion performs for every candidate.
     excludeFile: persistedExclusion
       ? createPersistedSupportPassportPrivateFileExclusion(
           storage,
@@ -314,13 +311,6 @@ async function* readEncryptedOfflineFileChunks(options: {
   const aadCandidates = offlineFileAadCandidates(options.filePath, options.memoryDir);
   let lastError: unknown;
   for (const aad of aadCandidates) {
-    // Stage the decrypted plaintext INSIDE the secure-store-protected memory
-    // root, never os.tmpdir() (#2033 P1): /tmp can be world-readable, shared
-    // tmpfs, or on unencrypted storage another local process can inspect, so a
-    // crash there could strand secure-store plaintext outside the store. mkdtemp
-    // creates an owner-only (0700) unique dir; the content file is 0600 and the
-    // dir is removed in `finally`. A hard-crash orphan stays owner-only inside
-    // the protected root - the same trust domain as the encrypted originals.
     const tempDir = await mkdtemp(path.join(options.memoryDir, OFFLINE_DECRYPT_STAGING_DIR_PREFIX));
     const tempPath = path.join(tempDir, "content");
     try {
