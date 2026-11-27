@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "10.0.177",
+  "version": "10.0.178",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core. Needs plugins.slots.memory = this plugin id for hooks to fire.",
   "setup": {
