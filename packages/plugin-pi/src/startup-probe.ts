@@ -12,7 +12,7 @@ import { recheckOfflineUntilReachable, refreshOfflineStatusLabel } from "./statu
 export type StartupProbeDeps = {
   /** Pure daemon health probe: no shared-breaker writes; the chain applies `breaker` under its currency guard. */
   probeHealth: (client: RemnicClient, config: RemnicPiConfig) => Promise<DaemonHealthVerdict>;
-  statusLabel: (probe: DaemonProbeResult, namespace: string | undefined) => string;
+  statusLabel: (probe: DaemonProbeResult, namespace: string | undefined, detail?: string) => string;
   recallDisabledStatus: string;
   /** Append a persistent `remnic_state` entry; the chain owns the preflight payloads. */
   appendStateEntry: (data: StateEntryData) => void;
@@ -23,6 +23,8 @@ export type StartupProbeDeps = {
 export type DaemonHealthVerdict = {
   result: DaemonProbeResult;
   breaker: "reachable" | "unreachable" | "none";
+  /** Why the daemon is unreachable when the probe got a real HTTP answer (e.g. credentials rejected). */
+  detail?: string;
 };
 
 type StartupProbeContext = {
@@ -87,7 +89,7 @@ class StartupProbeChain {
         await client.warnIfVersionMismatch({ timeoutMs: config.startupRequestTimeoutMs });
       }
       if (config.statusEnabled && this.isCurrent()) {
-        const label = recallTimeoutBreaker.isTripped() ? recallDisabledStatus : statusLabel(statusProbe, config.namespace);
+        const label = recallTimeoutBreaker.isTripped() ? recallDisabledStatus : statusLabel(statusProbe, config.namespace, verdict.detail);
         session.setStatus("remnic", label);
         // Only the offline write counts as stale: the recall-disabled label means
         // recall is paused, not that the daemon is down, and the ready label needs no refresh.

@@ -642,6 +642,41 @@ test("session_start status probe uses the startup timeout", async (t) => {
   assert.deepEqual(statuses, [["remnic", "Remnic offline"]]);
 });
 
+test("a 401 from the live probe names the credential rejection instead of plain offline", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "stale-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+      startupRequestTimeoutMs: 2000,
+    },
+  });
+  await extension(pi as any);
+
+  await emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: {
+      setStatus: (key: string, value: string) => statuses.push([key, value]),
+    },
+    sessionManager: { getSessionId: () => "offline-auth-test", getEntries: () => [] },
+  });
+
+  await waitFor(() => statuses.length > 0, "status after the startup probe gets a 401");
+  assert.deepEqual(statuses, [["remnic", "Remnic offline — daemon rejected credentials (HTTP 401)"]]);
+});
+
 test("MCP tools/list retries once after a transient failure and registers tools", async (t) => {
   const originalFetch = globalThis.fetch;
   let mcpCalls = 0;
