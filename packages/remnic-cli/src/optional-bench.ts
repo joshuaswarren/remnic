@@ -138,7 +138,7 @@ export async function loadBenchModule(): Promise<BenchModule> {
       "The `remnic bench` commands require the optional @remnic/bench package.\n" +
         "\n" +
         "Install it alongside the CLI:\n" +
-        "  npm install -g @remnic/bench\n" +
+        "  npm install -g @remnic/bench@alpha\n" +
         "\n" +
         "Or add it to a project:\n" +
       "  pnpm add @remnic/bench@alpha\n",

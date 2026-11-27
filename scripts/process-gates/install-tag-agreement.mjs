@@ -72,21 +72,41 @@ function scanRoots() {
 // Extract the text of every `npm install`/`npm i` command in a markdown
 // file: whole fenced lines whose (stripped) content starts with the command,
 // and inline-code spans that are themselves an install command.
+// An install command may sit anywhere on a line — after a comment marker
+// (`# or: npm i ...`), a shell prefix (`mkdir d && npm install ...`), or
+// inside an inline-code span. The gate still checks every spec the command
+// names, so commands are matched anywhere on the line rather than anchored.
+const CMD_ANYWHERE = /(?:^|[^\w./-])((?:npm\s+i(?:nstall)?|pnpm\s+add)\s[^&|;`]*)/g;
+
 function* installCommands(markdown) {
-  let inFence = false;
+  // CommonMark fences: ```` ``` ```` and `~~~` both open blocks; the closer
+  // must use the same marker character, be at least as long as the opener,
+  // and carry only whitespace after it.
+  let fenceChar = null;
+  let fenceLen = 0;
   for (const line of markdown.split("\n")) {
-    const fence = line.match(/^\s*```/);
+    const fence = line.match(/^\s{0,3}(`{3,}|~{3,})/);
     if (fence) {
-      inFence = !inFence;
+      if (fenceChar === null) {
+        fenceChar = fence[1][0];
+        fenceLen = fence[1].length;
+      } else if (
+        fence[1][0] === fenceChar &&
+        fence[1].length >= fenceLen &&
+        /^\s*$/.test(line.slice(line.indexOf(fence[1]) + fence[1].length))
+      ) {
+        fenceChar = null;
+        fenceLen = 0;
+      }
       continue;
     }
-    if (inFence) {
+    if (fenceChar !== null) {
       const cmd = line.replace(/^\s*(?:[$#>]\s*)?/, "");
-      if (/^(?:npm\s+i(?:nstall)?|pnpm\s+add)\s/.test(cmd)) yield cmd;
+      for (const m of cmd.matchAll(CMD_ANYWHERE)) yield m[1].trim();
       continue;
     }
     for (const m of line.matchAll(/`([^`\n]+)`/g)) {
-      if (/^(?:npm\s+i(?:nstall)?|pnpm\s+add)\s/.test(m[1])) yield m[1];
+      for (const c of m[1].matchAll(CMD_ANYWHERE)) yield c[1].trim();
     }
   }
 }
@@ -111,6 +131,13 @@ function* documentedSpecs(files) {
   }
 }
 
+// Packages restricted to one OS (the darwin capture-native helpers) publish
+// from capture-native-helper.yml AFTER this gate runs, so their channel tag
+// cannot resolve to the just-published version yet. --resolve skips them;
+// skipping the gate's release-blocking on them keeps a lagging Darwin tag
+// from stranding the release and helper dispatch that would advance it.
+const osRestricted = new Set();
+
 function workspaceVersions() {
   const map = new Map();
   const pkgsDir = join(repoRoot, "packages");
@@ -118,6 +145,7 @@ function workspaceVersions() {
     try {
       const pj = JSON.parse(readFileSync(join(pkgsDir, dir, "package.json"), "utf8"));
       if (pj.name && pj.version) map.set(pj.name, pj.version);
+      if (pj.name && Array.isArray(pj.os) && pj.os.length > 0) osRestricted.add(pj.name);
     } catch {
       // no package.json — not a package dir
     }
@@ -147,6 +175,7 @@ const warned = new Set();
 for (const s of specs) {
   if (!CHANNEL_TAGS.has(s.tag)) continue; // pinned versions resolve by definition
   if (RESOLVE_EXEMPT_FILES.has(s.file)) continue; // channel-defining docs
+  if (osRestricted.has(s.pkg)) continue; // helper-published after this gate
   const expected = versions.get(s.pkg);
   if (!expected) continue; // documented package not in this workspace
   const key = `${s.pkg}@${s.tag}`;
@@ -172,9 +201,7 @@ for (const s of specs) {
     }
     continue;
   }
-  const expMajor = expected.split(".")[0];
-  const actMajor = actual.split(".")[0];
-  if (actMajor !== expMajor) {
+  if (actual !== expected) {
     failures += 1;
     console.error(
       `[install-tag-agreement] FAIL — ${s.file}: ${s.token} resolves to ${actual} ` +

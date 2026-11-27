@@ -696,9 +696,13 @@ jobs:
 
       # The documented install must resolve the current line (issue #3439):
       # every `npm install @remnic/*` in the docs names an explicit tag, and
-      # each channel tag named there must resolve on npm to the major line
-      # just published. Fails the release if the docs drift — e.g. they name
-      # `latest` while it still points at a frozen older line.
+      # each channel tag named there must resolve on npm to the version just
+      # published. Fails the release if the docs drift — e.g. they name
+      # `latest` while it still points at a frozen older line. OS-restricted
+      # packages (the darwin capture-native helpers) publish from
+      # capture-native-helper.yml after this step, so the gate skips them —
+      # otherwise a Darwin tag still selecting the previous line could stop
+      # the release before the dispatch that would advance it.
       - name: Verify documented install tag agreement
         run: node scripts/process-gates/install-tag-agreement.mjs --resolve
 

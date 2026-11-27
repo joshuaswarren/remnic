@@ -111,11 +111,11 @@ export function buildCodingGraphInstallHint(): string {
     "The `@remnic/coding-graph` engine is optional and not installed in this environment.\n" +
     "\n" +
     "Install it alongside @remnic/core to enable codebase-graph features:\n" +
-    "  npm install @remnic/coding-graph\n" +
+    "  npm install @remnic/coding-graph@alpha\n" +
     "\n" +
     "Or add it to a project (pnpm / yarn):\n" +
     "  pnpm add @remnic/coding-graph@alpha\n" +
-    "  yarn add @remnic/coding-graph\n"
+    "  yarn add @remnic/coding-graph@alpha\n"
   );
 }
 

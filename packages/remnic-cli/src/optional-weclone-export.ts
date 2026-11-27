@@ -36,7 +36,7 @@ export async function loadWecloneExportModule(): Promise<WecloneExportModule> {
       "The weclone training-export adapter requires the optional @remnic/export-weclone package.\n" +
         "\n" +
         "Install it alongside the CLI:\n" +
-        "  npm install -g @remnic/export-weclone\n" +
+        "  npm install -g @remnic/export-weclone@alpha\n" +
         "\n" +
         "Or add it to a project:\n" +
         "  pnpm add @remnic/export-weclone@alpha\n",
