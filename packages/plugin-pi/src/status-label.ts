@@ -21,8 +21,8 @@ type RecallTimeoutTripEntry = {
 
 export const RECALL_DISABLED_STATUS = "Remnic recall paused (timeouts delayed operations; auto-retry after cooldown)";
 
-export function remnicStatusLabel(probe: DaemonProbeResult, namespace: string | undefined): string {
-  if (probe === "unreachable") return "Remnic offline";
+export function remnicStatusLabel(probe: DaemonProbeResult, namespace: string | undefined, detail?: string): string {
+  if (probe === "unreachable") return detail ? `Remnic offline — ${detail}` : "Remnic offline";
   if (probe === "starting") return "Remnic starting";
   return `Remnic ${namespace ? `(${namespace})` : "ready"}`;
 }

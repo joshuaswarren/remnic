@@ -1003,6 +1003,13 @@ async function probeDaemonHealth(
     if (err instanceof RemnicHttpError && err.status === 503 && err.code === "not_ready") {
       return { result: "starting", breaker: "reachable" };
     }
+    // A real HTTP answer from a live daemon is not "offline": name the actual
+    // rejection (credentials, permissions) so the footer does not send the
+    // operator hunting for a network problem (COS-796: a stale lane token read
+    // as "Remnic offline" on every pane).
+    if (err instanceof RemnicHttpError && (err.status === 401 || err.status === 403)) {
+      return { result: "unreachable", breaker: "none", detail: `daemon rejected credentials (HTTP ${err.status})` };
+    }
     // Startup just proved the daemon is unreachable, so trip the fast-skip
     // breaker — otherwise the first live hook spends the full turn budget on a
     // doomed request before the breaker would trip on its own.
