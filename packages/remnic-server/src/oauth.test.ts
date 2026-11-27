@@ -11,10 +11,12 @@ import {
   type EngramAccessService,
   generateToken,
   getAllValidTokenEntriesCached,
+  isOAuthConnector,
   revokeToken,
 } from "@remnic/core";
 import {
   buildOAuthRequestHandler,
+  oauthConnectorIdForRedirect,
   OAuthState,
   parseOAuthConfig,
   applyOAuthEnvOverrides,
@@ -25,6 +27,8 @@ const OPERATOR_TOKEN = "operator-test-token";
 const CLIENT_ID = "remnic-chatgpt-test";
 const CLIENT_SECRET = "s3cret-e2e-value";
 const REDIRECT_URI = "https://chatgpt.com/connector/oauth/cb_test123";
+const DEFAULT_REDIRECT_URI = REDIRECT_URI;
+const CLAUDE_REDIRECT_URI = "https://claude.ai/api/mcp/auth_callback";
 
 /** Reserve a free TCP port so the issuer URL can be fixed before start. */
 async function reserveFreePort(): Promise<number> {
@@ -122,7 +126,7 @@ async function startHarness(overrides?: Partial<Record<string, unknown>>): Promi
     clientId: CLIENT_ID,
     clientSecret: CLIENT_SECRET,
     tokenEndpointAuthMethod: "client_secret_post",
-    redirectUris: [REDIRECT_URI],
+    redirectUris: [REDIRECT_URI, CLAUDE_REDIRECT_URI],
     ...overrides,
   });
   const server = new EngramAccessHttpServer({
@@ -133,7 +137,7 @@ async function startHarness(overrides?: Partial<Record<string, unknown>>): Promi
     // Production wiring (startServer): one coherent entries snapshot +
     // chatgpt-connector tokens pinned to /mcp.
     authTokenEntriesGetter: () => getAllValidTokenEntriesCached(tokensPath),
-    tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
+    tokenPathPolicy: (connector, pathname) => !isOAuthConnector(connector) || pathname === "/mcp",
     adminConsoleEnabled: false,
     externalRequestHandler: buildOAuthRequestHandler(config, { tokensPath }),
     resourceMetadataUrl: `${issuer}/.well-known/oauth-protected-resource/mcp`,
@@ -152,7 +156,11 @@ async function startHarness(overrides?: Partial<Record<string, unknown>>): Promi
 }
 
 /** Run the authorize → approve → token exchange flow, returning the access token. */
-async function completeOAuthFlow(h: Harness, opts?: { resource?: string }): Promise<string> {
+async function completeOAuthFlow(
+  h: Harness,
+  opts?: { resource?: string; redirectUri?: string; expectPrefix?: RegExp },
+): Promise<string> {
+  const REDIRECT_URI = opts?.redirectUri ?? DEFAULT_REDIRECT_URI;
   const { verifier, challenge } = pkcePair();
   const authorizeUrl = new URL("/authorize", h.issuer);
   authorizeUrl.searchParams.set("response_type", "code");
@@ -214,7 +222,11 @@ async function completeOAuthFlow(h: Harness, opts?: { resource?: string }): Prom
   assert.equal(tokenResp.status, 200, `token exchange must succeed: ${await tokenResp.clone().text()}`);
   const tokens = (await tokenResp.json()) as { access_token: string; token_type: string };
   assert.equal(tokens.token_type, "Bearer");
-  assert.match(tokens.access_token, /^remnic_cg_/, "access token must be a chatgpt-connector token");
+  assert.match(
+    tokens.access_token,
+    opts?.expectPrefix ?? /^remnic_cg_/,
+    "access token must carry the linked app's connector prefix",
+  );
   return tokens.access_token;
 }
 
@@ -351,6 +363,55 @@ test("re-linking rotates the chatgpt token: old token stops working", async () =
   } finally {
     await h.cleanup();
   }
+});
+
+test("per-app tokens: linking Claude never revokes ChatGPT's token, and vice versa", async () => {
+  const h = await startHarness();
+  try {
+    const chatgpt1 = await completeOAuthFlow(h);
+    const claude1 = await completeOAuthFlow(h, {
+      redirectUri: CLAUDE_REDIRECT_URI,
+      expectPrefix: /^remnic_ca_/,
+    });
+    assert.equal((await mcpInitialize(h, chatgpt1)).status, 200, "Claude link must not revoke ChatGPT");
+    assert.equal((await mcpInitialize(h, claude1)).status, 200);
+
+    // Re-linking ChatGPT rotates only ChatGPT's token.
+    const chatgpt2 = await completeOAuthFlow(h);
+    assert.equal((await mcpInitialize(h, chatgpt1)).status, 401, "ChatGPT re-link rotates its own token");
+    assert.equal((await mcpInitialize(h, chatgpt2)).status, 200);
+    assert.equal((await mcpInitialize(h, claude1)).status, 200, "ChatGPT re-link must not revoke Claude");
+
+    // Re-linking Claude rotates only Claude's token.
+    const claude2 = await completeOAuthFlow(h, {
+      redirectUri: CLAUDE_REDIRECT_URI,
+      expectPrefix: /^remnic_ca_/,
+    });
+    assert.equal((await mcpInitialize(h, claude1)).status, 401, "Claude re-link rotates its own token");
+    assert.equal((await mcpInitialize(h, claude2)).status, 200);
+    assert.equal((await mcpInitialize(h, chatgpt2)).status, 200, "Claude re-link must not revoke ChatGPT");
+
+    // Claude's token is pinned to /mcp exactly like ChatGPT's.
+    for (const denied of ["/engram/v1/health", "/oauth/pending"]) {
+      const resp = await fetch(`${h.issuer}${denied}`, { headers: { authorization: `Bearer ${claude2}` } });
+      assert.equal(resp.status, 401, `claude-ai token must be denied on ${denied}`);
+    }
+    const connectors = getAllValidTokenEntriesCached(h.tokensPath).map((e) => e.connector).sort();
+    assert.deepEqual(connectors, ["chatgpt", "claude-ai"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("oauthConnectorIdForRedirect maps hosts to per-app connector ids", () => {
+  assert.equal(oauthConnectorIdForRedirect("https://chatgpt.com/connector/oauth/abc"), "chatgpt");
+  assert.equal(oauthConnectorIdForRedirect("https://claude.ai/api/mcp/auth_callback"), "claude-ai");
+  assert.equal(oauthConnectorIdForRedirect("https://claude.com/api/mcp/auth_callback"), "claude-ai");
+  assert.equal(oauthConnectorIdForRedirect("https://evilclaude.ai/cb"), "oauth-app");
+  assert.equal(oauthConnectorIdForRedirect("https://example.com/cb"), "oauth-app");
+  assert.equal(oauthConnectorIdForRedirect("not a url"), "oauth-app");
+  for (const id of ["chatgpt", "claude-ai", "oauth-app"]) assert.equal(isOAuthConnector(id), true);
+  assert.equal(isOAuthConnector("codex"), false);
 });
 
 test("authorize rejections: bad client, unregistered redirect, missing PKCE, setup mode", async () => {
@@ -641,7 +702,7 @@ test("disabled OAuth serves no facade endpoints and keeps the bare Bearer challe
     port: 0,
     authToken: OPERATOR_TOKEN,
     authTokenEntriesGetter: () => getAllValidTokenEntriesCached(tokensPath),
-    tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
+    tokenPathPolicy: (connector, pathname) => !isOAuthConnector(connector) || pathname === "/mcp",
     adminConsoleEnabled: false,
     externalRequestHandler: buildOAuthRequestHandler(config, { tokensPath }),
   });
@@ -861,7 +922,7 @@ test("token exchange: persist failure returns 500 and preserves the code; retry 
     port,
     authToken: OPERATOR_TOKEN,
     authTokenEntriesGetter: () => getAllValidTokenEntriesCached(tokensPath),
-    tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
+    tokenPathPolicy: (connector, pathname) => !isOAuthConnector(connector) || pathname === "/mcp",
     adminConsoleEnabled: false,
     externalRequestHandler: buildOAuthRequestHandler(config, { tokensPath }),
   });

@@ -68,6 +68,7 @@ import {
   doctorConnector,
   generateToken,
   listTokens,
+  isOAuthConnector,
   revokeToken,
   listSpaces,
   getActiveSpace,
@@ -4181,7 +4182,7 @@ function resolveStatusProbeToken(): string | undefined {
     // a ChatGPT entry at the head of the store doesn't produce a misleading
     // 401 when an ordinary connector token would authenticate health.
     const usable = listTokens().find(
-      (t) => t.connector !== "chatgpt" && typeof t.token === "string" && t.token.length > 0,
+      (t) => !isOAuthConnector(t.connector) && typeof t.token === "string" && t.token.length > 0,
     );
     if (usable) return usable.token;
   } catch {

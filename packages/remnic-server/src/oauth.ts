@@ -7,7 +7,8 @@
  * endpoint (`POST /mcp`) is bearer-token protected, so this module lets
  * Remnic act as its OWN authorization server: ChatGPT runs a standard
  * authorization-code + PKCE flow against these endpoints and receives a
- * regular Remnic connector token (connector id `chatgpt`) as the OAuth
+ * regular Remnic connector token (per-app connector id: `chatgpt`,
+ * `claude-ai`, or `oauth-app`; see oauthConnectorIdForRedirect) as the OAuth
  * access token. The existing bearer validation on `/mcp` then works
  * unchanged.
  *
@@ -87,8 +88,27 @@ const AUTHORIZATION_CODE_TTL_MS = 120_000;
 /** 128 bits of entropy in hex = 32 chars. */
 const HIGH_ENTROPY_HEX_BYTES = 16;
 
-/** Connector id under which OAuth access tokens are minted. */
-const CHATGPT_CONNECTOR_ID = "chatgpt";
+/**
+ * Connector id under which an OAuth access token is minted, chosen per
+ * linked app from the (already allowlist-validated) redirect URI host.
+ * Each app gets its own token-store entry, so re-linking one app rotates
+ * only that app's token: linking Claude never revokes ChatGPT's token and
+ * vice versa. ChatGPT keeps the original `chatgpt` id so existing links
+ * are unaffected. Every id here must be listed in core OAUTH_CONNECTOR_IDS
+ * so the access server pins it to `/mcp`.
+ */
+export function oauthConnectorIdForRedirect(redirectUri: string): string {
+  let host = "";
+  try {
+    host = new URL(redirectUri).hostname.toLowerCase();
+  } catch {
+    return "oauth-app";
+  }
+  const isHost = (domain: string) => host === domain || host.endsWith(`.${domain}`);
+  if (isHost("chatgpt.com") || isHost("openai.com")) return "chatgpt";
+  if (isHost("claude.ai") || isHost("claude.com")) return "claude-ai";
+  return "oauth-app";
+}
 
 // ── Config schema + parser ──────────────────────────────────────────────────
 
@@ -786,14 +806,17 @@ class RemnicOAuthProvider implements OAuthServerProvider {
     if (!entry) {
       throw new InvalidGrantError("authorization code is invalid, expired, or already used");
     }
-    // Mint a fresh Remnic connector token as the OAuth access token.
-    // commitTokenEntry replaces the previous `chatgpt` entry, so
-    // re-linking rotates the token — documented behavior. If the
+    // Mint a fresh Remnic connector token as the OAuth access token, under
+    // a per-app connector id derived from the redirect URI bound to this
+    // code. commitTokenEntry replaces only that app's previous entry, so
+    // re-linking an app rotates its own token (documented behavior) and
+    // never another app's. If the
     // token-store write fails (disk full, permissions), revive the code
     // so the client can retry the exchange instead of being forced
     // through a fresh authorize+approve (AGENTS.md #14 — don't burn old
     // state before the replacement is confirmed).
-    const tokenEntry = buildTokenEntry(CHATGPT_CONNECTOR_ID);
+    const connectorId = oauthConnectorIdForRedirect(entry.redirectUri);
+    const tokenEntry = buildTokenEntry(connectorId);
     try {
       commitTokenEntry(tokenEntry, this.tokensPath);
     } catch (err) {
@@ -805,7 +828,7 @@ class RemnicOAuthProvider implements OAuthServerProvider {
       );
       throw new ServerError("failed to persist the issued token; retry the exchange");
     }
-    log.info(`OAuth token issued for connector "${CHATGPT_CONNECTOR_ID}" (client=${client.client_id})`);
+    log.info(`OAuth token issued for connector "${connectorId}" (client=${client.client_id})`);
     return {
       access_token: tokenEntry.token,
       token_type: "Bearer",

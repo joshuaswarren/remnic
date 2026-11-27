@@ -53,7 +53,21 @@ const TOKEN_PREFIXES: Record<string, string> = {
   "amp": "remnic_am_",
   "generic-mcp": "remnic_gm_",
   "chatgpt": "remnic_cg_",
+  "claude-ai": "remnic_ca_",
+  "oauth-app": "remnic_oa_",
 };
+
+/**
+ * Connector ids minted by the OAuth facade (remnic-server oauth.ts), one per
+ * linked app so linking one app never rotates another app's token. Tokens
+ * under these ids are pinned to `/mcp` by the access server's path policy.
+ */
+export const OAUTH_CONNECTOR_IDS: readonly string[] = ["chatgpt", "claude-ai", "oauth-app"];
+
+/** True when `connector` is an OAuth-minted connector (pinned to `/mcp`). */
+export function isOAuthConnector(connector: string | undefined): boolean {
+  return connector !== undefined && OAUTH_CONNECTOR_IDS.includes(connector);
+}
 
 function defaultTokensPath(): string {
   return path.join(resolveHomeDir(), ".remnic", "tokens.json");
