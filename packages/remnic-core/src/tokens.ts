@@ -53,20 +53,33 @@ const TOKEN_PREFIXES: Record<string, string> = {
   "amp": "remnic_am_",
   "generic-mcp": "remnic_gm_",
   "chatgpt": "remnic_cg_",
-  "claude-ai": "remnic_ca_",
-  "oauth-app": "remnic_oa_",
 };
 
 /**
  * Connector ids minted by the OAuth facade (remnic-server oauth.ts), one per
- * linked app so linking one app never rotates another app's token. Tokens
- * under these ids are pinned to `/mcp` by the access server's path policy.
+ * linked app so linking one app never rotates another app's token:
+ * `chatgpt`, `claude-ai`, and `oauth-app-<redirect host>` for any other app.
+ * Tokens under these ids are pinned to `/mcp` by the access server's path
+ * policy.
  */
-export const OAUTH_CONNECTOR_IDS: readonly string[] = ["chatgpt", "claude-ai", "oauth-app"];
+export const OAUTH_CONNECTOR_IDS = ["chatgpt", "claude-ai"] as const;
+
+/** Prefix for per-host OAuth connector ids of apps other than ChatGPT/Claude. */
+export const OAUTH_APP_CONNECTOR_PREFIX = "oauth-app-";
 
 /** True when `connector` is an OAuth-minted connector (pinned to `/mcp`). */
 export function isOAuthConnector(connector: string | undefined): boolean {
-  return connector !== undefined && OAUTH_CONNECTOR_IDS.includes(connector);
+  if (connector === undefined) return false;
+  return (
+    OAUTH_CONNECTOR_IDS.some((id) => id === connector) ||
+    connector.startsWith(OAUTH_APP_CONNECTOR_PREFIX)
+  );
+}
+
+function oauthTokenPrefix(connector: string): string | undefined {
+  if (connector === "claude-ai") return "remnic_ca_";
+  if (connector.startsWith(OAUTH_APP_CONNECTOR_PREFIX)) return "remnic_oa_";
+  return undefined;
 }
 
 function defaultTokensPath(): string {
@@ -236,7 +249,7 @@ export function saveTokenStore(store: TokenStore, tokensPath?: string): void {
  * commitTokenEntry() to persist the candidate.
  */
 export function buildTokenEntry(connector: string, capabilities?: TokenCapabilities): TokenEntry {
-  const prefix = TOKEN_PREFIXES[connector] ?? "remnic_xx_";
+  const prefix = TOKEN_PREFIXES[connector] ?? oauthTokenPrefix(connector) ?? "remnic_xx_";
   const token = prefix + randomBytes(24).toString("hex");
   // Every newly-built entry carries an EXPLICIT capabilities record (issue
   // #1837). When none is requested, record a deliberate unrestricted

@@ -8,7 +8,7 @@
  * Remnic act as its OWN authorization server: ChatGPT runs a standard
  * authorization-code + PKCE flow against these endpoints and receives a
  * regular Remnic connector token (per-app connector id: `chatgpt`,
- * `claude-ai`, or `oauth-app`; see oauthConnectorIdForRedirect) as the OAuth
+ * `claude-ai`, or `oauth-app-<host>`; see oauthConnectorIdForRedirect) as the OAuth
  * access token. The existing bearer validation on `/mcp` then works
  * unchanged.
  *
@@ -64,7 +64,13 @@ import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprot
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { OAuthClientInformationFull, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { buildTokenEntry, commitTokenEntry, getAllValidTokensCached, log } from "@remnic/core";
+import {
+  buildTokenEntry,
+  commitTokenEntry,
+  getAllValidTokensCached,
+  log,
+  OAUTH_APP_CONNECTOR_PREFIX,
+} from "@remnic/core";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -102,12 +108,15 @@ export function oauthConnectorIdForRedirect(redirectUri: string): string {
   try {
     host = new URL(redirectUri).hostname.toLowerCase();
   } catch {
-    return "oauth-app";
+    return `${OAUTH_APP_CONNECTOR_PREFIX}unknown`;
   }
   const isHost = (domain: string) => host === domain || host.endsWith(`.${domain}`);
   if (isHost("chatgpt.com") || isHost("openai.com")) return "chatgpt";
   if (isHost("claude.ai") || isHost("claude.com")) return "claude-ai";
-  return "oauth-app";
+  // Any other app gets its own id keyed by redirect host, so two such apps
+  // never rotate each other's tokens either.
+  const slug = host.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "unknown";
+  return `${OAUTH_APP_CONNECTOR_PREFIX}${slug}`;
 }
 
 // ── Config schema + parser ──────────────────────────────────────────────────

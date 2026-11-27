@@ -835,7 +835,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     authToken: authToken || undefined,
     // Entry-based getter: validation + connector identity from ONE cached
     // snapshot (see tokens.ts). The path policy pins OAuth-minted tokens
-    // (connectors in OAUTH_CONNECTOR_IDS: chatgpt, claude-ai, oauth-app) to
+    // (chatgpt, claude-ai, oauth-app-<host>; see isOAuthConnector) to
     // the MCP endpoint only — they never
     // authorize REST/admin routes. All other connector tokens keep full
     // access, matching pre-OAuth behavior.

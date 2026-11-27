@@ -29,6 +29,7 @@ const CLIENT_SECRET = "s3cret-e2e-value";
 const REDIRECT_URI = "https://chatgpt.com/connector/oauth/cb_test123";
 const DEFAULT_REDIRECT_URI = REDIRECT_URI;
 const CLAUDE_REDIRECT_URI = "https://claude.ai/api/mcp/auth_callback";
+const OTHER_REDIRECT_URI = "https://example.com/oauth/callback";
 
 /** Reserve a free TCP port so the issuer URL can be fixed before start. */
 async function reserveFreePort(): Promise<number> {
@@ -126,7 +127,7 @@ async function startHarness(overrides?: Partial<Record<string, unknown>>): Promi
     clientId: CLIENT_ID,
     clientSecret: CLIENT_SECRET,
     tokenEndpointAuthMethod: "client_secret_post",
-    redirectUris: [REDIRECT_URI, CLAUDE_REDIRECT_URI],
+    redirectUris: [REDIRECT_URI, CLAUDE_REDIRECT_URI, OTHER_REDIRECT_URI],
     ...overrides,
   });
   const server = new EngramAccessHttpServer({
@@ -398,6 +399,15 @@ test("per-app tokens: linking Claude never revokes ChatGPT's token, and vice ver
     }
     const connectors = getAllValidTokenEntriesCached(h.tokensPath).map((e) => e.connector).sort();
     assert.deepEqual(connectors, ["chatgpt", "claude-ai"]);
+
+    // A third app on another host gets its own /mcp-pinned token and
+    // rotates neither ChatGPT nor Claude.
+    const other = await completeOAuthFlow(h, { redirectUri: OTHER_REDIRECT_URI, expectPrefix: /^remnic_oa_/ });
+    assert.equal((await mcpInitialize(h, other)).status, 200);
+    assert.equal((await mcpInitialize(h, chatgpt2)).status, 200);
+    assert.equal((await mcpInitialize(h, claude2)).status, 200);
+    const otherHealth = await fetch(`${h.issuer}/engram/v1/health`, { headers: { authorization: `Bearer ${other}` } });
+    assert.equal(otherHealth.status, 401, "fallback-app token must be /mcp-only");
   } finally {
     await h.cleanup();
   }
@@ -407,10 +417,11 @@ test("oauthConnectorIdForRedirect maps hosts to per-app connector ids", () => {
   assert.equal(oauthConnectorIdForRedirect("https://chatgpt.com/connector/oauth/abc"), "chatgpt");
   assert.equal(oauthConnectorIdForRedirect("https://claude.ai/api/mcp/auth_callback"), "claude-ai");
   assert.equal(oauthConnectorIdForRedirect("https://claude.com/api/mcp/auth_callback"), "claude-ai");
-  assert.equal(oauthConnectorIdForRedirect("https://evilclaude.ai/cb"), "oauth-app");
-  assert.equal(oauthConnectorIdForRedirect("https://example.com/cb"), "oauth-app");
-  assert.equal(oauthConnectorIdForRedirect("not a url"), "oauth-app");
-  for (const id of ["chatgpt", "claude-ai", "oauth-app"]) assert.equal(isOAuthConnector(id), true);
+  assert.equal(oauthConnectorIdForRedirect("https://evilclaude.ai/cb"), "oauth-app-evilclaude-ai");
+  assert.equal(oauthConnectorIdForRedirect("https://example.com/cb"), "oauth-app-example-com");
+  assert.equal(oauthConnectorIdForRedirect("https://other.example.org/cb"), "oauth-app-other-example-org");
+  assert.equal(oauthConnectorIdForRedirect("not a url"), "oauth-app-unknown");
+  for (const id of ["chatgpt", "claude-ai", "oauth-app-example-com"]) assert.equal(isOAuthConnector(id), true);
   assert.equal(isOAuthConnector("codex"), false);
 });
 

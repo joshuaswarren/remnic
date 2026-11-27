@@ -1068,6 +1068,7 @@ export {
   getAllValidTokenEntriesCached,
   resolveConnectorFromToken,
   OAUTH_CONNECTOR_IDS,
+  OAUTH_APP_CONNECTOR_PREFIX,
   isOAuthConnector,
   loadTokenStore,
   saveTokenStore,

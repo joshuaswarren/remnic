@@ -13,9 +13,10 @@ would revoke Claude's.
 - `oauthConnectorIdForRedirect()` (remnic-server `oauth.ts`) picks the
   connector id from the allowlist-validated redirect URI bound to the code:
   `chatgpt.com` / `openai.com` -> `chatgpt` (unchanged, `remnic_cg_`),
-  `claude.ai` / `claude.com` -> `claude-ai` (`remnic_ca_`), anything else ->
-  `oauth-app` (`remnic_oa_`). Suffix matching requires a dot boundary, so
-  `evilclaude.ai` maps to `oauth-app`.
+  `claude.ai` / `claude.com` -> `claude-ai` (`remnic_ca_`), any other app ->
+  its own `oauth-app-<redirect host>` id (`remnic_oa_`), so two other apps
+  never rotate each other either. Suffix matching requires a dot boundary,
+  so `evilclaude.ai` maps to `oauth-app-evilclaude-ai`.
 - Core exports `OAUTH_CONNECTOR_IDS` and `isOAuthConnector()`. The server
   path policy, server healthcheck token picker and CLI status probe use it,
   so every OAuth-minted token stays pinned to `/mcp` (no REST or operator
@@ -23,7 +24,7 @@ would revoke Claude's.
 
 ## Tests (macstudio-1, branch `fix/oauth-per-app-connector-tokens`)
 
-- `packages/remnic-server/src/oauth.test.ts`: 19/19 pass, including the new
+- `packages/remnic-server/src/oauth.test.ts`: 19/19 pass, including the new (third-app case included)
   - "per-app tokens: linking Claude never revokes ChatGPT's token, and vice
     versa" (both directions, own-token rotation still works, Claude token
     denied on `/engram/v1/health` and `/oauth/pending`, store holds exactly
@@ -36,6 +37,9 @@ would revoke Claude's.
 ## Deploy note
 
 Existing ChatGPT token entries keep connector id `chatgpt`, so no store
-migration is needed. ChatGPT's token issued before this fix was already
-rotated by the Claude link and needs one re-link after deploy; after that,
-each app keeps its own token.
+migration is needed. Where Claude was linked before this fix (as on
+2026-11-26 at 11:17 PM CT), Claude's live token sits in the legacy `chatgpt`
+entry and ChatGPT's token was already revoked. After deploy, re-link BOTH
+apps: Claude's re-link creates its own `claude-ai` entry, and ChatGPT's
+re-link replaces the legacy `chatgpt` entry. After both re-links, each app
+holds its own token in a separate entry.
