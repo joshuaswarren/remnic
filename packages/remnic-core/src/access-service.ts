@@ -1389,7 +1389,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     });
 
     const auditEnabled = accessCaps.recallAuditAnomalyDetection;
-    const auditLogEnabled = false; // Audit JSONL logging — off until wired to a directory
+    const auditLogEnabled = accessCaps.recallAuditLog;
     if (auditEnabled || auditLogEnabled) {
       const auditConfig: AccessAuditConfig = {
         audit: {

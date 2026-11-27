@@ -1,4 +1,8 @@
-import type { SessionObserverBandConfig } from "./types.js";
+export interface SessionObserverBandConfig {
+  maxBytes: number;
+  triggerDeltaBytes: number;
+  triggerDeltaTokens: number;
+}
 
 export const DEFAULT_SESSION_OBSERVER_BANDS: SessionObserverBandConfig[] = [
   { maxBytes: 50_000, triggerDeltaBytes: 4_800, triggerDeltaTokens: 1_200 },

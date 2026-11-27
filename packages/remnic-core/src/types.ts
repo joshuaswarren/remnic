@@ -8,6 +8,7 @@ import type { WearablesConfig } from "./wearables/types.js";
 import type { ExtractionSpanConfig, ExtractedFactSpanRef } from "./extraction-span-config.js";
 import type { ExtractionLivenessConfig } from "./extraction-liveness.js";
 import type { ExtractionFailureClass } from "./types-extraction-failure.js";
+import type { SessionObserverBandConfig } from "./session-observer-bands.js";
 import type { ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { ExternalWikiRoot } from "./external-wiki-config.js";
 import type { StateViewResult } from "./recall-state-view.js";
@@ -199,11 +200,7 @@ export interface RecallPipelineConfig {
   pipeline: RecallSectionConfig[];
 }
 
-export interface SessionObserverBandConfig {
-  maxBytes: number;
-  triggerDeltaBytes: number;
-  triggerDeltaTokens: number;
-}
+export type { SessionObserverBandConfig } from "./session-observer-bands.js";
 
 export interface FileHygieneConfig {
   enabled: boolean;
@@ -1151,6 +1148,8 @@ export interface PluginConfig
    * Ships disabled.
    */
   recallAuditAnomalyDetectionEnabled: boolean;
+  /** Recall-audit JSONL log under `<memoryDir>/transcripts/` (issue #3548, default-off). */
+  recallAuditLogEnabled: boolean;
   /** Rolling window over which audit entries are analyzed. */
   recallAuditAnomalyWindowMs: number;
   /** Threshold for the `repeat-query` flag. */
