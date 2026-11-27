@@ -871,11 +871,24 @@ export async function importNativeMemories(
       },
       { source: `${wearableSourceLabel(sourceId)}:native` },
     );
-    const nativeWriteResult = await deps.writer.writeSealedMemory(nativeEnvelope, {
-      importance: scoreImportance(content, "fact", memory.tags ?? []),
-      contentHashSource: content,
-      status,
-    });
+    // Per-item isolation: one rejected write must not discard the items
+    // already stored on this page — the caller can only account for what
+    // this function returns, so a mid-page throw would hide completed
+    // writes from the summary and skip their reindex. The failed item is
+    // left out of importedIds and retries on the next sync.
+    let nativeWriteResult;
+    try {
+      nativeWriteResult = await deps.writer.writeSealedMemory(nativeEnvelope, {
+        importance: scoreImportance(content, "fact", memory.tags ?? []),
+        contentHashSource: content,
+        status,
+      });
+    } catch (err) {
+      warnings.push(
+        `${sourceId}: native memory ${memory.id} failed to import: ${describeErrorForOperator(err)} — it retries on the next sync`,
+      );
+      continue;
+    }
     // #1645: a tombstone-blocked native import lands pending_review (no active
     // copy) — count it as blocked, NOT imported. Still record the provider id in
     // importedIds so the next sync doesn't re-import and duplicate the pending

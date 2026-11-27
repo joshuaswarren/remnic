@@ -16,6 +16,7 @@
  */
 
 import { fillWearableConversationLocations } from "../location/tagging.js";
+import { isAbortError } from "../abort-error.js";
 import { cleanConversation } from "./cleanup.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import {
@@ -583,22 +584,36 @@ export async function syncWearableSource(
       let cursor: string | null | undefined = undefined;
       const seenNativeCursors = new Set<string>();
       for (let page = 0; page < PAGE_SAFETY_CEILING; page++) {
-        const result = await connector.fetchNativeMemories({
-          cursor,
-          signal: options.signal,
-        });
-        const imported = await importNativeMemories(
-          connector.id,
-          result.memories,
-          alreadyImported,
-          settings,
-          nativeMemoryGen,
-        );
-        summary.warnings.push(...imported.warnings);
-        summary.nativeMemoriesImported += imported.imported;
-        summary.memoriesBlocked += imported.tombstoneBlocked;
-        importedNativeIds.push(...imported.importedIds);
-        for (const id of imported.importedIds) alreadyImported.add(id);
+        // Native memories are derived content: transcripts and the memory
+        // pass are already stored, and the watermark only advances at the
+        // end of the run. A provider rejection here (expired scope grant,
+        // API outage) must skip the import, not abort the run — otherwise
+        // every later sync replays the same failure and never advances.
+        let result;
+        try {
+          result = await connector.fetchNativeMemories({
+            cursor,
+            signal: options.signal,
+          });
+          const imported = await importNativeMemories(
+            connector.id,
+            result.memories,
+            alreadyImported,
+            settings,
+            nativeMemoryGen,
+          );
+          summary.warnings.push(...imported.warnings);
+          summary.nativeMemoriesImported += imported.imported;
+          summary.memoriesBlocked += imported.tombstoneBlocked;
+          importedNativeIds.push(...imported.importedIds);
+          for (const id of imported.importedIds) alreadyImported.add(id);
+        } catch (err) {
+          if (isAbortError(err)) throw err;
+          summary.warnings.push(
+            `${connector.id}: native-memory import failed: ${describeErrorForOperator(err)} — skipped; it retries on the next sync`,
+          );
+          break;
+        }
         if (!result.nextCursor) break;
         if (seenNativeCursors.has(result.nextCursor)) {
           summary.warnings.push(
