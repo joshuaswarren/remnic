@@ -1743,7 +1743,7 @@ export type SealedWriteExtras = Omit<
 >;
 
 export class StorageManager extends TombstoneBlockedCaptureIndexHost {
-  private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
+  private knowledgeIndexCache: { scored: import("./types.js").ScoredEntity[]; builtAt: number; revision: number; keyId: string } | null = null;
   private readonly deletionRevisionStore: DeletionRevisionStore;
   private readonly casRevisions: CasRevisionHost;
   private artifactIndexCache: { memories: MemoryFile[]; loadedAtMs: number; writeVersion: number } | null = null;
