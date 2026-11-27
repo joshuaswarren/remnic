@@ -234,6 +234,7 @@ export class BufferIngressCounters {
   private memoFor(entry: BufferEntryState): EntryDigestMemo {
     const retained = entry.retainedTurns;
     const memo = this.memos.get(entry);
+
     const retainedMatch =
       memo?.retainedRef === undefined
         ? memo !== undefined && retained === undefined

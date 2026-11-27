@@ -68,6 +68,7 @@ import {
   doctorConnector,
   generateToken,
   listTokens,
+  isOAuthConnector,
   revokeToken,
   listSpaces,
   getActiveSpace,
@@ -3995,8 +3996,9 @@ function resolveStatusProbeToken(): string | undefined {
   const operatorToken = resolveOperatorToken(resolveConfigPath());
   if (operatorToken) return operatorToken;
   try {
+
     const usable = listTokens().find(
-      (t) => t.connector !== "chatgpt" && typeof t.token === "string" && t.token.length > 0,
+      (t) => !isOAuthConnector(t.connector) && t.token.length > 0,
     );
     if (usable) return usable.token;
   } catch {

@@ -142,19 +142,11 @@ export interface SearchBackendStatus {
   embeddedFiles: number | null;
 }
 
-/**
- * Abstract search backend interface.
- *
- * Implementations:
- * - QmdClient (default, local hybrid BM25+vector+reranking)
- * - OramaBackend (embedded, pure JS, hybrid FTS+vector)
- * - LanceDbBackend (embedded, native Arrow bindings, RRF reranking)
- * - MeilisearchBackend (server-based SDK, hybrid search)
- * - RemoteSearchBackend (HTTP REST adapter)
- * - NoopSearchBackend (graceful degradation)
- *
- * See docs/writing-a-search-backend.md for the implementation guide.
- */
+export interface OperationalSearchHealth extends SearchBackendStatus {
+  collectionState: "present" | "missing" | "unknown";
+  isCurrent?: () => boolean;
+}
+
 export interface SearchBackend {
   probe(execution?: SearchExecutionOptions): Promise<boolean>;
   /**
@@ -165,8 +157,19 @@ export interface SearchBackend {
   checkAvailability?(execution?: SearchExecutionOptions): Promise<boolean>;
   isAvailable(): boolean;
   debugStatus(): string;
-  /** Optional embedding backlog status for health surfaces. */
+  operationalHealthIdentity?(): object | null;
+  getVersionStatus?(): {
+    installedVersion: string | null;
+    supportedVersion: string;
+    supported: boolean;
+    upgradeAvailable: boolean;
+    capabilities?: { doctor?: boolean };
+  } | null;
   status?(): Promise<SearchBackendStatus>;
+  readOperationalHealth?(
+    memoryDir: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<OperationalSearchHealth | undefined>;
 
   search(
     query: string,

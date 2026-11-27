@@ -17,7 +17,13 @@ import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprot
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { OAuthClientInformationFull, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { buildTokenEntry, commitTokenEntry, getAllValidTokensCached, log } from "@remnic/core";
+import {
+  buildTokenEntry,
+  commitTokenEntry,
+  getAllValidTokensCached,
+  log,
+  OAUTH_APP_CONNECTOR_PREFIX,
+} from "@remnic/core";
 
 
 const ALLOWED_TOKEN_AUTH_METHODS = ["client_secret_post", "none"] as const;
@@ -26,19 +32,27 @@ export type OAuthTokenEndpointAuthMethod = (typeof ALLOWED_TOKEN_AUTH_METHODS)[n
 /** Default TTL for pending authorizations (10 minutes). */
 const DEFAULT_APPROVAL_TTL_SECONDS = 600;
 
-/** Authorization-code TTL (OAuth 2.1 recommends short single-use codes). */
 const AUTHORIZATION_CODE_TTL_MS = 120_000;
 
-/** 128 bits of entropy in hex = 32 chars. */
 const HIGH_ENTROPY_HEX_BYTES = 16;
 
-const CHATGPT_CONNECTOR_ID = "chatgpt";
+export function oauthConnectorIdForRedirect(redirectUri: string): string {
+  let url: URL;
+  try {
+    url = new URL(redirectUri);
+  } catch {
+    return `${OAUTH_APP_CONNECTOR_PREFIX}unknown`;
+  }
+  const host = url.hostname.toLowerCase();
+  const isHost = (domain: string) => host === domain || host.endsWith(`.${domain}`);
+  if (isHost("chatgpt.com") || isHost("openai.com")) return "chatgpt";
+  if (isHost("claude.ai") || isHost("claude.com")) return "claude-ai";
+  const key = `${url.protocol}//${host}${url.port ? `:${url.port}` : ""}`;
+  const slug = encodeURIComponent(key) || "unknown";
+  return `${OAUTH_APP_CONNECTOR_PREFIX}${slug}`;
+}
 
 
-/**
- * Raw config block as it appears in `server.oauth`. All fields optional at
- * the type level; the parser enforces requirements when `enabled: true`.
- */
 export interface OAuthConfigInput {
   enabled?: unknown;
   issuerUrl?: unknown;
@@ -667,7 +681,8 @@ class RemnicOAuthProvider implements OAuthServerProvider {
     if (!entry) {
       throw new InvalidGrantError("authorization code is invalid, expired, or already used");
     }
-    const tokenEntry = buildTokenEntry(CHATGPT_CONNECTOR_ID);
+    const connectorId = oauthConnectorIdForRedirect(entry.redirectUri);
+    const tokenEntry = buildTokenEntry(connectorId);
     try {
       commitTokenEntry(tokenEntry, this.tokensPath);
     } catch (err) {
@@ -679,7 +694,7 @@ class RemnicOAuthProvider implements OAuthServerProvider {
       );
       throw new ServerError("failed to persist the issued token; retry the exchange");
     }
-    log.info(`OAuth token issued for connector "${CHATGPT_CONNECTOR_ID}" (client=${client.client_id})`);
+    log.info(`OAuth token issued for connector "${connectorId}" (client=${client.client_id})`);
     return {
       access_token: tokenEntry.token,
       token_type: "Bearer",

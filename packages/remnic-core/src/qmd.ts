@@ -23,6 +23,7 @@ import {
   versionAtLeast,
 } from "./qmd-preflight.js";
 import { EMPTY_QMD_STATUS, type QmdStatusReport, embedQmdFiles, fetchQmdStatus } from "./qmd-status.js";
+import { parseOperationalHealth, qmdHealthResponseSchema, UNKNOWN_OPERATIONAL_HEALTH } from "./qmd-health-metadata.js";
 import { type CommandChildProcess, launchProcess } from "./runtime/child-process.js";
 import { mergeEnv } from "./runtime/env.js";
 import {
@@ -30,6 +31,7 @@ import {
   type SearchDegradation,
   type SearchExecutionOptions,
   type SearchQueryOptions,
+  type OperationalSearchHealth,
   resolveEnsureCollectionArgs,
 } from "./search/port.js";
 import type { QmdSearchExplain, QmdSearchResult } from "./types.js";
@@ -883,7 +885,7 @@ export class QmdClient implements SearchBackend {
   private qmdCapabilities: QmdCapabilities = resolveQmdCapabilities(null);
 
   private daemonSession: QmdDaemonSession | null = null;
-  /** Identical in-flight search() calls share one daemon query. Cancel fires only when every waiter aborts. */
+  private daemonGeneration = 0;
   private readonly daemonSearchJoiner = createInflightJoiner<{
     results: QmdSearchResult[];
     degraded: boolean;
@@ -1017,6 +1019,7 @@ export class QmdClient implements SearchBackend {
     const daemonIndexName = this.qmdIndexName && this.qmdCapabilities.mcpIndexSelection ? this.qmdIndexName : undefined;
     const daemonSessionPath = `${normalizedPath}\0${daemonIndexName ?? ""}\0${this.cliVersion ?? ""}`;
     if (!this.daemonSession || this.daemonSessionPath !== daemonSessionPath) {
+      this.daemonGeneration++;
       await releaseSharedDaemonSession(this.daemonSession);
       this.daemonSession = retainSharedDaemonSession(
         normalizedPath,
@@ -1246,6 +1249,7 @@ export class QmdClient implements SearchBackend {
       if (signal?.aborted) return;
       const postInstall = await this.probePostInstallQmdVersion(supported, signal);
       if (signal?.aborted) return;
+      this.daemonGeneration++;
       this.qmdPath = postInstall.qmdPath;
       this.qmdPathSource = postInstall.source;
       this.cliVersion = postInstall.version;
@@ -1409,17 +1413,83 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  /**
-   * Query QMD collection status for embedding backlog metrics.
-   * Runs `qmd status -c <collection>` and parses the text output.
-   * Returns null fields when the command fails or output is unparseable.
-   */
+  operationalHealthIdentity(): object | null {
+    return this.daemonEnabled && this.daemonAvailable
+      ? this.daemonSession?.activeProcessIdentity() ?? null : null;
+  }
+
+  async readOperationalHealth(
+    memoryDir: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<OperationalSearchHealth | undefined> {
+    if (execution?.signal?.aborted) return UNKNOWN_OPERATIONAL_HEALTH;
+    const session = this.daemonSession;
+    if (!this.daemonEnabled || !this.daemonAvailable || !session?.isActive()) return undefined;
+    if (!this.getVersionStatus().supported) return UNKNOWN_OPERATIONAL_HEALTH;
+    const processIdentity = session.activeProcessIdentity();
+    const generation = this.daemonGeneration;
+    const sessionPath = this.daemonSessionPath;
+    const binary = this.qmdPath;
+    const version = this.cliVersion;
+    const index = this.qmdIndexName;
+    const collection = this.collection;
+    const selectedIndex = index && this.qmdCapabilities.mcpIndexSelection ? index : "";
+    const expectedPath = `${binary.trim() || "qmd"}\0${selectedIndex.trim()}\0${version?.trim() ?? ""}`;
+    const runtimeEnvKey = stableRuntimeEnvKey(this.qmdRuntimeEnv);
+    const ownershipKey = `${expectedPath}\0${runtimeEnvKey}`;
+    const owner = SHARED_DAEMON_SESSIONS.get(ownershipKey);
+    if (sessionPath !== expectedPath || owner?.session !== session || owner.refs <= 0) {
+      return UNKNOWN_OPERATIONAL_HEALTH;
+    }
+    const capabilities = this.qmdCapabilities;
+    const beforeEnv = mergeEnv({ NO_COLOR: "1", ...this.qmdRuntimeEnv });
+    const environmentKey = stableRuntimeEnvKey(beforeEnv);
+    const beforeCwd = process.cwd();
+    const deadline = performance.now() + 5_000;
+    const isCurrent = () => {
+      try {
+        return !execution?.signal?.aborted && performance.now() < deadline &&
+          processIdentity !== null && this.daemonGeneration === generation &&
+          this.daemonSession === session && this.daemonAvailable &&
+          session.activeProcessIdentity() === processIdentity &&
+          this.daemonSessionPath === sessionPath && this.qmdPath === binary &&
+          this.cliVersion === version && this.qmdCapabilities === capabilities &&
+          this.qmdIndexName === index && this.collection === collection &&
+          SHARED_DAEMON_SESSIONS.get(ownershipKey) === owner && owner.session === session && owner.refs > 0 &&
+          stableRuntimeEnvKey(this.qmdRuntimeEnv) === runtimeEnvKey &&
+          stableRuntimeEnvKey(mergeEnv({ NO_COLOR: "1", ...this.qmdRuntimeEnv })) === environmentKey &&
+          process.cwd() === beforeCwd;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      const capability = session.getHealthMetadataCapability();
+      if (!isCurrent()) return UNKNOWN_OPERATIONAL_HEALTH;
+      if (capability === "absent") return undefined;
+      if (capability !== "available") return UNKNOWN_OPERATIONAL_HEALTH;
+      const result = await session.callTool(
+        "status", {}, Math.max(1, deadline - performance.now()), execution?.signal,
+      );
+      const snapshot = parseOperationalHealth(
+        qmdHealthResponseSchema.safeParse(result).data, collection, memoryDir, beforeEnv,
+        mergeEnv({ NO_COLOR: "1", ...this.qmdRuntimeEnv }), beforeCwd, process.cwd(),
+      );
+      return { ...(isCurrent() ? snapshot : UNKNOWN_OPERATIONAL_HEALTH), isCurrent };
+    } catch {
+      return { ...UNKNOWN_OPERATIONAL_HEALTH, isCurrent };
+    }
+  }
+
   async status(): Promise<QmdStatusReport> {
     if (!this.isAvailable()) {
-      return EMPTY_QMD_STATUS;
+      return { ...EMPTY_QMD_STATUS, error: "qmd unavailable" };
     }
     if (!this.qmdCapabilities.safeStatusDeviceProbe) {
-      return EMPTY_QMD_STATUS;
+      return { ...EMPTY_QMD_STATUS, error: "qmd status device probe is unsafe for this version" };
+    }
+    if (!this.getVersionStatus().supported) {
+      return { ...EMPTY_QMD_STATUS, error: "qmd version is unsupported" };
     }
     return fetchQmdStatus((args, timeoutMs) => this.runQmdCommand(args, timeoutMs), this.collection, QMD_TIMEOUT_MS);
   }
@@ -1441,11 +1511,13 @@ export class QmdClient implements SearchBackend {
   }
 
   async dispose(): Promise<void> {
-    await releaseSharedDaemonSession(this.daemonSession);
+    this.daemonGeneration++;
+    const session = this.daemonSession;
     this.daemonSession = null;
     this.daemonSessionPath = null;
     this.daemonAvailable = false;
     this.daemonTransientFailures = 0;
+    await releaseSharedDaemonSession(session);
   }
 
   private recordDaemonSuccess(): void {

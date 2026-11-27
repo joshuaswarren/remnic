@@ -21,7 +21,7 @@ export interface QmdStatusCapable {
  *   Total files: 200129
  *   Embedded: 189091 (94.5%)
  *   Pending embedding: 108186
- * Returns null fields for unparseable or missing lines.
+ * Returns null for unparseable fields. Native QMD status omits a zero backlog.
  */
 function parseLeadingInt(s: string): number | null {
   let digits = "";
@@ -56,9 +56,14 @@ export function parseQmdStatusOutput(stdout: string): QmdStatusReport {
   let embeddedFiles: number | null = null;
   let pendingEmbeddings: number | null = null;
   let oldestPendingAgeMs: number | null = null;
+  let nativeHeader = false;
+  let nativeTotal = false;
+  let nativeVectors = false;
+  let sawPending = false;
 
   for (const rawLine of stdout.split("\n")) {
     const line = rawLine.trim().toLowerCase();
+    if (line === "qmd status") nativeHeader = true;
     const colonIdx = line.indexOf(":");
     if (colonIdx === -1) continue;
     const key = line.slice(0, colonIdx).trim();
@@ -66,14 +71,18 @@ export function parseQmdStatusOutput(stdout: string): QmdStatusReport {
 
     if (key === "total" || key === "total files" || key === "total file") {
       totalFiles = parseLeadingInt(value);
+      nativeTotal = key === "total" && /^\d+ files indexed$/.test(value) && Number.isSafeInteger(totalFiles);
     } else if (key === "vectors" || key === "embedded") {
       embeddedFiles = parseLeadingInt(value);
+      nativeVectors = key === "vectors" && /^\d+ embedded$/.test(value) && Number.isSafeInteger(embeddedFiles);
     } else if (key === "oldest pending") {
       oldestPendingAgeMs = parseLeadingDurationMs(value);
     } else if (key.startsWith("pending")) {
+      sawPending = true;
       pendingEmbeddings = parseLeadingInt(value);
     }
   }
+  if (nativeHeader && nativeTotal && nativeVectors && !sawPending) pendingEmbeddings = 0;
 
   return { totalFiles, embeddedFiles, pendingEmbeddings, oldestPendingAgeMs, raw };
 }

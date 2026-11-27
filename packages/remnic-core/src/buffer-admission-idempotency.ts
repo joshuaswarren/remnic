@@ -3,7 +3,7 @@ export interface BufferAdmissionIdempotencyState {
   admissionIdempotencyOrder?: string[];
 }
 
-export const BUFFER_ADMISSION_IDEMPOTENCY_CAP = 512;
+export const BUFFER_ADMISSION_IDEMPOTENCY_CAP = 4096;
 
 export function scopeObserveBufferAdmissionIdempotencyKey(input: {
   sessionKey: string;

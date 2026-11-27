@@ -13,6 +13,7 @@ import {
   type RequestOptions,
 } from "./client.js";
 import { resolvePiAgentHome } from "./paths.js";
+import { newObserveOutbox } from "./observe-outbox-factory.js";
 import {
   boundedReplayMessages,
   hashObservedMessage,
@@ -148,9 +149,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
   const config: RemnicPiConfig = { ...DEFAULT_CONFIG, ...(options.config ?? loadConfig(options)) };
   const client = new RemnicClient(config);
   const observeOutbox = config.observeEnabled
-    ? new ObserveOutbox(
-      config.observeOutboxPath?.trim() || path.join(resolvePiAgentHome(process.env), "remnic", "observe-outbox.jsonl"),
-    )
+    ? newObserveOutbox(config)
     : null;
   const sessionStates = new Map<string, PiSessionState>();
   const breakerKey = recallTimeoutBreakerCacheKey(config);

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { abortError, throwIfAborted } from "./abort-error.js";
 import { log } from "./logger.js";
 import { type CommandChildProcess, launchProcess } from "./runtime/child-process.js";
@@ -5,6 +6,15 @@ import { mergeEnv } from "./runtime/env.js";
 import { sleep } from "./utils/sleep.js";
 
 export type QmdRuntimeEnv = Record<string, string | undefined>;
+
+const initializeHealthSchema = z.object({
+  isError: z.literal(false).optional(),
+  capabilities: z.object({
+    experimental: z.object({
+      "qmd/healthMetadata": z.strictObject({ schemaVersion: z.literal(1) }).optional(),
+    }).optional(),
+  }),
+});
 
 export type QmdDaemonSpawn = (
   command: string,
@@ -47,9 +57,13 @@ function isTimeoutMessage(message: string): boolean {
   return message.toLowerCase().includes("timed out");
 }
 
+type HealthMetadataCapability = "available" | "absent" | "invalid";
+
 export class QmdDaemonSession {
   private child: CommandChildProcess | null = null;
   private initialized = false;
+  private processIdentity: object | null = null;
+  private healthMetadataCapability: HealthMetadataCapability | null = null;
   private buffer = "";
   private startPromise: Promise<boolean> | null = null;
   private pendingRequests = new Map<number, PendingRequest>();
@@ -90,6 +104,7 @@ export class QmdDaemonSession {
             stdio: ["pipe", "pipe", "pipe"],
           });
           this.child = child;
+          this.processIdentity = {};
           this.buffer = "";
 
           child.stdout?.on("data", (data: Buffer) => {
@@ -123,6 +138,7 @@ export class QmdDaemonSession {
         log.debug("QMD mcp: process already running, retrying handshake");
       }
 
+      const processIdentity = this.processIdentity;
       try {
         const result = await this.sendRequest(
           "initialize",
@@ -133,15 +149,20 @@ export class QmdDaemonSession {
           },
           60_000
         );
+        if (this.processIdentity !== processIdentity) return false;
         if (!result) {
           this.cleanup({ killChild: true });
           return false;
         }
         this.sendNotification("notifications/initialized");
+        const metadata = initializeHealthSchema.safeParse(result).data;
+        this.healthMetadataCapability = !metadata ? "invalid"
+          : metadata.capabilities.experimental?.["qmd/healthMetadata"] ? "available" : "absent";
         this.initialized = true;
         log.info("QMD mcp: stdio session initialized");
         return true;
       } catch (err) {
+        if (this.processIdentity !== processIdentity) return false;
         const msg = err instanceof Error ? err.message : String(err);
         if (isTimeoutMessage(msg)) {
           log.debug("QMD mcp: handshake timed out — process still loading, will retry later");
@@ -152,7 +173,7 @@ export class QmdDaemonSession {
         }
         return false;
       } finally {
-        this.startPromise = null;
+        if (this.processIdentity === processIdentity) this.startPromise = null;
       }
     })();
     return this.startPromise;
@@ -203,6 +224,14 @@ export class QmdDaemonSession {
 
   isActive(): boolean {
     return this.child !== null && !this.child.killed && this.initialized;
+  }
+
+  activeProcessIdentity(): object | null {
+    return this.isActive() ? this.processIdentity : null;
+  }
+
+  getHealthMetadataCapability(): HealthMetadataCapability | null {
+    return this.isActive() ? this.healthMetadataCapability : null;
   }
 
   isLoading(): boolean {
@@ -336,6 +365,8 @@ export class QmdDaemonSession {
     this.pendingRequests.clear();
     this.startPromise = null;
     this.child = null;
+    this.processIdentity = null;
+    this.healthMetadataCapability = null;
     this.buffer = "";
   }
 }

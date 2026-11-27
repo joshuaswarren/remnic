@@ -109,18 +109,16 @@ export async function appendInteractionLog(
   }
   const e = parsedEntry.data;
   assertCanonicalIsoTimestamp(e.timestamp, "interaction entry timestamp");
-  await mkdirPeerDirAtomic(memoryDir, peerId);
-  await assertPeerDirNotEscaped(memoryDir, peerId);
   const file = interactionsPath(memoryDir, peerId);
   const line = formatLogEntry(e) + "\n";
-  // `appendFile` creates the file if it does not exist. Serialize writes
   // per file so concurrent callers' entries land in enqueue order —
   // `fh.writeFile` chunks a large entry across multiple writes, and an
-  // unqueued writer could otherwise interleave between them (#3564).
-  // The chain tail is kept on a .catch(() => {}) so one failed append
-  // does not poison the queue for followers.
   const prev = appendQueues.get(file) ?? Promise.resolve();
-  const write = prev.then(() => appendFileNoFollow(file, line));
+  const write = prev.then(async () => {
+    await mkdirPeerDirAtomic(memoryDir, peerId);
+    await assertPeerDirNotEscaped(memoryDir, peerId);
+    await appendFileNoFollow(file, line);
+  });
   const tail = write.catch(() => {});
   appendQueues.set(file, tail);
   try {

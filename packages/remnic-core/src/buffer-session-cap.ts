@@ -1,7 +1,7 @@
 import { log } from "./logger.js";
 import type { BufferEntryState, BufferTurn } from "./types.js";
 
-export const FALLBACK_MAX_TURNS_PER_SESSION = 200;
+export const FALLBACK_MAX_TURNS_PER_SESSION = 2000;
 
 export function resolveMaxTurnsPerSession(configured: number | undefined): number {
   return configured ?? FALLBACK_MAX_TURNS_PER_SESSION;

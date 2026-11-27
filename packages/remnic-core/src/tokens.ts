@@ -55,6 +55,24 @@ const TOKEN_PREFIXES: Record<string, string> = {
   "chatgpt": "remnic_cg_",
 };
 
+export const OAUTH_CONNECTOR_IDS = ["chatgpt", "claude-ai"] as const;
+
+export const OAUTH_APP_CONNECTOR_PREFIX = "oauth-app-";
+
+export function isOAuthConnector(connector: string | undefined): boolean {
+  if (connector === undefined) return false;
+  return (
+    OAUTH_CONNECTOR_IDS.some((id) => id === connector) ||
+    connector.startsWith(OAUTH_APP_CONNECTOR_PREFIX)
+  );
+}
+
+function oauthTokenPrefix(connector: string): string | undefined {
+  if (connector === "claude-ai") return "remnic_ca_";
+  if (connector.startsWith(OAUTH_APP_CONNECTOR_PREFIX)) return "remnic_oa_";
+  return undefined;
+}
+
 function defaultTokensPath(): string {
   return path.join(resolveHomeDir(), ".remnic", "tokens.json");
 }
@@ -211,14 +229,8 @@ export function saveTokenStore(store: TokenStore, tokensPath?: string): void {
   }
 }
 
-/**
- * Build a TokenEntry candidate WITHOUT saving it to the store.
- * Callers use this when they need to defer the save until after a
- * dependent write (e.g. Hermes config.yaml) succeeds — see
- * commitTokenEntry() to persist the candidate.
- */
 export function buildTokenEntry(connector: string, capabilities?: TokenCapabilities): TokenEntry {
-  const prefix = TOKEN_PREFIXES[connector] ?? "remnic_xx_";
+  const prefix = TOKEN_PREFIXES[connector] ?? oauthTokenPrefix(connector) ?? "remnic_xx_";
   const token = prefix + randomBytes(24).toString("hex");
   return {
     token,

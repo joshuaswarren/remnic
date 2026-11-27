@@ -103,8 +103,8 @@ export type DrainOptions = {
   destination?: string;
 };
 
-/** The daemon remembers observe idempotency keys for about this long (512-entry record). */
-const SERVER_IDEMPOTENCY_WINDOW_MS = 15 * 60_000;
+/** The daemon remembers observe idempotency keys for about this long (4096-entry record on current releases). */
+const SERVER_IDEMPOTENCY_WINDOW_MS = 120 * 60_000;
 
 /**
  * Whether a drain on `destination` would deliver `entry`. An omitted caller
@@ -611,7 +611,7 @@ export class ObserveOutbox {
         if (Number.isFinite(queuedAtMs) && now() - queuedAtMs > SERVER_IDEMPOTENCY_WINDOW_MS && !warnedStale.has(entry.id)) {
           warnedStale.add(entry.id);
           notify?.(
-            `Remnic observe outbox: replaying a capture queued ${Math.round((now() - queuedAtMs) / 60_000)} minutes ago; the daemon only remembers its most recent 512 observe idempotency keys (roughly 15 minutes at typical load), so a duplicate is possible if the original request was already accepted`,
+            `Remnic observe outbox: replaying a capture queued ${Math.round((now() - queuedAtMs) / 60_000)} minutes ago; the daemon only remembers a bounded window of recent observe idempotency keys (about two hours at typical load on current releases; older daemons remembered only their most recent 512 keys, roughly 15 minutes), so a duplicate is possible if the original request was already accepted`,
             "warning"
           );
         }

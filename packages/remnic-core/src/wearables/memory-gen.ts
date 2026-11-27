@@ -776,11 +776,7 @@ export async function importNativeMemories(
       },
       { source: `${wearableSourceLabel(sourceId)}:native` },
     );
-    const nativeWriteResult = await deps.writer.writeSealedMemory(nativeEnvelope, {
-      importance: scoreImportance(content, "fact", memory.tags ?? []),
-      contentHashSource: content,
-      status,
-    });
+    let nativeWriteResult;    try {      nativeWriteResult = await deps.writer.writeSealedMemory(nativeEnvelope, {        importance: scoreImportance(content, "fact", memory.tags ?? []),        contentHashSource: content,        status,      });    } catch (err) {      warnings.push(        `${sourceId}: native memory ${memory.id} failed to import: ${describeErrorForOperator(err)} — it retries on the next sync`,      );      continue;    }
     if (!("duplicate" in nativeWriteResult)) {
       if (nativeWriteResult.tombstoneBlocked) tombstoneBlocked += 1;
       else imported += 1;
