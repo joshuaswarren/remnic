@@ -1458,12 +1458,15 @@ const pluginDefinition = {
     log.debug(
       `init llm routing (modelSource=${cfg.modelSource}, localLlmEnabled=${cfg.localLlmEnabled}${cfg.localLlmFastEnabled ? `, fastLlm=${cfg.localLlmFastModel || "(primary)"}` : ""})`,
     );
-    // api.config is the authoritative snapshot when the gateway passed one;
-    // openclaw.json is read only when it did not (#3612/#3613).
+    // api.config is the authoritative snapshot when the gateway passed one
+    // (#3612/#3613). openclaw.json still loads as the per-field fallback layer:
+    // a gateway snapshot that carries no entry for a plugin (e.g. the bundled
+    // active-memory check) cannot suppress that plugin's operator-authored
+    // file config, so the check reads the file for the fields the snapshot
+    // omits while the snapshot stays preferred wherever it has a value.
     const gatewayRawRuntimeConfig = isRecordLike(api.config) ? api.config : undefined;
-    const rawRuntimeConfig = gatewayRawRuntimeConfig ?? loadRawConfigFromFile();
-    const fileBackedRawRuntimeConfig =
-      gatewayRawRuntimeConfig === undefined ? rawRuntimeConfig : undefined;
+    const fileBackedRawRuntimeConfig = loadRawConfigFromFile();
+    const rawRuntimeConfig = gatewayRawRuntimeConfig ?? fileBackedRawRuntimeConfig;
     const slotValidationMode = validateSlotSelection({
       pluginId: serviceId,
       runtimeConfig: rawRuntimeConfig,
