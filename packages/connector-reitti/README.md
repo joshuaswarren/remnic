@@ -9,7 +9,7 @@ GPS/track storage, no telemetry.
 ## Install
 
 ```bash
-npm install @remnic/connector-reitti
+npm install @remnic/connector-reitti@alpha
 ```
 
 `@remnic/core` works without this package: a configured `reitti` source whose

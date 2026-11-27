@@ -29,7 +29,7 @@ separately from the base Remnic install. It provides the `remnic-weclone-proxy`
 binary:
 
 ```bash
-npm install -g @remnic/connector-weclone
+npm install -g @remnic/connector-weclone@alpha
 ```
 
 Then register the connector and write its config through the `remnic` CLI:

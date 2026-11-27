@@ -17,7 +17,7 @@ the pendant connectors.
 À-la-carte — install alongside `@remnic/core` only if you use Fireflies:
 
 ```sh
-npm install -g @remnic/connector-fireflies
+npm install -g @remnic/connector-fireflies@alpha
 ```
 
 Installing `@remnic/core` alone never pulls this in; core discovers it at

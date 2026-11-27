@@ -13,7 +13,7 @@ responds after moving to a newer OpenClaw bundle.
 Run the Remnic migration command:
 
 ```bash
-npm install -g @remnic/cli
+npm install -g @remnic/cli@alpha
 remnic openclaw migrate-engram --yes
 ```
 

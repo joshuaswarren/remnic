@@ -14,7 +14,7 @@ covers only channels and promotion.
 |---|---|---|---|
 | alpha | `alpha` | `npm install @remnic/core@alpha` | `release-and-publish.yml`, on every merge to `main` |
 | beta | `beta` | `npm install @remnic/core@beta` | `release-promote.yml`, dispatched |
-| stable | `latest` | `npm install @remnic/core` | `release-promote.yml`, dispatched |
+| stable | `latest` | `npm install @remnic/core@latest` | `release-promote.yml`, dispatched |
 
 Two properties hold by construction:
 
@@ -212,6 +212,15 @@ key, the code path, and the registry entry in one diff.
 ## Bootstrapping the channels
 
 Until a version has been promoted, `beta` and `latest` still point where they
-pointed before this model landed, so `npm install @remnic/core` keeps resolving
+pointed before this model landed, so `npm install @remnic/core@latest` keeps resolving
 throughout. The first promotions move `beta` onto the current head version and
 `latest` onto the last known-good version.
+
+While `latest` trails the published line, the install docs and package READMEs
+pin `@alpha` on every `npm install @remnic/*` command so the documented install
+resolves the current line instead of the frozen stable tag. Two gates hold that
+contract: `scripts/process-gates/install-tag-agreement.mjs` refuses a bare
+`npm install @remnic/<pkg>` in the documented install surfaces at pre-push, and
+the same script in `--resolve` mode runs inside `release-and-publish.yml` and
+fails the release if the tag the docs name does not resolve on npm to the
+version just published.

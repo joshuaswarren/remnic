@@ -12,7 +12,7 @@ of hand-rolled `fetch` calls.
 ## Install
 
 ```bash
-npm install @remnic/hermes-provider
+npm install @remnic/hermes-provider@alpha
 ```
 
 ## Usage

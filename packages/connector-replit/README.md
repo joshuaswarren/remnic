@@ -7,8 +7,8 @@ Replit Agent has no plugin system, so it can't install a Remnic hook like Claude
 ## Install
 
 ```bash
-pnpm add @remnic/replit
-# or: npm i @remnic/replit
+pnpm add @remnic/replit@alpha
+# or: npm i @remnic/replit@alpha
 ```
 
 Needs a running Remnic server (see [`@remnic/server`](https://www.npmjs.com/package/@remnic/server)) or a `@remnic/cli`-managed daemon that exposes MCP on port 4318.

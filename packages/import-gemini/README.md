@@ -4,7 +4,7 @@ Optional importer for Google Takeout "Gemini Apps Activity" exports. Ships
 as a separately installable companion to the Remnic CLI.
 
 ```bash
-npm install -g @remnic/import-gemini
+npm install -g @remnic/import-gemini@alpha
 remnic import --adapter gemini --file ~/takeout/My\ Activity.json
 ```
 

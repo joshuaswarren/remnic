@@ -176,6 +176,11 @@ const CHECKS = [
     hint: "openclaw.plugin.json minified is over the 250,000 fail-at. Shrink before the next config addition lands.",
   },
   {
+    name: "install tag agreement",
+    argv: ["node", "scripts/process-gates/install-tag-agreement.mjs"],
+    hint: "A documented `npm install @remnic/<pkg>` has no explicit tag and resolves npm `latest`, which can trail the published line. Name a tag (e.g. @alpha) or version (issue #3439).",
+  },
+  {
     name: "branch shape",
     argv: ["node", "scripts/process-gates/branch-shape.mjs"],
     hint: "Branch name does not match an expected pattern (b<n>/<issue>, b<n>/process-..., fix/<issue>-...).",

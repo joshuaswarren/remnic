@@ -22,7 +22,7 @@ This package is the first-class Remnic extension for Pi. It uses Pi's extension 
 Install through the Remnic CLI. This writes the Pi auto-discovery wrapper, private connector config, and local operator notes into Pi's extension directory.
 
 ```bash
-npm install -g @remnic/cli
+npm install -g @remnic/cli@alpha
 remnic daemon start
 remnic connectors install pi
 ```

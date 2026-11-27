@@ -9,7 +9,7 @@ imports Omi's own "memories" (extracted facts) into the review queue.
 This is an **à-la-carte optional companion** of `@remnic/core`:
 
 ```bash
-npm install -g @remnic/connector-omi
+npm install -g @remnic/connector-omi@alpha
 ```
 
 Remnic discovers it at runtime. No further registration is needed.

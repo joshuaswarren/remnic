@@ -5,7 +5,7 @@ It records desktop audio on PipeWire for `@remnic/capture-audio` and reads windo
 `@remnic/capture-screen`. It speaks the same command line and the same JSON output as the macOS
 helper, so the two daemons need no Linux-specific code beyond resolving this package.
 
-Install with `npm install @remnic/capture-native-linux`. `@remnic/capture-audio` and
+Install with `npm install @remnic/capture-native-linux@alpha`. `@remnic/capture-audio@alpha` and
 `@remnic/capture-screen` find it on Linux with no `REMNIC_CAPTURE_HELPER_BIN` setting.
 
 ## Requirements

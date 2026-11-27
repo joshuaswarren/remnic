@@ -15,8 +15,8 @@ signal-to-noise source for a personal digital avatar.
 ## Install
 
 ```bash
-pnpm add @remnic/export-weclone
-# or: npm i @remnic/export-weclone
+pnpm add @remnic/export-weclone@alpha
+# or: npm i @remnic/export-weclone@alpha
 ```
 
 `@remnic/export-weclone` is an **optional companion** of

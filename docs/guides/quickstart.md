@@ -9,7 +9,7 @@ shares the same local, plain-markdown memory store.
 Remnic ships as a single npm package and needs Node.js 22.12 or newer.
 
 ```bash
-npm install -g @remnic/cli
+npm install -g @remnic/cli@alpha
 ```
 
 This installs the `remnic` command (plus a legacy `engram` alias for the v1.x compatibility window) and pulls in the local server the daemon runs.
@@ -151,7 +151,7 @@ Remnic needs Node.js 22.12+. Where the system Node is mise-managed, install the 
 into a project directory instead of globally (same package as `npm install -g`):
 
 ```bash
-mkdir -p ~/remnic-cli && cd ~/remnic-cli && npm install @remnic/cli
+mkdir -p ~/remnic-cli && cd ~/remnic-cli && npm install @remnic/cli@alpha
 alias remnic="$PWD/node_modules/.bin/remnic"
 ```
 

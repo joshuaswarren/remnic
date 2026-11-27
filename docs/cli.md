@@ -8,7 +8,7 @@ configured. For the OpenClaw-hosted `openclaw engram` surface, see
 ## Install
 
 ```bash
-npm install -g @remnic/cli
+npm install -g @remnic/cli@alpha
 ```
 
 This installs two binaries: `remnic` (canonical) and `engram` (a legacy forwarder kept during the rename window — every command below works under either name). You can pin the binary the auto-runner uses with `REMNIC_CLI_BIN` (or the legacy `ENGRAM_CLI_BIN`).
@@ -105,7 +105,7 @@ remnic connectors status
 
 `remnic openclaw` subcommands take the usual safety flags: `--yes`/`--force` to skip prompts, `--dry-run` to preview, plus `--memory-dir`, `--config`, `--version`, `--plugin-dir`, `--legacy-plugin-dir`, and `--no-restart`.
 
-`remnic wearables speakers` has its own `list|self|set|remove` actions and `corrections` has `list|add|remove`; `fuse`/`fused` merge and read cross-source fused transcripts for a day. Each source ships as an à la carte connector package (for example `npm install @remnic/connector-limitless`).
+`remnic wearables speakers` has its own `list|self|set|remove` actions and `corrections` has `list|add|remove`; `fuse`/`fused` merge and read cross-source fused transcripts for a day. Each source ships as an à la carte connector package (for example `npm install @remnic/connector-limitless@alpha`).
 
 `remnic location` runs the same shared runner as the MCP/HTTP location surfaces. Credentials for built-in providers come from the environment (`REITTI_BASE_URL`, `REITTI_TOKEN`, optional `REITTI_AUTH_MODE=x-api-token|bearer`); an absent provider package reports `provider-not-registered` instead of failing. `sync` covers `location.syncDays` ending yesterday (or `--date`/`--days`), `backfill --from --to` is capped at 90 days, and coordinates are never stored or printed unless `location.retainCoordinates` is enabled.
 

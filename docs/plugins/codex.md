@@ -30,7 +30,7 @@ Without this step Codex cannot reach the Remnic daemon.
 ### 3. Install and load the plugin
 
 ```bash
-npm install -g @remnic/plugin-codex
+npm install -g @remnic/plugin-codex@alpha
 ```
 
 Then load it through Codex's own plugin loader (symlink into `~/.codex/plugins/`, marketplace install, or whatever your Codex build supports — consult Codex's plugin docs). Until this step runs, the session hooks and skills are inactive, so auto-recall and auto-observe do not fire.

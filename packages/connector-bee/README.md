@@ -9,7 +9,7 @@ imports Bee's own extracted "facts" into the review queue.
 This is an **à-la-carte optional companion** of `@remnic/core`:
 
 ```bash
-npm install -g @remnic/connector-bee
+npm install -g @remnic/connector-bee@alpha
 ```
 
 Remnic discovers it at runtime. No further registration is needed.

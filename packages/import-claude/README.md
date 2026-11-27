@@ -4,7 +4,7 @@ Optional importer for Claude.ai data exports. Ships as a separately
 installable companion to the Remnic CLI.
 
 ```bash
-npm install -g @remnic/import-claude
+npm install -g @remnic/import-claude@alpha
 remnic import --adapter claude --file ~/claude-export/projects.json
 ```
 

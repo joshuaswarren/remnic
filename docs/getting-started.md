@@ -24,7 +24,7 @@ The universal path. Works with Claude Code, Codex CLI, Cursor, and any other MCP
 client through the local daemon.
 
 ```bash
-npm install -g @remnic/cli
+npm install -g @remnic/cli@alpha
 ```
 
 This installs the `remnic` command and the bundled `@remnic/server` the daemon runs.

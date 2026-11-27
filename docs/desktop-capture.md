@@ -48,7 +48,7 @@ be built or verified on a headless host.
 2. **À-la-carte capture.** Capture daemons ship as separate optional packages
    (`@remnic/capture-screen`, `@remnic/capture-audio`) loaded lazily via
    computed-specifier dynamic import; a base install
-   (`npm install @remnic/core` or `@remnic/cli`) works with zero capture
+   (`npm install @remnic/core@alpha` or `@remnic/cli@alpha`) works with zero capture
    packages present and a missing package produces a clean install hint, never a
    `MODULE_NOT_FOUND`.
 3. **Fixture-first, CI-verifiable.** Every daemon exposes a `--replay` mode that
@@ -386,7 +386,7 @@ want (`-g` for a global CLI install):
 
 ```bash
 # Shipped today — cloud meeting connectors
-npm install -g @remnic/connector-granola @remnic/connector-fireflies
+npm install -g @remnic/connector-granola@alpha @remnic/connector-fireflies@alpha
 ```
 
 The planned capture daemons — `@remnic/capture-screen` (screen activity) and

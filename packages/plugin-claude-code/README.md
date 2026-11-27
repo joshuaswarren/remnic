@@ -21,7 +21,7 @@ Three discrete steps. None is automated for you end-to-end today; each writes to
 3. **Install this package and load it through Claude Code's plugin system** so the hook scripts, skills, and `memory-review` agent are actually active:
 
     ```bash
-    npm install -g @remnic/plugin-claude-code
+    npm install -g @remnic/plugin-claude-code@alpha
     ```
 
     Consult Claude Code's plugin docs for the exact load mechanism your install supports (plugin marketplace / symlink / etc.). Until this step runs, auto-recall and auto-observe don't fire even if step 2 is correct.

@@ -9,7 +9,7 @@ Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory an
 ## Install
 
 ```bash
-npm install @remnic/core
+npm install @remnic/core@alpha
 ```
 
 ## What it does

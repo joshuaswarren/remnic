@@ -18,9 +18,9 @@ Installing `@remnic/core` (or `@remnic/cli`) alone never pulls a
 connector in. Install only what you wear:
 
 ```bash
-npm install -g @remnic/connector-limitless
+npm install -g @remnic/connector-limitless@alpha
 # and/or
-npm install -g @remnic/connector-bee @remnic/connector-omi
+npm install -g @remnic/connector-bee@alpha @remnic/connector-omi@alpha
 ```
 
 Core discovers installed connectors at runtime via computed-specifier

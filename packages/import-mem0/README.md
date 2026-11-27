@@ -4,7 +4,7 @@ Optional importer for memories stored in a mem0.ai account. Ships as a
 separately installable companion to the Remnic CLI.
 
 ```bash
-npm install -g @remnic/import-mem0
+npm install -g @remnic/import-mem0@alpha
 export MEM0_API_KEY=...
 remnic import --adapter mem0 --rate-limit 2
 ```

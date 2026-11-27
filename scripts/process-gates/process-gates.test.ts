@@ -120,3 +120,61 @@ test("branch-shape accepts b<n>/<issue> pattern", () => {
   const r = runScript(gate("branch-shape"));
   assert.equal(r.status, 0, r.stderr);
 });
+
+test("install-tag-agreement passes on documented install surfaces", () => {
+  const r = runScript(gate("install-tag-agreement"));
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /OK/);
+});
+
+test("install-tag-agreement fails on a bare npm install spec", () => {
+  const dir = mkdtempSync(join(tmpdir(), "remnic-tag-gate-"));
+  try {
+    const doc = join(dir, "install.md");
+    writeFileSync(doc, "```bash\nnpm install -g @remnic/cli\n```\n");
+    const r = runScript(gate("install-tag-agreement"), { REMNIC_TEST_DOC: doc });
+    assert.equal(r.status, 1, `bare spec must exit 1, got ${r.status}`);
+    assert.match(r.stderr, /bare `npm install/);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test("install-tag-agreement accepts an explicit channel tag", () => {
+  const dir = mkdtempSync(join(tmpdir(), "remnic-tag-gate-"));
+  try {
+    const doc = join(dir, "install.md");
+    writeFileSync(doc, "```bash\nnpm install -g @remnic/cli@alpha\n```\n");
+    const r = runScript(gate("install-tag-agreement"), { REMNIC_TEST_DOC: doc });
+    assert.equal(r.status, 0, `explicit tag must exit 0, got ${r.status}: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test("install-tag-agreement fails on a bare pnpm add spec", () => {
+  const dir = mkdtempSync(join(tmpdir(), "remnic-tag-gate-"));
+  try {
+    const doc = join(dir, "install.md");
+    writeFileSync(doc, "```bash\npnpm add @remnic/cli\n```\n");
+    const r = runScript(gate("install-tag-agreement"), { REMNIC_TEST_DOC: doc });
+    assert.equal(r.status, 1, `bare pnpm add must exit 1, got ${r.status}`);
+    assert.match(r.stderr, /bare `npm install/);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test("install-tag-agreement accepts a pinned pnpm add spec", () => {
+  const dir = mkdtempSync(join(tmpdir(), "remnic-tag-gate-"));
+  try {
+    const doc = join(dir, "install.md");
+    writeFileSync(doc, "```bash\npnpm add @remnic/cli@alpha\n```\n");
+    const r = runScript(gate("install-tag-agreement"), { REMNIC_TEST_DOC: doc });
+    assert.equal(r.status, 0, `pinned pnpm add must exit 0, got ${r.status}: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});

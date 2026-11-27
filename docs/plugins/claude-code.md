@@ -52,7 +52,7 @@ Follow the package README. The legacy `docs/guides/claude-code-integration.md` a
 The `remnic connectors install claude-code` step only writes Remnic-side state; the plugin still has to be loaded, and the MCP credential still has to be supplied. How those two happen depends on the install path:
 
 - **Marketplace path** (see "Install from the Claude Code marketplace" above): `claude plugin install remnic@remnic` loads the plugin, Claude Code prompts for the bearer token (and optional daemon URL), and the bundled stdio proxy registers a working `remnic` MCP server at install time. If the server is missing or rejects your token, see the `claude mcp list` output and the package README's Troubleshooting section.
-- **Manual / npm path** (package README): you `npm install -g @remnic/plugin-claude-code`, load it through Claude Code's plugin loader, **and** paste the README's `.mcp.json` block into your MCP config by hand with the bearer token.
+- **Manual / npm path** (package README): you `npm install -g @remnic/plugin-claude-code@alpha`, load it through Claude Code's plugin loader, **and** paste the README's `.mcp.json` block into your MCP config by hand with the bearer token.
 
 Either way the three things to verify are: Remnic-side token + connector state, the MCP config (token present, URL correct), and that the plugin is actually loaded. The package README's `Troubleshooting` section lists the specific failure modes for each step.
 

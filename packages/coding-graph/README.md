@@ -9,9 +9,9 @@ neutral `FileIR` intermediate representation that the graph store consumes.
 ## Install
 
 ```bash
-npm install @remnic/coding-graph
+npm install @remnic/coding-graph@alpha
 # or
-pnpm add @remnic/coding-graph
+pnpm add @remnic/coding-graph@alpha
 ```
 
 ## What it provides
@@ -49,7 +49,7 @@ When the optional package is absent the loader throws a user-facing hint:
 The `@remnic/coding-graph` engine is optional and not installed in this environment.
 
 Install it alongside @remnic/core to enable codebase-graph features:
-  npm install @remnic/coding-graph
+  npm install @remnic/coding-graph@alpha
 ```
 
 ## Standards reference

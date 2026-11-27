@@ -21,7 +21,7 @@ Three discrete steps. None is automated end-to-end today; each writes to a diffe
 3. **Install this package and load it through Codex's plugin system** so the hooks, skills, and `.codex-plugin` manifest are actually active:
 
     ```bash
-    npm install -g @remnic/plugin-codex
+    npm install -g @remnic/plugin-codex@alpha
     ```
 
     Consult Codex's plugin docs for the exact load mechanism your install supports (symlink into `~/.codex/plugins/`, marketplace install, etc.). Until this step runs, the session hooks and skills aren't active and you won't get auto-recall / auto-observe.
