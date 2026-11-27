@@ -663,6 +663,7 @@ test("a 401 from the live probe names the credential rejection instead of plain 
       startupRequestTimeoutMs: 2000,
     },
   });
+  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
   await extension(pi as any);
 
   await emit("session_start", {}, {
@@ -3532,6 +3533,7 @@ test("a successful /remnic-recall clears a stale circuit breaker (review cursor)
       daemonCooldownMs: 60000,
     },
   });
+  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
   await extension(pi as any);
 
   const ctx = {
