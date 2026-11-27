@@ -637,6 +637,12 @@ export class EngramMcpServer {
               description:
                 "Opt in to state-aware recall views (issue #1952); ORs with the recallStateViews config flag.",
             },
+            deadlineMs: {
+              type: "number",
+              minimum: 0,
+              description:
+                "Client budget for this recall (issue #3499). An epoch-sized value is an absolute answer-by deadline; a smaller value is a budget in milliseconds from now. The daemon clamps its outer recall deadline to the tighter of this and recallOuterTimeoutMs.",
+            },
             searchOptions: engramRecallSearchOptionsMcpProperty,
           },
           required: ["query"],
