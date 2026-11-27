@@ -235,27 +235,6 @@ export function synthesizeCausalPreferences(
   return preferences;
 }
 
-// ─── Causal Impact Score ─────────────────────────────────────────────────────
-
-/**
- * Compute the causal impact score for a memory based on its
- * presence in causal chains. Used in lifecycle heat/decay.
- *
- * Formula: 0.1 * incomingEdges + 0.15 * outgoingEdges, clamped to [0, 0.3]
- */
-export function computeCausalImpactScore(
-  memoryId: string,
-  chainIndex: CausalChainIndex,
-): number {
-  // Memory IDs don't directly map to trajectory IDs, but trajectory-based
-  // memories may reference their source trajectory ID. For now, check
-  // if the memoryId appears as a trajectory ID in the chain index.
-  const incoming = chainIndex.incoming[memoryId]?.length ?? 0;
-  const outgoing = chainIndex.outgoing[memoryId]?.length ?? 0;
-  const raw = 0.1 * incoming + 0.15 * outgoing;
-  return Math.min(0.3, Math.max(0, raw));
-}
-
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**

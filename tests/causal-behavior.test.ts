@@ -5,13 +5,11 @@ import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import {
   synthesizeCausalPreferences,
-  computeCausalImpactScore,
   extractCausalBehaviorSignals,
   type CausalBehaviorSignal,
 } from "@remnic/core/causal-behavior";
 import { parseConfig } from "@remnic/core/config";
 import { recordCausalTrajectory } from "@remnic/core/causal-trajectory";
-import { writeChainIndex, resolveChainsDir, type CausalChainIndex, type CausalEdge } from "@remnic/core/causal-chain";
 
 // ─── synthesizeCausalPreferences ─────────────────────────────────────────────
 
@@ -83,41 +81,6 @@ test("synthesizeCausalPreferences filters by confidence threshold", () => {
 
   const prefs = synthesizeCausalPreferences(signals, 0.6);
   assert.equal(prefs.length, 0);
-});
-
-// ─── computeCausalImpactScore ────────────────────────────────────────────────
-
-test("computeCausalImpactScore returns 0 for unknown trajectory", () => {
-  const index: CausalChainIndex = {
-    outgoing: {},
-    incoming: {},
-    edges: {},
-    updatedAt: new Date().toISOString(),
-  };
-  assert.equal(computeCausalImpactScore("unknown-id", index), 0);
-});
-
-test("computeCausalImpactScore computes from edge counts", () => {
-  const index: CausalChainIndex = {
-    outgoing: { "traj-1": ["e1", "e2"] },
-    incoming: { "traj-1": ["e3"] },
-    edges: {},
-    updatedAt: new Date().toISOString(),
-  };
-  // 0.1 * 1 (incoming) + 0.15 * 2 (outgoing) = 0.1 + 0.3 = 0.4 → clamped to 0.3
-  const score = computeCausalImpactScore("traj-1", index);
-  assert.equal(score, 0.3);
-});
-
-test("computeCausalImpactScore clamps to [0, 0.3]", () => {
-  const index: CausalChainIndex = {
-    outgoing: { "traj-1": ["e1", "e2", "e3", "e4", "e5"] },
-    incoming: { "traj-1": ["e6", "e7", "e8"] },
-    edges: {},
-    updatedAt: new Date().toISOString(),
-  };
-  const score = computeCausalImpactScore("traj-1", index);
-  assert.equal(score, 0.3);
 });
 
 // ─── extractCausalBehaviorSignals ────────────────────────────────────────────
