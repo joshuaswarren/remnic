@@ -432,6 +432,46 @@ test("native memories import once and are tracked across syncs", async () => {
   }
 });
 
+test("a native-memory import failure warns and lets the sync complete", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const byDate = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "A durable fact about the new vendor agreement emerged." },
+          { speaker: "Speaker 2", text: "The vendor agreement now covers support through next year." },
+        ]),
+      ],
+    };
+    const { deps } = makeDeps(memoryDir);
+    const connector = fakeConnector(byDate);
+    connector.fetchNativeMemories = async () => {
+      throw new Error("provider rejected the scope grant");
+    };
+    const run = await syncWearableSource(
+      connector,
+      settings({ importNativeMemories: "review" }),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.equal(run.transcriptsWritten.length, 1, "transcript still stored");
+    assert.ok(
+      run.warnings.some((warning) => warning.includes("native-memory import failed")),
+      `expected native-import warning, got: ${run.warnings.join(" | ")}`,
+    );
+    const state = await loadSyncState(memoryDir);
+    assert.equal(
+      state.sources.testsource.lastDateSynced,
+      "2026-06-11",
+      "watermark still advances past a failed native import",
+    );
+    assert.ok(state.sources.testsource.dayHashes?.["2026-06-11"]);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("a failed memory pass retries on the next sync even when the day is unchanged", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {
