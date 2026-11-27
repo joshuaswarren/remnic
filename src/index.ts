@@ -1396,9 +1396,17 @@ const pluginDefinition = {
         }));
       void migrationPromise;
     }
-    // Workaround: Load config from file since gateway may not pass it.
-    // Pass serviceId so shim installs prefer their own entry (#403).
-    const fileConfig = loadPluginConfigFromFile(serviceId);
+    // Prefer the gateway-passed config snapshot; openclaw.json is read only
+    // when the host did not pass an entry (#3612/#3613). api.config carries
+    // the same operator-authored entry the file holds — slot → preferred →
+    // canonical → legacy resolution is shared with the file loader (#403).
+    const gatewayEntryConfig = resolveRemnicOpenClawPluginEntry(
+      api.config,
+      serviceId,
+    )?.["config"];
+    const fileConfig = isRecordLike(gatewayEntryConfig)
+      ? gatewayEntryConfig
+      : loadPluginConfigFromFile(serviceId);
     const openclawFlushPlanProcessingEnabled = resolveOpenClawFlushPlanProcessingEnabledFromConfig(fileConfig, api.pluginConfig);
     // Capture which keys the runtime layer (api.pluginConfig) explicitly
     // set so the emit-legacy-tools resolvers can distinguish a deliberate
@@ -1450,11 +1458,15 @@ const pluginDefinition = {
     log.debug(
       `init llm routing (modelSource=${cfg.modelSource}, localLlmEnabled=${cfg.localLlmEnabled}${cfg.localLlmFastEnabled ? `, fastLlm=${cfg.localLlmFastModel || "(primary)"}` : ""})`,
     );
+    // api.config is the authoritative snapshot when the gateway passed one
+    // (#3612/#3613). openclaw.json still loads as the per-field fallback layer:
+    // a gateway snapshot that carries no entry for a plugin (e.g. the bundled
+    // active-memory check) cannot suppress that plugin's operator-authored
+    // file config, so the check reads the file for the fields the snapshot
+    // omits while the snapshot stays preferred wherever it has a value.
+    const gatewayRawRuntimeConfig = isRecordLike(api.config) ? api.config : undefined;
     const fileBackedRawRuntimeConfig = loadRawConfigFromFile();
-    const rawRuntimeConfig =
-      api.config && typeof api.config === "object"
-        ? (api.config as Record<string, unknown>)
-        : fileBackedRawRuntimeConfig;
+    const rawRuntimeConfig = gatewayRawRuntimeConfig ?? fileBackedRawRuntimeConfig;
     const slotValidationMode = validateSlotSelection({
       pluginId: serviceId,
       runtimeConfig: rawRuntimeConfig,
