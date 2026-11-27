@@ -1066,7 +1066,7 @@ export {
   getAllValidTokens,
   getAllValidTokensCached,
   getAllValidTokenEntriesCached,
-  resolveConnectorFromToken,
+  resolveConnectorFromToken, OAUTH_CONNECTOR_IDS, OAUTH_APP_CONNECTOR_PREFIX, isOAuthConnector,
   loadTokenStore,
   saveTokenStore,
   type TokenEntry,
