@@ -14,9 +14,14 @@ would revoke Claude's.
   connector id from the allowlist-validated redirect URI bound to the code:
   `chatgpt.com` / `openai.com` -> `chatgpt` (unchanged, `remnic_cg_`),
   `claude.ai` / `claude.com` -> `claude-ai` (`remnic_ca_`), any other app ->
-  its own `oauth-app-<redirect host>` id (`remnic_oa_`), so two other apps
-  never rotate each other either. Suffix matching requires a dot boundary,
-  so `evilclaude.ai` maps to `oauth-app-evilclaude-ai`.
+  a unique `oauth-app-<origin>` id (`remnic_oa_`): the percent-encoded
+  hostname with the port kept (`app.example.com:8443` -> `oauth-app-app.example.com%3A8443`),
+  so distinct origins — different hosts, ports, or lookalike labels — never
+  collide into one id or rotate each other's tokens. Loopback native apps
+  (RFC 8252) get the same per-origin ids; a client that relinks on a new
+  port keeps its prior connector id and token alongside the new one.
+  Suffix matching requires a dot boundary, so `evilclaude.ai` maps to
+  `oauth-app-evilclaude.ai`.
 - Core exports `OAUTH_CONNECTOR_IDS` and `isOAuthConnector()`. The server
   path policy, server healthcheck token picker and CLI status probe use it,
   so every OAuth-minted token stays pinned to `/mcp` (no REST or operator

@@ -96,26 +96,31 @@ const HIGH_ENTROPY_HEX_BYTES = 16;
 
 /**
  * Connector id under which an OAuth access token is minted, chosen per
- * linked app from the (already allowlist-validated) redirect URI host.
+ * linked app from the (already allowlist-validated) redirect URI origin.
  * Each app gets its own token-store entry, so re-linking one app rotates
  * only that app's token: linking Claude never revokes ChatGPT's token and
  * vice versa. ChatGPT keeps the original `chatgpt` id so existing links
- * are unaffected. Every id here must be listed in core OAUTH_CONNECTOR_IDS
- * so the access server pins it to `/mcp`.
+ * are unaffected. Every id here must match core isOAuthConnector()
+ * (OAUTH_CONNECTOR_IDS or the OAUTH_APP_CONNECTOR_PREFIX) so the access
+ * server pins it to `/mcp`.
  */
 export function oauthConnectorIdForRedirect(redirectUri: string): string {
-  let host = "";
+  let url: URL;
   try {
-    host = new URL(redirectUri).hostname.toLowerCase();
+    url = new URL(redirectUri);
   } catch {
     return `${OAUTH_APP_CONNECTOR_PREFIX}unknown`;
   }
+  const host = url.hostname.toLowerCase();
   const isHost = (domain: string) => host === domain || host.endsWith(`.${domain}`);
   if (isHost("chatgpt.com") || isHost("openai.com")) return "chatgpt";
   if (isHost("claude.ai") || isHost("claude.com")) return "claude-ai";
-  // Any other app gets its own id keyed by redirect host, so two such apps
-  // never rotate each other's tokens either.
-  const slug = host.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "unknown";
+  // Any other app gets its own id keyed by its full redirect origin.
+  // Percent-encoding keeps host, port and separators injective, so two
+  // distinct origins can never collide into one connector id (and never
+  // rotate each other's tokens).
+  const key = `${host}${url.port ? `:${url.port}` : ""}`;
+  const slug = encodeURIComponent(key) || "unknown";
   return `${OAUTH_APP_CONNECTOR_PREFIX}${slug}`;
 }
 

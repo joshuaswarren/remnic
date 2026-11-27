@@ -58,13 +58,14 @@ const TOKEN_PREFIXES: Record<string, string> = {
 /**
  * Connector ids minted by the OAuth facade (remnic-server oauth.ts), one per
  * linked app so linking one app never rotates another app's token:
- * `chatgpt`, `claude-ai`, and `oauth-app-<redirect host>` for any other app.
+ * `chatgpt`, `claude-ai`, and `oauth-app-<origin>` (encoded redirect
+ * host+port) for any other app.
  * Tokens under these ids are pinned to `/mcp` by the access server's path
  * policy.
  */
 export const OAUTH_CONNECTOR_IDS = ["chatgpt", "claude-ai"] as const;
 
-/** Prefix for per-host OAuth connector ids of apps other than ChatGPT/Claude. */
+/** Prefix for per-origin OAuth connector ids of apps other than ChatGPT/Claude. */
 export const OAUTH_APP_CONNECTOR_PREFIX = "oauth-app-";
 
 /** True when `connector` is an OAuth-minted connector (pinned to `/mcp`). */

@@ -4177,10 +4177,11 @@ function resolveStatusProbeToken(): string | undefined {
   const operatorToken = resolveOperatorToken(resolveConfigPath());
   if (operatorToken) return operatorToken;
   try {
-    // Connector tokens authorize health EXCEPT chatgpt-minted ones, which
-    // the access server pins to /mcp only (tokenPathPolicy). Skip those so
-    // a ChatGPT entry at the head of the store doesn't produce a misleading
-    // 401 when an ordinary connector token would authenticate health.
+    // Connector tokens authorize health EXCEPT OAuth-minted ones (chatgpt,
+    // claude-ai, oauth-app-*; see isOAuthConnector), which the access
+    // server pins to /mcp only (tokenPathPolicy). Skip those so an OAuth
+    // entry at the head of the store doesn't produce a misleading 401
+    // when an ordinary connector token would authenticate health.
     const usable = listTokens().find(
       (t) => !isOAuthConnector(t.connector) && t.token.length > 0,
     );
