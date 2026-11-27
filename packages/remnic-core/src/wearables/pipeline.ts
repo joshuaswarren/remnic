@@ -16,6 +16,7 @@
  */
 
 import { fillWearableConversationLocations } from "../location/tagging.js";
+import { isAbortError } from "../abort-error.js";
 import { cleanConversation } from "./cleanup.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import {
@@ -607,6 +608,7 @@ export async function syncWearableSource(
           importedNativeIds.push(...imported.importedIds);
           for (const id of imported.importedIds) alreadyImported.add(id);
         } catch (err) {
+          if (isAbortError(err)) throw err;
           summary.warnings.push(
             `${connector.id}: native-memory import failed: ${describeErrorForOperator(err)} — skipped; it retries on the next sync`,
           );

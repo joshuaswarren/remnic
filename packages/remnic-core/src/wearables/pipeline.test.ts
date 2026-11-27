@@ -467,6 +467,16 @@ test("a native-memory import failure warns and lets the sync complete", async ()
       "watermark still advances past a failed native import",
     );
     assert.ok(state.sources.testsource.dayHashes?.["2026-06-11"]);
+
+    // Caller cancellation still propagates: an aborted fetch must not be
+    // converted into a completed sync with a stale-but-successful state.
+    const abortingConnector = fakeConnector(byDate);
+    abortingConnector.fetchNativeMemories = async () => {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    };
+    await assert.rejects(
+      syncWearableSource(abortingConnector, settings({ importNativeMemories: "review" }), config(), { days: 1 }, deps),
+    );
   } finally {
     rmSync(memoryDir, { recursive: true, force: true });
   }
