@@ -72,6 +72,7 @@ async function fixture(head) {
   git(root, ["config", "user.name", "Release Discipline Test"]);
   git(root, ["config", "commit.gpgsign", "false"]);
 
+  await writeFileIn(root, "package.json", `${JSON.stringify({ name: "remnic-workspace", private: true, version: "1.2.3" }, null, 2)}\n`);
   await writeFileIn(root, "packages/remnic-core/package.json", `${JSON.stringify({ name: "@remnic/core", version: "1.2.3" }, null, 2)}\n`);
   await writeFileIn(root, CONFIG_PATH, BASE_CONFIG);
   await writeFileIn(root, REGISTRY_PATH, `${JSON.stringify(BASE_REGISTRY, null, 2)}\n`);
@@ -144,6 +145,50 @@ test("a malformed Stability value fails instead of being normalized", async () =
     (result) => {
       assert.equal(result.status, 1, result.stderr);
       assert.match(result.stderr, /invalid stability declaration/);
+    },
+  );
+});
+
+test("a changeset naming a package outside the workspace fails", async () => {
+  await withFixture(
+    async ({ write }) => {
+      await write("packages/remnic-core/src/recall.ts", "export const recall = 1;\n");
+      await write(
+        ".changeset/bad-name.md",
+        `---\n"remnic-core": patch\n---\n\nTighten recall ordering.\n\nStability: stable\n`,
+      );
+    },
+    (result) => {
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /names no workspace package|not a workspace package/);
+      assert.match(result.stderr, /remnic-core/);
+    },
+  );
+});
+
+test("a changeset naming the root workspace package passes", async () => {
+  await withFixture(
+    async ({ write }) => {
+      await write("scripts/some-tool.sh", "#!/bin/sh\nexit 0\n");
+      await write(
+        ".changeset/tooling.md",
+        `---\n"remnic-workspace": patch\n---\n\nFix a CI-only defect.\n`,
+      );
+    },
+    (result) => {
+      assert.equal(result.status, 0, result.stderr);
+    },
+  );
+});
+
+test("a changeset naming the workspace package passes the name rule", async () => {
+  await withFixture(
+    async ({ write }) => {
+      await write("packages/remnic-core/src/recall.ts", "export const recall = 1;\n");
+      await write(".changeset/recall.md", changeset("Tighten recall ordering.\n\nStability: stable"));
+    },
+    (result) => {
+      assert.equal(result.status, 0, result.stderr);
     },
   );
 });

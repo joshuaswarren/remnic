@@ -168,6 +168,26 @@ export function parseStabilityDeclarations(text) {
 }
 
 /**
+ * Package names declared in a changeset's frontmatter block (the first
+ * `---` ... `---` pair). Entries look like `"@remnic/core": patch`; quoted
+ * and unquoted names both parse. A file with no frontmatter block returns
+ * an empty list — the shape itself is for the changeset tool to validate.
+ */
+export function parseChangesetPackages(text) {
+  const lines = text.split("\n");
+  const first = lines[0] && lines[0].endsWith("\r") ? lines[0].slice(0, -1) : lines[0];
+  if (first !== "---") return [];
+  const names = [];
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index].endsWith("\r") ? lines[index].slice(0, -1) : lines[index];
+    if (line === "---") break;
+    const entry = line.match(/^"([^"]+)"\s*:\s*(patch|minor|major)\s*$|^([^\s:]+)\s*:\s*(patch|minor|major)\s*$/);
+    if (entry) names.push(entry[1] ?? entry[3]);
+  }
+  return names;
+}
+
+/**
  * Parse + validate the flag registry. Keys are enumerated with
  * `Object.getOwnPropertyNames` and read with `Object.hasOwn` so a
  * non-enumerable or inherited field cannot slip past validation (checklist 46).
@@ -263,7 +283,17 @@ export function evaluateReleaseDiscipline(input) {
 
   // (a) changeset stability
   const levels = new Set();
+  const workspaceNames = new Set(packages.map((pkg) => pkg.name));
   for (const changeset of changesets) {
+    for (const name of parseChangesetPackages(changeset.text)) {
+      if (!workspaceNames.has(name)) {
+        violations.push(
+          `${changeset.path}: frontmatter names ${JSON.stringify(name)}, which is not a workspace package. ` +
+            `A name the workspace does not contain bumps nothing at release and can skip this gate's ` +
+            `checks — use the package's package.json name instead.`,
+        );
+      }
+    }
     const declared = parseStabilityDeclarations(changeset.text);
     for (const bad of declared.invalid) {
       violations.push(
@@ -460,9 +490,26 @@ export function collectFromGit({ repoRoot, baseRef, headRef, git = makeGit(repoR
     changesets.push({ path: file, text });
   }
 
+  const packages = discoverPackagesAtRef(git, headRef);
+  // The root package is not a `packages/*` workspace member, but its name is a
+  // legitimate changeset target for workspace/tooling-only changes
+  // (.changeset/2774-this-run-ci-defects.md). `dir: "."` never matches a
+  // normalized file path, so package attribution is unchanged.
+  const rootManifest = showAtRef(git, headRef, "package.json");
+  if (rootManifest !== null) {
+    try {
+      const parsed = JSON.parse(rootManifest);
+      if (parsed.name?.length > 0) {
+        packages.push({ dir: ".", name: parsed.name, kind: "npm", private: parsed.private === true });
+      }
+    } catch {
+      // A malformed root manifest is for other gates; the name check has nothing to compare.
+    }
+  }
+
   return {
     changedFiles,
-    packages: discoverPackagesAtRef(git, headRef),
+    packages,
     changesets,
     baseGates: extractDefaultOffGates(baseConfigSource),
     headGates: extractDefaultOffGates(headConfigSource),
